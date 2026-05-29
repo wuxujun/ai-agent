@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -14,6 +15,7 @@ import (
 
 	otlpmetrichttp "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	otlptracehttp "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -34,35 +36,48 @@ func InitOTel(serviceName, env, endpoint string) (ShutdownFunc, error) {
 		return nil, fmt.Errorf("create resource: %w", err)
 	}
 
-	metricExp, err := otlpmetrichttp.New(ctx,
-		otlpmetrichttp.WithEndpoint(endpoint),
-		otlpmetrichttp.WithInsecure(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create otlp metric exporter: %w", err)
-	}
+	var traceExp sdktrace.SpanExporter
+	var meterProvider *sdkmetric.MeterProvider
 
-	traceExp, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpoint(endpoint),
-		otlptracehttp.WithInsecure(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create otlp trace exporter: %w", err)
-	}
+	// Support stdout exporter via endpoint parameter or OTEL_EXPORTER environment variable
+	isStdout := endpoint == "stdout" || os.Getenv("OTEL_EXPORTER") == "stdout"
 
-	meterProvider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(10*time.Second)),
-		),
-		sdkmetric.WithResource(res),
-	)
+	if isStdout {
+		traceExp, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
+		if err != nil {
+			return nil, fmt.Errorf("create stdout trace exporter: %w", err)
+		}
+	} else {
+		metricExp, err := otlpmetrichttp.New(ctx,
+			otlpmetrichttp.WithEndpoint(endpoint),
+			otlpmetrichttp.WithInsecure(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create otlp metric exporter: %w", err)
+		}
+
+		meterProvider = sdkmetric.NewMeterProvider(
+			sdkmetric.WithReader(
+				sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(10*time.Second)),
+			),
+			sdkmetric.WithResource(res),
+		)
+		otel.SetMeterProvider(meterProvider)
+
+		traceExp, err = otlptracehttp.New(ctx,
+			otlptracehttp.WithEndpoint(endpoint),
+			otlptracehttp.WithInsecure(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create otlp trace exporter: %w", err)
+		}
+	}
 
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
 	)
 
-	otel.SetMeterProvider(meterProvider)
 	otel.SetTracerProvider(tracerProvider)
 
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
@@ -70,8 +85,10 @@ func InitOTel(serviceName, env, endpoint string) (ShutdownFunc, error) {
 	}))
 
 	return func(ctx context.Context) error {
-		if err := meterProvider.Shutdown(ctx); err != nil {
-			return err
+		if meterProvider != nil {
+			if err := meterProvider.Shutdown(ctx); err != nil {
+				return err
+			}
 		}
 		return tracerProvider.Shutdown(ctx)
 	}, nil

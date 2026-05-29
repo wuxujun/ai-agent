@@ -15,7 +15,7 @@ import (
 )
 
 type Handler struct {
-	store   *store.SQLiteStore
+	store   store.Store
 	engine  *orchestrator.Engine
 	metrics *metrics.Collector
 }
@@ -28,7 +28,7 @@ type CreateTaskRequest struct {
 	ToolBudget int    `json:"tool_budget"`
 }
 
-func RegisterRoutes(r *gin.Engine, st *store.SQLiteStore, eng *orchestrator.Engine, mc *metrics.Collector) {
+func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector) {
 	h := &Handler{store: st, engine: eng, metrics: mc}
 
 	r.Use(ErrorMiddleware())
@@ -74,7 +74,7 @@ func (h *Handler) createTask(c *gin.Context) {
 		Workspace:  req.Workspace,
 		MaxSteps:   req.MaxSteps,
 		ToolBudget: req.ToolBudget,
-		Status:     "created",
+		Status:     types.StatusCreated,
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -102,12 +102,13 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		return
 	}
 
-	if err := h.engine.Next(ctx, task); err != nil {
-		c.Error(err)
+	execErr := h.engine.Next(ctx, task)
+	if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
+		c.Error(saveErr)
 		return
 	}
-	if err := h.store.SaveFullTask(ctx, task); err != nil {
-		c.Error(err)
+	if execErr != nil {
+		c.Error(execErr)
 		return
 	}
 
@@ -128,12 +129,13 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
-	if err := h.engine.RunAll(ctx, task); err != nil {
-		c.Error(err)
+	execErr := h.engine.RunAll(ctx, task)
+	if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
+		c.Error(saveErr)
 		return
 	}
-	if err := h.store.SaveFullTask(ctx, task); err != nil {
-		c.Error(err)
+	if execErr != nil {
+		c.Error(execErr)
 		return
 	}
 

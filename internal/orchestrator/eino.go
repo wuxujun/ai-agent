@@ -25,7 +25,7 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
-		attribute.String("agent.task.status", task.Status),
+		attribute.String("agent.task.status", string(task.Status)),
 		attribute.Int("agent.task.step_count", task.StepCount),
 		attribute.Int("agent.task.max_steps", task.MaxSteps),
 		attribute.Int("agent.task.tool_budget", task.ToolBudget),
@@ -47,7 +47,7 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 	}
 
 	span.SetAttributes(
-		attribute.String("agent.task.status_after", output.Status),
+		attribute.String("agent.task.status_after", string(output.Status)),
 		attribute.Int("agent.task.step_count_after", output.StepCount),
 		attribute.Int("agent.task.tool_budget_after", output.ToolBudget),
 	)
@@ -76,10 +76,11 @@ func (e *Engine) checkBudget(ctx context.Context, state *einoStepState) (*einoSt
 	}
 
 	log.Printf("[Engine-Eino] Task %s reached step limit (%d/%d) or budget limit (%d)", task.ID, task.StepCount, task.MaxSteps, task.ToolBudget)
-	task.Status = "completed"
-	if task.FinalAnswer == "" {
-		task.FinalAnswer = "stopped by budget or max steps"
+	finalAnswer := task.FinalAnswer
+	if finalAnswer == "" {
+		finalAnswer = "stopped by budget or max steps"
 	}
+	_ = SetTaskCompleted(task, finalAnswer)
 	if e.Metrics != nil {
 		e.Metrics.IncCompleted()
 	}
@@ -88,7 +89,7 @@ func (e *Engine) checkBudget(ctx context.Context, state *einoStepState) (*einoSt
 
 func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepState, error) {
 	task := state.Task
-	if task.Status == "completed" {
+	if task.Status == types.StatusCompleted {
 		return state, nil
 	}
 
@@ -109,8 +110,7 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 
 	if decision.Stop {
 		log.Printf("[Engine-Eino] Task %s - Planner decided to stop. FinalAnswer: %q", task.ID, decision.FinalAnswer)
-		task.Status = "completed"
-		task.FinalAnswer = decision.FinalAnswer
+		_ = SetTaskCompleted(task, decision.FinalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
@@ -122,7 +122,7 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*einoStepState, error) {
 	task := state.Task
 	decision := state.Decision
-	if task.Status == "completed" || decision == nil {
+	if task.Status == types.StatusCompleted || decision == nil {
 		return state, nil
 	}
 
@@ -142,7 +142,7 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 	task.StepCount++
 	task.ToolBudget--
 	task.Trace = append(task.Trace, *trace)
-	task.Status = "running"
+	_ = SetTaskRunning(task)
 
 	log.Printf("[Engine-Eino] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)
 	return state, nil

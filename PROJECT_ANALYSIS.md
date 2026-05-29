@@ -38,8 +38,10 @@
 │   ├── engine.go                      # Engine 主入口、Legacy 编排、RunAll
 │   ├── eino.go                        # Eino Chain 编排实现
 │   ├── adk.go                         # Google ADK 编排实现
+│   ├── state.go                       # 任务状态迁移和管理
 │   ├── eino_test.go                   # Eino/Legacy 模式测试
-│   └── adk_test.go                    # ADK 模式测试
+│   ├── adk_test.go                    # ADK 模式测试
+│   └── state_test.go                  # 状态迁移单元测试
 ├── internal/planner                   # LLM、Mock、Fallback Planner
 ├── internal/policy                    # 工作空间和命令安全策略
 ├── internal/store                     # SQLite 持久化

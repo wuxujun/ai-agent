@@ -36,17 +36,24 @@ const (
 	ModeAdk    Mode = "adk"
 )
 
-func (e *Engine) Next(ctx context.Context, task *types.Task) error {
+func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
+	defer func() {
+		if err != nil {
+			_ = SetTaskFailed(task, err.Error())
+		}
+	}()
+
 	switch e.Mode {
 	case "", ModeEino:
-		return e.runEinoNext(ctx, task)
+		err = e.runEinoNext(ctx, task)
 	case ModeLegacy:
-		return e.runLegacyNext(ctx, task)
+		err = e.runLegacyNext(ctx, task)
 	case ModeAdk:
-		return e.runAdkNext(ctx, task)
+		err = e.runAdkNext(ctx, task)
 	default:
-		return fmt.Errorf("unsupported orchestrator mode: %s", e.Mode)
+		err = fmt.Errorf("unsupported orchestrator mode: %s", e.Mode)
 	}
+	return err
 }
 
 func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
@@ -57,7 +64,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
-		attribute.String("agent.task.status", task.Status),
+		attribute.String("agent.task.status", string(task.Status)),
 		attribute.Int("agent.task.step_count", task.StepCount),
 		attribute.Int("agent.task.max_steps", task.MaxSteps),
 		attribute.Int("agent.task.tool_budget", task.ToolBudget),
@@ -66,10 +73,11 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
 		log.Printf("[Engine] Task %s reached step limit (%d/%d) or budget limit (%d)", task.ID, task.StepCount, task.MaxSteps, task.ToolBudget)
-		task.Status = "completed"
-		if task.FinalAnswer == "" {
-			task.FinalAnswer = "stopped by budget or max steps"
+		finalAnswer := task.FinalAnswer
+		if finalAnswer == "" {
+			finalAnswer = "stopped by budget or max steps"
 		}
+		_ = SetTaskCompleted(task, finalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
@@ -99,8 +107,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 
 	if decision.Stop {
 		log.Printf("[Engine] Task %s - Planner decided to stop. FinalAnswer: %q", task.ID, decision.FinalAnswer)
-		task.Status = "completed"
-		task.FinalAnswer = decision.FinalAnswer
+		_ = SetTaskCompleted(task, decision.FinalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
@@ -126,7 +133,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	task.StepCount++
 	task.ToolBudget--
 	task.Trace = append(task.Trace, *trace)
-	task.Status = "running"
+	_ = SetTaskRunning(task)
 
 	log.Printf("[Engine] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)
 
@@ -153,7 +160,7 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 		e.Metrics.IncRunAll()
 	}
 
-	for task.Status != "completed" {
+	for task.Status != types.StatusCompleted && task.Status != types.StatusFailed {
 		select {
 		case <-ctx.Done():
 			log.Printf("[Engine Warning] Task %s canceled: %v", task.ID, ctx.Err())
@@ -204,7 +211,7 @@ func stepFindTextFiles(task *types.Task) error {
 	if len(files) == 0 {
 		task.Unresolved = append(task.Unresolved, "no candidate text or markdown files found")
 	}
-	task.Status = "running"
+	_ = SetTaskRunning(task)
 	return nil
 }
 
@@ -229,14 +236,13 @@ func stepSearchKeyword(task *types.Task) error {
 	if len(evidence) == 0 {
 		task.Unresolved = append(task.Unresolved, "keyword not found")
 	}
-	task.Status = "running"
+	_ = SetTaskRunning(task)
 	return nil
 }
 
 func stepReadBestFile(task *types.Task) error {
 	if len(task.Trace) < 2 || len(task.Trace[1].Evidence) == 0 {
-		task.Status = "completed"
-		task.FinalAnswer = "not enough evidence to select a file"
+		_ = SetTaskCompleted(task, "not enough evidence to select a file")
 		return nil
 	}
 
@@ -259,8 +265,7 @@ func stepReadBestFile(task *types.Task) error {
 		Observation: "read file snippet: " + snippet,
 	})
 
-	task.Status = "completed"
-	task.FinalAnswer = fmt.Sprintf("completed search; best candidate file: %s", target)
+	_ = SetTaskCompleted(task, fmt.Sprintf("completed search; best candidate file: %s", target))
 	return nil
 }
 

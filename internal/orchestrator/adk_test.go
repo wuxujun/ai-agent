@@ -63,7 +63,7 @@ func TestAdkNextExecutesModelAndCompletes(t *testing.T) {
 		t.Fatalf("expected 1 model call, got %d", m.calls)
 	}
 
-	if task.Status != "completed" {
+	if task.Status != types.StatusCompleted {
 		t.Fatalf("expected task status completed, got %s", task.Status)
 	}
 

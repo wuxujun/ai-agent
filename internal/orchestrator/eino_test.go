@@ -57,7 +57,7 @@ func TestEinoNextExecutesPlannerDecision(t *testing.T) {
 	if x.calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", x.calls)
 	}
-	if task.Status != "running" {
+	if task.Status != types.StatusRunning {
 		t.Fatalf("task status = %q, want running", task.Status)
 	}
 	if task.StepCount != 1 || task.ToolBudget != 1 {
@@ -97,7 +97,7 @@ func TestLegacyNextExecutesPlannerDecision(t *testing.T) {
 	if x.calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", x.calls)
 	}
-	if task.Status != "running" {
+	if task.Status != types.StatusRunning {
 		t.Fatalf("task status = %q, want running", task.Status)
 	}
 	if task.StepCount != 1 || task.ToolBudget != 1 {
@@ -138,7 +138,7 @@ func TestEinoNextStopsWhenPlannerStops(t *testing.T) {
 	if x.calls != 0 {
 		t.Fatalf("executor calls = %d, want 0", x.calls)
 	}
-	if task.Status != "completed" {
+	if task.Status != types.StatusCompleted {
 		t.Fatalf("task status = %q, want completed", task.Status)
 	}
 	if task.FinalAnswer != "done" {
@@ -162,7 +162,7 @@ func TestEinoNextStopsWhenBudgetExhausted(t *testing.T) {
 	if x.calls != 0 {
 		t.Fatalf("executor calls = %d, want 0", x.calls)
 	}
-	if task.Status != "completed" {
+	if task.Status != types.StatusCompleted {
 		t.Fatalf("task status = %q, want completed", task.Status)
 	}
 	if task.FinalAnswer != "stopped by budget or max steps" {

@@ -15,10 +15,19 @@ type StepTrace struct {
 	Evidence    []Evidence `json:"evidence"`
 }
 
+type TaskStatus string
+
+const (
+	StatusCreated   TaskStatus = "created"
+	StatusRunning   TaskStatus = "running"
+	StatusCompleted TaskStatus = "completed"
+	StatusFailed    TaskStatus = "failed"
+)
+
 type Task struct {
 	ID          string      `json:"id"`
 	Goal        string      `json:"goal"`
-	Status      string      `json:"status"`
+	Status      TaskStatus  `json:"status"`
 	MaxSteps    int         `json:"max_steps"`
 	StepCount   int         `json:"step_count"`
 	Workspace   string      `json:"workspace"`

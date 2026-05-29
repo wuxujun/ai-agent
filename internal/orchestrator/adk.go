@@ -101,10 +101,11 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
 		log.Printf("[ADK Engine] Task %s reached step limit (%d/%d) or budget limit (%d)", task.ID, task.StepCount, task.MaxSteps, task.ToolBudget)
-		task.Status = "completed"
-		if task.FinalAnswer == "" {
-			task.FinalAnswer = "stopped by budget or max steps"
+		finalAnswer := task.FinalAnswer
+		if finalAnswer == "" {
+			finalAnswer = "stopped by budget or max steps"
 		}
+		_ = SetTaskCompleted(task, finalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
@@ -232,7 +233,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 		task.Trace = append(task.Trace, stepTrace)
 		task.StepCount++
 		task.ToolBudget--
-		task.Status = "running"
+		_ = SetTaskRunning(task)
 
 		if e.Metrics != nil {
 			e.Metrics.ObserveExecutor(time.Since(time.Now()), err, t.Name())
@@ -296,16 +297,16 @@ If you have found the answer, output the answer clearly. If the answer cannot be
 	}
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
-		task.Status = "completed"
-		if task.FinalAnswer == "" {
-			task.FinalAnswer = "stopped by budget or max steps"
+		ans := task.FinalAnswer
+		if ans == "" {
+			ans = "stopped by budget or max steps"
 		}
+		_ = SetTaskCompleted(task, ans)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
 	} else if finalAnswer != "" {
-		task.Status = "completed"
-		task.FinalAnswer = finalAnswer
+		_ = SetTaskCompleted(task, finalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
