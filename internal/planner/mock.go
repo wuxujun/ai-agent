@@ -12,10 +12,10 @@ type MockPlanner struct{}
 func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecision, error) {
 	if task.StepCount == 0 {
 		return &PlanDecision{
-			ThoughtSummary: "Find candidate text files first",
+			ThoughtSummary: "Find candidate files first",
 			Action:         "find_files",
 			Parameters: map[string]any{
-				"pattern": "*.txt",
+				"pattern": "*",
 			},
 		}, nil
 	}
@@ -27,11 +27,11 @@ func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDeci
 			q = parts[len(parts)-1]
 		}
 		return &PlanDecision{
-			ThoughtSummary: "Search likely keyword in text files",
+			ThoughtSummary: "Search likely keyword in candidate files",
 			Action:         "search_text",
 			Parameters: map[string]any{
 				"query": q,
-				"glob":  "*.txt",
+				"glob":  "",
 			},
 		}, nil
 	}

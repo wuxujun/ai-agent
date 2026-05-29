@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -28,6 +29,8 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next")
 	defer span.End()
 
+	log.Printf("[Engine] Running step %d/%d (budget: %d) for task %s", task.StepCount+1, task.MaxSteps, task.ToolBudget, task.ID)
+
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
 		attribute.String("agent.task.status", task.Status),
@@ -37,6 +40,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) error {
 	)
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
+		log.Printf("[Engine] Task %s reached step limit (%d/%d) or budget limit (%d)", task.ID, task.StepCount, task.MaxSteps, task.ToolBudget)
 		task.Status = "completed"
 		if task.FinalAnswer == "" {
 			task.FinalAnswer = "stopped by budget or max steps"
@@ -54,10 +58,13 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) error {
 		e.Metrics.ObservePlanner(time.Since(pStart), err)
 	}
 	if err != nil {
+		log.Printf("[Engine Error] Planner failed for task %s: %v", task.ID, err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner failure")
 		return err
 	}
+
+	log.Printf("[Engine] Task %s - Planner thought: %q | Action chosen: %q", task.ID, decision.ThoughtSummary, decision.Action)
 
 	task.Hypothesis = decision.ThoughtSummary
 	span.SetAttributes(
@@ -66,6 +73,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) error {
 	)
 
 	if decision.Stop {
+		log.Printf("[Engine] Task %s - Planner decided to stop. FinalAnswer: %q", task.ID, decision.FinalAnswer)
 		task.Status = "completed"
 		task.FinalAnswer = decision.FinalAnswer
 		if e.Metrics != nil {
@@ -75,21 +83,27 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) error {
 		return nil
 	}
 
+	log.Printf("[Engine] Task %s - Executing action %q with parameters: %+v", task.ID, decision.Action, decision.Parameters)
 	xStart := time.Now()
 	trace, err := e.Executor.Execute(ctx, task, decision)
 	if e.Metrics != nil {
 		e.Metrics.ObserveExecutor(time.Since(xStart), err, decision.Action)
 	}
 	if err != nil {
+		log.Printf("[Engine Error] Executor failed for task %s, action %q: %v", task.ID, decision.Action, err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "executor failure")
 		return err
 	}
 
+	log.Printf("[Engine] Task %s - Action execution success. Observation: %q", task.ID, trace.Observation)
+
 	task.StepCount++
 	task.ToolBudget--
 	task.Trace = append(task.Trace, *trace)
 	task.Status = "running"
+
+	log.Printf("[Engine] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)
 
 	span.SetAttributes(
 		attribute.Int("agent.task.step_count_after", task.StepCount),
@@ -103,6 +117,8 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.run_all")
 	defer span.End()
 
+	log.Printf("[Engine] Starting task %s to completion. Goal: %q", task.ID, task.Goal)
+
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
 		attribute.String("agent.task.goal", task.Goal),
@@ -115,6 +131,7 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	for task.Status != "completed" {
 		select {
 		case <-ctx.Done():
+			log.Printf("[Engine Warning] Task %s canceled: %v", task.ID, ctx.Err())
 			span.RecordError(ctx.Err())
 			span.SetStatus(codes.Error, "context canceled")
 			return ctx.Err()
@@ -122,34 +139,45 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 		}
 
 		if err := e.Next(ctx, task); err != nil {
+			log.Printf("[Engine Error] Execution step failed for task %s: %v", task.ID, err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "run_all failed")
 			return err
 		}
 	}
 
+	log.Printf("[Engine] Task %s finished. Status: %s | FinalAnswer: %q", task.ID, task.Status, task.FinalAnswer)
 	span.SetAttributes(attribute.String("agent.task.final_answer", task.FinalAnswer))
 	return nil
 }
 
 func stepFindTextFiles(task *types.Task) error {
-	task.Hypothesis = "Relevant evidence is likely inside text files"
+	task.Hypothesis = "Relevant evidence is likely inside text or markdown files"
 
-	files, err := tools.FindFiles(task.Workspace, "*.txt")
+	txtFiles, err := tools.FindFiles(task.Workspace, "*.txt")
 	if err != nil {
 		return err
+	}
+	mdFiles, err := tools.FindFiles(task.Workspace, "*.md")
+	if err != nil {
+		return err
+	}
+
+	files := append(txtFiles, mdFiles...)
+	if len(files) > 20 {
+		files = files[:20]
 	}
 
 	task.Trace = append(task.Trace, types.StepTrace{
 		Step:        task.StepCount,
 		Goal:        task.Goal,
 		Action:      "find_files",
-		Query:       "*.txt",
+		Query:       "*.txt, *.md",
 		Observation: fmt.Sprintf("found %d candidate files", len(files)),
 	})
 
 	if len(files) == 0 {
-		task.Unresolved = append(task.Unresolved, "no candidate text files found")
+		task.Unresolved = append(task.Unresolved, "no candidate text or markdown files found")
 	}
 	task.Status = "running"
 	return nil

@@ -40,7 +40,7 @@ type Collector struct {
 }
 
 func NewCollector() *Collector {
-	meter := otel.Meter("agent-runtime")
+	meter := otel.Meter("ai-agent")
 
 	plannerCalls, _ := meter.Int64Counter("agent.planner.calls")
 	plannerFailures, _ := meter.Int64Counter("agent.planner.failures")

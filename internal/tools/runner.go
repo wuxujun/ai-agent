@@ -3,6 +3,8 @@ package tools
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"time"
 
@@ -26,6 +28,14 @@ func RunCommand(dir string, name string, args ...string) (string, error) {
 
 	err := cmd.Run()
 	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", fmt.Errorf("dependency '%s' is not installed on this system; please install it (e.g., 'brew install %s' or 'apt install %s')", name, name, name)
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 && name == "rg" {
+				return out.String(), nil
+			}
+		}
 		if stderr.Len() > 0 {
 			return stderr.String(), err
 		}

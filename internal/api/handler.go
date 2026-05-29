@@ -42,7 +42,7 @@ func RegisterRoutes(r *gin.Engine, st *store.SQLiteStore, eng *orchestrator.Engi
 		tasks.POST("/:id/run-all", h.runAll)
 		tasks.GET("/:id", h.getTask)
 	}
-	r.GET("/metrics", h.getMetrics)
+	api.GET("/metrics", h.getMetrics)
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})

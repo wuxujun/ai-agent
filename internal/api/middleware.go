@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -12,8 +13,10 @@ func ErrorMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
 		if len(c.Errors) > 0 {
+			err := c.Errors.Last()
+			log.Printf("[API Error] Request: %s %s - Error: %v", c.Request.Method, c.Request.URL.Path, err.Err)
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": c.Errors.Last().Error(),
+				"error": err.Error(),
 			})
 		}
 	}
