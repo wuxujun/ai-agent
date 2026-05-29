@@ -6,7 +6,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
-	"github.com/wuxujun/ai-agent/pkg/types"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/wuxujun/ai-agent/pkg/types"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 type MockPlanner struct{}

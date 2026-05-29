@@ -3,7 +3,7 @@ package planner
 import (
 	"context"
 
-	"github.com/wuxujun/ai-agent/pkg/types"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 type PlanDecision struct {

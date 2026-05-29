@@ -1,6 +1,6 @@
 # AI Agent - Go Runtime Engine
 
-这是一个基于 Go 语言构建的 AI Agent 执行运行时引擎，核心采用 Planner-Executor（规划器-执行器）环路设计。它允许 AI Agent 根据用户的目标（Goal），在安全的沙箱工作空间（Workspace）中规划并执行文件查找、内容检索以及文件阅读等操作，以最终达成目标。
+这是一个基于 Go 语言构建的 AI Agent 执行运行时引擎，核心采用 Eino Chain 承载 Planner-Executor（规划器-执行器）任务编排。它允许 AI Agent 根据用户的目标（Goal），在安全的沙箱工作空间（Workspace）中规划并执行文件查找、内容检索以及文件阅读等操作，以最终达成目标。
 
 项目集成了 Gin HTTP 框架、SQLite 数据库以及 OpenTelemetry 链路/指标监控，具备完整的任务生命周期管理与可观测性。
 
@@ -26,7 +26,7 @@ graph TD
 
 ### 核心模块说明
 1. **API 层 (`internal/api`)**：提供 Gin-based RESTful API 接口，负责任务的注册、单步调试、批量运行及指标监控。
-2. **编排引擎 (`internal/orchestrator`)**：任务运行的主循环，通过 `Planner` 决定下一步动作，由 `Executor` 驱动底层工具执行并把执行状态、发现的线索（Evidence）追加到 `Trace` 中。
+2. **编排引擎 (`internal/orchestrator`)**：任务运行的主循环，通过 Eino Chain 将预算检查、`Planner` 决策、`Executor` 执行和任务状态更新串联为可组合节点，并把执行状态、发现的线索（Evidence）追加到 `Trace` 中。
 3. **规划器 (`internal/planner`)**：
    - `LLMPlanner`：使用大语言模型（GPT-4.1 兼容 API）通过 JSON Schema 控制输出，为 Agent 规划思考逻辑。
    - `MockPlanner`：提供静态本地测试流程。
@@ -49,15 +49,14 @@ graph TD
 │   ├── api/                # REST 接口路由与 API 处理器
 │   ├── executor/           # 动作执行器分发
 │   ├── metrics/            # 本地性能指标采集器
-│   ├── orchestrator/       # 任务编排引擎核心 (Plan-Execute 闭环)
+│   ├── orchestrator/       # 基于 Eino Chain 的任务编排引擎核心
 │   ├── planner/            # LLM / Mock / Fallback 规划器实现
 │   ├── policy/             # 权限边界与安全策略校验 (防逃逸)
 │   ├── store/              # SQLite 数据库持久化实现
 │   ├── telemetry/          # OpenTelemetry 链路追踪初始化
 │   ├── tools/              # 底层文件、搜索等工具封装
+│   ├── types/              # 任务 (Task)、步骤追踪 (StepTrace) 等实体定义
 │   └── workspace/          # 工作空间管理
-├── pkg/
-│   └── types/              # 任务 (Task)、步骤追踪 (StepTrace) 等实体定义
 ├── go.mod                  # 依赖管理
 └── README.md               # 项目说明文档
 ```
@@ -67,7 +66,7 @@ graph TD
 ## ⚡ 快速开始
 
 ### 1. 环境准备
-项目依赖本地安装的 `go 1.25` 以上版本，且运行环境推荐包含 `ripgrep (rg)` 和 `find` 命令。
+项目依赖本地安装的 `go 1.25` 以上版本，任务编排使用 CloudWeGo Eino，且运行环境推荐包含 `ripgrep (rg)` 和 `find` 命令。
 
 在运行前，请先设置 OpenAI 的 API 密钥（LLM 规划器所需）：
 ```bash
@@ -84,6 +83,13 @@ export OPENAI_API_KEY="your-api-key"
 go run ./cmd/server
 ```
 服务默认监听在 `http://127.0.0.1:8080`。
+
+任务编排入口可通过环境变量切换：
+```bash
+export AI_AGENT_ORCHESTRATOR=eino    # 默认，使用 Eino Chain 编排
+export AI_AGENT_ORCHESTRATOR=legacy  # 使用旧版 Engine.Next 直接编排
+export AI_AGENT_ORCHESTRATOR=adk     # 使用 Google ADK for Go 编排
+```
 
 ---
 

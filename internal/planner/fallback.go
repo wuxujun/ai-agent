@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/wuxujun/ai-agent/internal/metrics"
-	"github.com/wuxujun/ai-agent/pkg/types"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 )

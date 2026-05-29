@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/wuxujun/ai-agent/pkg/types"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 func BuildSystemPrompt() string {

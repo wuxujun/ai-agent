@@ -11,21 +11,45 @@ import (
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
-	"github.com/wuxujun/ai-agent/pkg/types"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"google.golang.org/adk/model"
 )
 
 type Engine struct {
 	Planner  planner.Planner
 	Executor executor.Executor
 	Metrics  *metrics.Collector
+	Mode     Mode
+	AdkModel model.LLM
 }
 
-var tracer = otel.Tracer("agent-runtime/orchestrator")
+var tracer = otel.Tracer("ai-agent/orchestrator")
+
+type Mode string
+
+const (
+	ModeEino   Mode = "eino"
+	ModeLegacy Mode = "legacy"
+	ModeAdk    Mode = "adk"
+)
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) error {
+	switch e.Mode {
+	case "", ModeEino:
+		return e.runEinoNext(ctx, task)
+	case ModeLegacy:
+		return e.runLegacyNext(ctx, task)
+	case ModeAdk:
+		return e.runAdkNext(ctx, task)
+	default:
+		return fmt.Errorf("unsupported orchestrator mode: %s", e.Mode)
+	}
+}
+
+func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next")
 	defer span.End()
 
@@ -37,6 +61,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) error {
 		attribute.Int("agent.task.step_count", task.StepCount),
 		attribute.Int("agent.task.max_steps", task.MaxSteps),
 		attribute.Int("agent.task.tool_budget", task.ToolBudget),
+		attribute.String("agent.orchestrator", "legacy"),
 	)
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {

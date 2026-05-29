@@ -3,7 +3,7 @@ package tools
 import (
 	"strings"
 
-	"github.com/wuxujun/ai-agent/pkg/types"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 func SearchWithRG(workspace string, query string, glob string) ([]types.Evidence, string, error) {
