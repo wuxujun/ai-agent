@@ -6,29 +6,47 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"google.golang.org/genai"
 )
 
-var tracer = otel.Tracer("agent-runtime/planner")
+var tracer = otel.Tracer("ai-agent/planner")
+
+type ProviderType string
+
+const (
+	ProviderOpenAIResponses ProviderType = "openai-responses"
+	ProviderOpenAI          ProviderType = "openai"
+	ProviderGemini          ProviderType = "gemini"
+	ProviderOllama          ProviderType = "ollama"
+)
 
 type LLMPlanner struct {
-	APIKey  string
-	Model   string
-	BaseURL string
-	Client  *http.Client
+	Provider ProviderType
+	APIKey   string
+	Model    string
+	BaseURL  string
+	Client   *http.Client
 }
 
 func NewLLMPlanner(apiKey, model, baseURL string) *LLMPlanner {
+	return NewLLMPlannerWithProvider(ProviderOpenAIResponses, apiKey, model, baseURL)
+}
+
+func NewLLMPlannerWithProvider(provider ProviderType, apiKey, model, baseURL string) *LLMPlanner {
 	return &LLMPlanner{
-		APIKey:  apiKey,
-		Model:   model,
-		BaseURL: baseURL,
+		Provider: provider,
+		APIKey:   apiKey,
+		Model:    model,
+		BaseURL:  baseURL,
 		Client: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -41,96 +59,297 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
+		attribute.String("llm.provider", string(p.Provider)),
 		attribute.String("llm.model", p.Model),
 		attribute.Int("agent.task.step_count", task.StepCount),
 	)
 
+	log.Printf("[LLM Planner] Starting planning for task %s, step_count: %d, provider: %s, model: %s", task.ID, task.StepCount, p.Provider, p.Model)
+
 	systemPrompt := BuildSystemPrompt()
 	userPrompt := BuildUserPrompt(task)
 
-	reqBody := map[string]any{
-		"model": p.Model,
-		"input": []map[string]any{
+	if p.Provider == ProviderGemini {
+		configOpts := &genai.ClientConfig{
+			APIKey: p.APIKey,
+		}
+		if p.BaseURL != "" {
+			configOpts.HTTPOptions = genai.HTTPOptions{
+				BaseURL: p.BaseURL,
+			}
+		}
+		client, err := genai.NewClient(ctx, configOpts)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "failed to create genai client")
+			log.Printf("[LLM Planner Error] Task %s - failed to create genai client: %v", task.ID, err)
+			return nil, err
+		}
+
+		contents := []*genai.Content{
 			{
-				"role": "system",
-				"content": []map[string]any{
-					{"type": "input_text", "text": systemPrompt},
+				Role: "user",
+				Parts: []*genai.Part{
+					{Text: userPrompt},
 				},
 			},
-			{
-				"role": "user",
-				"content": []map[string]any{
-					{"type": "input_text", "text": userPrompt},
+		}
+
+		config := &genai.GenerateContentConfig{
+			SystemInstruction: &genai.Content{
+				Parts: []*genai.Part{
+					{Text: systemPrompt},
 				},
 			},
-		},
-		"text": map[string]any{
-			"format": map[string]any{
-				"type":   "json_schema",
-				"name":   "planner_decision",
-				"strict": true,
-				"schema": PlannerDecisionSchema(),
+			ResponseMIMEType: "application/json",
+			ResponseSchema:   PlannerDecisionGenAISchema(),
+		}
+
+		log.Printf("[LLM Planner] Sending request to Gemini: model=%s", p.Model)
+		resp, err := client.Models.GenerateContent(ctx, p.Model, contents, config)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "gemini request failed")
+			log.Printf("[LLM Planner Error] Task %s - Gemini request failed: %v", task.ID, err)
+			return nil, err
+		}
+
+		textValue := resp.Text()
+		var decision PlanDecision
+		if err := unmarshalDecision(textValue, &decision); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "decision unmarshal failed")
+			log.Printf("[LLM Planner Error] Task %s - failed to unmarshal Gemini response %q: %v", task.ID, textValue, err)
+			return nil, fmt.Errorf("invalid planner decision: %w", err)
+		}
+
+		if err := ValidateDecision(&decision); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "decision validation failed")
+			log.Printf("[LLM Planner Error] Task %s - validation failed for decision %+v: %v", task.ID, decision, err)
+			return nil, err
+		}
+
+		span.SetAttributes(
+			attribute.String("agent.planner.action", decision.Action),
+			attribute.Bool("agent.planner.stop", decision.Stop),
+		)
+
+		log.Printf("[LLM Planner] Task %s decision - Thought: %q | Action: %q | Stop: %t | FinalAnswer: %q | Parameters: %+v",
+			task.ID, decision.ThoughtSummary, decision.Action, decision.Stop, decision.FinalAnswer, decision.Parameters)
+
+		return &decision, nil
+	}
+
+	var req *http.Request
+	var err error
+	var respParser func(raw []byte) (string, error)
+
+	switch p.Provider {
+	case ProviderOpenAIResponses:
+		reqBody := map[string]any{
+			"model": p.Model,
+			"input": []map[string]any{
+				{
+					"role": "system",
+					"content": []map[string]any{
+						{"type": "input_text", "text": systemPrompt},
+					},
+				},
+				{
+					"role": "user",
+					"content": []map[string]any{
+						{"type": "input_text", "text": userPrompt},
+					},
+				},
 			},
-		},
+			"text": map[string]any{
+				"format": map[string]any{
+					"type":   "json_schema",
+					"name":   "planner_decision",
+					"strict": true,
+					"schema": PlannerDecisionSchema(),
+				},
+			},
+		}
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "marshal failed")
+			log.Printf("[LLM Planner Error] Task %s - failed to marshal request body: %v", task.ID, err)
+			return nil, err
+		}
+		log.Printf("[LLM Planner] Sending request to API (%s): %s | Body: %s", p.Provider, p.BaseURL, string(b))
+		req, err = http.NewRequestWithContext(ctx, "POST", p.BaseURL, bytes.NewReader(b))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "request creation failed")
+			log.Printf("[LLM Planner Error] Task %s - failed to create request: %v", task.ID, err)
+			return nil, err
+		}
+		if p.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+p.APIKey)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		respParser = func(raw []byte) (string, error) {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return "", err
+			}
+			return extractStructuredText(m)
+		}
+
+	case ProviderOpenAI:
+		reqBody := map[string]any{
+			"model": p.Model,
+			"messages": []map[string]any{
+				{"role": "system", "content": systemPrompt},
+				{"role": "user", "content": userPrompt},
+			},
+			"response_format": map[string]any{
+				"type": "json_schema",
+				"json_schema": map[string]any{
+					"name":   "planner_decision",
+					"strict": true,
+					"schema": PlannerDecisionSchema(),
+				},
+			},
+		}
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "marshal failed")
+			log.Printf("[LLM Planner Error] Task %s - failed to marshal request body: %v", task.ID, err)
+			return nil, err
+		}
+		req, err = http.NewRequestWithContext(ctx, "POST", p.BaseURL, bytes.NewReader(b))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "request creation failed")
+			log.Printf("[LLM Planner Error] Task %s - failed to create request: %v", task.ID, err)
+			return nil, err
+		}
+		if p.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+p.APIKey)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		respParser = func(raw []byte) (string, error) {
+			type openaiChatResponse struct {
+				Choices []struct {
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				} `json:"choices"`
+			}
+			var oResp openaiChatResponse
+			if err := json.Unmarshal(raw, &oResp); err != nil {
+				return "", err
+			}
+			if len(oResp.Choices) == 0 {
+				return "", errors.New("empty choices in OpenAI response")
+			}
+			return oResp.Choices[0].Message.Content, nil
+		}
+
+	case ProviderOllama:
+		reqBody := map[string]any{
+			"model": p.Model,
+			"messages": []map[string]any{
+				{"role": "system", "content": systemPrompt},
+				{"role": "user", "content": userPrompt},
+			},
+			"stream": false,
+			"format": PlannerDecisionSchema(),
+		}
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "marshal failed")
+			log.Printf("[LLM Planner Error] Task %s - failed to marshal request body: %v", task.ID, err)
+			return nil, err
+		}
+		req, err = http.NewRequestWithContext(ctx, "POST", p.BaseURL, bytes.NewReader(b))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "request creation failed")
+			log.Printf("[LLM Planner Error] Task %s - failed to create request: %v", task.ID, err)
+			return nil, err
+		}
+		if p.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+p.APIKey)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		respParser = func(raw []byte) (string, error) {
+			type ollamaChatResponse struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			}
+			var oResp ollamaChatResponse
+			if err := json.Unmarshal(raw, &oResp); err != nil {
+				return "", err
+			}
+			return oResp.Message.Content, nil
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", p.Provider)
 	}
 
-	b, err := json.Marshal(reqBody)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "marshal failed")
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL, bytes.NewReader(b))
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "request creation failed")
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+p.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-
+	log.Printf("[LLM Planner] Sending request to API (%s): %s", p.Provider, p.BaseURL)
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner request failed")
+		log.Printf("[LLM Planner Error] Task %s - request failed: %v", task.ID, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+	log.Printf("[LLM Planner] API response received with status %d", resp.StatusCode)
 
 	if resp.StatusCode >= 300 {
-		err := fmt.Errorf("planner API returned status %d", resp.StatusCode)
+		var bodyErr bytes.Buffer
+		_, _ = bodyErr.ReadFrom(resp.Body)
+		err := fmt.Errorf("planner API returned status %d: %s", resp.StatusCode, bodyErr.String())
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner API error")
+		log.Printf("[LLM Planner Error] Task %s - API returned status %d: %s", task.ID, resp.StatusCode, bodyErr.String())
 		return nil, err
 	}
 
-	var raw map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	var rawBody bytes.Buffer
+	if _, err := rawBody.ReadFrom(resp.Body); err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "decode failed")
+		span.SetStatus(codes.Error, "read body failed")
+		log.Printf("[LLM Planner Error] Task %s - failed to read response body: %v", task.ID, err)
 		return nil, err
 	}
 
-	textValue, err := extractStructuredText(raw)
+	textValue, err := respParser(rawBody.Bytes())
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "extract failed")
+		span.SetStatus(codes.Error, "parse response failed")
+		log.Printf("[LLM Planner Error] Task %s - failed to parse response: %v", task.ID, err)
 		return nil, err
 	}
 
 	var decision PlanDecision
-	if err := json.Unmarshal([]byte(textValue), &decision); err != nil {
+	if err := unmarshalDecision(textValue, &decision); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "decision unmarshal failed")
+		log.Printf("[LLM Planner Error] Task %s - failed to unmarshal decision JSON: %v", task.ID, err)
 		return nil, fmt.Errorf("invalid planner decision: %w", err)
 	}
 
 	if err := ValidateDecision(&decision); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "decision validation failed")
+		log.Printf("[LLM Planner Error] Task %s - validation failed for decision %+v: %v", task.ID, decision, err)
 		return nil, err
 	}
 
@@ -138,6 +357,9 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 		attribute.String("agent.planner.action", decision.Action),
 		attribute.Bool("agent.planner.stop", decision.Stop),
 	)
+
+	log.Printf("[LLM Planner] Task %s decision - Thought: %q | Action: %q | Stop: %t | FinalAnswer: %q | Parameters: %+v",
+		task.ID, decision.ThoughtSummary, decision.Action, decision.Stop, decision.FinalAnswer, decision.Parameters)
 
 	return &decision, nil
 }
@@ -169,4 +391,60 @@ func extractStructuredText(raw map[string]any) (string, error) {
 	}
 
 	return "", errors.New("structured text not found")
+}
+
+func PlannerDecisionGenAISchema() *genai.Schema {
+	return &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"thought_summary": {
+				Type:        genai.TypeString,
+				Description: "A brief internal summary of why this next step was chosen, under 30 words.",
+			},
+			"stop": {
+				Type:        genai.TypeBoolean,
+				Description: "Whether the agent should stop now.",
+			},
+			"final_answer": {
+				Type:        genai.TypeString,
+				Description: "If stop is true, provide a concise final answer; otherwise empty string.",
+			},
+			"action": {
+				Type:        genai.TypeString,
+				Enum:        []string{"find_files", "search_text", "read_file", "none"},
+				Description: "The single next action to execute. Use none only when stop is true.",
+			},
+			"parameters": {
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"pattern": {Type: genai.TypeString},
+					"query":   {Type: genai.TypeString},
+					"glob":    {Type: genai.TypeString},
+					"path":    {Type: genai.TypeString},
+				},
+				Required: []string{"pattern", "query", "glob", "path"},
+			},
+		},
+		Required: []string{"thought_summary", "stop", "final_answer", "action", "parameters"},
+	}
+}
+
+func unmarshalDecision(textValue string, decision *PlanDecision) error {
+	// First try: direct unmarshal
+	if err := json.Unmarshal([]byte(textValue), decision); err == nil {
+		return nil
+	}
+
+	// Fallback: extract the JSON block between the first '{' and last '}'
+	firstIdx := strings.Index(textValue, "{")
+	lastIdx := strings.LastIndex(textValue, "}")
+	if firstIdx != -1 && lastIdx != -1 && firstIdx < lastIdx {
+		cleaned := textValue[firstIdx : lastIdx+1]
+		if err := json.Unmarshal([]byte(cleaned), decision); err == nil {
+			log.Printf("[LLM Planner] Successfully parsed decision JSON after extracting from raw response")
+			return nil
+		}
+	}
+
+	return json.Unmarshal([]byte(textValue), decision)
 }

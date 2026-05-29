@@ -36,13 +36,16 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "compile eino chain failed")
+		log.Printf("[Engine-Eino Error] Task %s - failed to compile Eino chain: %v", task.ID, err)
 		return err
 	}
 
+	log.Printf("[Engine-Eino] Invoking Eino step chain for task %s", task.ID)
 	output, err := runner.Invoke(ctx, &einoStepState{Task: task})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "eino chain failed")
+		log.Printf("[Engine-Eino Error] Task %s - Eino chain invocation failed: %v", task.ID, err)
 		return err
 	}
 

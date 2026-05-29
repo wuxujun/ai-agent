@@ -34,11 +34,14 @@ const (
 	ModeEino   Mode = "eino"
 	ModeLegacy Mode = "legacy"
 	ModeAdk    Mode = "adk"
+	ModeStep   Mode = "step"
 )
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
+	log.Printf("[Engine] Running next execution step for task %s (mode: %q)", task.ID, e.Mode)
 	defer func() {
 		if err != nil {
+			log.Printf("[Engine Error] Task %s step execution failed: %v", task.ID, err)
 			_ = SetTaskFailed(task, err.Error())
 		}
 	}()
@@ -50,6 +53,8 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		err = e.runLegacyNext(ctx, task)
 	case ModeAdk:
 		err = e.runAdkNext(ctx, task)
+	case ModeStep:
+		err = e.runStepNext(ctx, task)
 	default:
 		err = fmt.Errorf("unsupported orchestrator mode: %s", e.Mode)
 	}
@@ -184,14 +189,17 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 }
 
 func stepFindTextFiles(task *types.Task) error {
+	log.Printf("[Engine] Legacy static path - Finding text files for task %s", task.ID)
 	task.Hypothesis = "Relevant evidence is likely inside text or markdown files"
 
 	txtFiles, err := tools.FindFiles(task.Workspace, "*.txt")
 	if err != nil {
+		log.Printf("[Engine Error] Legacy static path - FindFiles (*.txt) failed: %v", err)
 		return err
 	}
 	mdFiles, err := tools.FindFiles(task.Workspace, "*.md")
 	if err != nil {
+		log.Printf("[Engine Error] Legacy static path - FindFiles (*.md) failed: %v", err)
 		return err
 	}
 
@@ -199,6 +207,8 @@ func stepFindTextFiles(task *types.Task) error {
 	if len(files) > 20 {
 		files = files[:20]
 	}
+
+	log.Printf("[Engine] Legacy static path - Found %d text/markdown files for task %s", len(files), task.ID)
 
 	task.Trace = append(task.Trace, types.StepTrace{
 		Step:        task.StepCount,
@@ -217,12 +227,16 @@ func stepFindTextFiles(task *types.Task) error {
 
 func stepSearchKeyword(task *types.Task) error {
 	query := lastWord(task.Goal)
+	log.Printf("[Engine] Legacy static path - Searching keyword %q for task %s", query, task.ID)
 	task.Hypothesis = "Search the most likely keyword in candidate text files"
 
 	evidence, _, err := tools.SearchWithRG(task.Workspace, query, "*.txt")
 	if err != nil {
+		log.Printf("[Engine Error] Legacy static path - SearchWithRG failed: %v", err)
 		return err
 	}
+
+	log.Printf("[Engine] Legacy static path - Found %d evidence items for task %s", len(evidence), task.ID)
 
 	task.Trace = append(task.Trace, types.StepTrace{
 		Step:        task.StepCount,
@@ -241,14 +255,18 @@ func stepSearchKeyword(task *types.Task) error {
 }
 
 func stepReadBestFile(task *types.Task) error {
+	log.Printf("[Engine] Legacy static path - Reading best file for task %s", task.ID)
 	if len(task.Trace) < 2 || len(task.Trace[1].Evidence) == 0 {
+		log.Printf("[Engine] Legacy static path - Not enough evidence to select a file for task %s", task.ID)
 		_ = SetTaskCompleted(task, "not enough evidence to select a file")
 		return nil
 	}
 
 	target := task.Trace[1].Evidence[0].Path
+	log.Printf("[Engine] Legacy static path - Target best file identified: %s for task %s", target, task.ID)
 	content, err := tools.ReadFile(task.Workspace, target)
 	if err != nil {
+		log.Printf("[Engine Error] Legacy static path - ReadFile failed: %v", err)
 		return err
 	}
 

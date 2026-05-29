@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -24,13 +25,18 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task) (*Plan
 
 	span.SetAttributes(attribute.String("agent.task.id", task.ID))
 
+	log.Printf("[Fallback Planner] Executing PlanNext for task %s", task.ID)
+
 	if f.Primary != nil {
+		log.Printf("[Fallback Planner] Trying primary planner for task %s", task.ID)
 		decision, err := f.Primary.PlanNext(ctx, task)
 		if err == nil {
 			span.SetAttributes(attribute.Bool("agent.fallback.used", false))
+			log.Printf("[Fallback Planner] Primary planner succeeded for task %s", task.ID)
 			return decision, nil
 		}
 		span.RecordError(err)
+		log.Printf("[Fallback Planner Warning] Primary planner failed for task %s: %v", task.ID, err)
 	}
 
 	if f.Secondary != nil {
@@ -38,8 +44,16 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task) (*Plan
 			f.Metrics.IncFallbackHit()
 		}
 		span.SetAttributes(attribute.Bool("agent.fallback.used", true))
-		return f.Secondary.PlanNext(ctx, task)
+		log.Printf("[Fallback Planner] Falling back to secondary planner for task %s", task.ID)
+		decision, err := f.Secondary.PlanNext(ctx, task)
+		if err != nil {
+			log.Printf("[Fallback Planner Error] Secondary planner also failed for task %s: %v", task.ID, err)
+			return nil, err
+		}
+		log.Printf("[Fallback Planner] Secondary planner succeeded for task %s", task.ID)
+		return decision, nil
 	}
 
+	log.Printf("[Fallback Planner Error] No planner available to plan next step for task %s", task.ID)
 	return nil, fmt.Errorf("no planner available")
 }

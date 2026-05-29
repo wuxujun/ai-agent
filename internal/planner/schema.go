@@ -49,7 +49,7 @@ func PlannerDecisionSchema() map[string]any {
 					"glob":    map[string]any{"type": "string"},
 					"path":    map[string]any{"type": "string"},
 				},
-				"required": []string{},
+				"required": []string{"pattern", "query", "glob", "path"},
 			},
 		},
 		"required": []string{"thought_summary", "stop", "final_answer", "action", "parameters"},

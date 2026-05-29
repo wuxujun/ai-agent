@@ -1,353 +1,362 @@
-# AI Agent 项目分析总结
+# AI Agent 项目深度总结与任务执行步骤分析
 
 生成日期：2026-05-29
+项目路径：[ai-agent (wuxujun/ai-agent)](file:///Users/xujunwu/Documents/IDEAProject/ai-agent)
 
-## 1. 项目定位
+---
 
-本项目是一个使用 Go 编写的 AI Agent 运行时服务。它以任务为中心，接收用户目标后在指定工作空间内执行文件查找、文本搜索、文件读取等动作，并把每一步执行结果持久化为 Trace。
+## 1. 项目定位与核心设计
 
-当前项目已经从单一 Planner-Executor 环路演进为“多编排入口”的 Agent Runtime：
+本项目是一个基于 Go 语言构建的 **AI Agent 执行运行时引擎 (Agent Runtime)**。系统围绕用户的“任务目标（Goal）”展开，在受信任的“工作空间（Workspace）”沙箱内执行多轮的“规划-执行-观测（Plan-Execute-Observe）”循环，进行文件的查找、搜索和内容检索。
 
-- 默认使用 CloudWeGo Eino Chain 编排任务步骤。
-- 保留 Legacy Engine 直接编排逻辑，便于回退和对比。
-- 新增 Google ADK for Go 编排模式，用 ADK Agent 和工具回调驱动执行。
-- HTTP API、SQLite Store、工具层、Policy、Metrics/Telemetry 仍作为公共基础设施复用。
+项目的一大核心特色是实现了**多编排引擎入口设计**，目前支持 Eino Chain 编排、Google ADK 编排、Legacy 编排以及 Step 静态规则编排，所有编排模式均复用统一的 Web API、数据库存储、安全策略和可观测性组件。
 
-## 2. 技术栈
+### 核心架构图
 
-| 类别 | 当前选择 | 说明 |
+```mermaid
+graph TD
+    Client[客户端 API 请求] -->|1. POST /api/tasks| API[internal/api 层]
+    API -->|2. 保存初始状态| Store[SQLite/Postgres/Redis/Memory Store]
+    
+    Client -->|3. POST /api/tasks/:id/run| API
+    API -->|4. 获取任务上下文| Store
+    API -->|5. 触发单步或全部执行| Engine[internal/orchestrator Engine]
+    
+    Engine -->|模式分发| Eino[eino 模式: Eino compose.Chain]
+    Engine -->|模式分发| ADK[adk 模式: Google ADK for Go]
+    Engine -->|模式分发| Legacy[legacy 模式: 传统过程式引擎]
+    Engine -->|模式分发| Step[step 模式: 静态三步规则引擎]
+    
+    subgraph 决策与执行层
+        Eino & ADK & Legacy & Step -->|6. 规划| Planner[internal/planner]
+        Planner -->|LLM / Fallback / Mock| LLM[Gemini / OpenAI / Ollama]
+        Eino & ADK & Legacy & Step -->|7. 安全过滤| Policy[internal/policy]
+        Policy -->|8. 工具分发| Executor[internal/executor]
+        Executor -->|9. 底层命令执行| Tools[internal/tools: find/rg/cat]
+    end
+    
+    Tools -->|10. 收集 Evidence 与 Observation| Engine
+    Engine -->|11. 持久化 Task & StepTrace| Store
+    Engine -->|12. 链路监控与指标上报| Telemetry[internal/telemetry & internal/metrics]
+```
+
+### 架构可视化
+
+![AI Agent 核心架构图](/Users/xujunwu/.gemini/antigravity-cli/brain/b823e327-a916-4e86-98a9-dcff4efbc224/agent_architecture_graph_1780044127034.png)
+
+---
+
+## 2. 核心技术栈
+
+| 类别 | 技术组件 | 作用与说明 |
 | --- | --- | --- |
-| 语言 | Go 1.25 | `go.mod` 指定版本 |
-| Web 框架 | Gin | 提供 REST API |
-| 默认编排 | CloudWeGo Eino v0.9.2 | 用 `compose.Chain` 串联任务节点 |
-| 可选编排 | Google ADK for Go v1.3.0 | 用 ADK Agent、Tool、Runner 执行任务 |
-| LLM 接入 | OpenAI Responses API / Gemini | Legacy/Eino 使用 OpenAI Planner；ADK 使用 Gemini Model |
-| 数据库 | SQLite | 使用 `modernc.org/sqlite`，本地 `data/agent.db` |
-| 可观测性 | OpenTelemetry | OTLP HTTP 默认发往 `127.0.0.1:4318` |
-| 本地工具 | `find`、`rg`、文件读取 | 用于工作空间检索和读取 |
+| **开发语言** | Go 1.25 | 项目的基础运行环境，在 [go.mod](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/go.mod) 中指定。 |
+| **HTTP API 框架** | Gin v1.12.0 | 提供高效的 RESTful API 接口，配置并暴露路由组及中间件。 |
+| **Eino 编排** | CloudWeGo Eino v0.9.2 | 字节跳动开源的大模型应用开发框架。使用 `compose.Chain` 将预算检查、规划、执行节点组装为链式有向图。 |
+| **ADK 编排** | Google ADK for Go v1.3.0 | 谷歌官方的 Agent 开发套件。利用其 Tool、LLMAgent 与 Runner 实现工具自动回调和多轮对话。 |
+| **LLM 客户端** | Google GenAI SDK v1.58.0 | 用于 ADK 和 Gemini 模式下调用 Gemini 2.5 Flash 等模型，支持 Schema 约束。 |
+| **数据持久化** | SQLite (modernc.org/sqlite) | 默认存储模式，纯 Go 实现的无 CGO 依赖 SQLite，本地文件位于 `data/agent.db`。 |
+| **多后端存储** | PostgreSQL & Redis & Memory | 支持通过环境变量配置分布式或内存存储以满足不同环境部署需求。 |
+| **可观测性** | OpenTelemetry (OTel) | 实现了链路追踪（Traces）与指标收集（Metrics），向 `127.0.0.1:4318` 发送 OTLP 报文。 |
+| **底层查找与检索** | `find`、`ripgrep (rg)` | 系统本地安装的安全白名单命令，用于高速文件和文本检索。 |
 
-## 3. 当前目录结构
+---
+
+## 3. 详细项目目录结构
 
 ```text
 .
-├── cmd/server/main.go                 # 服务启动入口
-├── internal/api                       # Gin 路由、Handler、中间件
-├── internal/executor                  # Planner 决策到工具调用的执行层
-├── internal/metrics                   # 内存指标与 OTel 指标封装
-├── internal/orchestrator
-│   ├── engine.go                      # Engine 主入口、Legacy 编排、RunAll
-│   ├── eino.go                        # Eino Chain 编排实现
-│   ├── adk.go                         # Google ADK 编排实现
-│   ├── state.go                       # 任务状态迁移和管理
-│   ├── eino_test.go                   # Eino/Legacy 模式测试
-│   ├── adk_test.go                    # ADK 模式测试
-│   └── state_test.go                  # 状态迁移单元测试
-├── internal/planner                   # LLM、Mock、Fallback Planner
-├── internal/policy                    # 工作空间和命令安全策略
-├── internal/store                     # SQLite 持久化
-├── internal/telemetry                 # OpenTelemetry 初始化
-├── internal/tools                     # find、rg、read_file 等工具封装
-├── internal/workspace                 # 早期 Agent 原型式抽象
-├── internal/types/task.go                # Task、StepTrace、Evidence 类型
-├── workspace/demo                     # 示例工作空间
-├── PROJECT_ANALYSIS.md                # 当前分析文档
-├── README.md
-├── go.mod
-└── go.sum
+├── cmd/
+│   └── server/
+│       └── main.go                 # 系统的入口点。加载环境变量、初始化 OTel、装配 Planner 与 Engine、启动 Gin 服务器
+├── internal/
+│   ├── api/
+│   │   ├── handler.go              # 实现创建任务、单步运行、运行全部、获取详情与指标的 HTTP 控制器
+│   │   ├── middleware.go           # OTel 链路追踪属性中间件和全局错误处理中间件
+│   │   └── router.go               # 路由注册函数空壳（实际在 handler.go 中暴露了 RegisterRoutes）
+│   ├── executor/
+│   │   └── executor.go             # 实现 DefaultExecutor，将 Planner 的决策（Decision）路由到具体 tools 的执行
+│   ├── metrics/
+│   │   └── metrics.go              # 本地内存指标与 OTel 监控指标收集器（统计 Planner 耗时、Executor 状态及 Fallback 次数等）
+│   ├── orchestrator/
+│   │   ├── adk.go                  # Google ADK 编排模式实现，管理 tool 注册、拦截器回调与 Runner 回话
+│   │   ├── eino.go                 # CloudWeGo Eino 编排模式实现，定义链式 state 并通过 compose.NewChain 挂载 Lambda
+│   │   ├── engine.go               # Engine 核心结构定义、Next 路由与 RunAll 循环执行实现
+│   │   ├── state.go                # Task 状态机管理（TransitionTask, SetTaskRunning, SetTaskCompleted 等）
+│   │   └── step.go                 # 静态规则编排模式实现，支持固定的三阶段查找/搜索/读取任务
+│   ├── planner/
+│   │   ├── fallback.go             # 双路容错 Planner：当 primary 报错时自动降级到 secondary，并记录 fallback 指标
+│   │   ├── llm.go                  # 多端 LLM 服务调用实现（支持 OpenAI-responses, OpenAI, Gemini, Ollama 协议）
+│   │   ├── prompt.go               # 构建 SystemPrompt 与含有 Trace 上下文的 UserPrompt 模板
+│   │   ├── schema.go               # 定义 PlanDecision 结构体及大语言模型约束的 JSON Schema 格式
+│   │   └── validate.go             # 对 LLM 输出结果的有效性验证（动作类型及参数校验）
+│   ├── policy/
+│   │   └── policy.go               # 安全控制中心。检验工作空间逃逸、执行命令白名单校验、工作空间防穿透路径校验
+│   ├── store/
+│   │   ├── store.go                # 数据仓储 Store 接口定义
+│   │   ├── sqlite.go               # 基于 SQLite 的任务与步骤 Trace 读写实现，使用 UPSERT 与事务
+│   │   ├── postgres.go             # 基于 PostgreSQL 的高并发持久化实现
+│   │   ├── redis.go                # 基于 Redis JSON 序列化的缓存级持久化实现
+│   │   └── memory.go               # 基于并发安全 Map 的内存临时存储实现
+│   ├── telemetry/
+│   │   └── telemetry.go            # 初始化 OpenTelemetry SDK 的 Trace Provider 与 Meter Provider，管理优雅停机
+│   ├── tools/
+│   │   ├── runner.go               # Command 安全运行器，限制超时为 3s 并进行命令校验
+│   │   ├── find.go                 # 封装 native find 命令以进行通配符文件检索
+│   │   ├── rg.go                   # 封装 native ripgrep 命令以进行高性能全文搜索
+│   │   └── read.go                 # 封装文件内容读取，提供 4KB 内容剪切与路径安全检验
+│   └── types/
+│       └── task.go                 # 定义 Task 实体、StepTrace 步骤轨迹及 Evidence 证据链数据结构
+└── workspace/
+    └── demo/                       # 预设的演示工作空间，包含 sample.txt 和一系列供检索的 md 文件
 ```
 
-## 4. 启动与入口配置
+---
 
-服务入口是 `cmd/server/main.go`，启动过程为：
+## 4. 任务运行核心生命周期与步骤
 
-1. 初始化 OpenTelemetry。
-2. 打开 SQLite 数据库 `data/agent.db`。
-3. 检查 `OPENAI_API_KEY`，为空会直接退出。
-4. 创建 OpenAI `LLMPlanner`、`MockPlanner` 和 `FallbackPlanner`。
-5. 读取 `AI_AGENT_ORCHESTRATOR` 决定编排模式。
-6. 创建 `orchestrator.Engine`。
-7. 注册 Gin 路由并监听 `:8080`。
+当客户端发起一个任务请求后，该任务会经历**创建、装载、预算检查、规划、安全检测与执行、持久化以及状态流转**七大阶段。以下是详细的执行步骤：
 
-当前支持的编排模式：
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as 客户端
+    participant API as API Handler
+    participant Store as Store 持久化
+    participant Engine as Engine (Mode Distribute)
+    participant Planner as FallbackPlanner
+    participant LLM as LLM Provider
+    participant Policy as Policy Validator
+    participant Executor as DefaultExecutor
+    participant Tools as Shell Tools
 
-| 环境变量 | 行为 |
-| --- | --- |
-| 未设置或 `eino` | 默认，使用 Eino Chain 编排 |
-| `legacy` | 使用旧版 `Engine.Next` 直接编排 |
-| `adk` | 使用 Google ADK Agent 编排 |
+    Note over Client, Store: 【1. 创建阶段 (POST /api/tasks)】
+    Client->>API: 提交任务 Payload (ID, Goal, Workspace, MaxSteps, ToolBudget)
+    API->>Policy: 验证 Workspace 安全性 ValidateWorkspace(root)
+    Policy-->>API: 路径验证通过
+    API->>Store: 初始化 Task 并落库 SaveFullTask(ctx, task)
+    Store-->>API: 写入数据库成功
+    API-->>Client: 返回 HTTP 200 (Task JSON)
 
-示例：
+    Note over Client, Engine: 【2. 运行触发阶段 (POST /api/tasks/:id/run)】
+    Client->>API: 请求执行任务单步或全部 (run / run-all)
+    API->>Store: 查询当前任务 GetTask(ctx, id)
+    Store-->>API: 返回 Task 上下文
+    API->>Engine: 调用 Engine.Next(ctx, task) 或 RunAll
+    
+    Note over Engine, Planner: 【3. 预算检查与规划阶段】
+    Engine->>Engine: checkBudget (检查 StepCount < MaxSteps 且 ToolBudget > 0)
+    Engine->>Planner: 调用 Planner.PlanNext(ctx, task)
+    Planner->>Planner: 结合 Trace 拼接 SystemPrompt 和 UserPrompt
+    Planner->>LLM: 发送结构化 JSON Schema 请求 (Gemini / OpenAI / Ollama)
+    LLM-->>Planner: 返回 Planner 决策的 JSON 字符串
+    Planner->>Planner: 清理及 unmarshal JSON，并校验合法性 ValidateDecision
+    Planner-->>Engine: 返回 PlanDecision (Thought, Action, Parameters, Stop)
 
-```bash
-export OPENAI_API_KEY="your-openai-key"
-export AI_AGENT_ORCHESTRATOR=eino
-go run ./cmd/server
+    Note over Engine, Executor: 【4. 执行与工具调用阶段】
+    alt Planner 决策 Stop 为 true
+        Engine->>Engine: 调用 SetTaskCompleted 将任务状态标记为 completed 写入 FinalAnswer
+    else Planner 决策 Stop 为 false，继续执行 Action
+        Engine->>Executor: 调用 Executor.Execute(ctx, task, decision)
+        Executor->>Policy: 验证指令合法性 ValidateCommand & ValidateReadPath
+        Policy-->>Executor: 安全合规
+        Executor->>Tools: 调用底层 shell 或标准库 (FindFiles / SearchWithRG / ReadFile)
+        Tools->>Tools: 在 Workspace 路径下通过 exec.Command 执行 find/rg 或调用 os.ReadFile
+        Tools-->>Executor: 返回执行结果文本或结构化数据
+        Executor-->>Engine: 返回填充好的 StepTrace 结构体
+        Engine->>Engine: 更新预算 (StepCount++, ToolBudget--)，状态流转为 running
+    end
+
+    Note over Engine, Client: 【5. 保存与响应阶段】
+    Engine-->>API: 返回执行结果或 nil error
+    API->>Store: 持久化 Task 最新属性与 Trace 数组 SaveFullTask(ctx, task)
+    Store-->>API: 事务提交成功
+    API-->>Client: 返回运行后最新的 Task 状态及完整的 Trace 历史 (HTTP 200)
 ```
 
-ADK 模式额外会尝试读取：
+### 步骤详情拆解：
 
-```bash
-export GEMINI_API_KEY="your-gemini-key"
-export GEMINI_MODEL="gemini-2.5-flash"
-export AI_AGENT_ORCHESTRATOR=adk
-```
+#### 第一步：创建任务并检验路径安全
+- 客户端通过 `POST /api/tasks` 注册新任务。
+- `api.createTask` 处理器提取入参。当 `max_steps` 或 `tool_budget` 未指定时，默认初始化为 `5`。
+- 调用 [policy.ValidateWorkspace](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/policy/policy.go#L15)，利用 `filepath.Clean` 过滤防止输入根路径 `/`、当前目录 `.` 或包含 `..` 的非法相对路径。
+- 通过 [store.SaveFullTask](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/store/sqlite.go#L123) 将任务信息写入 SQLite/Postgres 中的 `tasks` 表，状态初始设为 `created`。
 
-如果 `GEMINI_API_KEY` 和 `GOOGLE_API_KEY` 都为空，ADK 当前代码会回退尝试 `OPENAI_API_KEY` 作为 Gemini client APIKey。
+#### 第二步：触发任务与预算关卡拦截
+- 客户端发起运行请求，触发 [Engine.Next](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/orchestrator/engine.go#L40)。
+- **预算验证 (budget_guard)**：如果任务的 `StepCount >= MaxSteps` 或 `ToolBudget <= 0`，则表明运行资源已耗尽。此时将终止后续规划与执行，调用 [SetTaskCompleted](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/orchestrator/state.go#L45) 将状态转换为 `completed`，填入最终回复并返回。
 
-## 5. 核心运行链路
+#### 第三步：规划器 (Planner) 决策与容错
+- 调用 [Planner.PlanNext](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/planner/schema.go#L17) 机制。
+- **模板拼接**：[BuildSystemPrompt](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/planner/prompt.go#L10) 强制 LLM 扮演规划师角色并只能输出 JSON Schema 范围内的 Action；[BuildUserPrompt](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/planner/prompt.go#L29) 汇总了任务目标、当前的 Step、最近 4 步的历史 Trace 以及上一步返回的 Evidence 证据内容。
+- **多提供商分发**：根据环境变量 `AI_AGENT_LLM_PROVIDER` 将请求路由至不同的 LLM 接口：
+  - `openai-responses` / `openai`：通过 HTTP POST 请求带有严格 JSON 模式定义的 Chat API。
+  - `gemini`：通过 Google GenAI 官方 SDK，应用 `ResponseMIMEType: "application/json"` 并将 Eino-style Schema 转化为 `genai.Schema` 进行约束生成。
+- **降级保护 (Fallback)**：使用双路 Planner 封装（Primary 为 LLM，Secondary 为静态 [MockPlanner](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/planner/mock.go)）。如果网络发生抖动或大模型生成格式损坏，Primary 抛出异常，[FallbackPlanner](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/planner/fallback.go) 将拦截该异常，自动将请求导向 Mock 规划器，同时向 metrics 模块递增 `fallback` 统计数，保证运行时服务不中断。
+- **结果反序列化与检验**：LLM 响应文本由 [unmarshalDecision](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/planner/llm.go#L432) 处理（包含 `{}` 字符截取提取，以应对不规则的 Markdown 标记输出）。随后使用 [ValidateDecision](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/planner/validate.go) 检查 Action 的取值是否落在 `{"find_files", "search_text", "read_file", "none"}` 范围内。
 
-### 5.1 API 层
+#### 第四步：执行器 (Executor) 指令安全审查与工具路由
+- 获得 `PlanDecision` 后，如果 `Stop` 为 `true`，引擎调用 [SetTaskCompleted](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/orchestrator/state.go#L45) 提早宣告结束。
+- 否则，将决策路由到 [DefaultExecutor.Execute](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/executor/executor.go#L23)，匹配具体动作：
+  - **`find_files`**：提取参数 `pattern`，调用 [tools.FindFiles](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/tools/find.go#L5)。
+  - **`search_text`**：提取 `query` 和 `glob` 参数，调用 [tools.SearchWithRG](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/tools/rg.go#L9)。
+  - **`read_file`**：提取 `path` 参数，调用 [tools.ReadFile](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/tools/read.go#L10)。
+- **底线防御 (Policy Validation)**：在工具真正运转前，[tools.ReadFile](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/tools/read.go#L10) 会率先启动 [policy.ValidateReadPath](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/policy/policy.go#L33)。通过将工作空间路径与目标文件绝对路径进行清洗与前缀对比（`strings.HasPrefix(targetAbs, workspaceAbs)`），彻底切断外部链接或 `../` 目录穿透（Directory Traversal）漏洞。
+- **Native 命令安全执行**：工具模块通过 [tools.RunCommand](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/tools/runner.go#L14) 调用本地 Shell 命令：
+  - 启动 `exec.CommandContext` 并绑定 `3秒超时` Context 以防止底层挂起。
+  - 检查依赖是否就绪。若本地未安装 `find` 或 `rg`，将抛出直观的安装引导说明。
+  - 获取命令输出并封装。`search_text` 会自动把 ripgrep 输出转化为精简的 [Evidence](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/types/task.go#L3) 数组（包含文件相对路径、命中的文本行以及查询关键字）。
 
-主要接口：
+#### 第五步：运行状态持久化与可观测性打标
+- 执行成功后，引擎完成一次循环：
+  - 任务计步累加：`StepCount++`。
+  - 预算递减：`ToolBudget--`。
+  - 新的步骤轨迹：[StepTrace](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/types/task.go#L9) 被追加进 `Task.Trace` 数组。
+  - 任务状态转变为 `running`。
+- **数据库事务存储**：调用 [store.ReplaceTraces](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/store/sqlite.go#L96)。为保证强一致性，它会在一条 SQL 事务内首先执行 `DELETE FROM traces WHERE task_id = ?`，随后批量将所有的 Trace 重新插入 `traces` 表中。
+- **可观测性链路埋点**：在上述每一个节点（Engine, Planner, Executor, Store）都会通过 OTel tracer 开启一个 Child Span，并将任务的关键状态如 `agent.task.id`、`agent.task.step_count_after`、`agent.task.tool_budget_after` 以及执行的动作名称作为 Span 标签（Span Attributes）推送给 APM 采集端。
 
-| 方法 | 路径 | 功能 |
-| --- | --- | --- |
-| `POST` | `/api/tasks` | 创建任务 |
-| `POST` | `/api/tasks/:id/run` | 执行单步 |
-| `POST` | `/api/tasks/:id/run-all` | 执行直到完成 |
-| `GET` | `/api/tasks/:id` | 查询任务 |
-| `GET` | `/api/metrics` | 查询内存指标快照 |
-| `GET` | `/ping` | 健康检查 |
+---
 
-创建任务时会设置默认值：
+## 5. 四种编排模式详细分析
 
-- `max_steps <= 0` 时设为 5。
-- `tool_budget <= 0` 时设为 5。
+项目设计了四类互不干扰的 Orchestrator 实现，可以在启动项目时通过 `AI_AGENT_ORCHESTRATOR` 环境变量来切换：
 
-### 5.2 Engine 分发
+### 编排模式对比表
 
-`Engine.Next` 是编排入口，根据 `Engine.Mode` 分发：
+| 模式名称 | 对应环境变量值 | 核心底层机制 | 优势 | 适用场景 |
+| --- | --- | --- | --- | --- |
+| **Eino 模式** | `eino` (默认) | CloudWeGo Eino Compose Chain | 节点流转完全可视化、可组合性高，易于链式扩展 | 默认生产执行模式 |
+| **ADK 模式** | `adk` | Google ADK `llmagent.Agent` & Runner | 遵循标准的 ReAct 大模型自动工具调用范式 | 面向更强自主权的多步骤推理与动态规划场景 |
+| **Legacy 模式** | `legacy` | 原生过程式代码循环 | 执行路径短，逻辑直观，系统开销小，无框架接入成本 | 作为排查 Eino 故障时的性能基准和回退手段 |
+| **Step 模式** | `step` | 静态三步硬编码流程 | 无需调用大模型做决策，响应极快，结果高度可预测 | 用于本地集成测试、演示和固定搜索流场景 |
 
+### 1) Eino 模式 (`runEinoNext`)
+- **位置**：[internal/orchestrator/eino.go](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/orchestrator/eino.go)
+- **运行机理**：
+  在 `runEinoNext` 中，引擎每次执行都会调用 `compileEinoStepChain` 构建一条 `compose.Chain` 并运行。整个 Chain 包含四个链式节点：
+  1. `budget_guard`：对应的执行函数为 `checkBudget`，在进入规划前做硬性边界截断。
+  2. `planner`：对应的执行函数为 `planNext`，驱动内嵌的 `Planner` 做方向规划，如果 `decision.Stop` 为真，则标记 Completed。
+  3. `executor`：对应的执行函数为 `executeDecision`，解析规划动作分发底层 Tools 并累加 StepCount。
+  4. `task_output`：终点 Lambda 提取加工后的 Task 对象返回。
+
+### 2) ADK 模式 (`runAdkNext`)
+- **位置**：[internal/orchestrator/adk.go](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/orchestrator/adk.go)
+- **运行机理**：
+  ADK 模式采用不同的编程范式，它使用 Gemini 客户端并将底层的工具转换成 ADK 的 `tool.Tool` 注册至 `llmagent.Agent` 中。
+  1. **工具拦截器机制**：在 Agent 执行前后分别注入 `BeforeToolCallback` 与 `AfterToolCallback` 拦截器。
+  2. **拦截器同步**：在 `AfterToolCallback` 中拦截到执行工具名称（如 `search_text`），在此处同步将执行成功的值和 Evidence 提取出来，手动转换组装成项目自身的 `types.StepTrace` 结构并追加进任务属性中，同步扣减预算与递增步数。
+  3. **模型对话**：最终的 Final Answer 提取自 ADK Runner 产生的最终 LLM 响应文字。
+
+### 3) Legacy 模式 (`runLegacyNext`)
+- **位置**：[internal/orchestrator/engine.go](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/orchestrator/engine.go)
+- **运行机理**：
+  在 `runLegacyNext` 方法中，使用标准的过程式控制语句。依次判定步数限制、触发 Planner 决策、分支判断 `Stop` 信号、调用 Executor，最后将计算出的 StepTrace 追加更新并保存。逻辑没有多余封装，是最稳定的回退执行流。
+
+### 4) Step 模式 (`runStepNext`)
+- **位置**：[internal/orchestrator/step.go](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/orchestrator/step.go)
+- **运行机理**：
+  Step 模式不进行模型交互，而是按照预设的代码分支在第 0、1、2 步分别执行硬编码好的策略：
+  - **第 0 步 (`stepFindTextFiles`)**：在工作空间中查找所有的 `*.txt` 与 `*.md` 候选文件。
+  - **第 1 步 (`stepSearchKeyword`)**：从任务 Goal 中提取最后一个单词作为 Query，调用 ripgrep 在 workspace 中全文检索。
+  - **第 2 步 (`stepReadBestFile`)**：读取上一步搜出的第 1 个最优 Evidence 候选文件，完成检索任务。
+
+---
+
+## 6. 数据模型设计
+
+核心数据结构定义于 [internal/types/task.go](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/types/task.go) 中：
+
+### 1) [Task](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/types/task.go#L27)
+存储任务的全局元数据、当前所处的决策状态以及最终的推理答案：
 ```go
-switch e.Mode {
-case "", ModeEino:
-    return e.runEinoNext(ctx, task)
-case ModeLegacy:
-    return e.runLegacyNext(ctx, task)
-case ModeAdk:
-    return e.runAdkNext(ctx, task)
+type Task struct {
+	ID          string      `json:"id"`           // 任务唯一 ID 标识
+	Goal        string      `json:"goal"`         // 任务的终极目标
+	Status      TaskStatus  `json:"status"`       // 任务生命周期状态: created, running, completed, failed
+	MaxSteps    int         `json:"max_steps"`    // 限制的最大决策步数
+	StepCount   int         `json:"step_count"`   // 当前已跑完的步数
+	Workspace   string      `json:"workspace"`    // 运行沙箱的工作空间相对/绝对路径
+	Hypothesis  string      `json:"hypothesis"`   // 规划器最新的思考总结
+	Unresolved  []string    `json:"unresolved"`   // 推理过程中发现的尚待验证的问题
+	ToolBudget  int         `json:"tool_budget"`  // 限制允许调用工具的最高额度次数
+	Trace       []StepTrace `json:"trace"`        // 存储多步执行的完整历史快照
+	FinalAnswer string      `json:"final_answer"`  // 推理链路最终产出的文本答案
 }
 ```
 
-`RunAll` 不区分具体模式，它循环调用 `Next`，直到任务状态变为 `completed`。
-
-### 5.3 Eino 模式
-
-文件：`internal/orchestrator/eino.go`
-
-Eino 模式用 `compose.NewChain[*einoStepState, *types.Task]()` 编排四个 Lambda 节点：
-
-1. `budget_guard`：检查最大步数和工具预算。
-2. `planner`：调用 `Planner.PlanNext`。
-3. `executor`：调用 `Executor.Execute`。
-4. `task_output`：返回最终更新后的 `Task`。
-
-它复用现有 Planner、Executor、Metrics、Trace 更新逻辑，行为上与 Legacy 模式保持接近。
-
-### 5.4 Legacy 模式
-
-文件：`internal/orchestrator/engine.go`
-
-Legacy 模式保留原始直接编排逻辑：
-
-1. 检查预算和最大步数。
-2. 调用 Planner。
-3. 如果 Planner 停止，则写入 FinalAnswer。
-4. 否则调用 Executor。
-5. 追加 StepTrace。
-6. 更新 StepCount、ToolBudget 和 Status。
-
-该模式适合作为 Eino 改造期间的回退入口。
-
-### 5.5 ADK 模式
-
-文件：`internal/orchestrator/adk.go`
-
-ADK 模式创建 ADK `llmagent.Agent`，注册三个 function tool：
-
-- `find_files`
-- `search_text`
-- `read_file`
-
-工具回调会在执行后把结果转换为项目自身的 `types.StepTrace`，并更新：
-
-- `Trace`
-- `StepCount`
-- `ToolBudget`
-- `Status`
-
-ADK 模式的最终答案来自 ADK Runner 的 final response。
-
-## 6. Planner、Executor 与 Tools
-
-### Planner
-
-目录：`internal/planner`
-
-当前包括：
-
-- `LLMPlanner`：调用 OpenAI Responses API，使用 JSON Schema 约束输出。
-- `MockPlanner`：按步骤返回固定动作。
-- `FallbackPlanner`：Primary 失败后降级到 Secondary。
-
-允许的 Planner 动作：
-
-- `find_files`
-- `search_text`
-- `read_file`
-- `none`
-
-### Executor
-
-目录：`internal/executor`
-
-`DefaultExecutor` 将 Planner 决策分发到工具层：
-
-| Action | 工具 |
-| --- | --- |
-| `find_files` | `tools.FindFiles` |
-| `search_text` | `tools.SearchWithRG` |
-| `read_file` | `tools.ReadFile` |
-
-### Tools
-
-目录：`internal/tools`
-
-工具层通过 `RunCommand` 执行外部命令，当前超时为 3 秒。命令白名单由 `internal/policy` 控制。
-
-## 7. 数据模型与存储
-
-核心类型在 `internal/types/task.go`：
-
-- `Task`：任务状态、预算、工作空间、Trace 和最终答案。
-- `StepTrace`：单步动作、查询、观察和证据。
-- `Evidence`：搜索命中的文件路径、行内容和查询词。
-
-SQLite Store 包含两张表：
-
-- `tasks`
-- `traces`
-
-`SaveFullTask` 当前会 upsert 任务主体，然后删除并重写该任务的全部 Trace。
-
-## 8. 可观测性
-
-项目包含两套观测能力：
-
-- `internal/metrics`：内存计数器和 OTel Meter，包括 planner、executor、run_all、completed、fallback 等指标。
-- `internal/telemetry`：初始化 OTel trace 和 metric exporter。
-
-主要链路包括：
-
-- API 请求链路。
-- Engine `next` 和 `run_all`。
-- Planner 调用。
-- Executor 调用。
-- Store 保存和读取。
-
-Eino、Legacy、ADK 模式会在 span attribute 中标记不同编排模式。
-
-## 9. 测试现状
-
-已执行：
-
-```bash
-go test ./...
+### 2) [StepTrace](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/types/task.go#L9)
+用于记录单步规划与执行的行动轨迹：
+```go
+type StepTrace struct {
+	Step        int        `json:"step"`         // 对应的步数
+	Goal        string     `json:"goal"`         // 当前步的局部目标
+	Action      string     `json:"action"`       // 执行的工具动作: find_files, search_text, read_file
+	Query       string     `json:"query"`         // 工具对应的查询输入值（如 glob 模式或文本串）
+	Observation string     `json:"observation"`  // 工具运行完的概要反馈
+	Evidence    []Evidence `json:"evidence"`     // 命中的文件详细片段数据
+}
 ```
 
-结果：通过。
+### 3) [Evidence](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/types/task.go#L3)
+记录搜索出的详细线索，充当下一步 LLM 推理的上下文依据：
+```go
+type Evidence struct {
+	Path  string   `json:"path"`                 // 包含线索的文件相对路径
+	Lines []string `json:"lines"`                // 命中的行号与文本详情集合
+	Query string   `json:"query"`                // 此次查找所用的关键字
+}
+```
 
-当前有测试覆盖：
+---
 
-- Eino 模式正常 Planner -> Executor 执行。
-- Legacy 模式正常 Planner -> Executor 执行。
-- Planner stop 时不调用 Executor。
-- 预算耗尽时不调用 Planner/Executor。
-- 非法编排模式返回错误。
-- ADK 模式使用 mock LLM 返回最终答案。
+## 7. 性能监控与可观测性设计
 
-缺口：
+项目通过在多处核心模块中嵌入 OTel 代码，实现了非常规范的可观测性设计。
 
-- API Handler 测试缺失。
-- Store 持久化测试缺失。
-- Policy 路径安全测试缺失。
-- Executor 工具分发测试缺失。
-- ADK 工具调用 Trace 转换逻辑测试较弱。
+### 链路追踪 (Tracing)
+项目使用 OpenTelemetry Go SDK。以 HTTP 路由作为入口打标：
+1. **Gin 链路中间件**：[otelgin.Middleware](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/cmd/server/main.go#L180) 拦截所有入站请求，生成顶层 Span。
+2. **编排模式追踪**：在 [Engine.Next](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/orchestrator/engine.go#L40) 等流程中，会创建 `engine.next` Span 并被打上对应的编排模式标签（如 `agent.orchestrator: "eino"` ）。
+3. **安全与仓储追踪**：在 [sqlite.go](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/store/sqlite.go) 的 `store.save_full_task` 节点以及 [executor.go](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/executor/executor.go) 中亦有专门的 Trace 覆盖。当执行出错时，会通过 `span.RecordError(err)` 记录调用栈并设置 Span 状态为 `Error`。
 
-## 10. 当前优势
+### 监控指标 (Metrics)
+在 [internal/metrics/metrics.go](file:///Users/xujunwu/Documents/IDEAProject/ai-agent/internal/metrics/metrics.go) 中，项目定义了 `Collector` 结构，提供内存指标快照和 OTel Meter 两种指标收集：
+- `agent_tasks_run_all_total`：累计执行全部任务的总次数。
+- `agent_tasks_completed_total`：累计成功执行完毕的任务数。
+- `agent_fallback_total`：触发双路规划器降级的总次数。
+- `agent_planner_duration_seconds`：LLM 规划决策所消耗的时间直方图（Histogram）。
+- `agent_executor_duration_seconds`：各类工具实际执行消耗的时间。
 
-- 编排入口可切换，Eino/Legacy/ADK 可以并存验证。
-- Eino 模式没有破坏原有 Planner 和 Executor 抽象。
-- Legacy 模式可作为稳定回退路径。
-- ADK 模式引入了 Agent 工具调用范式，为后续多工具、多轮推理扩展留了入口。
-- SQLite 和 Trace 让任务过程可追踪、可复盘。
-- OTel 和内存指标已覆盖核心路径。
+---
 
-## 11. 风险与改进建议
+## 8. 项目优化建议
 
-### 11.1 ADK 模式仍偏实验
+虽然系统架构设计清晰且具备良好的扩展性，但结合最新代码实现，仍有以下几个值得优化和改进的方向：
 
-ADK 模式每次 `Next` 都创建 Tool、Agent、Runner 和 session service，开销较大。建议后续把 ADK Agent 初始化挪到 Engine 构造阶段或工厂层，并复用 Runner。
+### 1) 缓存 Eino 编译后的 Runnable
+> [!TIP]
+> **现状**：`runEinoNext` 每次被调用时，都会调用 `compileEinoStepChain` 重新编译一次 Eino Chain。
+> **建议**：在 `Engine` 结构体内维护一个编译好的 `compose.Runnable` 缓存，或者在 `main.go` 服务初始化时编译完毕直接传入 Engine。避免高并发任务请求下重复编译产生的开销。
 
-### 11.2 ADK API Key 语义不清
+### 2) ADK 模式生命周期管理与优化
+> [!IMPORTANT]
+> **现状**：ADK 模式在每次 `Next` 被调用时，均会重新创建 Tool、LLM 客户端、Agent、以及 Runner。这会产生频繁的连接握手和内存分配。
+> **建议**：将 ADK Agent 的构建和初始化转移到服务启动期，在 Engine 内部维持长周期的 ADK 会话（Session）和 Runner，以提高响应速度。
 
-ADK 使用 Gemini Model，但当前在 Gemini/Google key 不存在时会回退使用 `OPENAI_API_KEY`。这容易造成配置误导。建议拆分为明确的 `GEMINI_API_KEY` 或 `GOOGLE_API_KEY` 要求。
+### 3) 优化 Trace 数据重写（写放大问题）
+> [!WARNING]
+> **现状**：`SaveFullTask` 保存任务时，会直接删除原任务的所有 Trace 记录，随后批量全量写入新的 Trace。随着步数（Step）的增长，会带来极大的写放大问题。
+> **建议**：重构 SQLite 插入机制，在 Trace 表上基于 `(task_id, step)` 建立联合唯一索引，采用增量追加模式（`INSERT OR IGNORE` 或事务中判断步数追加），减少数据库碎片和写开销。
 
-### 11.3 main.go 仍强依赖 OPENAI_API_KEY
+### 4) ADK 模式的 LLM 配置精简
+> [!IMPORTANT]
+> **现状**：ADK 模式采用 Gemini 模型，但当前在 `GEMINI_API_KEY` 为空时会尝试提取 `OPENAI_API_KEY` 去构建客户端，并且即使只使用 ADK，`main.go` 依然会强校验并要求配置 `OPENAI_API_KEY`，否则进程报错退出。
+> **建议**：修正初始化配置。允许系统在指定使用特定编排模式时，只加载对应模式所需的模型配置。避免对 OpenAI 密钥的硬性依赖导致 ADK 模式无法单独运行。
 
-即使只运行 ADK 模式，`main.go` 也会先要求 `OPENAI_API_KEY`。这会限制 ADK 独立运行。建议按模式初始化不同 Planner/Model，或允许 ADK 模式跳过 OpenAI Planner 初始化。
+### 5) 健全 Workspace 路径防逃逸设计
+> [!CAUTION]
+> **现状**：`ValidateWorkspace` 仅使用了 `filepath.Clean` 并校验了 `..` 以及非法根。但是在处理存在软链接（Symlinks）或者将相对路径转为绝对路径时的逃逸边界检测较弱。
+> **建议**：在 `ValidateWorkspace` 中，通过 `filepath.Abs` 率先将所有路径转化为绝对物理路径，再进行前缀和软链接的求值检验（`os.Readlink`），防范高级别沙箱逃逸攻击。
 
-### 11.4 Eino Chain 每步动态编译
-
-`runEinoNext` 当前每次调用都会 `compileEinoStepChain`。功能正确，但有额外开销。建议把编译后的 Runnable 缓存到 Engine，或在启动时构建。
-
-### 11.5 Workspace 安全策略仍需增强
-
-`ValidateWorkspace` 当前只拒绝 `.`、`/` 和包含 `..` 的路径。建议：
-
-- 转为绝对路径后校验。
-- 限制到明确允许的根目录。
-- 检查目录存在性。
-- 处理 symlink，避免逃逸。
-
-### 11.6 Trace 数据写入方式可优化
-
-`SaveFullTask` 每次删除并重写全部 Trace，简单但有写放大。建议改成事务内增量追加 Trace。
-
-### 11.7 工具结果结构化程度不一致
-
-Legacy/Eino 的 `find_files` 只记录数量，没有把文件列表保存为 Evidence。ADK 的工具结果转换也依赖 map/json 转换。建议统一工具结果模型，让 Planner 和用户都能看到更稳定的结构化上下文。
-
-### 11.8 仓库存在本地文件和构建产物
-
-当前工作区可以看到：
-
-- `server`
-- `data/agent.db`
-- `.DS_Store`
-- `internal/.DS_Store`
-- `workspace/.DS_Store`
-
-建议确认 `.gitignore` 并清理不应入库的构建产物、本地数据库和系统文件。
-
-### 11.9 internal/workspace 职责不清
-
-`internal/workspace` 下仍有早期 `package agent` 风格抽象，与当前主链路不直接衔接。建议明确是删除、迁移还是接入主架构。
-
-## 12. 推荐下一步
-
-优先级建议：
-
-1. 修正启动配置：按 `AI_AGENT_ORCHESTRATOR` 分模式初始化依赖，避免 ADK 模式强依赖 OpenAI key。
-2. 缓存 Eino compiled Runnable，减少单步执行开销。
-3. 为 Policy、Store、Executor、API 增加基础测试。
-4. 清理 `internal/workspace` 和本地构建/数据库文件。
-5. 统一工具输出和 Trace 结构。
-6. 将 `run-all` 改成异步任务，避免 HTTP 10 秒超时限制。
-7. 增强 workspace sandbox，尤其是 symlink 和绝对路径边界。
-
-## 13. 总结
-
-当前项目已经具备一个可扩展的 AI Agent Runtime 雏形：HTTP API 负责任务生命周期，SQLite 保存状态和 Trace，Planner/Executor/Tools 执行工作空间检索任务，Eino/Legacy/ADK 三种编排方式支持并行演进。
-
-短期最值得处理的是配置初始化、Eino Chain 缓存、安全测试和 ADK 模式稳定性。完成这些后，项目会更适合继续扩展更多工具、更复杂的任务流，以及生产化的异步任务执行模型。
+---

@@ -58,38 +58,53 @@ type ReadFileResult struct {
 }
 
 func findFilesHandler(ctx tool.Context, args FindFilesArgs) (FindFilesResult, error) {
+	log.Printf("[ADK Engine Tool] find_files called with pattern: %q", args.Pattern)
 	workspace, _ := ctx.Value(workspaceKey).(string)
 	if workspace == "" {
-		return FindFilesResult{}, fmt.Errorf("workspace not found in context")
+		err := fmt.Errorf("workspace not found in context")
+		log.Printf("[ADK Engine Tool Error] find_files failed: %v", err)
+		return FindFilesResult{}, err
 	}
 	files, err := tools.FindFiles(workspace, args.Pattern)
 	if err != nil {
+		log.Printf("[ADK Engine Tool Error] find_files failed: %v", err)
 		return FindFilesResult{}, err
 	}
+	log.Printf("[ADK Engine Tool] find_files found %d files", len(files))
 	return FindFilesResult{Files: files}, nil
 }
 
 func searchTextHandler(ctx tool.Context, args SearchTextArgs) (SearchTextResult, error) {
+	log.Printf("[ADK Engine Tool] search_text called with query: %q, glob: %q", args.Query, args.Glob)
 	workspace, _ := ctx.Value(workspaceKey).(string)
 	if workspace == "" {
-		return SearchTextResult{}, fmt.Errorf("workspace not found in context")
+		err := fmt.Errorf("workspace not found in context")
+		log.Printf("[ADK Engine Tool Error] search_text failed: %v", err)
+		return SearchTextResult{}, err
 	}
 	evidence, _, err := tools.SearchWithRG(workspace, args.Query, args.Glob)
 	if err != nil {
+		log.Printf("[ADK Engine Tool Error] search_text failed: %v", err)
 		return SearchTextResult{}, err
 	}
+	log.Printf("[ADK Engine Tool] search_text found %d evidence items", len(evidence))
 	return SearchTextResult{Evidence: evidence}, nil
 }
 
 func readFileHandler(ctx tool.Context, args ReadFileArgs) (ReadFileResult, error) {
+	log.Printf("[ADK Engine Tool] read_file called with path: %q", args.Path)
 	workspace, _ := ctx.Value(workspaceKey).(string)
 	if workspace == "" {
-		return ReadFileResult{}, fmt.Errorf("workspace not found in context")
+		err := fmt.Errorf("workspace not found in context")
+		log.Printf("[ADK Engine Tool Error] read_file failed: %v", err)
+		return ReadFileResult{}, err
 	}
 	content, err := tools.ReadFile(workspace, args.Path)
 	if err != nil {
+		log.Printf("[ADK Engine Tool Error] read_file failed: %v", err)
 		return ReadFileResult{}, err
 	}
+	log.Printf("[ADK Engine Tool] read_file successfully read %d characters", len(content))
 	return ReadFileResult{Content: content}, nil
 }
 
@@ -169,13 +184,17 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 
 	// Interceptor callbacks to update trace and step count
 	beforeToolCallback := func(toolCtx tool.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+		log.Printf("[ADK Engine Callback] Tool %s about to be invoked with args: %+v", t.Name(), args)
 		if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
-			return nil, fmt.Errorf("budget or step limit reached: step %d/%d, budget %d", task.StepCount, task.MaxSteps, task.ToolBudget)
+			err := fmt.Errorf("budget or step limit reached: step %d/%d, budget %d", task.StepCount, task.MaxSteps, task.ToolBudget)
+			log.Printf("[ADK Engine Callback Error] %v", err)
+			return nil, err
 		}
 		return args, nil
 	}
 
 	afterToolCallback := func(toolCtx tool.Context, t tool.Tool, args, result map[string]any, err error) (map[string]any, error) {
+		log.Printf("[ADK Engine Callback] Tool %s invocation completed. Err: %v", t.Name(), err)
 		stepTrace := types.StepTrace{
 			Step:   task.StepCount + 1,
 			Goal:   task.Goal,
@@ -259,6 +278,7 @@ If you have found the answer, output the answer clearly. If the answer cannot be
 		AfterToolCallbacks:  []llmagent.AfterToolCallback{afterToolCallback},
 	})
 	if err != nil {
+		log.Printf("[ADK Engine Error] Task %s - failed to create llm agent: %v", task.ID, err)
 		return fmt.Errorf("failed to create llm agent: %w", err)
 	}
 
@@ -270,6 +290,7 @@ If you have found the answer, output the answer clearly. If the answer cannot be
 		AutoCreateSession: true,
 	})
 	if err != nil {
+		log.Printf("[ADK Engine Error] Task %s - failed to create runner: %v", task.ID, err)
 		return fmt.Errorf("failed to create runner: %w", err)
 	}
 
@@ -277,6 +298,7 @@ If you have found the answer, output the answer clearly. If the answer cannot be
 	runCtx := context.WithValue(ctx, workspaceKey, task.Workspace)
 	userMsg := genai.NewContentFromText(task.Goal, genai.RoleUser)
 
+	log.Printf("[ADK Engine] Task %s - starting ADK execution session", task.ID)
 	var finalAnswer string
 	for event, err := range r.Run(runCtx, "user", task.ID, userMsg, agent.RunConfig{}) {
 		if err != nil {
@@ -295,6 +317,8 @@ If you have found the answer, output the answer clearly. If the answer cannot be
 			}
 		}
 	}
+
+	log.Printf("[ADK Engine] Task %s - execution session ended. FinalAnswer: %q", task.ID, finalAnswer)
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
 		ans := task.FinalAnswer

@@ -27,7 +27,9 @@ func TransitionTask(task *types.Task, target types.TaskStatus) error {
 	}
 
 	if !valid {
-		return fmt.Errorf("invalid task state transition from %q to %q (Task ID: %s)", task.Status, target, task.ID)
+		err := fmt.Errorf("invalid task state transition from %q to %q (Task ID: %s)", task.Status, target, task.ID)
+		log.Printf("[State Manager Error] %v", err)
+		return err
 	}
 
 	log.Printf("[State Manager] Task %s transitioning from %s to %s", task.ID, task.Status, target)
@@ -45,6 +47,7 @@ func SetTaskCompleted(task *types.Task, finalAnswer string) error {
 	if err := TransitionTask(task, types.StatusCompleted); err != nil {
 		return err
 	}
+	log.Printf("[State Manager] Task %s marked as Completed. FinalAnswer: %q", task.ID, finalAnswer)
 	task.FinalAnswer = finalAnswer
 	return nil
 }
@@ -54,6 +57,7 @@ func SetTaskFailed(task *types.Task, reason string) error {
 	if err := TransitionTask(task, types.StatusFailed); err != nil {
 		return err
 	}
+	log.Printf("[State Manager Error] Task %s marked as Failed. Reason: %q", task.ID, reason)
 	task.FinalAnswer = "Failed: " + reason
 	return nil
 }
