@@ -150,3 +150,23 @@ func TestCosineSimilarityEdgeCases(t *testing.T) {
 		t.Errorf("expected similarity of identical vectors to be 1.0, got %f", sim)
 	}
 }
+
+func TestDeduplicateMemories(t *testing.T) {
+	mems := []types.Memory{
+		{ID: "mem-1", TaskID: "task-1", Goal: "Find files", FinalAnswer: "Found A"},
+		{ID: "mem-1", TaskID: "task-1", Goal: "Find files", FinalAnswer: "Found A"}, // Duplicate ID
+		{ID: "mem-2", TaskID: "task-1", Goal: "Find files", FinalAnswer: "Found A"}, // Duplicate TaskID
+		{ID: "mem-3", TaskID: "task-2", Goal: "find files", FinalAnswer: "Found B"}, // Duplicate Goal (case-insensitive)
+		{ID: "mem-4", TaskID: "task-3", Goal: "Lookup users", FinalAnswer: "found a"}, // Duplicate FinalAnswer (case-insensitive)
+		{ID: "mem-5", TaskID: "task-4", Goal: "Unique Goal", FinalAnswer: "Unique Answer"}, // Unique
+	}
+
+	deduped := memory.DeduplicateMemories(mems)
+	if len(deduped) != 2 {
+		t.Fatalf("expected 2 unique memories, got %d: %+v", len(deduped), deduped)
+	}
+
+	if deduped[0].ID != "mem-1" || deduped[1].ID != "mem-5" {
+		t.Errorf("unexpected deduped result order or keys: %+v", deduped)
+	}
+}

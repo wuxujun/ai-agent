@@ -69,7 +69,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	if task.StepCount == 0 && len(task.Memories) == 0 {
 		var retrievedMems []types.Memory
 
-		// 1. Try querying third-party RAG search URL if configured
+		// 1. Try querying third-party RAG search URL if configured (query up to 5 candidates)
 		if os.Getenv("AI_AGENT_RAG_SEARCH_URL") != "" {
 			if extMems, extErr := memory.SearchThirdPartyRAG(ctx, task.Goal); extErr == nil && len(extMems) > 0 {
 				retrievedMems = append(retrievedMems, extMems...)
@@ -79,12 +79,11 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			}
 		}
 
-		// 2. If we need more memories, or as fallback, query local Store
-		if len(retrievedMems) < 3 && e.Store != nil {
+		// 2. Query local Store for up to 5 candidates
+		if e.Store != nil {
 			log.Printf("[Engine] Querying local long-term memory for task: %s (Goal: %q)", task.ID, task.Goal)
 			if emb, embErr := memory.GetEmbedding(ctx, task.Goal); embErr == nil {
-				limit := 3 - len(retrievedMems)
-				if mems, queryErr := e.Store.QueryMemories(ctx, task.Goal, emb, limit); queryErr == nil && len(mems) > 0 {
+				if mems, queryErr := e.Store.QueryMemories(ctx, task.Goal, emb, 5); queryErr == nil && len(mems) > 0 {
 					for _, m := range mems {
 						retrievedMems = append(retrievedMems, *m)
 					}
@@ -93,8 +92,14 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			}
 		}
 
+		// 3. Deduplicate and limit to top 3 unique memories
 		if len(retrievedMems) > 0 {
-			task.Memories = retrievedMems
+			deduped := memory.DeduplicateMemories(retrievedMems)
+			if len(deduped) > 3 {
+				deduped = deduped[:3]
+			}
+			task.Memories = deduped
+			log.Printf("[Engine] Final RAG memories count after deduplication and filtering: %d for task %s", len(task.Memories), task.ID)
 		}
 	}
 

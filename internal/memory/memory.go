@@ -56,3 +56,57 @@ func CreateMemoryFromTask(ctx context.Context, task *types.Task) (*types.Memory,
 		Embedding:   emb,
 	}, nil
 }
+
+// DeduplicateMemories filters out duplicate or highly redundant memories.
+// It filters by duplicate ID, TaskID, and exact normalized matches of Goal or FinalAnswer.
+func DeduplicateMemories(memories []types.Memory) []types.Memory {
+	if len(memories) <= 1 {
+		return memories
+	}
+
+	seenIDs := make(map[string]bool)
+	seenTaskIDs := make(map[string]bool)
+	seenGoals := make(map[string]bool)
+	seenAnswers := make(map[string]bool)
+
+	var deduped []types.Memory
+
+	for _, mem := range memories {
+		// Normalize fields for comparison
+		id := strings.TrimSpace(mem.ID)
+		taskID := strings.TrimSpace(mem.TaskID)
+		goal := strings.ToLower(strings.TrimSpace(mem.Goal))
+		answer := strings.ToLower(strings.TrimSpace(mem.FinalAnswer))
+
+		if id != "" && seenIDs[id] {
+			continue
+		}
+		if taskID != "" && seenTaskIDs[taskID] {
+			continue
+		}
+		if goal != "" && seenGoals[goal] {
+			continue
+		}
+		if answer != "" && seenAnswers[answer] {
+			continue
+		}
+
+		// Mark as seen
+		if id != "" {
+			seenIDs[id] = true
+		}
+		if taskID != "" {
+			seenTaskIDs[taskID] = true
+		}
+		if goal != "" {
+			seenGoals[goal] = true
+		}
+		if answer != "" {
+			seenAnswers[answer] = true
+		}
+
+		deduped = append(deduped, mem)
+	}
+
+	return deduped
+}
