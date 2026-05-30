@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS memories (
 	// Migrate: add agent_role column to traces if it doesn't exist yet.
 	// SQLite returns an error if the column already exists; we ignore it.
 	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN agent_role TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
 	return nil
 }
 
@@ -118,7 +119,8 @@ func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces [
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = ?`, taskID); err != nil {
+	// Delete any stale traces beyond the current trace length (e.g. if task was truncated/reset)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = ? AND step >= ?`, taskID, len(traces)); err != nil {
 		return err
 	}
 
@@ -130,6 +132,13 @@ func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces [
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO traces (task_id, step, goal, action, query, observation, evidence_json, agent_role)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(task_id, step) DO UPDATE SET
+	goal = excluded.goal,
+	action = excluded.action,
+	query = excluded.query,
+	observation = excluded.observation,
+	evidence_json = excluded.evidence_json,
+	agent_role = excluded.agent_role
 `, taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole)); err != nil {
 			return err
 		}

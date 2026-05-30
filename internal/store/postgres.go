@@ -74,7 +74,11 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 `
 	_, err := p.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	_, _ = p.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
+	return nil
 }
 
 // Close closes the database connection.
@@ -109,7 +113,7 @@ final_answer=EXCLUDED.final_answer
 	return err
 }
 
-// ReplaceTraces deletes old traces for a task and inserts new ones within a transaction.
+// ReplaceTraces saves traces using UPSERT to avoid write amplification, and deletes stale traces.
 func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces []types.StepTrace) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -117,7 +121,8 @@ func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = $1`, taskID); err != nil {
+	// Delete any stale traces beyond the current trace length (e.g. if task was truncated/reset)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = $1 AND step >= $2`, taskID, len(traces)); err != nil {
 		return err
 	}
 
@@ -129,6 +134,13 @@ func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO traces (task_id, step, goal, action, query, observation, evidence_json, agent_role)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT(task_id, step) DO UPDATE SET
+	goal = EXCLUDED.goal,
+	action = EXCLUDED.action,
+	query = EXCLUDED.query,
+	observation = EXCLUDED.observation,
+	evidence_json = EXCLUDED.evidence_json,
+	agent_role = EXCLUDED.agent_role
 `, taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole)); err != nil {
 			return err
 		}
