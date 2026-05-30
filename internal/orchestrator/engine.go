@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
+	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/metrics"
+	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
@@ -19,11 +23,20 @@ import (
 )
 
 type Engine struct {
-	Planner  planner.Planner
-	Executor executor.Executor
-	Metrics  *metrics.Collector
-	Mode     Mode
-	AdkModel model.LLM
+	Planner     planner.Planner
+	Executor    executor.Executor
+	Metrics     *metrics.Collector
+	Mode        Mode
+	AdkModel    model.LLM
+	// Coordinator is required when Mode == ModeMultiAgent.
+	Coordinator *multiagent.Coordinator
+	// Store handles database persistence and long-term memory.
+	Store       store.Store
+
+	// einoRunner is compiled once and cached for reuse across all runEinoNext calls.
+	einoOnce   sync.Once
+	einoRunner any // compose.Runnable[*einoStepState, *types.Task]
+	einoErr    error
 }
 
 var tracer = otel.Tracer("ai-agent/orchestrator")
@@ -31,10 +44,11 @@ var tracer = otel.Tracer("ai-agent/orchestrator")
 type Mode string
 
 const (
-	ModeEino   Mode = "eino"
-	ModeLegacy Mode = "legacy"
-	ModeAdk    Mode = "adk"
-	ModeStep   Mode = "step"
+	ModeEino       Mode = "eino"
+	ModeLegacy     Mode = "legacy"
+	ModeAdk        Mode = "adk"
+	ModeStep       Mode = "step"
+	ModeMultiAgent Mode = "multiagent"
 )
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
@@ -46,6 +60,20 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		}
 	}()
 
+	if task.StepCount == 0 && len(task.Memories) == 0 && e.Store != nil {
+		log.Printf("[Engine] Querying long-term memory for task: %s (Goal: %q)", task.ID, task.Goal)
+		if emb, embErr := memory.GetEmbedding(ctx, task.Goal); embErr == nil {
+			if mems, queryErr := e.Store.QueryMemories(ctx, task.Goal, emb, 3); queryErr == nil && len(mems) > 0 {
+				task.Memories = make([]types.Memory, len(mems))
+				for i, m := range mems {
+					task.Memories[i] = *m
+				}
+				log.Printf("[Engine] Retrieved %d relevant historical memories for task %s", len(mems), task.ID)
+			}
+		}
+	}
+
+
 	switch e.Mode {
 	case "", ModeEino:
 		err = e.runEinoNext(ctx, task)
@@ -55,6 +83,8 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		err = e.runAdkNext(ctx, task)
 	case ModeStep:
 		err = e.runStepNext(ctx, task)
+	case ModeMultiAgent:
+		err = e.runMultiAgentNext(ctx, task)
 	default:
 		err = fmt.Errorf("unsupported orchestrator mode: %s", e.Mode)
 	}

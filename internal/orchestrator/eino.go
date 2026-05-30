@@ -32,7 +32,8 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 		attribute.String("agent.orchestrator", "eino"),
 	)
 
-	runner, err := e.compileEinoStepChain(ctx)
+	// Get (or lazily compile) the cached Eino runner.
+	runner, err := e.getEinoRunner(ctx)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "compile eino chain failed")
@@ -56,6 +57,23 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 	)
 
 	return nil
+}
+
+// getEinoRunner returns the compiled Eino chain runner, compiling it once and caching it.
+func (e *Engine) getEinoRunner(ctx context.Context) (compose.Runnable[*einoStepState, *types.Task], error) {
+	e.einoOnce.Do(func() {
+		log.Printf("[Engine-Eino] Compiling Eino step chain (first use)")
+		r, err := e.compileEinoStepChain(ctx)
+		if err != nil {
+			e.einoErr = err
+			return
+		}
+		e.einoRunner = r
+	})
+	if e.einoErr != nil {
+		return nil, e.einoErr
+	}
+	return e.einoRunner.(compose.Runnable[*einoStepState, *types.Task]), nil
 }
 
 func (e *Engine) compileEinoStepChain(ctx context.Context) (compose.Runnable[*einoStepState, *types.Task], error) {

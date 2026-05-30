@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
@@ -38,6 +39,12 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 	switch d.Action {
 	case "find_files":
 		pattern, _ := d.Parameters["pattern"].(string)
+		// Validate workspace boundary before executing
+		if err := policy.ValidateWorkspace(task.Workspace); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "workspace policy violation")
+			return nil, fmt.Errorf("find_files policy violation: %w", err)
+		}
 		files, err := tools.FindFiles(task.Workspace, pattern)
 		if err != nil {
 			span.RecordError(err)
@@ -52,6 +59,12 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 	case "search_text":
 		query, _ := d.Parameters["query"].(string)
 		glob, _ := d.Parameters["glob"].(string)
+		// Validate workspace boundary before executing
+		if err := policy.ValidateWorkspace(task.Workspace); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "workspace policy violation")
+			return nil, fmt.Errorf("search_text policy violation: %w", err)
+		}
 		evidence, _, err := tools.SearchWithRG(task.Workspace, query, glob)
 		if err != nil {
 			span.RecordError(err)
@@ -72,12 +85,13 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 			span.SetStatus(codes.Error, "read_file failed")
 			return nil, err
 		}
-		if len(content) > 220 {
-			content = content[:220]
-		}
+		// tools.ReadFile already caps content at 4000 chars; no further truncation needed.
 		trace.Query = path
-		trace.Observation = "read file snippet: " + content
-		span.SetAttributes(attribute.String("agent.executor.path", path))
+		trace.Observation = "read file content: " + content
+		span.SetAttributes(
+			attribute.String("agent.executor.path", path),
+			attribute.Int("agent.executor.content_len", len(content)),
+		)
 		return trace, nil
 
 	default:

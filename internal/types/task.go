@@ -1,5 +1,15 @@
 package types
 
+// AgentRole identifies which agent produced a StepTrace entry in multi-agent mode.
+type AgentRole string
+
+const (
+	AgentRolePlanner    AgentRole = "planner"
+	AgentRoleResearcher AgentRole = "researcher"
+	AgentRoleWriter     AgentRole = "writer"
+	AgentRoleSingle     AgentRole = "" // default single-agent mode
+)
+
 type Evidence struct {
 	Path  string   `json:"path"`
 	Lines []string `json:"lines"`
@@ -13,6 +23,9 @@ type StepTrace struct {
 	Query       string     `json:"query"`
 	Observation string     `json:"observation"`
 	Evidence    []Evidence `json:"evidence"`
+	// AgentRole identifies the agent that produced this trace entry.
+	// Empty for single-agent (legacy/eino/adk) modes; set in multi-agent mode.
+	AgentRole AgentRole `json:"agent_role,omitempty"`
 }
 
 type TaskStatus string
@@ -36,4 +49,6 @@ type Task struct {
 	ToolBudget  int         `json:"tool_budget"`
 	Trace       []StepTrace `json:"trace"`
 	FinalAnswer string      `json:"final_answer"`
+	Memories    []Memory    `json:"memories,omitempty"`
 }
+

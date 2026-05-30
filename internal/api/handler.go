@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +20,7 @@ type Handler struct {
 	store   store.Store
 	engine  *orchestrator.Engine
 	metrics *metrics.Collector
+	wg      sync.WaitGroup // tracks background run-all goroutines for graceful shutdown
 }
 
 type CreateTaskRequest struct {
@@ -41,12 +44,18 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.POST("/:id/run", h.runTaskStep)
 		tasks.POST("/:id/run-all", h.runAll)
 		tasks.GET("/:id", h.getTask)
+		tasks.GET("", h.listTasks)
 	}
 	api.GET("/metrics", h.getMetrics)
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
+}
+
+// Wait blocks until all background run-all goroutines complete. Call during shutdown.
+func (h *Handler) Wait() {
+	h.wg.Wait()
 }
 
 func (h *Handler) createTask(c *gin.Context) {
@@ -68,6 +77,18 @@ func (h *Handler) createTask(c *gin.Context) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+	defer cancel()
+
+	// P8: Prevent silent overwrite of an existing task.
+	if exists, err := h.store.ExistsTask(ctx, req.ID); err != nil {
+		c.Error(err)
+		return
+	} else if exists {
+		c.JSON(http.StatusConflict, gin.H{"error": "task already exists", "task_id": req.ID})
+		return
+	}
+
 	task := &types.Task{
 		ID:         req.ID,
 		Goal:       req.Goal,
@@ -77,15 +98,12 @@ func (h *Handler) createTask(c *gin.Context) {
 		Status:     types.StatusCreated,
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-	defer cancel()
-
 	if err := h.store.SaveFullTask(ctx, task); err != nil {
 		c.Error(err)
 		return
 	}
 
-	c.JSON(http.StatusOK, task)
+	c.JSON(http.StatusCreated, task)
 }
 
 func (h *Handler) runTaskStep(c *gin.Context) {
@@ -116,10 +134,10 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 }
 
 func (h *Handler) runAll(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	loadCtx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 	defer cancel()
 
-	task, err := h.store.GetTask(ctx, c.Param("id"))
+	task, err := h.store.GetTask(loadCtx, c.Param("id"))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
@@ -129,17 +147,35 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
-	execErr := h.engine.RunAll(ctx, task)
-	if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
-		c.Error(saveErr)
-		return
-	}
-	if execErr != nil {
-		c.Error(execErr)
+	if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
+		c.JSON(http.StatusOK, task)
 		return
 	}
 
-	c.JSON(http.StatusOK, task)
+	// Run asynchronously so the HTTP handler returns immediately (202 Accepted).
+	// The caller should poll GET /api/tasks/:id to observe completion.
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		// Use a background context so the task isn't cancelled when the HTTP request ends.
+		bgCtx := context.Background()
+		log.Printf("[Handler] Starting async run-all for task %s", task.ID)
+		execErr := h.engine.RunAll(bgCtx, task)
+		saveCtx, saveCancel := context.WithTimeout(bgCtx, 5*time.Second)
+		defer saveCancel()
+		if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
+			log.Printf("[Handler Error] Failed to save task %s after run-all: %v", task.ID, saveErr)
+		}
+		if execErr != nil {
+			log.Printf("[Handler Error] run-all failed for task %s: %v", task.ID, execErr)
+		}
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"message": "task is running in background",
+		"task_id": task.ID,
+		"status":  task.Status,
+	})
 }
 
 func (h *Handler) getTask(c *gin.Context) {
@@ -165,4 +201,21 @@ func (h *Handler) getMetrics(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, h.metrics.Snapshot())
+}
+
+// listTasks handles GET /api/tasks — returns all tasks (summary, no trace).
+func (h *Handler) listTasks(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	tasks, err := h.store.ListTasks(ctx)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tasks": tasks,
+		"count": len(tasks),
+	})
 }

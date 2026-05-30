@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -72,6 +75,13 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("failed to save task to redis: %w", err)
 	}
 
+	if task.Status == types.StatusCompleted {
+		// Automatically index completed task as a long-term memory for cross-task RAG
+		if mem, err := memory.CreateMemoryFromTask(ctx, task); err == nil {
+			_ = r.SaveMemory(ctx, mem)
+		}
+	}
+
 	return nil
 }
 
@@ -102,3 +112,143 @@ func (r *RedisStore) GetTask(ctx context.Context, id string) (*types.Task, error
 
 	return &task, nil
 }
+
+// ListTasks returns tasks stored in Redis using SCAN. Note: this may be slow for large datasets.
+// Results are capped at 500 tasks.
+func (r *RedisStore) ListTasks(ctx context.Context) ([]*types.Task, error) {
+	ctx, span := tracer.Start(ctx, "store.list_tasks")
+	defer span.End()
+
+	var cursor uint64
+	var keys []string
+	for {
+		var batch []string
+		var err error
+		batch, cursor, err = r.client.Scan(ctx, cursor, "task:*", 100).Result()
+		if err != nil {
+			span.RecordError(err)
+			return nil, err
+		}
+		keys = append(keys, batch...)
+		if cursor == 0 || len(keys) >= 500 {
+			break
+		}
+	}
+	if len(keys) > 500 {
+		keys = keys[:500]
+	}
+
+	tasks := make([]*types.Task, 0, len(keys))
+	for _, key := range keys {
+		val, err := r.client.Get(ctx, key).Result()
+		if err != nil {
+			continue // skip missing/expired keys
+		}
+		var t types.Task
+		if err := json.Unmarshal([]byte(val), &t); err != nil {
+			continue
+		}
+		tasks = append(tasks, &t)
+	}
+	span.SetAttributes(attribute.Int("agent.store.task_count", len(tasks)))
+	return tasks, nil
+}
+
+// ExistsTask returns true if a task with the given id already exists.
+func (r *RedisStore) ExistsTask(ctx context.Context, id string) (bool, error) {
+	n, err := r.client.Exists(ctx, r.taskKey(id)).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// memoryKey formats the Redis key for a memory.
+func (r *RedisStore) memoryKey(id string) string {
+	return "memory:" + id
+}
+
+// SaveMemory persists a memory entry to Redis.
+func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
+	data, err := json.Marshal(mem)
+	if err != nil {
+		return fmt.Errorf("failed to serialize memory: %w", err)
+	}
+
+	err = r.client.Set(ctx, r.memoryKey(mem.ID), data, 0).Err()
+	if err != nil {
+		return fmt.Errorf("failed to save memory to redis: %w", err)
+	}
+
+	return nil
+}
+
+// QueryMemories retrieves and ranks memories based on vector similarity or keyword match in Redis.
+func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	var cursor uint64
+	var keys []string
+	for {
+		var batch []string
+		var err error
+		batch, cursor, err = r.client.Scan(ctx, cursor, "memory:*", 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, batch...)
+		if cursor == 0 || len(keys) >= 500 {
+			break
+		}
+	}
+
+	type rankResult struct {
+		mem   *types.Memory
+		score float32
+	}
+	var ranked []rankResult
+
+	for _, key := range keys {
+		val, err := r.client.Get(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+		var mem types.Memory
+		if err := json.Unmarshal([]byte(val), &mem); err != nil {
+			continue
+		}
+
+		var score float32
+		if len(embedding) > 0 && len(mem.Embedding) > 0 {
+			score = memory.CosineSimilarity(embedding, mem.Embedding)
+		} else {
+			// Fallback: simple case-insensitive term-match score
+			qWords := strings.Fields(strings.ToLower(query))
+			tWords := strings.ToLower(mem.Goal + " " + mem.KeyFindings + " " + mem.FinalAnswer)
+			if len(qWords) > 0 {
+				var matches float32
+				for _, qw := range qWords {
+					qw = strings.Trim(qw, ".,!?;:()[]{}'\"-")
+					if len(qw) > 2 && strings.Contains(tWords, qw) {
+						matches += 1.0
+					}
+				}
+				score = matches / float32(len(qWords))
+			}
+		}
+		ranked = append(ranked, rankResult{mem: &mem, score: score})
+	}
+
+	sort.Slice(ranked, func(i, j int) bool {
+		return ranked[i].score > ranked[j].score
+	})
+
+	if limit > len(ranked) {
+		limit = len(ranked)
+	}
+
+	res := make([]*types.Memory, 0, limit)
+	for i := 0; i < limit; i++ {
+		res = append(res, ranked[i].mem)
+	}
+	return res, nil
+}
+

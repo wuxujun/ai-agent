@@ -5,17 +5,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 )
 
+// toolTimeout returns the command execution timeout from the environment.
+// AI_AGENT_TOOL_TIMEOUT_SECONDS allows operators to tune it; default is 10s.
+func toolTimeout() time.Duration {
+	if s := os.Getenv("AI_AGENT_TOOL_TIMEOUT_SECONDS"); s != "" {
+		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 10 * time.Second
+}
+
 func RunCommand(dir string, name string, args ...string) (string, error) {
 	if err := policy.ValidateCommand(name); err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout())
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)

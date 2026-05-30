@@ -183,6 +183,9 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 	}
 
 	// Interceptor callbacks to update trace and step count
+	// toolStartTime stores per-invocation start times keyed by tool name
+	toolStartTime := make(map[string]time.Time)
+
 	beforeToolCallback := func(toolCtx tool.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 		log.Printf("[ADK Engine Callback] Tool %s about to be invoked with args: %+v", t.Name(), args)
 		if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
@@ -190,11 +193,19 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 			log.Printf("[ADK Engine Callback Error] %v", err)
 			return nil, err
 		}
+		// Record start time for latency measurement
+		toolStartTime[t.Name()] = time.Now()
 		return args, nil
 	}
 
 	afterToolCallback := func(toolCtx tool.Context, t tool.Tool, args, result map[string]any, err error) (map[string]any, error) {
-		log.Printf("[ADK Engine Callback] Tool %s invocation completed. Err: %v", t.Name(), err)
+		// Compute real elapsed time from the start recorded in beforeToolCallback
+		var elapsed time.Duration
+		if start, ok := toolStartTime[t.Name()]; ok {
+			elapsed = time.Since(start)
+			delete(toolStartTime, t.Name())
+		}
+		log.Printf("[ADK Engine Callback] Tool %s invocation completed in %s. Err: %v", t.Name(), elapsed, err)
 		stepTrace := types.StepTrace{
 			Step:   task.StepCount + 1,
 			Goal:   task.Goal,
@@ -236,13 +247,11 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 				stepTrace.Evidence = evidences
 
 			case "read_file":
+				// tools.ReadFile already caps at 4000 chars; pass through the full content.
 				content, _ := result["content"].(string)
 				path, _ := args["path"].(string)
-				if len(content) > 220 {
-					content = content[:220]
-				}
 				stepTrace.Query = path
-				stepTrace.Observation = "read file snippet: " + content
+				stepTrace.Observation = "read file content: " + content
 
 			default:
 				stepTrace.Observation = fmt.Sprintf("Completed action %s with result: %+v", t.Name(), result)
@@ -255,7 +264,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 		_ = SetTaskRunning(task)
 
 		if e.Metrics != nil {
-			e.Metrics.ObserveExecutor(time.Since(time.Now()), err, t.Name())
+			e.Metrics.ObserveExecutor(elapsed, err, t.Name())
 		}
 
 		return result, nil

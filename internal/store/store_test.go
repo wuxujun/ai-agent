@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -183,6 +184,60 @@ func TestStores(t *testing.T) {
 			}
 			if len(ev1.Lines) != len(ev2.Lines) || ev1.Lines[0] != ev2.Lines[0] {
 				t.Errorf("expected evidence Lines %v, got %v", ev1.Lines, ev2.Lines)
+			}
+
+			// 5. Test Memory Save and Query
+			mem1 := &types.Memory{
+				ID:          "mem-task-1",
+				TaskID:      "task-1",
+				Goal:        "find config file and check API keys",
+				FinalAnswer: "The API key is abc123 in config.yaml",
+				KeyFindings: "Step 1: found config.yaml. Step 2: read API key.",
+				Timestamp:   time.Now(),
+				Embedding:   []float32{1.0, 0.0, 0.0},
+			}
+			err = s.SaveMemory(ctx, mem1)
+			if err != nil {
+				t.Fatalf("failed to save memory 1: %v", err)
+			}
+
+			mem2 := &types.Memory{
+				ID:          "mem-task-2",
+				TaskID:      "task-2",
+				Goal:        "compile go binary and run tests",
+				FinalAnswer: "Build succeeded and all tests passed",
+				KeyFindings: "Step 1: run go build. Step 2: run go test.",
+				Timestamp:   time.Now(),
+				Embedding:   []float32{0.0, 1.0, 0.0},
+			}
+			err = s.SaveMemory(ctx, mem2)
+			if err != nil {
+				t.Fatalf("failed to save memory 2: %v", err)
+			}
+
+			// Query with embedding similar to mem1
+			mems, err := s.QueryMemories(ctx, "find API key", []float32{0.9, 0.1, 0.0}, 2)
+			if err != nil {
+				t.Fatalf("failed to query memories: %v", err)
+			}
+
+			if len(mems) == 0 {
+				t.Fatalf("expected at least 1 memory, got 0")
+			}
+			if mems[0].ID != mem1.ID {
+				t.Errorf("expected closest memory to be %q, got %q", mem1.ID, mems[0].ID)
+			}
+
+			// Query with query string (fallback keyword overlap test)
+			mems2, err := s.QueryMemories(ctx, "run tests", nil, 2)
+			if err != nil {
+				t.Fatalf("failed to query memories by query string: %v", err)
+			}
+			if len(mems2) == 0 {
+				t.Fatalf("expected at least 1 memory matching string, got 0")
+			}
+			if mems2[0].ID != mem2.ID {
+				t.Errorf("expected keyword match to favor %q, got %q", mem2.ID, mems2[0].ID)
 			}
 		})
 	}

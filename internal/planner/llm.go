@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,13 +44,22 @@ func NewLLMPlanner(apiKey, model, baseURL string) *LLMPlanner {
 }
 
 func NewLLMPlannerWithProvider(provider ProviderType, apiKey, model, baseURL string) *LLMPlanner {
+	// AI_AGENT_LLM_TIMEOUT_SECONDS allows operators to tune the LLM call timeout.
+	// Default is 30s which is generous enough for complex reasoning chains.
+	timeout := 30 * time.Second
+	if s := os.Getenv("AI_AGENT_LLM_TIMEOUT_SECONDS"); s != "" {
+		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
+			timeout = time.Duration(secs) * time.Second
+			log.Printf("[LLM Planner] Using custom LLM timeout: %s", timeout)
+		}
+	}
 	return &LLMPlanner{
 		Provider: provider,
 		APIKey:   apiKey,
 		Model:    model,
 		BaseURL:  baseURL,
 		Client: &http.Client{
-			Timeout: 20 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }

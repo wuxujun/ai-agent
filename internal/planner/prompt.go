@@ -27,8 +27,18 @@ Rules:
 }
 
 func BuildUserPrompt(task *types.Task) string {
+	var memorySection string
+	if len(task.Memories) > 0 {
+		var ms []string
+		for i, mem := range task.Memories {
+			ms = append(ms, fmt.Sprintf("- Memory %d:\n  * Goal: %s\n  * Key Findings:\n%s\n  * Final Answer: %s",
+				i+1, mem.Goal, indentText(mem.KeyFindings, "    "), mem.FinalAnswer))
+		}
+		memorySection = "\n\nRelated Historical Memories (RAG - Cross-task Knowledge Sharing):\n" + strings.Join(ms, "\n\n")
+	}
+
 	return fmt.Sprintf(`Task goal:
-%s
+%s%s
 
 Current status:
 - step_count: %d
@@ -52,6 +62,7 @@ Decision requirements:
 - If enough evidence exists, stop and provide final_answer.
 - If stopping, set action to "none".`,
 		task.Goal,
+		memorySection,
 		task.StepCount,
 		task.MaxSteps,
 		task.ToolBudget,
@@ -59,6 +70,14 @@ Decision requirements:
 		formatUnresolved(task.Unresolved),
 		summarizeTrace(task.Trace),
 	)
+}
+
+func indentText(text, indent string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = indent + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func formatUnresolved(items []string) string {
