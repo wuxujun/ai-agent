@@ -11,6 +11,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/model"
@@ -24,7 +25,10 @@ import (
 
 type contextKey string
 
-const workspaceKey contextKey = "workspace"
+const (
+	workspaceKey contextKey = "workspace"
+	taskKey      contextKey = "task"
+)
 
 // FindFilesArgs defines the arguments for find_files tool
 type FindFilesArgs struct {
@@ -127,6 +131,77 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 		return nil
 	}
 
+	r, err := e.getAdkRunner(ctx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to compile adk runner")
+		log.Printf("[ADK Engine Error] Task %s - failed to get ADK runner: %v", task.ID, err)
+		return err
+	}
+
+	// Prepare execution context with workspace and task injection
+	runCtx := context.WithValue(ctx, workspaceKey, task.Workspace)
+	runCtx = context.WithValue(runCtx, taskKey, task)
+	userMsg := genai.NewContentFromText(task.Goal, genai.RoleUser)
+
+	log.Printf("[ADK Engine] Task %s - starting ADK execution session", task.ID)
+	var finalAnswer string
+	for event, err := range r.Run(runCtx, "user", task.ID, userMsg, agent.RunConfig{}) {
+		if err != nil {
+			log.Printf("[ADK Engine Error] Runner run error: %v", err)
+			return err
+		}
+		if event.IsFinalResponse() {
+			if event.LLMResponse.Content != nil {
+				var sb strings.Builder
+				for _, part := range event.LLMResponse.Content.Parts {
+					if part.Text != "" {
+						sb.WriteString(part.Text)
+					}
+				}
+				finalAnswer = sb.String()
+			}
+		}
+	}
+
+	log.Printf("[ADK Engine] Task %s - execution session ended. FinalAnswer: %q", task.ID, finalAnswer)
+
+	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
+		ans := task.FinalAnswer
+		if ans == "" {
+			ans = "stopped by budget or max steps"
+		}
+		_ = SetTaskCompleted(task, ans)
+		if e.Metrics != nil {
+			e.Metrics.IncCompleted()
+		}
+	} else if finalAnswer != "" {
+		_ = SetTaskCompleted(task, finalAnswer)
+		if e.Metrics != nil {
+			e.Metrics.IncCompleted()
+		}
+	}
+
+	return nil
+}
+
+func (e *Engine) getAdkRunner(ctx context.Context) (*runner.Runner, error) {
+	e.adkOnce.Do(func() {
+		log.Printf("[ADK Engine] Compiling ADK runner (first use)")
+		r, err := e.compileAdkRunner(ctx)
+		if err != nil {
+			e.adkErr = err
+			return
+		}
+		e.adkRunner = r
+	})
+	if e.adkErr != nil {
+		return nil, e.adkErr
+	}
+	return e.adkRunner.(*runner.Runner), nil
+}
+
+func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 	var llmModel model.LLM
 	if e.AdkModel != nil {
 		llmModel = e.AdkModel
@@ -140,7 +215,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 			apiKey = os.Getenv("OPENAI_API_KEY")
 		}
 		if apiKey == "" {
-			return fmt.Errorf("GEMINI_API_KEY, GOOGLE_API_KEY, or OPENAI_API_KEY is required for ADK mode")
+			return nil, fmt.Errorf("GEMINI_API_KEY, GOOGLE_API_KEY, or OPENAI_API_KEY is required for ADK mode")
 		}
 
 		modelName := os.Getenv("GEMINI_MODEL")
@@ -153,7 +228,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 			APIKey: apiKey,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create gemini model: %w", err)
+			return nil, fmt.Errorf("failed to create gemini model: %w", err)
 		}
 	}
 
@@ -163,7 +238,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 		Description: "Find candidate files in the workspace matching a glob pattern (e.g. '*.txt', '*.md')",
 	}, findFilesHandler)
 	if err != nil {
-		return fmt.Errorf("failed to create find_files tool: %w", err)
+		return nil, fmt.Errorf("failed to create find_files tool: %w", err)
 	}
 
 	searchTextTool, err := functiontool.New(functiontool.Config{
@@ -171,7 +246,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 		Description: "Search text using ripgrep (rg) for a query string in the workspace, optionally filtering files by glob pattern",
 	}, searchTextHandler)
 	if err != nil {
-		return fmt.Errorf("failed to create search_text tool: %w", err)
+		return nil, fmt.Errorf("failed to create search_text tool: %w", err)
 	}
 
 	readFileTool, err := functiontool.New(functiontool.Config{
@@ -179,27 +254,32 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 		Description: "Read the content of a file (up to 4000 characters) given its relative path in the workspace",
 	}, readFileHandler)
 	if err != nil {
-		return fmt.Errorf("failed to create read_file tool: %w", err)
+		return nil, fmt.Errorf("failed to create read_file tool: %w", err)
 	}
 
 	// Interceptor callbacks to update trace and step count
-	// toolStartTime stores per-invocation start times keyed by tool name
 	toolStartTime := make(map[string]time.Time)
 
 	beforeToolCallback := func(toolCtx tool.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+		task, _ := toolCtx.Value(taskKey).(*types.Task)
+		if task == nil {
+			return nil, fmt.Errorf("task not found in context")
+		}
 		log.Printf("[ADK Engine Callback] Tool %s about to be invoked with args: %+v", t.Name(), args)
 		if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
 			err := fmt.Errorf("budget or step limit reached: step %d/%d, budget %d", task.StepCount, task.MaxSteps, task.ToolBudget)
 			log.Printf("[ADK Engine Callback Error] %v", err)
 			return nil, err
 		}
-		// Record start time for latency measurement
 		toolStartTime[t.Name()] = time.Now()
 		return args, nil
 	}
 
 	afterToolCallback := func(toolCtx tool.Context, t tool.Tool, args, result map[string]any, err error) (map[string]any, error) {
-		// Compute real elapsed time from the start recorded in beforeToolCallback
+		task, _ := toolCtx.Value(taskKey).(*types.Task)
+		if task == nil {
+			return nil, fmt.Errorf("task not found in context")
+		}
 		var elapsed time.Duration
 		if start, ok := toolStartTime[t.Name()]; ok {
 			elapsed = time.Since(start)
@@ -247,7 +327,6 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 				stepTrace.Evidence = evidences
 
 			case "read_file":
-				// tools.ReadFile already caps at 4000 chars; pass through the full content.
 				content, _ := result["content"].(string)
 				path, _ := args["path"].(string)
 				stepTrace.Query = path
@@ -287,8 +366,7 @@ If you have found the answer, output the answer clearly. If the answer cannot be
 		AfterToolCallbacks:  []llmagent.AfterToolCallback{afterToolCallback},
 	})
 	if err != nil {
-		log.Printf("[ADK Engine Error] Task %s - failed to create llm agent: %v", task.ID, err)
-		return fmt.Errorf("failed to create llm agent: %w", err)
+		return nil, fmt.Errorf("failed to create llm agent: %w", err)
 	}
 
 	sessionService := session.InMemoryService()
@@ -299,51 +377,8 @@ If you have found the answer, output the answer clearly. If the answer cannot be
 		AutoCreateSession: true,
 	})
 	if err != nil {
-		log.Printf("[ADK Engine Error] Task %s - failed to create runner: %v", task.ID, err)
-		return fmt.Errorf("failed to create runner: %w", err)
+		return nil, fmt.Errorf("failed to create runner: %w", err)
 	}
 
-	// Prepare execution context with workspace injection
-	runCtx := context.WithValue(ctx, workspaceKey, task.Workspace)
-	userMsg := genai.NewContentFromText(task.Goal, genai.RoleUser)
-
-	log.Printf("[ADK Engine] Task %s - starting ADK execution session", task.ID)
-	var finalAnswer string
-	for event, err := range r.Run(runCtx, "user", task.ID, userMsg, agent.RunConfig{}) {
-		if err != nil {
-			log.Printf("[ADK Engine Error] Runner run error: %v", err)
-			return err
-		}
-		if event.IsFinalResponse() {
-			if event.LLMResponse.Content != nil {
-				var sb strings.Builder
-				for _, part := range event.LLMResponse.Content.Parts {
-					if part.Text != "" {
-						sb.WriteString(part.Text)
-					}
-				}
-				finalAnswer = sb.String()
-			}
-		}
-	}
-
-	log.Printf("[ADK Engine] Task %s - execution session ended. FinalAnswer: %q", task.ID, finalAnswer)
-
-	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
-		ans := task.FinalAnswer
-		if ans == "" {
-			ans = "stopped by budget or max steps"
-		}
-		_ = SetTaskCompleted(task, ans)
-		if e.Metrics != nil {
-			e.Metrics.IncCompleted()
-		}
-	} else if finalAnswer != "" {
-		_ = SetTaskCompleted(task, finalAnswer)
-		if e.Metrics != nil {
-			e.Metrics.IncCompleted()
-		}
-	}
-
-	return nil
+	return r, nil
 }

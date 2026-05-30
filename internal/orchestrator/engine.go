@@ -38,6 +38,11 @@ type Engine struct {
 	einoOnce   sync.Once
 	einoRunner any // compose.Runnable[*einoStepState, *types.Task]
 	einoErr    error
+
+	// adkRunner is compiled once and cached for reuse across all runAdkNext calls.
+	adkOnce    sync.Once
+	adkRunner  any // *runner.Runner
+	adkErr     error
 }
 
 var tracer = otel.Tracer("ai-agent/orchestrator")
