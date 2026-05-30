@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -60,16 +61,35 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		}
 	}()
 
-	if task.StepCount == 0 && len(task.Memories) == 0 && e.Store != nil {
-		log.Printf("[Engine] Querying long-term memory for task: %s (Goal: %q)", task.ID, task.Goal)
-		if emb, embErr := memory.GetEmbedding(ctx, task.Goal); embErr == nil {
-			if mems, queryErr := e.Store.QueryMemories(ctx, task.Goal, emb, 3); queryErr == nil && len(mems) > 0 {
-				task.Memories = make([]types.Memory, len(mems))
-				for i, m := range mems {
-					task.Memories[i] = *m
-				}
-				log.Printf("[Engine] Retrieved %d relevant historical memories for task %s", len(mems), task.ID)
+	if task.StepCount == 0 && len(task.Memories) == 0 {
+		var retrievedMems []types.Memory
+
+		// 1. Try querying third-party RAG search URL if configured
+		if os.Getenv("AI_AGENT_RAG_SEARCH_URL") != "" {
+			if extMems, extErr := memory.SearchThirdPartyRAG(ctx, task.Goal); extErr == nil && len(extMems) > 0 {
+				retrievedMems = append(retrievedMems, extMems...)
+				log.Printf("[Engine] Retrieved %d memories from third-party RAG URL for task %s", len(extMems), task.ID)
+			} else if extErr != nil {
+				log.Printf("[Engine Warning] Failed to query third-party RAG URL: %v", extErr)
 			}
+		}
+
+		// 2. If we need more memories, or as fallback, query local Store
+		if len(retrievedMems) < 3 && e.Store != nil {
+			log.Printf("[Engine] Querying local long-term memory for task: %s (Goal: %q)", task.ID, task.Goal)
+			if emb, embErr := memory.GetEmbedding(ctx, task.Goal); embErr == nil {
+				limit := 3 - len(retrievedMems)
+				if mems, queryErr := e.Store.QueryMemories(ctx, task.Goal, emb, limit); queryErr == nil && len(mems) > 0 {
+					for _, m := range mems {
+						retrievedMems = append(retrievedMems, *m)
+					}
+					log.Printf("[Engine] Retrieved %d relevant local historical memories for task %s", len(mems), task.ID)
+				}
+			}
+		}
+
+		if len(retrievedMems) > 0 {
+			task.Memories = retrievedMems
 		}
 	}
 
