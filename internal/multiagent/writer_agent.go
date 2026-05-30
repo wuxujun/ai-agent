@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 // writerSystemPrompt instructs the LLM to synthesise evidence into a final answer.
@@ -49,10 +51,10 @@ func (w *WriterAgent) jsonSchema() map[string]any {
 }
 
 // Write calls the LLM to synthesise all gathered evidence into a WriterOutput.
-func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvidence) (*WriterOutput, error) {
+func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*WriterOutput, error) {
 	log.Printf("[WriterAgent] Synthesising answer for goal %q with %d evidence item(s)", goal, len(evidence))
 
-	userPrompt := w.buildPrompt(goal, evidence)
+	userPrompt := w.buildPrompt(goal, evidence, memories)
 
 	var output WriterOutput
 	if err := callLLMJSON(ctx, w.Config, writerSystemPrompt, userPrompt, w.jsonSchema(), &output); err != nil {
@@ -64,9 +66,11 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 }
 
 // buildPrompt assembles the evidence into a readable prompt for the WriterAgent.
-func (w *WriterAgent) buildPrompt(goal string, evidence []StepEvidence) string {
+func (w *WriterAgent) buildPrompt(goal string, evidence []StepEvidence, memories []types.Memory) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Goal: %s\n\n", goal)
+
+	memorySection := formatMemories(memories)
+	fmt.Fprintf(&sb, "Goal: %s%s\n\n", goal, memorySection)
 
 	if len(evidence) == 0 {
 		sb.WriteString("No evidence was gathered during the research phase.\n")
@@ -95,3 +99,6 @@ func (w *WriterAgent) buildPrompt(goal string, evidence []StepEvidence) string {
 	}
 	return sb.String()
 }
+
+
+

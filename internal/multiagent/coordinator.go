@@ -17,8 +17,8 @@ import (
 var tracer = otel.Tracer("ai-agent/multiagent")
 
 type Planner interface {
-	Plan(ctx context.Context, goal, workspace string) (*ResearchPlan, error)
-	Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace) (*ResearchPlan, error)
+	Plan(ctx context.Context, goal, workspace string, memories []types.Memory) (*ResearchPlan, error)
+	Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace, memories []types.Memory) (*ResearchPlan, error)
 }
 
 type Researcher interface {
@@ -26,7 +26,7 @@ type Researcher interface {
 }
 
 type Writer interface {
-	Write(ctx context.Context, goal string, evidence []StepEvidence) (*WriterOutput, error)
+	Write(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*WriterOutput, error)
 }
 
 // Coordinator orchestrates the three agents in sequence:
@@ -80,12 +80,73 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	}
 	span.SetAttributes(attribute.Int("multiagent.plan.step_count", len(plan.Steps)))
 
-	// ── Phase 2: Research ──────────────────────────────────────────────────────
-	allEvidence := c.runResearchPhase(ctx, task, plan.Steps)
-	span.SetAttributes(attribute.Int("multiagent.research.evidence_items", len(allEvidence)))
+	var allEvidence []StepEvidence
+	currentSteps := plan.Steps
+	depthIterations := 0
+	maxDepthIterations := 2
 
-	// ── Phase 3: Write ─────────────────────────────────────────────────────────
-	c.runWritePhase(ctx, task, allEvidence)
+	for {
+		// ── Phase 2: Research ──────────────────────────────────────────────────────
+		evidenceBatch := c.runResearchPhase(ctx, task, currentSteps)
+		allEvidence = append(allEvidence, evidenceBatch...)
+		span.SetAttributes(attribute.Int("multiagent.research.evidence_items", len(allEvidence)))
+
+		select {
+		case <-ctx.Done():
+			log.Printf("[Coordinator] Context cancelled during execution flow")
+			return ctx.Err()
+		default:
+		}
+
+		// ── Phase 3: Write ─────────────────────────────────────────────────────────
+		conf, writeErr := c.runWritePhase(ctx, task, allEvidence)
+		if writeErr != nil {
+			break // fallback happened or writer failed
+		}
+
+		// Adaptive Step Depth expansion: if confidence is low, and we have budget/steps left, request Planner to generate more steps
+		if conf == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && task.StepCount < task.MaxSteps {
+			depthIterations++
+			log.Printf("[Coordinator] Confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion (iteration %d/%d)",
+				depthIterations, maxDepthIterations)
+
+			// Record adaptive depth trace
+			task.Trace = append(task.Trace, types.StepTrace{
+				Step:        task.StepCount,
+				Goal:        task.Goal,
+				Action:      "plan",
+				Query:       "adaptive_depth",
+				Observation: "[coordinator] confidence was low; requesting additional steps for deeper investigation",
+				AgentRole:   RolePlanner,
+			})
+			task.StepCount++
+
+			// Re-plan additional steps based on traces history
+			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
+			if replanErr != nil || len(newPlan.Steps) == 0 {
+				log.Printf("[Coordinator Error] Adaptive replan failed or returned empty steps — stopping loop")
+				break
+			}
+
+			// Record planner trace
+			task.Trace = append(task.Trace, types.StepTrace{
+				Step:        task.StepCount,
+				Goal:        task.Goal,
+				Action:      "plan",
+				Query:       "replanner",
+				Observation: fmt.Sprintf("[replanner] %s — %d additional step(s) planned", newPlan.ThoughtSummary, len(newPlan.Steps)),
+				AgentRole:   RolePlanner,
+			})
+			task.StepCount++
+
+			// Prepare new steps for the next iteration
+			currentSteps = newPlan.Steps
+			task.Status = types.StatusRunning
+			continue
+		}
+
+		break
+	}
 
 	log.Printf("[Coordinator] Workflow complete for task %s — status=%s", task.ID, task.Status)
 	span.SetAttributes(
@@ -101,7 +162,7 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	log.Printf("[Coordinator] Phase 1 — Planning for task %s", task.ID)
 
 	start := time.Now()
-	plan, err := c.Planner.Plan(ctx, task.Goal, task.Workspace)
+	plan, err := c.Planner.Plan(ctx, task.Goal, task.Workspace, task.Memories)
 	elapsed := time.Since(start)
 
 	if c.Metrics != nil {
@@ -223,7 +284,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			log.Printf("[Coordinator] Triggering collaborative replan/error-correction loop (replan count: %d)", replansCount)
 
 			// Call Replanner to adjust plan based on trace history
-			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace)
+			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
 			if replanErr != nil {
 				log.Printf("[Coordinator Error] Replanner failed: %v — continuing with remaining steps", replanErr)
 			} else if len(newPlan.Steps) > 0 {
@@ -254,11 +315,11 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 	return allEvidence
 }
 
-func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evidence []StepEvidence) {
+func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {
 	log.Printf("[Coordinator] Phase 3 — Writing final answer for task %s", task.ID)
 
 	start := time.Now()
-	output, err := c.Writer.Write(ctx, task.Goal, evidence)
+	output, err := c.Writer.Write(ctx, task.Goal, evidence, task.Memories)
 	elapsed := time.Since(start)
 
 	if c.Metrics != nil {
@@ -281,7 +342,7 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 		task.StepCount++
 		task.Status = types.StatusCompleted
 		task.FinalAnswer = fallback
-		return
+		return "low", err
 	}
 
 	task.Trace = append(task.Trace, types.StepTrace{
@@ -302,4 +363,5 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	}
 
 	log.Printf("[Coordinator] Phase 3 done — answer written (confidence=%s) in %s", output.Confidence, elapsed)
+	return output.Confidence, nil
 }

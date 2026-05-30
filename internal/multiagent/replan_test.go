@@ -15,14 +15,14 @@ type mockPlanner struct {
 	replanSteps  []multiagent.ResearchStep
 }
 
-func (m *mockPlanner) Plan(ctx context.Context, goal, workspace string) (*multiagent.ResearchPlan, error) {
+func (m *mockPlanner) Plan(ctx context.Context, goal, workspace string, memories []types.Memory) (*multiagent.ResearchPlan, error) {
 	return &multiagent.ResearchPlan{
 		ThoughtSummary: "Initial plan",
 		Steps:          m.planSteps,
 	}, nil
 }
 
-func (m *mockPlanner) Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace) (*multiagent.ResearchPlan, error) {
+func (m *mockPlanner) Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace, memories []types.Memory) (*multiagent.ResearchPlan, error) {
 	m.replanCalled = true
 	return &multiagent.ResearchPlan{
 		ThoughtSummary: "Corrected plan after failure",
@@ -55,7 +55,7 @@ func (r *mockResearcher) Research(ctx context.Context, workspace string, step mu
 
 type mockWriter struct{}
 
-func (w *mockWriter) Write(ctx context.Context, goal string, evidence []multiagent.StepEvidence) (*multiagent.WriterOutput, error) {
+func (w *mockWriter) Write(ctx context.Context, goal string, evidence []multiagent.StepEvidence, memories []types.Memory) (*multiagent.WriterOutput, error) {
 	return &multiagent.WriterOutput{
 		FinalAnswer:     "final answer: successful correction",
 		EvidenceSummary: "summary",

@@ -73,13 +73,15 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 }
 
 // Plan calls the LLM to produce a ResearchPlan for the given goal.
-func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string) (*ResearchPlan, error) {
+func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memories []types.Memory) (*ResearchPlan, error) {
 	log.Printf("[PlannerAgent] Decomposing goal into research plan: %q", goal)
 
+	memorySection := formatMemories(memories)
+
 	userPrompt := fmt.Sprintf(
-		"Goal: %s\n\nWorkspace root: %s\n\n"+
+		"Goal: %s%s\n\nWorkspace root: %s\n\n"+
 			"Produce a research plan with concrete steps to achieve the goal using the available file tools.",
-		goal, workspace,
+		goal, memorySection, workspace,
 	)
 
 	var plan ResearchPlan
@@ -118,14 +120,16 @@ Rules:
 5. Set every unused field to an empty string "".`
 
 // Replan calls the LLM to generate a revised ResearchPlan when a execution step fails.
-func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace) (*ResearchPlan, error) {
+func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace, memories []types.Memory) (*ResearchPlan, error) {
 	log.Printf("[PlannerAgent] Re-planning goal: %q due to step execution failure", goal)
 
+	memorySection := formatMemories(memories)
+
 	userPrompt := fmt.Sprintf(
-		"Goal: %s\n\nWorkspace root: %s\n\n"+
+		"Goal: %s%s\n\nWorkspace root: %s\n\n"+
 			"Execution History so far:\n%s\n\n"+
 			"Please analyze the failure and generate a revised plan.",
-		goal, workspace, formatTracesForReplanner(traces),
+		goal, memorySection, workspace, formatTracesForReplanner(traces),
 	)
 
 	var plan ResearchPlan
@@ -151,5 +155,24 @@ func formatTracesForReplanner(traces []types.StepTrace) string {
 		b.WriteString(fmt.Sprintf("  Observation: %s\n", tr.Observation))
 	}
 	return b.String()
+}
+
+func formatMemories(memories []types.Memory) string {
+	if len(memories) == 0 {
+		return ""
+	}
+	var ms []string
+	for i, mem := range memories {
+		// Indent key findings
+		lines := strings.Split(mem.KeyFindings, "\n")
+		for j, line := range lines {
+			lines[j] = "    " + line
+		}
+		indentedFindings := strings.Join(lines, "\n")
+
+		ms = append(ms, fmt.Sprintf("- Memory %d:\n  * Goal: %s\n  * Key Findings:\n%s\n  * Final Answer: %s",
+			i+1, mem.Goal, indentedFindings, mem.FinalAnswer))
+	}
+	return "\n\nRelated Historical Memories (RAG - Cross-task Knowledge Sharing):\n" + strings.Join(ms, "\n\n")
 }
 
