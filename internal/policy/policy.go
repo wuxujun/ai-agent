@@ -7,9 +7,15 @@ import (
 )
 
 var allowedCommands = map[string]bool{
-	"rg":   true,
-	"find": true,
-	"cat":  true,
+	"rg":      true,
+	"find":    true,
+	"cat":     true,
+	"python3": true,
+	"python":  true,
+	"go":      true,
+	"node":    true,
+	"bash":    true,
+	"sh":      true,
 }
 
 func ValidateWorkspace(root string) error {
@@ -44,3 +50,8 @@ func ValidateReadPath(workspace, target string) error {
 	}
 	return nil
 }
+
+func ValidateWritePath(workspace, target string) error {
+	return ValidateReadPath(workspace, target)
+}
+

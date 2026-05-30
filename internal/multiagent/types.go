@@ -24,11 +24,14 @@ const (
 type ResearchStep struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
-	// Action is one of: "find_files" | "search_text" | "read_file"
+	// Action is one of: "find_files" | "search_text" | "read_file" | "write_file" | "execute_code"
 	Action      string `json:"action"`
 	SearchQuery string `json:"search_query"` // used by search_text
 	FileGlob    string `json:"file_glob"`    // used by find_files or search_text filter
 	FilePath    string `json:"file_path"`    // used by read_file
+	Content     string `json:"content"`      // used by write_file
+	Command     string `json:"command"`      // used by execute_code
+	Args        string `json:"args"`         // used by execute_code
 }
 
 // ResearchPlan is the structured output of the PlannerAgent.

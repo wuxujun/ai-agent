@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/metrics"
@@ -15,15 +16,28 @@ import (
 
 var tracer = otel.Tracer("ai-agent/multiagent")
 
+type Planner interface {
+	Plan(ctx context.Context, goal, workspace string) (*ResearchPlan, error)
+	Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace) (*ResearchPlan, error)
+}
+
+type Researcher interface {
+	Research(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error)
+}
+
+type Writer interface {
+	Write(ctx context.Context, goal string, evidence []StepEvidence) (*WriterOutput, error)
+}
+
 // Coordinator orchestrates the three agents in sequence:
 //
 //	PlannerAgent → ResearcherAgent (×N) → WriterAgent
 //
 // It updates task.Trace and task.Status in-place.
 type Coordinator struct {
-	Planner    *PlannerAgent
-	Researcher *ResearcherAgent
-	Writer     *WriterAgent
+	Planner    Planner
+	Researcher Researcher
+	Writer     Writer
 	Metrics    *metrics.Collector
 }
 
@@ -116,28 +130,40 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 }
 
 func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, steps []ResearchStep) []StepEvidence {
-	log.Printf("[Coordinator] Phase 2 — Researching %d step(s) for task %s", len(steps), task.ID)
+	log.Printf("[Coordinator] Phase 2 — Researching step(s) for task %s", task.ID)
 
 	var allEvidence []StepEvidence
 
-	for i, step := range steps {
+	// Convert slice to a dynamic list we can modify during execution
+	currentSteps := make([]ResearchStep, len(steps))
+	copy(currentSteps, steps)
+
+	stepIndex := 0
+	replansCount := 0
+	maxReplans := 3 // Limit re-planning count to prevent infinite loop
+
+	for stepIndex < len(currentSteps) {
 		// Budget and step-count gate
 		if task.ToolBudget <= 0 {
-			log.Printf("[Coordinator] Tool budget exhausted at research step %d — stopping early", i+1)
+			log.Printf("[Coordinator] Tool budget exhausted at research step index %d — stopping early", stepIndex)
 			break
 		}
 		if task.StepCount >= task.MaxSteps {
-			log.Printf("[Coordinator] Max steps reached at research step %d — stopping early", i+1)
+			log.Printf("[Coordinator] Max steps reached at research step index %d — stopping early", stepIndex)
 			break
 		}
 
 		// Context cancellation check
 		select {
 		case <-ctx.Done():
-			log.Printf("[Coordinator] Context cancelled during research phase: %v", ctx.Err())
+			log.Printf("[Coordinator] Context cancelled during research phase")
 			return allEvidence
 		default:
 		}
+
+		step := currentSteps[stepIndex]
+		log.Printf("[Coordinator] Executing research step %d: ID=%s, Action=%s, Desc=%q",
+			task.StepCount+1, step.ID, step.Action, step.Description)
 
 		start := time.Now()
 		ev, err := c.Researcher.Research(ctx, task.Workspace, step)
@@ -147,33 +173,81 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			c.Metrics.ObserveExecutor(elapsed, err, step.Action)
 		}
 
+		// Detect if step failed
+		failed := false
+		var obs string
 		if err != nil {
-			// Fatal researcher error (e.g. policy violation propagated up)
+			failed = true
+			obs = fmt.Sprintf("[researcher] fatal error: %v", err)
 			log.Printf("[Coordinator] ResearcherAgent fatal error at step %s: %v", step.ID, err)
-			task.Trace = append(task.Trace, types.StepTrace{
-				Step:        task.StepCount,
-				Goal:        task.Goal,
-				Action:      step.Action,
-				Query:       step.SearchQuery + step.FileGlob + step.FilePath,
-				Observation: fmt.Sprintf("[researcher] fatal error: %v", err),
-				AgentRole:   RoleResearcher,
-			})
 		} else {
-			task.Trace = append(task.Trace, types.StepTrace{
-				Step:        task.StepCount,
-				Goal:        task.Goal,
-				Action:      step.Action,
-				Query:       step.SearchQuery + step.FileGlob + step.FilePath,
-				Observation: fmt.Sprintf("[researcher] %s", ev.Observation),
-				Evidence:    ev.Evidence,
-				AgentRole:   RoleResearcher,
-			})
+			obs = fmt.Sprintf("[researcher] %s", ev.Observation)
+			// Check if the observation indicates failure or error (e.g., RCE denied, command failed, not found, policy violation)
+			lowerObs := strings.ToLower(ev.Observation)
+			if strings.Contains(lowerObs, "error:") ||
+				strings.Contains(lowerObs, "failed:") ||
+				strings.Contains(lowerObs, "not found") ||
+				strings.Contains(lowerObs, "policy violation") {
+				failed = true
+				log.Printf("[Coordinator] Observation indicates failure at step %s: %q", step.ID, ev.Observation)
+			}
+		}
+
+		// Record the trace
+		var traceEvidence []types.Evidence
+		if ev != nil {
+			traceEvidence = ev.Evidence
+		}
+
+		task.Trace = append(task.Trace, types.StepTrace{
+			Step:        task.StepCount,
+			Goal:        task.Goal,
+			Action:      step.Action,
+			Query:       step.SearchQuery + step.FileGlob + step.FilePath + step.Command + " " + step.Args,
+			Observation: obs,
+			Evidence:    traceEvidence,
+			AgentRole:   RoleResearcher,
+		})
+
+		if ev != nil && !failed {
 			allEvidence = append(allEvidence, *ev)
 		}
 
 		task.StepCount++
 		task.ToolBudget--
 		task.Status = types.StatusRunning
+
+		// Trigger re-planning if the step failed and we haven't reached replans limit
+		if failed && replansCount < maxReplans {
+			replansCount++
+			log.Printf("[Coordinator] Triggering collaborative replan/error-correction loop (replan count: %d)", replansCount)
+
+			// Call Replanner to adjust plan based on trace history
+			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace)
+			if replanErr != nil {
+				log.Printf("[Coordinator Error] Replanner failed: %v — continuing with remaining steps", replanErr)
+			} else if len(newPlan.Steps) > 0 {
+				log.Printf("[Coordinator] Replanner generated %d revised steps. Replacing remaining plan.", len(newPlan.Steps))
+
+				// Record planner trace
+				task.Trace = append(task.Trace, types.StepTrace{
+					Step:        task.StepCount,
+					Goal:        task.Goal,
+					Action:      "plan",
+					Query:       "replanner",
+					Observation: fmt.Sprintf("[replanner] %s — %d step(s) revised due to failure", newPlan.ThoughtSummary, len(newPlan.Steps)),
+					AgentRole:   RolePlanner,
+				})
+				task.StepCount++
+
+				// Replace remaining steps with the new steps, reset execution pointer
+				currentSteps = newPlan.Steps
+				stepIndex = 0
+				continue
+			}
+		}
+
+		stepIndex++
 	}
 
 	log.Printf("[Coordinator] Phase 2 done — %d evidence item(s) gathered", len(allEvidence))

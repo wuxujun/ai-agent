@@ -96,6 +96,44 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 			Query: path,
 		}}
 
+	case "write_file":
+		path := step.FilePath
+		if path == "" {
+			ev.Observation = "write_file skipped: empty file_path"
+			return ev, nil
+		}
+		full := filepath.Join(workspace, path)
+		if err := policy.ValidateWritePath(workspace, full); err != nil {
+			ev.Observation = fmt.Sprintf("write_file policy violation: %v", err)
+			log.Printf("[ResearcherAgent] Step %s policy violation: %v", step.ID, err)
+			return ev, nil
+		}
+		err := tools.WriteFile(workspace, path, step.Content)
+		if err != nil {
+			ev.Observation = fmt.Sprintf("write_file error: %v", err)
+			log.Printf("[ResearcherAgent] Step %s write_file error: %v", step.ID, err)
+			return ev, nil
+		}
+		ev.Observation = fmt.Sprintf("successfully wrote %d char(s) to %q", len(step.Content), path)
+
+	case "execute_code":
+		command := step.Command
+		if command == "" {
+			ev.Observation = "execute_code skipped: empty command"
+			return ev, nil
+		}
+		output, err := tools.ExecuteCode(workspace, command, step.Args)
+		if err != nil {
+			ev.Observation = fmt.Sprintf("execute_code error: %v. Output: %s", err, output)
+			log.Printf("[ResearcherAgent] Step %s execute_code error: %v", step.ID, err)
+			return ev, nil
+		}
+		obs := output
+		if len(obs) > 4000 {
+			obs = obs[:4000]
+		}
+		ev.Observation = fmt.Sprintf("command executed. Output:\n%s", obs)
+
 	default:
 		ev.Observation = fmt.Sprintf("unsupported action %q — skipping", step.Action)
 		log.Printf("[ResearcherAgent] Step %s unsupported action: %s", step.ID, step.Action)

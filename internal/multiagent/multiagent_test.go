@@ -2,6 +2,7 @@ package multiagent_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/multiagent"
@@ -96,6 +97,43 @@ func TestResearcherAgent_PolicyViolation(t *testing.T) {
 	}
 	if len(ev.Evidence) != 0 {
 		t.Errorf("Should have no evidence for policy-violating path, got %d", len(ev.Evidence))
+	}
+}
+
+func TestResearcherAgent_WriteFileAndExecuteCode(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	agent := &multiagent.ResearcherAgent{}
+
+	// 1. Test write_file
+	ev1, err := agent.Research(context.Background(), tmpDir, multiagent.ResearchStep{
+		ID:          "step-write",
+		Description: "Write script hello.py",
+		Action:      "write_file",
+		FilePath:    "hello.py",
+		Content:     "print('hello world')",
+	})
+	if err != nil {
+		t.Fatalf("unexpected write_file error: %v", err)
+	}
+	if !strings.Contains(ev1.Observation, "successfully wrote") {
+		t.Errorf("expected success message, got: %q", ev1.Observation)
+	}
+
+	// 2. Test execute_code
+	ev2, err := agent.Research(context.Background(), tmpDir, multiagent.ResearchStep{
+		ID:          "step-exec",
+		Description: "Run hello.py using python3",
+		Action:      "execute_code",
+		Command:     "python3",
+		Args:        "hello.py",
+	})
+	if err != nil {
+		t.Fatalf("unexpected execute_code error: %v", err)
+	}
+	if !strings.Contains(ev2.Observation, "command executed") || !strings.Contains(ev2.Observation, "hello world") {
+		t.Errorf("expected script output 'hello world' in observation, got: %q", ev2.Observation)
 	}
 }
 

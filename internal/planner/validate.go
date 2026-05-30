@@ -8,10 +8,12 @@ import (
 
 func ValidateDecision(d *PlanDecision) error {
 	valid := map[string]bool{
-		"find_files":  true,
-		"search_text": true,
-		"read_file":   true,
-		"none":        true,
+		"find_files":   true,
+		"search_text":  true,
+		"read_file":    true,
+		"write_file":   true,
+		"execute_code": true,
+		"none":         true,
 	}
 
 	if !valid[d.Action] {
@@ -32,6 +34,10 @@ func ValidateDecision(d *PlanDecision) error {
 		return validateSearchText(d.Parameters)
 	case "read_file":
 		return validateReadFile(d.Parameters)
+	case "write_file":
+		return validateWriteFile(d.Parameters)
+	case "execute_code":
+		return validateExecuteCode(d.Parameters)
 	case "none":
 		if strings.TrimSpace(d.FinalAnswer) == "" {
 			return errors.New("stop decision requires final_answer")
@@ -71,6 +77,35 @@ func validateReadFile(params map[string]any) error {
 	}
 	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
 		return errors.New("invalid read_file path")
+	}
+	return nil
+}
+
+func validateWriteFile(params map[string]any) error {
+	path, _ := params["path"].(string)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("write_file requires non-empty path")
+	}
+	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
+		return errors.New("invalid write_file path")
+	}
+	// content is required to be present as a string type
+	if _, ok := params["content"].(string); !ok {
+		return errors.New("write_file requires content string parameter")
+	}
+	return nil
+}
+
+func validateExecuteCode(params map[string]any) error {
+	command, _ := params["command"].(string)
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return errors.New("execute_code requires non-empty command")
+	}
+	// args is required to be present as a string type
+	if _, ok := params["args"].(string); !ok {
+		return errors.New("execute_code requires args string parameter")
 	}
 	return nil
 }

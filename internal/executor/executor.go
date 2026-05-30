@@ -94,6 +94,55 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 		)
 		return trace, nil
 
+	case "write_file":
+		path, _ := d.Parameters["path"].(string)
+		content, _ := d.Parameters["content"].(string)
+		if err := policy.ValidateWorkspace(task.Workspace); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "workspace policy violation")
+			return nil, fmt.Errorf("write_file policy violation: %w", err)
+		}
+		err := tools.WriteFile(task.Workspace, path, content)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "write_file failed")
+			return nil, err
+		}
+		trace.Query = path
+		trace.Observation = fmt.Sprintf("successfully wrote %d characters to %s", len(content), path)
+		span.SetAttributes(
+			attribute.String("agent.executor.path", path),
+			attribute.Int("agent.executor.write_len", len(content)),
+		)
+		return trace, nil
+
+	case "execute_code":
+		command, _ := d.Parameters["command"].(string)
+		args, _ := d.Parameters["args"].(string)
+		if err := policy.ValidateWorkspace(task.Workspace); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "workspace policy violation")
+			return nil, fmt.Errorf("execute_code policy violation: %w", err)
+		}
+		output, err := tools.ExecuteCode(task.Workspace, command, args)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "execute_code failed")
+			return nil, fmt.Errorf("execute_code error: %w. Output: %s", err, output)
+		}
+		trace.Query = command + " " + args
+		obs := output
+		if len(obs) > 4000 {
+			obs = obs[:4000]
+		}
+		trace.Observation = "command executed. Output:\n" + obs
+		span.SetAttributes(
+			attribute.String("agent.executor.command", command),
+			attribute.String("agent.executor.args", args),
+			attribute.Int("agent.executor.output_len", len(output)),
+		)
+		return trace, nil
+
 	default:
 		err := fmt.Errorf("unsupported action: %s", d.Action)
 		span.RecordError(err)

@@ -422,7 +422,7 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 			},
 			"action": {
 				Type:        genai.TypeString,
-				Enum:        []string{"find_files", "search_text", "read_file", "none"},
+				Enum:        []string{"find_files", "search_text", "read_file", "write_file", "execute_code", "none"},
 				Description: "The single next action to execute. Use none only when stop is true.",
 			},
 			"parameters": {
@@ -432,8 +432,11 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 					"query":   {Type: genai.TypeString},
 					"glob":    {Type: genai.TypeString},
 					"path":    {Type: genai.TypeString},
+					"content": {Type: genai.TypeString},
+					"command": {Type: genai.TypeString},
+					"args":    {Type: genai.TypeString},
 				},
-				Required: []string{"pattern", "query", "glob", "path"},
+				Required: []string{"pattern", "query", "glob", "path", "content", "command", "args"},
 			},
 		},
 		Required: []string{"thought_summary", "stop", "final_answer", "action", "parameters"},

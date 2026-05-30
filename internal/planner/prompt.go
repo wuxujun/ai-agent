@@ -50,6 +50,8 @@ Available tools:
 1. find_files(pattern): find candidate files by glob inside the workspace
 2. search_text(query, glob?): search file contents for a term
 3. read_file(path): read a small text file for local context
+4. write_file(path, content): write content to a file inside the workspace
+5. execute_code(command, args): run interpreter commands inside the workspace (allowed commands: python3, python, go, node, bash, sh)
 
 Unresolved questions:
 %s

@@ -37,7 +37,7 @@ func PlannerDecisionSchema() map[string]any {
 			},
 			"action": map[string]any{
 				"type":        "string",
-				"enum":        []string{"find_files", "search_text", "read_file", "none"},
+				"enum":        []string{"find_files", "search_text", "read_file", "write_file", "execute_code", "none"},
 				"description": "The single next action to execute. Use none only when stop is true.",
 			},
 			"parameters": map[string]any{
@@ -48,8 +48,11 @@ func PlannerDecisionSchema() map[string]any {
 					"query":   map[string]any{"type": "string"},
 					"glob":    map[string]any{"type": "string"},
 					"path":    map[string]any{"type": "string"},
+					"content": map[string]any{"type": "string"},
+					"command": map[string]any{"type": "string"},
+					"args":    map[string]any{"type": "string"},
 				},
-				"required": []string{"pattern", "query", "glob", "path"},
+				"required": []string{"pattern", "query", "glob", "path", "content", "command", "args"},
 			},
 		},
 		"required": []string{"thought_summary", "stop", "final_answer", "action", "parameters"},
