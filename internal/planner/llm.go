@@ -81,15 +81,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 	userPrompt := BuildUserPrompt(task)
 
 	if p.Provider == ProviderGemini {
-		configOpts := &genai.ClientConfig{
-			APIKey: p.APIKey,
-		}
-		if p.BaseURL != "" {
-			configOpts.HTTPOptions = genai.HTTPOptions{
-				BaseURL: p.BaseURL,
-			}
-		}
-		client, err := genai.NewClient(ctx, configOpts)
+		client, err := GetGeminiClient(p.APIKey, p.BaseURL)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "failed to create genai client")

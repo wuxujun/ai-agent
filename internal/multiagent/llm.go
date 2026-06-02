@@ -115,11 +115,7 @@ func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt st
 // ── Gemini path ──────────────────────────────────────────────────────────────
 
 func callGeminiJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, dest any) error {
-	opts := &genai.ClientConfig{APIKey: cfg.APIKey}
-	if cfg.BaseURL != "" {
-		opts.HTTPOptions = genai.HTTPOptions{BaseURL: cfg.BaseURL}
-	}
-	client, err := genai.NewClient(ctx, opts)
+	client, err := planner.GetGeminiClient(cfg.APIKey, cfg.BaseURL)
 	if err != nil {
 		return fmt.Errorf("gemini client: %w", err)
 	}

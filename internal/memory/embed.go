@@ -72,11 +72,7 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 }
 
 func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConfig) ([]float32, error) {
-	opts := &genai.ClientConfig{APIKey: cfg.APIKey}
-	if cfg.BaseURL != "" {
-		opts.HTTPOptions = genai.HTTPOptions{BaseURL: cfg.BaseURL}
-	}
-	client, err := genai.NewClient(ctx, opts)
+	client, err := planner.GetGeminiClient(cfg.APIKey, cfg.BaseURL)
 	if err != nil {
 		return nil, err
 	}
