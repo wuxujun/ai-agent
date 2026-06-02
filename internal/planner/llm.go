@@ -152,162 +152,17 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 		return &decision, nil
 	}
 
-	var req *http.Request
-	var err error
-	var respParser func(raw []byte) (string, error)
+	prov, err := lookupProvider(p.Provider)
+	if err != nil {
+		return nil, err
+	}
 
-	switch p.Provider {
-	case ProviderOpenAIResponses:
-		reqBody := map[string]any{
-			"model": p.Model,
-			"input": []map[string]any{
-				{
-					"role": "system",
-					"content": []map[string]any{
-						{"type": "input_text", "text": systemPrompt},
-					},
-				},
-				{
-					"role": "user",
-					"content": []map[string]any{
-						{"type": "input_text", "text": userPrompt},
-					},
-				},
-			},
-			"text": map[string]any{
-				"format": map[string]any{
-					"type":   "json_schema",
-					"name":   "planner_decision",
-					"strict": true,
-					"schema": PlannerDecisionSchema(),
-				},
-			},
-		}
-		b, err := json.Marshal(reqBody)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "marshal failed")
-			log.Printf("[LLM Planner Error] Task %s - failed to marshal request body: %v", task.ID, err)
-			return nil, err
-		}
-		log.Printf("[LLM Planner] Sending request to API (%s): %s | Body: %s", p.Provider, p.BaseURL, string(b))
-		req, err = http.NewRequestWithContext(ctx, "POST", p.BaseURL, bytes.NewReader(b))
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "request creation failed")
-			log.Printf("[LLM Planner Error] Task %s - failed to create request: %v", task.ID, err)
-			return nil, err
-		}
-		if p.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+p.APIKey)
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		respParser = func(raw []byte) (string, error) {
-			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
-				return "", err
-			}
-			return extractStructuredText(m)
-		}
-
-	case ProviderOpenAI:
-		reqBody := map[string]any{
-			"model": p.Model,
-			"messages": []map[string]any{
-				{"role": "system", "content": systemPrompt},
-				{"role": "user", "content": userPrompt},
-			},
-			"response_format": map[string]any{
-				"type": "json_schema",
-				"json_schema": map[string]any{
-					"name":   "planner_decision",
-					"strict": true,
-					"schema": PlannerDecisionSchema(),
-				},
-			},
-		}
-		b, err := json.Marshal(reqBody)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "marshal failed")
-			log.Printf("[LLM Planner Error] Task %s - failed to marshal request body: %v", task.ID, err)
-			return nil, err
-		}
-		req, err = http.NewRequestWithContext(ctx, "POST", p.BaseURL, bytes.NewReader(b))
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "request creation failed")
-			log.Printf("[LLM Planner Error] Task %s - failed to create request: %v", task.ID, err)
-			return nil, err
-		}
-		if p.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+p.APIKey)
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		respParser = func(raw []byte) (string, error) {
-			type openaiChatResponse struct {
-				Choices []struct {
-					Message struct {
-						Content string `json:"content"`
-					} `json:"message"`
-				} `json:"choices"`
-			}
-			var oResp openaiChatResponse
-			if err := json.Unmarshal(raw, &oResp); err != nil {
-				return "", err
-			}
-			if len(oResp.Choices) == 0 {
-				return "", errors.New("empty choices in OpenAI response")
-			}
-			return oResp.Choices[0].Message.Content, nil
-		}
-
-	case ProviderOllama:
-		reqBody := map[string]any{
-			"model": p.Model,
-			"messages": []map[string]any{
-				{"role": "system", "content": systemPrompt},
-				{"role": "user", "content": userPrompt},
-			},
-			"stream": false,
-			"format": PlannerDecisionSchema(),
-		}
-		b, err := json.Marshal(reqBody)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "marshal failed")
-			log.Printf("[LLM Planner Error] Task %s - failed to marshal request body: %v", task.ID, err)
-			return nil, err
-		}
-		req, err = http.NewRequestWithContext(ctx, "POST", p.BaseURL, bytes.NewReader(b))
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "request creation failed")
-			log.Printf("[LLM Planner Error] Task %s - failed to create request: %v", task.ID, err)
-			return nil, err
-		}
-		if p.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+p.APIKey)
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		respParser = func(raw []byte) (string, error) {
-			type ollamaChatResponse struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			}
-			var oResp ollamaChatResponse
-			if err := json.Unmarshal(raw, &oResp); err != nil {
-				return "", err
-			}
-			return oResp.Message.Content, nil
-		}
-
-	default:
-		return nil, fmt.Errorf("unsupported provider: %s", p.Provider)
+	req, respParser, err := prov.BuildRequest(ctx, p.Client, p.Model, p.APIKey, p.BaseURL, systemPrompt, userPrompt, PlannerDecisionSchema())
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "build request failed")
+		log.Printf("[LLM Planner Error] Task %s - failed to build request: %v", task.ID, err)
+		return nil, err
 	}
 
 	log.Printf("[LLM Planner] Sending request to API (%s): %s", p.Provider, p.BaseURL)

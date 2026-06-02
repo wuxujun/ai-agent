@@ -90,13 +90,16 @@ func (m *MemoryStore) Close() error {
 	return nil
 }
 
-// ListTasks returns all tasks ordered by ID.
-func (m *MemoryStore) ListTasks(ctx context.Context) ([]*types.Task, error) {
+// ListTasks returns tasks matching f. MemoryStore applies status filter and pagination in-process.
+func (m *MemoryStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	tasks := make([]*types.Task, 0, len(m.tasks))
 	for _, t := range m.tasks {
+		if f.Status != "" && t.Status != f.Status {
+			continue
+		}
 		cloned := *t
 		if t.Unresolved != nil {
 			cloned.Unresolved = make([]string, len(t.Unresolved))
@@ -107,6 +110,17 @@ func (m *MemoryStore) ListTasks(ctx context.Context) ([]*types.Task, error) {
 			copy(cloned.Trace, t.Trace)
 		}
 		tasks = append(tasks, &cloned)
+	}
+
+	// Apply pagination
+	limit := resolveLimit(f.Limit, 50, 500)
+	offset := f.Offset
+	if offset >= len(tasks) {
+		return []*types.Task{}, nil
+	}
+	tasks = tasks[offset:]
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
 	}
 	return tasks, nil
 }

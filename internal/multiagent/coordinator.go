@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/metrics"
@@ -194,22 +195,20 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 
 	var allEvidence []StepEvidence
 
-	// Convert slice to a dynamic list we can modify during execution
 	currentSteps := make([]ResearchStep, len(steps))
 	copy(currentSteps, steps)
 
-	stepIndex := 0
 	replansCount := 0
-	maxReplans := 3 // Limit re-planning count to prevent infinite loop
+	maxReplans := 3
 
-	for stepIndex < len(currentSteps) {
+	for len(currentSteps) > 0 {
 		// Budget and step-count gate
 		if task.ToolBudget <= 0 {
-			log.Printf("[Coordinator] Tool budget exhausted at research step index %d — stopping early", stepIndex)
+			log.Printf("[Coordinator] Tool budget exhausted — stopping research early")
 			break
 		}
 		if task.StepCount >= task.MaxSteps {
-			log.Printf("[Coordinator] Max steps reached at research step index %d — stopping early", stepIndex)
+			log.Printf("[Coordinator] Max steps reached — stopping research early")
 			break
 		}
 
@@ -221,7 +220,173 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		default:
 		}
 
-		step := currentSteps[stepIndex]
+		// Partition: collect a batch of parallelisable (read-only) steps at the front,
+		// or fall back to a single serial step.
+		batch, remainder, isParallel := partitionBatch(currentSteps, task.ToolBudget, task.MaxSteps-task.StepCount)
+		currentSteps = remainder
+
+		var batchEvidence []StepEvidence
+		var anyFailed bool
+
+		if isParallel && len(batch) > 1 {
+			log.Printf("[Coordinator] Executing %d read-only steps in parallel", len(batch))
+			batchEvidence, anyFailed = c.runBatchParallel(ctx, task, batch)
+		} else {
+			log.Printf("[Coordinator] Executing %d step(s) serially", len(batch))
+			batchEvidence, anyFailed = c.runBatchSerial(ctx, task, batch)
+		}
+
+		allEvidence = append(allEvidence, batchEvidence...)
+
+		// Trigger re-planning if any step in the batch failed
+		if anyFailed && replansCount < maxReplans {
+			replansCount++
+			log.Printf("[Coordinator] Triggering collaborative replan/error-correction loop (replan count: %d)", replansCount)
+
+			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
+			if replanErr != nil {
+				log.Printf("[Coordinator Error] Replanner failed: %v — continuing with remaining steps", replanErr)
+			} else if len(newPlan.Steps) > 0 {
+				log.Printf("[Coordinator] Replanner generated %d revised steps.", len(newPlan.Steps))
+				task.Trace = append(task.Trace, types.StepTrace{
+					Step:        task.StepCount,
+					Goal:        task.Goal,
+					Action:      "plan",
+					Query:       "replanner",
+					Observation: fmt.Sprintf("[replanner] %s — %d step(s) revised due to failure", newPlan.ThoughtSummary, len(newPlan.Steps)),
+					AgentRole:   RolePlanner,
+				})
+				task.StepCount++
+				currentSteps = newPlan.Steps
+				continue
+			}
+		}
+	}
+
+	log.Printf("[Coordinator] Phase 2 done — %d evidence item(s) gathered", len(allEvidence))
+	return allEvidence
+}
+
+// isReadOnlyAction returns true for actions that do not mutate the workspace.
+func isReadOnlyAction(action string) bool {
+	switch action {
+	case "find_files", "search_text", "read_file":
+		return true
+	}
+	return false
+}
+
+// partitionBatch returns the largest safe batch from the front of steps.
+// isParallel is true when the batch contains only read-only actions.
+// budgetLeft and stepsLeft cap the batch size.
+func partitionBatch(steps []ResearchStep, budgetLeft, stepsLeft int) (batch []ResearchStep, remainder []ResearchStep, isParallel bool) {
+	if len(steps) == 0 {
+		return nil, nil, false
+	}
+	// If first step is serial, return it alone
+	if !isReadOnlyAction(steps[0].Action) {
+		return steps[:1], steps[1:], false
+	}
+	// Collect consecutive read-only steps up to budget/step limits
+	end := 0
+	for end < len(steps) && isReadOnlyAction(steps[end].Action) && end < budgetLeft && end < stepsLeft {
+		end++
+	}
+	if end == 0 {
+		end = 1
+	}
+	return steps[:end], steps[end:], true
+}
+
+// runBatchParallel executes a batch of read-only steps concurrently.
+func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, batch []ResearchStep) (evidence []StepEvidence, anyFailed bool) {
+	type result struct {
+		ev      *StepEvidence
+		tr      types.StepTrace
+		failed  bool
+		elapsed time.Duration
+		action  string
+		err     error
+	}
+
+	results := make([]result, len(batch))
+	baseStep := task.StepCount
+
+	var wg sync.WaitGroup
+	for i, step := range batch {
+		wg.Add(1)
+		go func(idx int, s ResearchStep) {
+			defer wg.Done()
+			start := time.Now()
+			ev, err := c.Researcher.Research(ctx, task.Workspace, s)
+			elapsed := time.Since(start)
+
+			var obs string
+			failed := (err != nil) || (ev != nil && ev.Failed)
+			if err != nil {
+				obs = fmt.Sprintf("[researcher] fatal error: %v", err)
+			} else {
+				obs = fmt.Sprintf("[researcher] %s", ev.Observation)
+			}
+
+			var trEvidence []types.Evidence
+			if ev != nil {
+				trEvidence = ev.Evidence
+			}
+
+			tr := types.StepTrace{
+				Step:        baseStep + idx,
+				Goal:        task.Goal,
+				Action:      s.Action,
+				Query:       buildStepQuery(s),
+				Observation: obs,
+				Evidence:    trEvidence,
+				AgentRole:   RoleResearcher,
+			}
+
+			results[idx] = result{
+				ev:      ev,
+				tr:      tr,
+				failed:  failed,
+				elapsed: elapsed,
+				action:  s.Action,
+				err:     err,
+			}
+		}(i, step)
+	}
+	wg.Wait()
+
+	// Merge results back into task state (in order)
+	for _, r := range results {
+		if c.Metrics != nil {
+			c.Metrics.ObserveExecutor(r.elapsed, r.err, r.action)
+		}
+		task.Trace = append(task.Trace, r.tr)
+		if r.ev != nil && !r.failed {
+			evidence = append(evidence, *r.ev)
+		}
+		if r.failed {
+			anyFailed = true
+		}
+	}
+	task.StepCount += len(batch)
+	task.ToolBudget -= len(batch)
+	task.Status = types.StatusRunning
+	return
+}
+
+// runBatchSerial executes steps one at a time (used for write/execute steps).
+func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batch []ResearchStep) (evidence []StepEvidence, anyFailed bool) {
+	for _, step := range batch {
+		if task.ToolBudget <= 0 || task.StepCount >= task.MaxSteps {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return evidence, anyFailed
+		default:
+		}
+
 		log.Printf("[Coordinator] Executing research step %d: ID=%s, Action=%s, Desc=%q",
 			task.StepCount+1, step.ID, step.Action, step.Description)
 
@@ -233,24 +398,18 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			c.Metrics.ObserveExecutor(elapsed, err, step.Action)
 		}
 
-		// Detect if step failed
 		var obs string
 		if err != nil {
 			obs = fmt.Sprintf("[researcher] fatal error: %v", err)
-			log.Printf("[Coordinator] ResearcherAgent fatal error at step %s: %v", step.ID, err)
 		} else {
 			obs = fmt.Sprintf("[researcher] %s", ev.Observation)
 		}
 
-		// Use the explicit Failed flag set by ResearcherAgent — never parse the
-		// Observation string, which could legitimately contain words like "error"
-		// or "not found" and cause false-positive replanning.
 		failed := (err != nil) || (ev != nil && ev.Failed)
 
-		// Record the trace
-		var traceEvidence []types.Evidence
+		var trEvidence []types.Evidence
 		if ev != nil {
-			traceEvidence = ev.Evidence
+			trEvidence = ev.Evidence
 		}
 
 		task.Trace = append(task.Trace, types.StepTrace{
@@ -259,53 +418,22 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			Action:      step.Action,
 			Query:       buildStepQuery(step),
 			Observation: obs,
-			Evidence:    traceEvidence,
+			Evidence:    trEvidence,
 			AgentRole:   RoleResearcher,
 		})
 
 		if ev != nil && !failed {
-			allEvidence = append(allEvidence, *ev)
+			evidence = append(evidence, *ev)
+		}
+		if failed {
+			anyFailed = true
 		}
 
 		task.StepCount++
 		task.ToolBudget--
 		task.Status = types.StatusRunning
-
-		// Trigger re-planning if the step failed and we haven't reached replans limit
-		if failed && replansCount < maxReplans {
-			replansCount++
-			log.Printf("[Coordinator] Triggering collaborative replan/error-correction loop (replan count: %d)", replansCount)
-
-			// Call Replanner to adjust plan based on trace history
-			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
-			if replanErr != nil {
-				log.Printf("[Coordinator Error] Replanner failed: %v — continuing with remaining steps", replanErr)
-			} else if len(newPlan.Steps) > 0 {
-				log.Printf("[Coordinator] Replanner generated %d revised steps. Replacing remaining plan.", len(newPlan.Steps))
-
-				// Record planner trace
-				task.Trace = append(task.Trace, types.StepTrace{
-					Step:        task.StepCount,
-					Goal:        task.Goal,
-					Action:      "plan",
-					Query:       "replanner",
-					Observation: fmt.Sprintf("[replanner] %s — %d step(s) revised due to failure", newPlan.ThoughtSummary, len(newPlan.Steps)),
-					AgentRole:   RolePlanner,
-				})
-				task.StepCount++
-
-				// Replace remaining steps with the new steps, reset execution pointer
-				currentSteps = newPlan.Steps
-				stepIndex = 0
-				continue
-			}
-		}
-
-		stepIndex++
 	}
-
-	log.Printf("[Coordinator] Phase 2 done — %d evidence item(s) gathered", len(allEvidence))
-	return allEvidence
+	return
 }
 
 func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {

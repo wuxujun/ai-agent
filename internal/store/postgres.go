@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -241,14 +242,28 @@ ORDER BY step ASC, id ASC
 	return &task, rows.Err()
 }
 
-// ListTasks returns all tasks ordered by id, capped at 500.
-func (p *PostgresStore) ListTasks(ctx context.Context) ([]*types.Task, error) {
-	rows, err := p.db.QueryContext(ctx, `
+// ListTasks returns tasks matching f, ordered by id ASC.
+func (p *PostgresStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task, error) {
+	limit := resolveLimit(f.Limit, 50, 500)
+	args := []any{}
+	where := ""
+	if f.Status != "" {
+		where = "WHERE status = $1"
+		args = append(args, string(f.Status))
+	}
+	offsetArg := len(args) + 1
+	limitArg := len(args) + 2
+	args = append(args, f.Offset, limit)
+
+	query := fmt.Sprintf(`
 SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, final_answer
 FROM tasks
+%s
 ORDER BY id ASC
-LIMIT 500
-`)
+LIMIT $%d OFFSET $%d
+`, where, limitArg, offsetArg)
+
+	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -45,6 +46,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.POST("/:id/run-all", h.runAll)
 		tasks.GET("/:id", h.getTask)
 		tasks.GET("", h.listTasks)
+		tasks.GET("/:id/stream", h.streamTask)
 	}
 	api.GET("/metrics", h.getMetrics)
 
@@ -159,9 +161,6 @@ func (h *Handler) runAll(c *gin.Context) {
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		// Use a bounded background context: decoupled from the HTTP request (so it
-		// isn't cancelled when the connection closes) but with a 10-minute ceiling
-		// to prevent goroutine leaks if RunAll hangs indefinitely.
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer bgCancel()
 		log.Printf("[Handler] Starting async run-all for task %s", task.ID)
@@ -174,6 +173,13 @@ func (h *Handler) runAll(c *gin.Context) {
 		if execErr != nil {
 			log.Printf("[Handler Error] run-all failed for task %s: %v", task.ID, execErr)
 		}
+		// Publish terminal event to SSE subscribers
+		finalEvent := StepEvent{
+			TaskID: task.ID,
+			Status: task.Status,
+			Final:  task.FinalAnswer,
+		}
+		GetBus().Publish(task.ID, finalEvent)
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -208,19 +214,38 @@ func (h *Handler) getMetrics(c *gin.Context) {
 	c.JSON(http.StatusOK, h.metrics.Snapshot())
 }
 
-// listTasks handles GET /api/tasks — returns all tasks (summary, no trace).
+// listTasks handles GET /api/tasks — supports pagination and status filtering.
+// Query params: status (optional), limit (default 50, max 500), offset (default 0)
 func (h *Handler) listTasks(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	tasks, err := h.store.ListTasks(ctx)
+	f := store.ListFilter{}
+
+	if s := c.Query("status"); s != "" {
+		f.Status = types.TaskStatus(s)
+	}
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			f.Limit = v
+		}
+	}
+	if o := c.Query("offset"); o != "" {
+		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
+			f.Offset = v
+		}
+	}
+
+	tasks, err := h.store.ListTasks(ctx, f)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"tasks": tasks,
-		"count": len(tasks),
+		"tasks":  tasks,
+		"count":  len(tasks),
+		"limit":  f.Limit,
+		"offset": f.Offset,
 	})
 }

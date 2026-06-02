@@ -114,8 +114,8 @@ func (r *RedisStore) GetTask(ctx context.Context, id string) (*types.Task, error
 }
 
 // ListTasks returns tasks stored in Redis using SCAN. Note: this may be slow for large datasets.
-// Results are capped at 500 tasks.
-func (r *RedisStore) ListTasks(ctx context.Context) ([]*types.Task, error) {
+// Status filtering and pagination are applied in-process after fetching.
+func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task, error) {
 	ctx, span := tracer.Start(ctx, "store.list_tasks")
 	defer span.End()
 
@@ -148,7 +148,22 @@ func (r *RedisStore) ListTasks(ctx context.Context) ([]*types.Task, error) {
 		if err := json.Unmarshal([]byte(val), &t); err != nil {
 			continue
 		}
+		if f.Status != "" && t.Status != f.Status {
+			continue
+		}
 		tasks = append(tasks, &t)
+	}
+
+	// Apply pagination
+	limit := resolveLimit(f.Limit, 50, 500)
+	offset := f.Offset
+	if offset >= len(tasks) {
+		span.SetAttributes(attribute.Int("agent.store.task_count", 0))
+		return []*types.Task{}, nil
+	}
+	tasks = tasks[offset:]
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
 	}
 	span.SetAttributes(attribute.Int("agent.store.task_count", len(tasks)))
 	return tasks, nil
