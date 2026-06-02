@@ -16,6 +16,7 @@ var allowedCommands = map[string]bool{
 	"node":    true,
 	"bash":    true,
 	"sh":      true,
+	"git":     true,
 }
 
 func ValidateWorkspace(root string) error {

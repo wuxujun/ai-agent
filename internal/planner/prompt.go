@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -37,6 +38,12 @@ func BuildUserPrompt(task *types.Task) string {
 		memorySection = "\n\nRelated Historical Memories (RAG - Cross-task Knowledge Sharing):\n" + strings.Join(ms, "\n\n")
 	}
 
+	var toolsList []string
+	for i, t := range tools.DefaultRegistry.List() {
+		toolsList = append(toolsList, fmt.Sprintf("%d. %s: %s", i+1, t.Name(), t.Description()))
+	}
+	toolsString := strings.Join(toolsList, "\n")
+
 	return fmt.Sprintf(`Task goal:
 %s%s
 
@@ -47,11 +54,7 @@ Current status:
 - status: %s
 
 Available tools:
-1. find_files(pattern): find candidate files by glob inside the workspace
-2. search_text(query, glob?): search file contents for a term
-3. read_file(path): read a small text file for local context
-4. write_file(path, content): write content to a file inside the workspace
-5. execute_code(command, args): run interpreter commands inside the workspace (allowed commands: python3, python, go, node, bash, sh)
+%s
 
 Unresolved questions:
 %s
@@ -69,6 +72,7 @@ Decision requirements:
 		task.MaxSteps,
 		task.ToolBudget,
 		task.Status,
+		toolsString,
 		formatUnresolved(task.Unresolved),
 		summarizeTrace(task.Trace),
 	)

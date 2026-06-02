@@ -1,10 +1,44 @@
 package tools
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+type SearchTextTool struct{}
+
+func (t *SearchTextTool) Name() string {
+	return "search_text"
+}
+
+func (t *SearchTextTool) Description() string {
+	return "Search for text matching a regex query in the workspace"
+}
+
+func (t *SearchTextTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
+	if err := policy.ValidateWorkspace(workspace); err != nil {
+		return nil, fmt.Errorf("search_text policy violation: %w", err)
+	}
+	query, _ := params["query"].(string)
+	glob, _ := params["glob"].(string)
+	evidence, _, err := SearchWithRG(workspace, query, glob)
+	if err != nil {
+		return nil, err
+	}
+	return &ToolResult{
+		Query:       query,
+		Observation: fmt.Sprintf("found %d evidence items", len(evidence)),
+		Evidence:    evidence,
+	}, nil
+}
+
+func init() {
+	Register(&SearchTextTool{})
+}
 
 func SearchWithRG(workspace string, query string, glob string) ([]types.Evidence, string, error) {
 	args := []string{"-n", "--no-heading", "--color", "never"}
