@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ type Handler struct {
 	engine  *orchestrator.Engine
 	metrics *metrics.Collector
 	wg      sync.WaitGroup // tracks background run-all goroutines for graceful shutdown
+	taskSem chan struct{}  // bounded worker pool for concurrency control
 }
 
 type CreateTaskRequest struct {
@@ -33,7 +35,18 @@ type CreateTaskRequest struct {
 }
 
 func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector) {
-	h := &Handler{store: st, engine: eng, metrics: mc}
+	maxTasks := 10 // default concurrent tasks
+	if s := os.Getenv("AI_AGENT_MAX_CONCURRENT_TASKS"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			maxTasks = v
+		}
+	}
+	h := &Handler{
+		store:   st,
+		engine:  eng,
+		metrics: mc,
+		taskSem: make(chan struct{}, maxTasks),
+	}
 
 	r.Use(ErrorMiddleware())
 	r.Use(SpanAttributesMiddleware())
@@ -114,6 +127,15 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
+	// Acquire concurrency slot
+	select {
+	case h.taskSem <- struct{}{}:
+		defer func() { <-h.taskSem }()
+	case <-ctx.Done():
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "too many concurrent tasks, please try again later"})
+		return
+	}
+
 	task, err := h.store.GetTask(ctx, c.Param("id"))
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -161,6 +183,11 @@ func (h *Handler) runAll(c *gin.Context) {
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
+
+		// Wait for a concurrency slot
+		h.taskSem <- struct{}{}
+		defer func() { <-h.taskSem }()
+
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer bgCancel()
 		log.Printf("[Handler] Starting async run-all for task %s", task.ID)
