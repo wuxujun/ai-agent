@@ -40,10 +40,14 @@ func (r *mockResearcher) Research(ctx context.Context, workspace string, step mu
 		return nil, fmt.Errorf("simulated step execution error")
 	}
 	if step.ID == "step-fail-obs" {
+		// Real ResearcherAgent sets Failed=true when a tool call fails.
+		// Observation still contains a human-readable message, but Coordinator
+		// must NOT parse it — it must rely solely on Failed.
 		return &multiagent.StepEvidence{
 			StepID:      step.ID,
 			Action:      step.Action,
 			Observation: "error: command failed with code 1",
+			Failed:      true,
 		}, nil
 	}
 	return &multiagent.StepEvidence{

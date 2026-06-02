@@ -34,10 +34,12 @@ type Engine struct {
 	// Store handles database persistence and long-term memory.
 	Store       store.Store
 
-	// einoRunner is compiled once and cached for reuse across all runEinoNext calls.
-	einoOnce   sync.Once
-	einoRunner any // compose.Runnable[*einoStepState, *types.Task]
-	einoErr    error
+	// einoRunner is compiled once and cached for the lifetime of the Engine.
+	// A sync.Mutex guards lazy initialisation; unlike sync.Once, a failed
+	// compilation attempt can be retried on the next call.
+	einoMu     sync.Mutex
+	einoRunner any  // compose.Runnable[*einoStepState, *types.Task] after successful compile
+	einoReady  bool // true once einoRunner has been successfully compiled
 
 	// adkRunner is compiled once and cached for reuse across all runAdkNext calls.
 	adkOnce    sync.Once

@@ -107,7 +107,9 @@ func (h *Handler) createTask(c *gin.Context) {
 }
 
 func (h *Handler) runTaskStep(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	// 60s allows for LLM planner calls (P99 ≈ 30s) plus tool execution and DB write.
+	// A 5s timeout was too short and would cancel in-flight LLM requests.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
 	task, err := h.store.GetTask(ctx, c.Param("id"))
@@ -157,11 +159,14 @@ func (h *Handler) runAll(c *gin.Context) {
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		// Use a background context so the task isn't cancelled when the HTTP request ends.
-		bgCtx := context.Background()
+		// Use a bounded background context: decoupled from the HTTP request (so it
+		// isn't cancelled when the connection closes) but with a 10-minute ceiling
+		// to prevent goroutine leaks if RunAll hangs indefinitely.
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer bgCancel()
 		log.Printf("[Handler] Starting async run-all for task %s", task.ID)
 		execErr := h.engine.RunAll(bgCtx, task)
-		saveCtx, saveCancel := context.WithTimeout(bgCtx, 5*time.Second)
+		saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer saveCancel()
 		if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
 			log.Printf("[Handler Error] Failed to save task %s after run-all: %v", task.ID, saveErr)

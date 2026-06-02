@@ -59,21 +59,34 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 	return nil
 }
 
-// getEinoRunner returns the compiled Eino chain runner, compiling it once and caching it.
+// getEinoRunner returns the compiled Eino chain runner, compiling it lazily on
+// the first successful call. Unlike sync.Once, a compilation failure does NOT
+// permanently poison the cache: subsequent calls will retry compilation, which
+// is useful when a transient error (e.g. a missing env var) is corrected at
+// runtime without restarting the server.
+//
+// Thread-safety: einoMu serialises concurrent first-call compilation.
+// After einoReady is true the mutex is acquired read-only (fast path) but we
+// keep the simple full-lock approach because compilation is a cold path.
 func (e *Engine) getEinoRunner(ctx context.Context) (compose.Runnable[*einoStepState, *types.Task], error) {
-	e.einoOnce.Do(func() {
-		log.Printf("[Engine-Eino] Compiling Eino step chain (first use)")
-		r, err := e.compileEinoStepChain(ctx)
-		if err != nil {
-			e.einoErr = err
-			return
-		}
-		e.einoRunner = r
-	})
-	if e.einoErr != nil {
-		return nil, e.einoErr
+	e.einoMu.Lock()
+	defer e.einoMu.Unlock()
+
+	if e.einoReady {
+		// Fast path: runner already compiled and cached.
+		return e.einoRunner.(compose.Runnable[*einoStepState, *types.Task]), nil
 	}
-	return e.einoRunner.(compose.Runnable[*einoStepState, *types.Task]), nil
+
+	// Slow path: compile the chain. On failure we return the error but leave
+	// einoReady=false so the next request can retry.
+	log.Printf("[Engine-Eino] Compiling Eino step chain (first use or retry after failure)")
+	r, err := e.compileEinoStepChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.einoRunner = r
+	e.einoReady = true
+	return r, nil
 }
 
 func (e *Engine) compileEinoStepChain(ctx context.Context) (compose.Runnable[*einoStepState, *types.Task], error) {

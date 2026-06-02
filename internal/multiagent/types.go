@@ -47,6 +47,11 @@ type StepEvidence struct {
 	Action      string           `json:"action"`
 	Observation string           `json:"observation"`
 	Evidence    []types.Evidence `json:"evidence,omitempty"`
+	// Failed is set to true by ResearcherAgent when the step could not be
+	// completed (tool error or policy violation). Coordinator uses this flag
+	// instead of parsing Observation strings, avoiding false positives when
+	// legitimate content contains words like "error" or "not found".
+	Failed bool `json:"failed,omitempty"`
 }
 
 // WriterOutput is the final synthesised answer produced by the WriterAgent.

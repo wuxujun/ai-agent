@@ -43,6 +43,7 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 		files, err := tools.FindFiles(workspace, glob)
 		if err != nil {
 			ev.Observation = fmt.Sprintf("find_files error: %v", err)
+			ev.Failed = true
 			log.Printf("[ResearcherAgent] Step %s find_files error: %v", step.ID, err)
 			return ev, nil // non-fatal
 		}
@@ -59,11 +60,13 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 		query := step.SearchQuery
 		if query == "" {
 			ev.Observation = "search_text skipped: empty search_query"
+			ev.Failed = true
 			return ev, nil
 		}
 		evidence, _, err := tools.SearchWithRG(workspace, query, step.FileGlob)
 		if err != nil {
 			ev.Observation = fmt.Sprintf("search_text error: %v", err)
+			ev.Failed = true
 			log.Printf("[ResearcherAgent] Step %s search_text error: %v", step.ID, err)
 			return ev, nil // non-fatal
 		}
@@ -74,18 +77,21 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 		path := step.FilePath
 		if path == "" {
 			ev.Observation = "read_file skipped: empty file_path"
+			ev.Failed = true
 			return ev, nil
 		}
 		// Validate the specific target path.
 		full := filepath.Join(workspace, path)
 		if err := policy.ValidateReadPath(workspace, full); err != nil {
 			ev.Observation = fmt.Sprintf("read_file policy violation: %v", err)
+			ev.Failed = true
 			log.Printf("[ResearcherAgent] Step %s policy violation: %v", step.ID, err)
 			return ev, nil // non-fatal; report and continue
 		}
 		content, err := tools.ReadFile(workspace, path)
 		if err != nil {
 			ev.Observation = fmt.Sprintf("read_file error: %v", err)
+			ev.Failed = true
 			log.Printf("[ResearcherAgent] Step %s read_file error: %v", step.ID, err)
 			return ev, nil // non-fatal
 		}
@@ -100,17 +106,20 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 		path := step.FilePath
 		if path == "" {
 			ev.Observation = "write_file skipped: empty file_path"
+			ev.Failed = true
 			return ev, nil
 		}
 		full := filepath.Join(workspace, path)
 		if err := policy.ValidateWritePath(workspace, full); err != nil {
 			ev.Observation = fmt.Sprintf("write_file policy violation: %v", err)
+			ev.Failed = true
 			log.Printf("[ResearcherAgent] Step %s policy violation: %v", step.ID, err)
 			return ev, nil
 		}
 		err := tools.WriteFile(workspace, path, step.Content)
 		if err != nil {
 			ev.Observation = fmt.Sprintf("write_file error: %v", err)
+			ev.Failed = true
 			log.Printf("[ResearcherAgent] Step %s write_file error: %v", step.ID, err)
 			return ev, nil
 		}
@@ -120,11 +129,13 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 		command := step.Command
 		if command == "" {
 			ev.Observation = "execute_code skipped: empty command"
+			ev.Failed = true
 			return ev, nil
 		}
 		output, err := tools.ExecuteCode(workspace, command, step.Args)
 		if err != nil {
 			ev.Observation = fmt.Sprintf("execute_code error: %v. Output: %s", err, output)
+			ev.Failed = true
 			log.Printf("[ResearcherAgent] Step %s execute_code error: %v", step.ID, err)
 			return ev, nil
 		}
@@ -136,6 +147,7 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 
 	default:
 		ev.Observation = fmt.Sprintf("unsupported action %q — skipping", step.Action)
+		ev.Failed = true
 		log.Printf("[ResearcherAgent] Step %s unsupported action: %s", step.ID, step.Action)
 	}
 

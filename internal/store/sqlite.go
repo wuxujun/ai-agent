@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -79,6 +81,8 @@ CREATE TABLE IF NOT EXISTS memories (
 	// SQLite returns an error if the column already exists; we ignore it.
 	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN agent_role TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
+	// Index for time-bounded memory retrieval (QueryMemories uses ORDER BY timestamp DESC)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp DESC)`)
 	return nil
 }
 
@@ -168,10 +172,35 @@ func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 	}
 
 	if task.Status == types.StatusCompleted {
-		// Automatically index completed task as a long-term memory for cross-task RAG
-		if mem, err := memory.CreateMemoryFromTask(ctx, task); err == nil {
-			_ = s.SaveMemory(ctx, mem)
-		}
+		// Index the completed task as a long-term memory for cross-task RAG.
+		// This is done asynchronously with its own context so that:
+		// 1. The Embedding API call (network I/O) never blocks the SaveFullTask
+		//    response path — task saves return immediately.
+		// 2. A cancelled parent context (e.g. request timeout) cannot abort the
+		//    indexing of a task that has already been successfully persisted.
+		//
+		// Deep-copy the slice fields so the goroutine is not racing with the
+		// caller, which may append to task.Trace after SaveFullTask returns.
+		taskSnap := *task
+		taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
+		copy(taskSnap.Trace, task.Trace)
+		taskSnap.Memories = make([]types.Memory, len(task.Memories))
+		copy(taskSnap.Memories, task.Memories)
+		taskSnap.Unresolved = make([]string, len(task.Unresolved))
+		copy(taskSnap.Unresolved, task.Unresolved)
+
+		go func() {
+			asyncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
+			if err != nil {
+				log.Printf("[Store] Warning: failed to create memory for task %s: %v", taskSnap.ID, err)
+				return
+			}
+			if err := s.SaveMemory(asyncCtx, mem); err != nil {
+				log.Printf("[Store] Warning: failed to save memory for task %s: %v", taskSnap.ID, err)
+			}
+		}()
 	}
 
 	return nil
@@ -238,17 +267,38 @@ ORDER BY step ASC, id ASC
 	return &task, rows.Err()
 }
 
-// ListTasks returns all tasks (without trace rows) ordered by id, capped at 500.
-func (s *SQLiteStore) ListTasks(ctx context.Context) ([]*types.Task, error) {
+// ListTasks returns tasks matching f (without trace rows) ordered by id ASC.
+// It supports status filtering and cursor-style pagination via f.Limit and f.Offset.
+func (s *SQLiteStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task, error) {
 	ctx, span := tracer.Start(ctx, "store.list_tasks")
 	defer span.End()
 
-	rows, err := s.db.QueryContext(ctx, `
+	limit := resolveLimit(f.Limit, 50, 500)
+	span.SetAttributes(
+		attribute.String("agent.store.filter_status", string(f.Status)),
+		attribute.Int("agent.store.limit", limit),
+		attribute.Int("agent.store.offset", f.Offset),
+	)
+
+	// Build query dynamically so we only add a WHERE clause when needed.
+	// Using a fixed column list avoids SELECT * surprises on schema changes.
+	const base = `
 SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, final_answer
-FROM tasks
-ORDER BY id ASC
-LIMIT 500
-`)
+FROM tasks`
+
+	var (
+		query string
+		args  []any
+	)
+	if f.Status != "" {
+		query = base + "\nWHERE status = ?\nORDER BY id ASC\nLIMIT ? OFFSET ?"
+		args = []any{string(f.Status), limit, f.Offset}
+	} else {
+		query = base + "\nORDER BY id ASC\nLIMIT ? OFFSET ?"
+		args = []any{limit, f.Offset}
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -313,11 +363,17 @@ embedding_json=excluded.embedding_json
 }
 
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match.
+// To avoid full-table scans as the memories table grows, only the most recent
+// maxCandidates rows are loaded into memory for in-process cosine ranking.
+const queryCandidateLimit = 200
+
 func (s *SQLiteStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
 FROM memories
-`)
+ORDER BY timestamp DESC
+LIMIT ?
+`, queryCandidateLimit)
 	if err != nil {
 		return nil, err
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/metrics"
@@ -235,24 +234,18 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		}
 
 		// Detect if step failed
-		failed := false
 		var obs string
 		if err != nil {
-			failed = true
 			obs = fmt.Sprintf("[researcher] fatal error: %v", err)
 			log.Printf("[Coordinator] ResearcherAgent fatal error at step %s: %v", step.ID, err)
 		} else {
 			obs = fmt.Sprintf("[researcher] %s", ev.Observation)
-			// Check if the observation indicates failure or error (e.g., RCE denied, command failed, not found, policy violation)
-			lowerObs := strings.ToLower(ev.Observation)
-			if strings.Contains(lowerObs, "error:") ||
-				strings.Contains(lowerObs, "failed:") ||
-				strings.Contains(lowerObs, "not found") ||
-				strings.Contains(lowerObs, "policy violation") {
-				failed = true
-				log.Printf("[Coordinator] Observation indicates failure at step %s: %q", step.ID, ev.Observation)
-			}
 		}
+
+		// Use the explicit Failed flag set by ResearcherAgent — never parse the
+		// Observation string, which could legitimately contain words like "error"
+		// or "not found" and cause false-positive replanning.
+		failed := (err != nil) || (ev != nil && ev.Failed)
 
 		// Record the trace
 		var traceEvidence []types.Evidence
@@ -264,7 +257,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			Step:        task.StepCount,
 			Goal:        task.Goal,
 			Action:      step.Action,
-			Query:       step.SearchQuery + step.FileGlob + step.FilePath + step.Command + " " + step.Args,
+			Query:       buildStepQuery(step),
 			Observation: obs,
 			Evidence:    traceEvidence,
 			AgentRole:   RoleResearcher,
@@ -323,8 +316,7 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	elapsed := time.Since(start)
 
 	if c.Metrics != nil {
-		// Reuse planner metric for writer LLM call (both are LLM latency)
-		c.Metrics.ObservePlanner(elapsed, err)
+		c.Metrics.ObserveWriter(elapsed, err)
 	}
 
 	if err != nil {
@@ -364,4 +356,32 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 
 	log.Printf("[Coordinator] Phase 3 done — answer written (confidence=%s) in %s", output.Confidence, elapsed)
 	return output.Confidence, nil
+}
+
+// buildStepQuery constructs a structured, human-readable query string for
+// StepTrace.Query. Only the fields relevant to the step's action are included,
+// preventing the previous issue where all parameters were blindly concatenated
+// into an unreadable string like "keyword*.go/path/file python3 args".
+func buildStepQuery(step ResearchStep) string {
+	switch step.Action {
+	case "search_text":
+		q := fmt.Sprintf("query=%q", step.SearchQuery)
+		if step.FileGlob != "" {
+			q += fmt.Sprintf(" glob=%q", step.FileGlob)
+		}
+		return q
+	case "find_files":
+		return fmt.Sprintf("glob=%q", step.FileGlob)
+	case "read_file":
+		return fmt.Sprintf("path=%q", step.FilePath)
+	case "write_file":
+		return fmt.Sprintf("path=%q", step.FilePath)
+	case "execute_code":
+		if step.Args != "" {
+			return fmt.Sprintf("cmd=%q args=%q", step.Command, step.Args)
+		}
+		return fmt.Sprintf("cmd=%q", step.Command)
+	default:
+		return fmt.Sprintf("action=%q", step.Action)
+	}
 }

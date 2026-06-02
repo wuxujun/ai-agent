@@ -14,6 +14,9 @@ type Snapshot struct {
 	PlannerCalls       int64         `json:"planner_calls"`
 	PlannerFailures    int64         `json:"planner_failures"`
 	PlannerLatencySum  time.Duration `json:"planner_latency_sum"`
+	WriterCalls        int64         `json:"writer_calls"`
+	WriterFailures     int64         `json:"writer_failures"`
+	WriterLatencySum   time.Duration `json:"writer_latency_sum"`
 	ExecutorCalls      int64         `json:"executor_calls"`
 	ExecutorFailures   int64         `json:"executor_failures"`
 	ExecutorLatencySum time.Duration `json:"executor_latency_sum"`
@@ -29,6 +32,10 @@ type Collector struct {
 	plannerCalls     api.Int64Counter
 	plannerFailures  api.Int64Counter
 	plannerLatencyMs api.Float64Histogram
+
+	writerCalls     api.Int64Counter
+	writerFailures  api.Int64Counter
+	writerLatencyMs api.Float64Histogram
 
 	executorCalls     api.Int64Counter
 	executorFailures  api.Int64Counter
@@ -46,6 +53,10 @@ func NewCollector() *Collector {
 	plannerFailures, _ := meter.Int64Counter("agent.planner.failures")
 	plannerLatencyMs, _ := meter.Float64Histogram("agent.planner.latency_ms")
 
+	writerCalls, _ := meter.Int64Counter("agent.writer.calls")
+	writerFailures, _ := meter.Int64Counter("agent.writer.failures")
+	writerLatencyMs, _ := meter.Float64Histogram("agent.writer.latency_ms")
+
 	executorCalls, _ := meter.Int64Counter("agent.executor.calls")
 	executorFailures, _ := meter.Int64Counter("agent.executor.failures")
 	executorLatencyMs, _ := meter.Float64Histogram("agent.executor.latency_ms")
@@ -58,6 +69,9 @@ func NewCollector() *Collector {
 		plannerCalls:      plannerCalls,
 		plannerFailures:   plannerFailures,
 		plannerLatencyMs:  plannerLatencyMs,
+		writerCalls:       writerCalls,
+		writerFailures:    writerFailures,
+		writerLatencyMs:   writerLatencyMs,
 		executorCalls:     executorCalls,
 		executorFailures:  executorFailures,
 		executorLatencyMs: executorLatencyMs,
@@ -81,6 +95,26 @@ func (c *Collector) ObservePlanner(latency time.Duration, err error) {
 	c.plannerLatencyMs.Record(ctx, float64(latency.Milliseconds()))
 	if err != nil {
 		c.plannerFailures.Add(ctx, 1)
+	}
+}
+
+// ObserveWriter records a WriterAgent LLM call duration and outcome.
+// It uses dedicated writer metrics so writer latency is not conflated with
+// planner latency in dashboards and alerts.
+func (c *Collector) ObserveWriter(latency time.Duration, err error) {
+	c.mu.Lock()
+	c.s.WriterCalls++
+	c.s.WriterLatencySum += latency
+	if err != nil {
+		c.s.WriterFailures++
+	}
+	c.mu.Unlock()
+
+	ctx := context.Background()
+	c.writerCalls.Add(ctx, 1)
+	c.writerLatencyMs.Record(ctx, float64(latency.Milliseconds()))
+	if err != nil {
+		c.writerFailures.Add(ctx, 1)
 	}
 }
 
