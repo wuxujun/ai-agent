@@ -21,6 +21,12 @@ func (t *WebSearchTool) Description() string {
 	return "Search the web using DuckDuckGo HTML"
 }
 
+func (t *WebSearchTool) Parameters() map[string]any {
+	return map[string]any{
+		"query": map[string]any{"type": "string", "description": "Search keywords"},
+	}
+}
+
 func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	query, _ := params["query"].(string)
 	if query == "" {

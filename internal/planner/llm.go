@@ -9,10 +9,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -251,7 +253,30 @@ func extractStructuredText(raw map[string]any) (string, error) {
 	return "", errors.New("structured text not found")
 }
 
+// PlannerDecisionGenAISchema is the genai (Gemini) equivalent of
+// PlannerDecisionSchema. Its action enum and parameter set are likewise derived
+// from the tool registry, so the OpenAI and Gemini planner paths stay in sync
+// automatically as tools are added.
 func PlannerDecisionGenAISchema() *genai.Schema {
+	registered := tools.DefaultRegistry.List() // sorted by name
+
+	actions := make([]string, 0, len(registered)+1)
+	paramProps := map[string]*genai.Schema{}
+	for _, t := range registered {
+		actions = append(actions, t.Name())
+		for name := range t.Parameters() {
+			// All current tool parameters are strings.
+			paramProps[name] = &genai.Schema{Type: genai.TypeString}
+		}
+	}
+	actions = append(actions, "none")
+
+	paramKeys := make([]string, 0, len(paramProps))
+	for k := range paramProps {
+		paramKeys = append(paramKeys, k)
+	}
+	sort.Strings(paramKeys)
+
 	return &genai.Schema{
 		Type: genai.TypeObject,
 		Properties: map[string]*genai.Schema{
@@ -269,21 +294,13 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 			},
 			"action": {
 				Type:        genai.TypeString,
-				Enum:        []string{"find_files", "search_text", "read_file", "write_file", "execute_code", "none"},
+				Enum:        actions,
 				Description: "The single next action to execute. Use none only when stop is true.",
 			},
 			"parameters": {
-				Type: genai.TypeObject,
-				Properties: map[string]*genai.Schema{
-					"pattern": {Type: genai.TypeString},
-					"query":   {Type: genai.TypeString},
-					"glob":    {Type: genai.TypeString},
-					"path":    {Type: genai.TypeString},
-					"content": {Type: genai.TypeString},
-					"command": {Type: genai.TypeString},
-					"args":    {Type: genai.TypeString},
-				},
-				Required: []string{"pattern", "query", "glob", "path", "content", "command", "args"},
+				Type:       genai.TypeObject,
+				Properties: paramProps,
+				Required:   paramKeys,
 			},
 		},
 		Required: []string{"thought_summary", "stop", "final_answer", "action", "parameters"},

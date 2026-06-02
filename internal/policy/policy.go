@@ -2,6 +2,8 @@ package policy
 
 import (
 	"errors"
+	"net"
+	"net/url"
 	"path/filepath"
 	"strings"
 )
@@ -42,6 +44,55 @@ func ValidateWorkspace(root string) error {
 		return errors.New("workspace too broad")
 	}
 	return nil
+}
+
+// ValidateURL guards outbound HTTP requests against SSRF. It permits only
+// http/https schemes and rejects hosts that resolve to loopback, private,
+// link-local, or otherwise non-public addresses (e.g. the cloud metadata
+// endpoint 169.254.169.254). Because the URL originates from LLM output, this
+// gate prevents the agent from being steered into the internal network.
+func ValidateURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return errors.New("invalid url")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("only http/https urls are allowed")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("url has no host")
+	}
+
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		resolved, err := net.LookupIP(host)
+		if err != nil {
+			return errors.New("cannot resolve url host")
+		}
+		ips = resolved
+	}
+
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return errors.New("url resolves to a disallowed (private/loopback/link-local) address")
+		}
+	}
+	return nil
+}
+
+func isBlockedIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	// Block IPv4 carrier-grade NAT range 100.64.0.0/10 as a precaution.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
+	}
+	return false
 }
 
 func ValidateCommand(name string) error {

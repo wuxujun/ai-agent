@@ -18,6 +18,12 @@ func (t *ReadFileTool) Description() string {
 	return "Read the contents of a file in the workspace"
 }
 
+func (t *ReadFileTool) Parameters() map[string]any {
+	return map[string]any{
+		"path": map[string]any{"type": "string", "description": "Workspace-relative file path to read"},
+	}
+}
+
 func (t *ReadFileTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	path, _ := params["path"].(string)
 	content, err := ReadFile(workspace, path)

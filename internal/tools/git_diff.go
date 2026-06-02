@@ -18,6 +18,12 @@ func (t *GitDiffTool) Description() string {
 	return "Get the git diff for the workspace or a specific file"
 }
 
+func (t *GitDiffTool) Parameters() map[string]any {
+	return map[string]any{
+		"path": map[string]any{"type": "string", "description": "Optional workspace-relative path to diff; empty diffs the whole workspace"},
+	}
+}
+
 func (t *GitDiffTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("git_diff policy violation: %w", err)

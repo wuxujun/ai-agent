@@ -2,7 +2,9 @@ package planner
 
 import (
 	"context"
+	"sort"
 
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -18,7 +20,34 @@ type Planner interface {
 	PlanNext(ctx context.Context, task *types.Task) (*PlanDecision, error)
 }
 
+// PlannerDecisionSchema builds the JSON Schema constraining the planner LLM's
+// output. The action enum and the parameters object are generated from the tool
+// registry, so registering a new tool automatically makes it selectable by the
+// planner — no manual edits to this file are required.
+//
+// Note: OpenAI structured-output strict mode requires every property to appear
+// in "required", so the merged parameter set is listed there in full; unused
+// parameters are expected to be emitted as empty strings.
 func PlannerDecisionSchema() map[string]any {
+	registered := tools.DefaultRegistry.List() // sorted by name (deterministic)
+
+	actions := make([]string, 0, len(registered)+1)
+	paramProps := map[string]any{}
+	for _, t := range registered {
+		actions = append(actions, t.Name())
+		for name, spec := range t.Parameters() {
+			paramProps[name] = spec
+		}
+	}
+	// "none" is the sentinel action used when the agent stops.
+	actions = append(actions, "none")
+
+	paramKeys := make([]string, 0, len(paramProps))
+	for k := range paramProps {
+		paramKeys = append(paramKeys, k)
+	}
+	sort.Strings(paramKeys)
+
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -37,22 +66,14 @@ func PlannerDecisionSchema() map[string]any {
 			},
 			"action": map[string]any{
 				"type":        "string",
-				"enum":        []string{"find_files", "search_text", "read_file", "write_file", "execute_code", "none"},
+				"enum":        actions,
 				"description": "The single next action to execute. Use none only when stop is true.",
 			},
 			"parameters": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
-				"properties": map[string]any{
-					"pattern": map[string]any{"type": "string"},
-					"query":   map[string]any{"type": "string"},
-					"glob":    map[string]any{"type": "string"},
-					"path":    map[string]any{"type": "string"},
-					"content": map[string]any{"type": "string"},
-					"command": map[string]any{"type": "string"},
-					"args":    map[string]any{"type": "string"},
-				},
-				"required": []string{"pattern", "query", "glob", "path", "content", "command", "args"},
+				"properties":           paramProps,
+				"required":             paramKeys,
 			},
 		},
 		"required": []string{"thought_summary", "stop", "final_answer", "action", "parameters"},

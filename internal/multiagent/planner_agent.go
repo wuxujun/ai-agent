@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -19,6 +20,9 @@ Available actions:
   read_file    – read a specific file's content  (set file_path)
   write_file   – write content to a file         (set file_path, content)
   execute_code – run script execution command    (set command, args; allowed commands: python3, python, go, node, bash, sh)
+  git_diff     – show git diff of the workspace   (optionally set file_path for a single file)
+  http_fetch   – fetch content from a public URL  (set url; private/loopback addresses are blocked)
+  web_search   – search the web for keywords      (set search_query)
 
 Rules:
 1. Produce between 2 and 8 steps — prefer fewer, higher-quality steps.
@@ -26,7 +30,7 @@ Rules:
 3. Each step builds on previous findings.
 4. Step IDs must be "step-1", "step-2", etc.
 5. Set every unused field to an empty string "".
-6. Never include steps that cannot be executed with the five actions above.`
+6. Never include steps that cannot be executed with the actions above.`
 
 // PlannerAgent decomposes a user goal into a structured ResearchPlan using an LLM.
 type PlannerAgent struct {
@@ -35,20 +39,23 @@ type PlannerAgent struct {
 
 // jsonSchema returns the JSON Schema used to enforce structured output.
 func (p *PlannerAgent) jsonSchema() map[string]any {
+	// Action enum is derived from the tool registry so newly registered tools
+	// become selectable by the planner without editing this schema by hand.
 	stepSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"id":           map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
 			"description":  map[string]any{"type": "string", "description": "What this step investigates"},
-			"action":       map[string]any{"type": "string", "enum": []string{"find_files", "search_text", "read_file", "write_file", "execute_code"}},
-			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text only)"},
+			"action":       map[string]any{"type": "string", "enum": tools.Names()},
+			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search)"},
 			"file_glob":    map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
-			"file_path":    map[string]any{"type": "string", "description": "Relative file path for read_file"},
+			"file_path":    map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
 			"content":      map[string]any{"type": "string", "description": "Content to write (write_file only)"},
 			"command":      map[string]any{"type": "string", "description": "Command/Interpreter to run (execute_code only)"},
 			"args":         map[string]any{"type": "string", "description": "Space-separated arguments (execute_code only)"},
+			"url":          map[string]any{"type": "string", "description": "Absolute http/https URL to fetch (http_fetch only)"},
 		},
-		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args"},
+		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url"},
 		"additionalProperties": false,
 	}
 
@@ -111,6 +118,9 @@ Available actions:
   read_file    – read a specific file's content  (set file_path)
   write_file   – write content to a file         (set file_path, content)
   execute_code – run script execution command    (set command, args; allowed commands: python3, python, go, node, bash, sh)
+  git_diff     – show git diff of the workspace   (optionally set file_path for a single file)
+  http_fetch   – fetch content from a public URL  (set url; private/loopback addresses are blocked)
+  web_search   – search the web for keywords      (set search_query)
 
 Rules:
 1. Analyze the trace and explain why you think it failed in thought_summary.

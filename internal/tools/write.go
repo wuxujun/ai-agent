@@ -19,6 +19,13 @@ func (t *WriteFileTool) Description() string {
 	return "Write content to a file in the workspace"
 }
 
+func (t *WriteFileTool) Parameters() map[string]any {
+	return map[string]any{
+		"path":    map[string]any{"type": "string", "description": "Workspace-relative file path to write"},
+		"content": map[string]any{"type": "string", "description": "Content to write to the file"},
+	}
+}
+
 func (t *WriteFileTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("write_file policy violation: %w", err)

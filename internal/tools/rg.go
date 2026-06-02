@@ -19,6 +19,13 @@ func (t *SearchTextTool) Description() string {
 	return "Search for text matching a regex query in the workspace"
 }
 
+func (t *SearchTextTool) Parameters() map[string]any {
+	return map[string]any{
+		"query": map[string]any{"type": "string", "description": "Regex pattern to search for"},
+		"glob":  map[string]any{"type": "string", "description": "Optional file glob to restrict the search, e.g. *.go"},
+	}
+}
+
 func (t *SearchTextTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("search_text policy violation: %w", err)

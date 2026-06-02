@@ -18,6 +18,12 @@ func (t *FindFilesTool) Description() string {
 	return "Find files matching a pattern in the workspace"
 }
 
+func (t *FindFilesTool) Parameters() map[string]any {
+	return map[string]any{
+		"pattern": map[string]any{"type": "string", "description": "Filename glob pattern, e.g. *.go"},
+	}
+}
+
 func (t *FindFilesTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("find_files policy violation: %w", err)

@@ -267,10 +267,11 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 	return allEvidence
 }
 
-// isReadOnlyAction returns true for actions that do not mutate the workspace.
+// isReadOnlyAction returns true for actions that do not mutate the workspace
+// and are therefore safe to run concurrently in a parallel batch.
 func isReadOnlyAction(action string) bool {
 	switch action {
-	case "find_files", "search_text", "read_file":
+	case "find_files", "search_text", "read_file", "git_diff", "http_fetch", "web_search":
 		return true
 	}
 	return false
@@ -509,6 +510,15 @@ func buildStepQuery(step ResearchStep) string {
 			return fmt.Sprintf("cmd=%q args=%q", step.Command, step.Args)
 		}
 		return fmt.Sprintf("cmd=%q", step.Command)
+	case "git_diff":
+		if step.FilePath != "" {
+			return fmt.Sprintf("path=%q", step.FilePath)
+		}
+		return "workspace"
+	case "http_fetch":
+		return fmt.Sprintf("url=%q", step.URL)
+	case "web_search":
+		return fmt.Sprintf("query=%q", step.SearchQuery)
 	default:
 		return fmt.Sprintf("action=%q", step.Action)
 	}

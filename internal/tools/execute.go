@@ -18,6 +18,13 @@ func (t *ExecuteCodeTool) Description() string {
 	return "Execute a command in the workspace"
 }
 
+func (t *ExecuteCodeTool) Parameters() map[string]any {
+	return map[string]any{
+		"command": map[string]any{"type": "string", "description": "Executable to run; must be on the policy allowlist (e.g. python3, go, bash)"},
+		"args":    map[string]any{"type": "string", "description": "Space-separated arguments passed to the command"},
+	}
+}
+
 func (t *ExecuteCodeTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("execute_code policy violation: %w", err)

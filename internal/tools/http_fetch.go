@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/wuxujun/ai-agent/internal/policy"
 )
 
 type HttpFetchTool struct{}
@@ -18,10 +20,19 @@ func (t *HttpFetchTool) Description() string {
 	return "Fetch content from an HTTP/HTTPS URL"
 }
 
+func (t *HttpFetchTool) Parameters() map[string]any {
+	return map[string]any{
+		"url": map[string]any{"type": "string", "description": "Absolute http/https URL to fetch"},
+	}
+}
+
 func (t *HttpFetchTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	url, _ := params["url"].(string)
 	if url == "" {
 		return nil, fmt.Errorf("url parameter is required")
+	}
+	if err := policy.ValidateURL(url); err != nil {
+		return nil, fmt.Errorf("http_fetch policy violation: %w", err)
 	}
 
 	client := &http.Client{

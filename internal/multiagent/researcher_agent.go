@@ -146,11 +146,45 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 		ev.Observation = fmt.Sprintf("command executed. Output:\n%s", obs)
 
 	default:
-		ev.Observation = fmt.Sprintf("unsupported action %q — skipping", step.Action)
-		ev.Failed = true
-		log.Printf("[ResearcherAgent] Step %s unsupported action: %s", step.ID, step.Action)
+		// Any other action is routed through the tool registry. This lets
+		// multi-agent mode use tools beyond the five handled above (e.g.
+		// git_diff, http_fetch, web_search) and makes future tools work without
+		// editing this switch. The five cases above are kept as-is because they
+		// produce richer per-file Evidence than the generic ToolResult.
+		tool, ok := tools.Get(step.Action)
+		if !ok {
+			ev.Observation = fmt.Sprintf("unsupported action %q — skipping", step.Action)
+			ev.Failed = true
+			log.Printf("[ResearcherAgent] Step %s unsupported action: %s", step.ID, step.Action)
+			break
+		}
+		result, err := tool.Execute(ctx, workspace, stepToParams(step))
+		if err != nil {
+			ev.Observation = fmt.Sprintf("%s error: %v", step.Action, err)
+			ev.Failed = true
+			log.Printf("[ResearcherAgent] Step %s %s error: %v", step.ID, step.Action, err)
+			return ev, nil // non-fatal
+		}
+		ev.Observation = result.Observation
+		ev.Evidence = result.Evidence
 	}
 
 	log.Printf("[ResearcherAgent] Step %s done: %s (evidence=%d)", step.ID, ev.Observation, len(ev.Evidence))
 	return ev, nil
+}
+
+// stepToParams translates a ResearchStep's semantic fields into the generic
+// parameter map expected by tools.Tool.Execute. Every possible key is populated;
+// each tool reads only the keys it needs, so the superset mapping is safe.
+func stepToParams(step ResearchStep) map[string]interface{} {
+	return map[string]interface{}{
+		"pattern": step.FileGlob,    // find_files
+		"glob":    step.FileGlob,    // search_text filter
+		"query":   step.SearchQuery, // search_text / web_search
+		"path":    step.FilePath,    // read_file / write_file / git_diff
+		"content": step.Content,     // write_file
+		"command": step.Command,     // execute_code
+		"args":    step.Args,        // execute_code
+		"url":     step.URL,         // http_fetch
+	}
 }
