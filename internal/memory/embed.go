@@ -8,10 +8,10 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"google.golang.org/genai"
@@ -77,7 +77,7 @@ func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		return nil, err
 	}
 
-	model := os.Getenv("AI_AGENT_EMBEDDING_MODEL")
+	model := config.Get().Embedding.Model
 	if model == "" {
 		model = "text-embedding-004"
 	}
@@ -95,7 +95,7 @@ func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 }
 
 func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConfig) ([]float32, error) {
-	model := os.Getenv("AI_AGENT_EMBEDDING_MODEL")
+	model := config.Get().Embedding.Model
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
@@ -159,7 +159,7 @@ func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 }
 
 func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConfig) ([]float32, error) {
-	model := os.Getenv("AI_AGENT_EMBEDDING_MODEL")
+	model := config.Get().Embedding.Model
 	if model == "" {
 		model = "nomic-embed-text"
 	}

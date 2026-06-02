@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/policy"
@@ -35,12 +35,12 @@ type CreateTaskRequest struct {
 }
 
 func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector) {
-	maxTasks := 10 // default concurrent tasks
-	if s := os.Getenv("AI_AGENT_MAX_CONCURRENT_TASKS"); s != "" {
-		if v, err := strconv.Atoi(s); err == nil && v > 0 {
-			maxTasks = v
-		}
+	cfg := config.Get()
+	maxTasks := cfg.Orchestrator.MaxConcurrentTasks
+	if maxTasks <= 0 {
+		maxTasks = 10
 	}
+	
 	h := &Handler{
 		store:   st,
 		engine:  eng,

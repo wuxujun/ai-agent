@@ -8,6 +8,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/memory"
 )
 
@@ -38,12 +39,15 @@ func TestSearchThirdPartyRAG_GET(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Configure env variables
-	os.Setenv("AI_AGENT_RAG_SEARCH_URL", server.URL)
-	os.Setenv("AI_AGENT_RAG_SEARCH_METHOD", "GET")
+	// Configure config variables
+	cfg := config.Get()
+	originalURL := cfg.RAG.SearchURL
+	originalMethod := cfg.RAG.SearchMethod
+	cfg.RAG.SearchURL = server.URL
+	cfg.RAG.SearchMethod = "GET"
 	defer func() {
-		os.Unsetenv("AI_AGENT_RAG_SEARCH_URL")
-		os.Unsetenv("AI_AGENT_RAG_SEARCH_METHOD")
+		cfg.RAG.SearchURL = originalURL
+		cfg.RAG.SearchMethod = originalMethod
 	}()
 
 	mems, err := memory.SearchThirdPartyRAG(ctx, "test-query")
@@ -92,12 +96,15 @@ func TestSearchThirdPartyRAG_POST_Object(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Configure env variables
-	os.Setenv("AI_AGENT_RAG_SEARCH_URL", server.URL)
-	os.Setenv("AI_AGENT_RAG_SEARCH_METHOD", "POST")
+	// Configure config variables
+	cfg := config.Get()
+	originalURL := cfg.RAG.SearchURL
+	originalMethod := cfg.RAG.SearchMethod
+	cfg.RAG.SearchURL = server.URL
+	cfg.RAG.SearchMethod = "POST"
 	defer func() {
-		os.Unsetenv("AI_AGENT_RAG_SEARCH_URL")
-		os.Unsetenv("AI_AGENT_RAG_SEARCH_METHOD")
+		cfg.RAG.SearchURL = originalURL
+		cfg.RAG.SearchMethod = originalMethod
 	}()
 
 	mems, err := memory.SearchThirdPartyRAG(ctx, "post-query")
@@ -133,8 +140,10 @@ func TestSearchThirdPartyRAG_HttpErrors(t *testing.T) {
 	}))
 	defer server.Close()
 
-	os.Setenv("AI_AGENT_RAG_SEARCH_URL", server.URL)
-	defer os.Unsetenv("AI_AGENT_RAG_SEARCH_URL")
+	cfg := config.Get()
+	originalURL := cfg.RAG.SearchURL
+	cfg.RAG.SearchURL = server.URL
+	defer func() { cfg.RAG.SearchURL = originalURL }()
 
 	_, err := memory.SearchThirdPartyRAG(ctx, "error-query")
 	if err == nil {

@@ -5,21 +5,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"strconv"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/policy"
 )
 
-// toolTimeout returns the command execution timeout from the environment.
-// AI_AGENT_TOOL_TIMEOUT_SECONDS allows operators to tune it; default is 10s.
+// toolTimeout returns the command execution timeout from the configuration.
 func toolTimeout() time.Duration {
-	if s := os.Getenv("AI_AGENT_TOOL_TIMEOUT_SECONDS"); s != "" {
-		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
-			return time.Duration(secs) * time.Second
-		}
+	cfg := config.Get()
+	if cfg.Tool.TimeoutSeconds > 0 {
+		return time.Duration(cfg.Tool.TimeoutSeconds) * time.Second
 	}
 	return 10 * time.Second
 }

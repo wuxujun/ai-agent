@@ -7,11 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"google.golang.org/genai"
 )
@@ -29,68 +28,14 @@ type LLMConfig struct {
 // DefaultLLMConfig builds an LLMConfig from the same environment variables
 // used by the main planner, so no additional configuration is needed.
 func DefaultLLMConfig() LLMConfig {
-	provider := planner.ProviderType(os.Getenv("AI_AGENT_LLM_PROVIDER"))
-	if provider == "" {
-		switch {
-		case os.Getenv("OPENAI_API_KEY") != "":
-			provider = planner.ProviderOpenAIResponses
-		case os.Getenv("GEMINI_API_KEY") != "" || os.Getenv("GOOGLE_API_KEY") != "":
-			provider = planner.ProviderGemini
-		default:
-			provider = planner.ProviderOpenAIResponses
-		}
-	}
-
-	var apiKey string
-	switch provider {
-	case planner.ProviderOpenAI, planner.ProviderOpenAIResponses:
-		apiKey = os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("AI_AGENT_LLM_API_KEY")
-		}
-	case planner.ProviderGemini:
-		apiKey = os.Getenv("GEMINI_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("GOOGLE_API_KEY")
-		}
-		if apiKey == "" {
-			apiKey = os.Getenv("AI_AGENT_LLM_API_KEY")
-		}
-	default:
-		apiKey = os.Getenv("AI_AGENT_LLM_API_KEY")
-	}
-
-	model := os.Getenv("AI_AGENT_LLM_MODEL")
-	if model == "" {
-		switch provider {
-		case planner.ProviderOpenAIResponses:
-			model = "gpt-4.1-mini"
-		case planner.ProviderOpenAI:
-			model = "gpt-4.1-mini"
-		case planner.ProviderGemini:
-			model = "gemini-2.5-flash"
-		default:
-			model = "llama3"
-		}
-	}
-
-	baseURL := os.Getenv("AI_AGENT_LLM_BASE_URL")
-	if baseURL == "" {
-		switch provider {
-		case planner.ProviderOpenAIResponses:
-			baseURL = "https://api.openai.com/v1/responses"
-		case planner.ProviderOpenAI:
-			baseURL = "https://api.openai.com/v1/chat/completions"
-		case planner.ProviderOllama:
-			baseURL = "http://localhost:11434/api/chat"
-		}
-	}
-
-	timeout := 30 * time.Second
-	if s := os.Getenv("AI_AGENT_LLM_TIMEOUT_SECONDS"); s != "" {
-		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
-			timeout = time.Duration(secs) * time.Second
-		}
+	cfg := config.Get()
+	provider := planner.ProviderType(cfg.ResolveLLMProvider())
+	apiKey := cfg.ResolveLLMAPIKey(string(provider))
+	model := cfg.ResolveLLMModel(string(provider))
+	baseURL := cfg.ResolveLLMBaseURL(string(provider))
+	timeout := time.Duration(cfg.LLM.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 30 * time.Second
 	}
 
 	return LLMConfig{

@@ -8,13 +8,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/tools"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -46,14 +45,10 @@ func NewLLMPlanner(apiKey, model, baseURL string) *LLMPlanner {
 }
 
 func NewLLMPlannerWithProvider(provider ProviderType, apiKey, model, baseURL string) *LLMPlanner {
-	// AI_AGENT_LLM_TIMEOUT_SECONDS allows operators to tune the LLM call timeout.
-	// Default is 30s which is generous enough for complex reasoning chains.
-	timeout := 30 * time.Second
-	if s := os.Getenv("AI_AGENT_LLM_TIMEOUT_SECONDS"); s != "" {
-		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
-			timeout = time.Duration(secs) * time.Second
-			log.Printf("[LLM Planner] Using custom LLM timeout: %s", timeout)
-		}
+	cfg := config.Get()
+	timeout := time.Duration(cfg.LLM.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 30 * time.Second
 	}
 	return &LLMPlanner{
 		Provider: provider,

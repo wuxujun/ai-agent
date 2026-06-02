@@ -9,21 +9,23 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
+
+	"github.com/wuxujun/ai-agent/internal/config"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 // SearchThirdPartyRAG queries an external/third-party RAG URL to retrieve relevant historical memories/knowledge.
 func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, error) {
-	ragURL := os.Getenv("AI_AGENT_RAG_SEARCH_URL")
+	cfg := config.Get()
+	ragURL := cfg.RAG.SearchURL
 	if ragURL == "" {
 		return nil, nil // No third-party RAG URL configured
 	}
 
-	method := os.Getenv("AI_AGENT_RAG_SEARCH_METHOD")
+	method := cfg.RAG.SearchMethod
 	if method == "" {
 		method = "GET"
 	}

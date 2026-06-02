@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wuxujun/ai-agent/internal/config"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
 	"github.com/wuxujun/ai-agent/internal/memory"
@@ -72,7 +73,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		var retrievedMems []types.Memory
 
 		// 1. Try querying third-party RAG search URL if configured (query up to 5 candidates)
-		if os.Getenv("AI_AGENT_RAG_SEARCH_URL") != "" {
+	if config.Get().RAG.SearchURL != "" {
 			if extMems, extErr := memory.SearchThirdPartyRAG(ctx, task.Goal); extErr == nil && len(extMems) > 0 {
 				retrievedMems = append(retrievedMems, extMems...)
 				log.Printf("[Engine] Retrieved %d memories from third-party RAG URL for task %s", len(extMems), task.ID)
