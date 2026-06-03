@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 )
@@ -41,9 +40,7 @@ func (t *HttpFetchTool) Execute(ctx context.Context, workspace string, params ma
 		return nil, fmt.Errorf("http_fetch policy violation: %w", err)
 	}
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	client := &http.Client{}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

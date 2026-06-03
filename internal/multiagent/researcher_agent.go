@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/tools"
-	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 // ResearcherAgent executes ResearchSteps using local file-system tools.
@@ -33,141 +31,29 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 		Action:   step.Action,
 	}
 
-	switch step.Action {
-
-	case "find_files":
-		glob := step.FileGlob
-		if glob == "" {
-			glob = "*" // default: all files
-		}
-		files, err := tools.FindFiles(workspace, glob)
-		if err != nil {
-			ev.Observation = fmt.Sprintf("find_files error: %v", err)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s find_files error: %v", step.ID, err)
-			return ev, nil // non-fatal
-		}
-		ev.Observation = fmt.Sprintf("found %d file(s) matching %q", len(files), glob)
-		for _, f := range files {
-			ev.Evidence = append(ev.Evidence, types.Evidence{
-				Path:  f,
-				Lines: []string{"<file found>"},
-				Query: glob,
-			})
-		}
-
-	case "search_text":
-		query := step.SearchQuery
-		if query == "" {
-			ev.Observation = "search_text skipped: empty search_query"
-			ev.Failed = true
-			return ev, nil
-		}
-		evidence, _, err := tools.SearchWithRG(workspace, query, step.FileGlob)
-		if err != nil {
-			ev.Observation = fmt.Sprintf("search_text error: %v", err)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s search_text error: %v", step.ID, err)
-			return ev, nil // non-fatal
-		}
-		ev.Observation = fmt.Sprintf("found %d match(es) for %q", len(evidence), query)
-		ev.Evidence = evidence
-
-	case "read_file":
-		path := step.FilePath
-		if path == "" {
-			ev.Observation = "read_file skipped: empty file_path"
-			ev.Failed = true
-			return ev, nil
-		}
-		// Validate the specific target path.
-		full := filepath.Join(workspace, path)
-		if err := policy.ValidateReadPath(workspace, full); err != nil {
-			ev.Observation = fmt.Sprintf("read_file policy violation: %v", err)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s policy violation: %v", step.ID, err)
-			return ev, nil // non-fatal; report and continue
-		}
-		content, err := tools.ReadFile(workspace, path)
-		if err != nil {
-			ev.Observation = fmt.Sprintf("read_file error: %v", err)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s read_file error: %v", step.ID, err)
-			return ev, nil // non-fatal
-		}
-		ev.Observation = fmt.Sprintf("read %d char(s) from %q", len(content), path)
-		ev.Evidence = []types.Evidence{{
-			Path:  path,
-			Lines: []string{content},
-			Query: path,
-		}}
-
-	case "write_file":
-		path := step.FilePath
-		if path == "" {
-			ev.Observation = "write_file skipped: empty file_path"
-			ev.Failed = true
-			return ev, nil
-		}
-		full := filepath.Join(workspace, path)
-		if err := policy.ValidateWritePath(workspace, full); err != nil {
-			ev.Observation = fmt.Sprintf("write_file policy violation: %v", err)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s policy violation: %v", step.ID, err)
-			return ev, nil
-		}
-		err := tools.WriteFile(workspace, path, step.Content)
-		if err != nil {
-			ev.Observation = fmt.Sprintf("write_file error: %v", err)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s write_file error: %v", step.ID, err)
-			return ev, nil
-		}
-		ev.Observation = fmt.Sprintf("successfully wrote %d char(s) to %q", len(step.Content), path)
-
-	case "execute_code":
-		command := step.Command
-		if command == "" {
-			ev.Observation = "execute_code skipped: empty command"
-			ev.Failed = true
-			return ev, nil
-		}
-		output, err := tools.ExecuteCode(workspace, command, step.Args)
-		if err != nil {
-			ev.Observation = fmt.Sprintf("execute_code error: %v. Output: %s", err, output)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s execute_code error: %v", step.ID, err)
-			return ev, nil
-		}
-		obs := output
-		if len(obs) > 4000 {
-			obs = obs[:4000]
-		}
-		ev.Observation = fmt.Sprintf("command executed. Output:\n%s", obs)
-
-	default:
-		// Any other action is routed through the tool registry. This lets
-		// multi-agent mode use tools beyond the five handled above (e.g.
-		// git_diff, http_fetch, web_search) and makes future tools work without
-		// editing this switch. The five cases above are kept as-is because they
-		// produce richer per-file Evidence than the generic ToolResult.
-		tool, ok := tools.Get(step.Action)
-		if !ok {
-			ev.Observation = fmt.Sprintf("unsupported action %q — skipping", step.Action)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s unsupported action: %s", step.ID, step.Action)
-			break
-		}
-		result, err := tool.Execute(ctx, workspace, stepToParams(step))
-		if err != nil {
-			ev.Observation = fmt.Sprintf("%s error: %v", step.Action, err)
-			ev.Failed = true
-			log.Printf("[ResearcherAgent] Step %s %s error: %v", step.ID, step.Action, err)
-			return ev, nil // non-fatal
-		}
-		ev.Observation = result.Observation
-		ev.Evidence = result.Evidence
+	tool, ok := tools.Get(step.Action)
+	if !ok {
+		ev.Observation = fmt.Sprintf("unsupported action %q — skipping", step.Action)
+		ev.Failed = true
+		log.Printf("[ResearcherAgent] Step %s unsupported action: %s", step.ID, step.Action)
+		return ev, nil
 	}
+
+	params := stepToParams(step)
+	// Apply default for find_files if glob is empty
+	if step.Action == "find_files" && params["pattern"] == "" {
+		params["pattern"] = "*"
+	}
+
+	result, err := tool.Execute(ctx, workspace, params)
+	if err != nil {
+		ev.Observation = fmt.Sprintf("%s error: %v", step.Action, err)
+		ev.Failed = true
+		log.Printf("[ResearcherAgent] Step %s %s error: %v", step.ID, step.Action, err)
+		return ev, nil // non-fatal
+	}
+	ev.Observation = result.Observation
+	ev.Evidence = result.Evidence
 
 	log.Printf("[ResearcherAgent] Step %s done: %s (evidence=%d)", step.ID, ev.Observation, len(ev.Evidence))
 	return ev, nil

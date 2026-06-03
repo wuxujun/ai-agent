@@ -3,6 +3,7 @@ package tools
 import (
 	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -38,7 +39,12 @@ func (t *ReadFileTool) Execute(ctx context.Context, workspace string, params map
 	}
 	return &ToolResult{
 		Query:       path,
-		Observation: "read file content: " + content,
+		Observation: fmt.Sprintf("read %d char(s) from %q", len(content), path),
+		Evidence: []types.Evidence{{
+			Path:  path,
+			Lines: []string{content},
+			Query: path,
+		}},
 	}, nil
 }
 

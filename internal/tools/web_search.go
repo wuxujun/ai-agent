@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 )
 
 type WebSearchTool struct{}
@@ -41,9 +40,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params ma
 
 	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-	}
+	client := &http.Client{}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {

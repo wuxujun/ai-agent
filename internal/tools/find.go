@@ -39,9 +39,18 @@ func (t *FindFilesTool) Execute(ctx context.Context, workspace string, params ma
 	if err != nil {
 		return nil, err
 	}
+	var evidence []types.Evidence
+	for _, f := range files {
+		evidence = append(evidence, types.Evidence{
+			Path:  f,
+			Lines: []string{"<file found>"},
+			Query: pattern,
+		})
+	}
 	return &ToolResult{
 		Query:       pattern,
-		Observation: fmt.Sprintf("found %d candidate files", len(files)),
+		Observation: fmt.Sprintf("found %d candidate files matching %q", len(files), pattern),
+		Evidence:    evidence,
 	}, nil
 }
 

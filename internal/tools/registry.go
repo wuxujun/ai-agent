@@ -41,7 +41,7 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(t Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tools[t.Name()] = t
+	r.tools[t.Name()] = &toolMiddleware{Tool: t}
 }
 
 func (r *Registry) Get(name string) (Tool, bool) {
