@@ -25,17 +25,23 @@ func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fu
 		}
 	} else if task.StepCount == 1 {
 		parts := strings.Fields(task.Goal)
-		q := "TODO"
-		if len(parts) > 0 {
-			q = parts[len(parts)-1]
-		}
-		decision = &PlanDecision{
-			ThoughtSummary: "Search likely keyword in candidate files",
-			Action:         "search_text",
-			Parameters: map[string]any{
-				"query": q,
-				"glob":  "",
-			},
+		if len(parts) == 0 {
+			decision = &PlanDecision{
+				ThoughtSummary: "Goal is empty, stopping",
+				Action:         "stop",
+				Stop:           true,
+				FinalAnswer:    "empty goal provided",
+			}
+		} else {
+			q := parts[len(parts)-1]
+			decision = &PlanDecision{
+				ThoughtSummary: "Search likely keyword in candidate files",
+				Action:         "search_text",
+				Parameters: map[string]any{
+					"query": q,
+					"glob":  "",
+				},
+			}
 		}
 	} else if task.StepCount == 2 && len(task.Trace) >= 2 && len(task.Trace[1].Evidence) > 0 {
 		decision = &PlanDecision{

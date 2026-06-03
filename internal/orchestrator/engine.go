@@ -360,7 +360,11 @@ func stepFindTextFiles(task *types.Task) error {
 }
 
 func stepSearchKeyword(task *types.Task) error {
-	query := lastWord(task.Goal)
+	query, err := lastWord(task.Goal)
+	if err != nil {
+		log.Printf("[Engine Error] Legacy static path - Failed to extract keyword: %v", err)
+		return err
+	}
 	log.Printf("[Engine] Legacy static path - Searching keyword %q for task %s", query, task.ID)
 	task.Hypothesis = "Search the most likely keyword in candidate text files"
 
@@ -421,10 +425,10 @@ func stepReadBestFile(task *types.Task) error {
 	return nil
 }
 
-func lastWord(s string) string {
+func lastWord(s string) (string, error) {
 	parts := strings.Fields(s)
 	if len(parts) == 0 {
-		return "TODO"
+		return "", fmt.Errorf("empty input, cannot extract keyword")
 	}
-	return parts[len(parts)-1]
+	return parts[len(parts)-1], nil
 }
