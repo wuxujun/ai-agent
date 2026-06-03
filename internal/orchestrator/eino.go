@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -176,15 +177,28 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 	log.Printf("[Engine-Eino] Task %s - Executing actions %v", task.ID, actionNames)
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)
+
+	// Count per-action failures. Tool failures are recorded in the traces and
+	// are non-fatal (the executor only returns err on context cancellation), so
+	// we surface them to metrics but keep the task running.
+	failed := countFailedTraces(traces)
+	obsErr := err
+	if obsErr == nil && failed > 0 {
+		obsErr = fmt.Errorf("%d of %d actions failed", failed, len(traces))
+	}
 	if e.Metrics != nil {
-		e.Metrics.ObserveExecutor(time.Since(xStart), err, "batch")
+		e.Metrics.ObserveExecutor(time.Since(xStart), obsErr, "batch")
 	}
 	if err != nil {
-		log.Printf("[Engine-Eino] Executor failed for task %s, actions %v: %v", task.ID, actionNames, err)
+		log.Printf("[Engine-Eino] Executor aborted for task %s, actions %v: %v", task.ID, actionNames, err)
 		return state, err
 	}
 
-	log.Printf("[Engine-Eino] Task %s - Action execution success. %d traces produced", task.ID, len(traces))
+	if failed > 0 {
+		log.Printf("[Engine-Eino] Task %s - %d/%d actions failed; recorded as observations, continuing", task.ID, failed, len(traces))
+	} else {
+		log.Printf("[Engine-Eino] Task %s - Action execution success. %d traces produced", task.ID, len(traces))
+	}
 
 	task.StepCount += len(traces)
 	task.ToolBudget -= len(traces)
@@ -193,4 +207,15 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 
 	log.Printf("[Engine-Eino] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)
 	return state, nil
+}
+
+// countFailedTraces returns how many traces recorded a tool failure.
+func countFailedTraces(traces []types.StepTrace) int {
+	failed := 0
+	for i := range traces {
+		if traces[i].Error != "" {
+			failed++
+		}
+	}
+	return failed
 }

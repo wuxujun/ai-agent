@@ -124,7 +124,8 @@ func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces [
 	defer tx.Rollback()
 
 	// Delete any stale traces beyond the current trace length (e.g. if task was truncated/reset)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = ? AND step >= ?`, taskID, len(traces)); err != nil {
+	// We use step > len(traces) assuming step is 1-indexed, or at least to safely keep current length.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = ? AND step > ?`, taskID, len(traces)); err != nil {
 		return err
 	}
 
@@ -143,6 +144,12 @@ ON CONFLICT(task_id, step) DO UPDATE SET
 	observation = excluded.observation,
 	evidence_json = excluded.evidence_json,
 	agent_role = excluded.agent_role
+WHERE traces.goal != excluded.goal
+   OR traces.action != excluded.action
+   OR traces.query != excluded.query
+   OR traces.observation != excluded.observation
+   OR traces.evidence_json != excluded.evidence_json
+   OR traces.agent_role != excluded.agent_role;
 `, taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole)); err != nil {
 			return err
 		}

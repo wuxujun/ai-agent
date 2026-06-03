@@ -2,11 +2,21 @@ package multiagent
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+func makeTempDir(t *testing.T) string {
+	dir, err := os.MkdirTemp(".", "test_workspace_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
 
 // recordingTool captures the params it was invoked with so the test can assert
 // that ResearcherAgent correctly maps ResearchStep fields onto tool parameters.
@@ -35,7 +45,7 @@ func TestResearcherRoutesUnknownActionThroughRegistry(t *testing.T) {
 	tools.Register(stub) // adds to DefaultRegistry for this test process
 
 	agent := &ResearcherAgent{}
-	ev, err := agent.Research(context.Background(), t.TempDir(), ResearchStep{
+	ev, err := agent.Research(context.Background(), makeTempDir(t), ResearchStep{
 		ID:          "step-1",
 		Description: "drive the stub tool",
 		Action:      "recording_tool",
@@ -72,7 +82,7 @@ func TestResearcherRoutesUnknownActionThroughRegistry(t *testing.T) {
 // action remains a non-fatal failure (unchanged behaviour).
 func TestResearcherStillRejectsUnregisteredAction(t *testing.T) {
 	agent := &ResearcherAgent{}
-	ev, err := agent.Research(context.Background(), t.TempDir(), ResearchStep{
+	ev, err := agent.Research(context.Background(), makeTempDir(t), ResearchStep{
 		ID:     "step-x",
 		Action: "definitely_not_registered",
 	})

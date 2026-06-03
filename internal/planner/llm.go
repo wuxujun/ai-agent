@@ -299,6 +299,28 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 	}
 	sort.Strings(paramKeys)
 
+	// Each element of the actions array mirrors ActionCall (action + parameters).
+	// This MUST stay structurally identical to the OpenAI PlannerDecisionSchema:
+	// PlanDecision unmarshals into Actions []ActionCall, so a singular
+	// action/parameters shape (the previous version) deserialised to zero
+	// actions and failed ValidateDecision on every Gemini turn.
+	actionItem := &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"action": {
+				Type:        genai.TypeString,
+				Enum:        actions,
+				Description: "The single next action to execute. Use none only when stop is true.",
+			},
+			"parameters": {
+				Type:       genai.TypeObject,
+				Properties: paramProps,
+				Required:   paramKeys,
+			},
+		},
+		Required: []string{"action", "parameters"},
+	}
+
 	return &genai.Schema{
 		Type: genai.TypeObject,
 		Properties: map[string]*genai.Schema{
@@ -314,18 +336,13 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 				Type:        genai.TypeString,
 				Description: "If stop is true, provide a concise final answer; otherwise empty string.",
 			},
-			"action": {
-				Type:        genai.TypeString,
-				Enum:        actions,
-				Description: "The single next action to execute. Use none only when stop is true.",
-			},
-			"parameters": {
-				Type:       genai.TypeObject,
-				Properties: paramProps,
-				Required:   paramKeys,
+			"actions": {
+				Type:        genai.TypeArray,
+				Description: "One or more independent tool actions to execute in parallel. If no tools are needed, use a single 'none' action.",
+				Items:       actionItem,
 			},
 		},
-		Required: []string{"thought_summary", "stop", "final_answer", "action", "parameters"},
+		Required: []string{"thought_summary", "stop", "final_answer", "actions"},
 	}
 }
 

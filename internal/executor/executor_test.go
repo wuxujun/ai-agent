@@ -16,7 +16,7 @@ func TestExecutorWriteFileAndExecuteCode(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Create a temp directory as workspace
-	tmpDir, err := os.MkdirTemp("", "executor_test_workspace")
+	tmpDir, err := os.MkdirTemp(".", "executor_test_workspace")
 	if err != nil {
 		t.Fatalf("failed to create temp workspace: %v", err)
 	}
@@ -101,5 +101,47 @@ func TestExecutorWriteFileAndExecuteCode(t *testing.T) {
 	}
 	if !strings.Contains(trace2.Observation, "Hello from executed code!") {
 		t.Errorf("expected observation to contain stdout, got: %q", trace2.Observation)
+	}
+}
+
+// TestExecutorPartialFailureIsNonFatal verifies that a failing action no longer
+// aborts the whole step: the failure is recorded in its trace (Error set) while
+// sibling successes are preserved, and Execute returns no error.
+func TestExecutorPartialFailureIsNonFatal(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir, err := os.MkdirTemp(".", "executor_partial_fail")
+	if err != nil {
+		t.Fatalf("failed to create temp workspace: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	execInst := &executor.DefaultExecutor{}
+	task := &types.Task{ID: "partial-fail-task", Workspace: tmpDir, Status: types.StatusRunning}
+
+	dec := &planner.PlanDecision{
+		Actions: []planner.ActionCall{
+			{Action: "definitely_not_a_tool", Parameters: map[string]any{}},
+			{Action: "write_file", Parameters: map[string]any{
+				"path": "ok.txt", "content": "fine\n",
+			}},
+		},
+	}
+
+	traces, err := execInst.Execute(ctx, task, dec)
+	if err != nil {
+		t.Fatalf("partial failure must not return a fatal error, got: %v", err)
+	}
+	if len(traces) != 2 {
+		t.Fatalf("expected 2 traces (index-aligned with actions), got %d", len(traces))
+	}
+	if traces[0].Error == "" {
+		t.Error("expected failed action trace to carry an Error")
+	}
+	if traces[1].Error != "" {
+		t.Errorf("expected sibling success to have no Error, got %q", traces[1].Error)
+	}
+	if !strings.Contains(traces[1].Observation, "successfully wrote") {
+		t.Errorf("expected sibling success observation, got %q", traces[1].Observation)
 	}
 }

@@ -23,7 +23,7 @@ var allowedCommands = map[string]bool{
 
 func ValidateWorkspace(root string) error {
 	cleanRaw := filepath.Clean(root)
-	if cleanRaw == "." || cleanRaw == "/" {
+	if cleanRaw == "." {
 		return errors.New("workspace too broad")
 	}
 	if strings.Contains(cleanRaw, "..") {
@@ -34,15 +34,35 @@ func ValidateWorkspace(root string) error {
 	if err != nil {
 		return err
 	}
+
 	eval, err := filepath.EvalSymlinks(abs)
 	if err != nil {
+		// If path does not exist yet, we can't eval symlinks fully,
+		// but we still clean it.
 		eval = filepath.Clean(abs)
+	} else {
+		eval = filepath.Clean(eval)
 	}
 
-	cleanAbs := filepath.Clean(eval)
-	if cleanAbs == "/" {
+	if eval == "/" {
 		return errors.New("workspace too broad")
 	}
+
+	// 强制限制 Workspace 必须在当前应用的执行目录下
+	// 避免传入通过软链接逃逸出项目根目录的恶意路径
+	cwd, err := filepath.Abs(".")
+	if err != nil {
+		return err
+	}
+	cwdEval, err := filepath.EvalSymlinks(cwd)
+	if err == nil {
+		cwd = filepath.Clean(cwdEval)
+	}
+
+	if eval != cwd && !strings.HasPrefix(eval, cwd+string(filepath.Separator)) {
+		return errors.New("workspace escapes application root directory")
+	}
+
 	return nil
 }
 

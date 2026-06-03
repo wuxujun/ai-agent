@@ -2,6 +2,7 @@ package multiagent_test
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -9,13 +10,22 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+func makeTempDir(t *testing.T) string {
+	dir, err := os.MkdirTemp(".", "test_workspace_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 // ── ResearcherAgent tests ─────────────────────────────────────────────────────
 
 func TestResearcherAgent_FindFiles(t *testing.T) {
 	t.Parallel()
 
 	agent := &multiagent.ResearcherAgent{}
-	ev, err := agent.Research(context.Background(), t.TempDir(), multiagent.ResearchStep{
+	ev, err := agent.Research(context.Background(), makeTempDir(t), multiagent.ResearchStep{
 		ID:          "step-1",
 		Description: "find all .go files",
 		Action:      "find_files",
@@ -41,7 +51,7 @@ func TestResearcherAgent_SearchText(t *testing.T) {
 	t.Parallel()
 
 	agent := &multiagent.ResearcherAgent{}
-	ev, err := agent.Research(context.Background(), t.TempDir(), multiagent.ResearchStep{
+	ev, err := agent.Research(context.Background(), makeTempDir(t), multiagent.ResearchStep{
 		ID:          "step-2",
 		Description: "search for TODO",
 		Action:      "search_text",
@@ -60,7 +70,7 @@ func TestResearcherAgent_ReadFile_Empty(t *testing.T) {
 	t.Parallel()
 
 	agent := &multiagent.ResearcherAgent{}
-	ev, err := agent.Research(context.Background(), t.TempDir(), multiagent.ResearchStep{
+	ev, err := agent.Research(context.Background(), makeTempDir(t), multiagent.ResearchStep{
 		ID:       "step-3",
 		Action:   "read_file",
 		FilePath: "", // empty → should skip gracefully
@@ -82,7 +92,7 @@ func TestResearcherAgent_PolicyViolation(t *testing.T) {
 
 	agent := &multiagent.ResearcherAgent{}
 	// Try to read a file outside the workspace (path traversal).
-	ev, err := agent.Research(context.Background(), t.TempDir(), multiagent.ResearchStep{
+	ev, err := agent.Research(context.Background(), makeTempDir(t), multiagent.ResearchStep{
 		ID:       "step-4",
 		Action:   "read_file",
 		FilePath: "../../etc/passwd",
@@ -103,7 +113,7 @@ func TestResearcherAgent_PolicyViolation(t *testing.T) {
 func TestResearcherAgent_WriteFileAndExecuteCode(t *testing.T) {
 	t.Parallel()
 
-	tmpDir := t.TempDir()
+	tmpDir := makeTempDir(t)
 	agent := &multiagent.ResearcherAgent{}
 
 	// 1. Test write_file
@@ -141,7 +151,7 @@ func TestResearcherAgent_UnsupportedAction(t *testing.T) {
 	t.Parallel()
 
 	agent := &multiagent.ResearcherAgent{}
-	ev, err := agent.Research(context.Background(), t.TempDir(), multiagent.ResearchStep{
+	ev, err := agent.Research(context.Background(), makeTempDir(t), multiagent.ResearchStep{
 		ID:     "step-5",
 		Action: "unknown_action",
 	})

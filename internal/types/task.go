@@ -29,6 +29,10 @@ type StepTrace struct {
 	Query       string     `json:"query"`
 	Observation string     `json:"observation"`
 	Evidence    []Evidence `json:"evidence"`
+	// Error holds the failure reason when this action failed. It is empty for
+	// successful actions. A non-empty Error means the step was recorded as an
+	// observation for the planner to react to, rather than aborting the task.
+	Error string `json:"error,omitempty"`
 	// AgentRole identifies the agent that produced this trace entry.
 	// Empty for single-agent (legacy/eino/adk) modes; set in multi-agent mode.
 	AgentRole  AgentRole  `json:"agent_role,omitempty"`

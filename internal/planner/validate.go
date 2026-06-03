@@ -4,25 +4,26 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/wuxujun/ai-agent/internal/tools"
 )
 
 func ValidateDecision(d *PlanDecision) error {
-	valid := map[string]bool{
-		"find_files":   true,
-		"search_text":  true,
-		"read_file":    true,
-		"write_file":   true,
-		"execute_code": true,
-		"none":         true,
-	}
-
 	if len(d.Actions) == 0 {
 		return errors.New("decision must contain at least one action")
 	}
 
 	for _, ac := range d.Actions {
-		if !valid[ac.Action] {
-			return fmt.Errorf("invalid action: %s", ac.Action)
+		// "none" is the sentinel stop action and is never a registered tool.
+		// Every other action must correspond to a tool in the registry, so the
+		// set of valid actions stays in lock-step with PlannerDecisionSchema
+		// (both derive from tools.DefaultRegistry). Hardcoding the list here
+		// previously let the schema offer tools (git_diff/http_fetch/web_search)
+		// that the validator then rejected, failing the whole task.
+		if ac.Action != "none" {
+			if _, ok := tools.Get(ac.Action); !ok {
+				return fmt.Errorf("invalid action: %s", ac.Action)
+			}
 		}
 
 		if d.Stop && ac.Action != "none" {

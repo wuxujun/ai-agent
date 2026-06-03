@@ -212,10 +212,7 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 			apiKey = os.Getenv("GOOGLE_API_KEY")
 		}
 		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI_API_KEY")
-		}
-		if apiKey == "" {
-			return nil, fmt.Errorf("GEMINI_API_KEY, GOOGLE_API_KEY, or OPENAI_API_KEY is required for ADK mode")
+			return nil, fmt.Errorf("GEMINI_API_KEY or GOOGLE_API_KEY is required for ADK mode")
 		}
 
 		modelName := os.Getenv("GEMINI_MODEL")

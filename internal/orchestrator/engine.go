@@ -76,7 +76,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		var retrievedMems []types.Memory
 
 		// 1. Try querying third-party RAG search URL if configured (query up to 5 candidates)
-	if config.Get().RAG.SearchURL != "" {
+		if config.Get().RAG.SearchURL != "" {
 			if extMems, extErr := memory.SearchThirdPartyRAG(ctx, task.Goal); extErr == nil && len(extMems) > 0 {
 				retrievedMems = append(retrievedMems, extMems...)
 				log.Printf("[Engine] Retrieved %d memories from third-party RAG URL for task %s", len(extMems), task.ID)
@@ -231,17 +231,31 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	log.Printf("[Engine] Task %s - Executing actions %v", task.ID, actionNames)
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)
+
+	// Tool failures are recorded in the traces and are non-fatal (the executor
+	// only returns err on context cancellation); surface them to metrics but
+	// keep the task running so the planner can observe and recover next turn.
+	failed := countFailedTraces(traces)
+	obsErr := err
+	if obsErr == nil && failed > 0 {
+		obsErr = fmt.Errorf("%d of %d actions failed", failed, len(traces))
+	}
 	if e.Metrics != nil {
-		e.Metrics.ObserveExecutor(time.Since(xStart), err, "batch")
+		e.Metrics.ObserveExecutor(time.Since(xStart), obsErr, "batch")
 	}
 	if err != nil {
-		log.Printf("[Engine Error] Executor failed for task %s, actions %v: %v", task.ID, actionNames, err)
+		log.Printf("[Engine Error] Executor aborted for task %s, actions %v: %v", task.ID, actionNames, err)
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "executor failure")
+		span.SetStatus(codes.Error, "executor aborted")
 		return err
 	}
 
-	log.Printf("[Engine] Task %s - Action execution success. %d traces produced", task.ID, len(traces))
+	if failed > 0 {
+		log.Printf("[Engine] Task %s - %d/%d actions failed; recorded as observations, continuing", task.ID, failed, len(traces))
+		span.SetAttributes(attribute.Int("agent.executor.failed_actions", failed))
+	} else {
+		log.Printf("[Engine] Task %s - Action execution success. %d traces produced", task.ID, len(traces))
+	}
 
 	task.StepCount += len(traces)
 	task.ToolBudget -= len(traces)

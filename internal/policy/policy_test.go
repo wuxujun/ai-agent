@@ -18,7 +18,9 @@ func TestValidateWorkspace(t *testing.T) {
 	}
 
 	// 2. Valid workspaces
-	tmpDir := t.TempDir()
+	cwd, _ := os.Getwd()
+	tmpDir, _ := os.MkdirTemp(cwd, "test_workspace_*")
+	defer os.RemoveAll(tmpDir)
 	if err := policy.ValidateWorkspace(tmpDir); err != nil {
 		t.Errorf("unexpected error for valid temp workspace: %v", err)
 	}

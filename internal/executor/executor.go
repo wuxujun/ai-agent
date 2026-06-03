@@ -34,18 +34,18 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 		attribute.Int("agent.executor.parallel_actions", len(d.Actions)),
 	)
 
-	type result struct {
-		trace types.StepTrace
-		err   error
-	}
-	results := make([]result, len(d.Actions))
+	// Each goroutine owns a distinct index, so writing into the pre-sized slice
+	// needs no extra synchronisation. A failed action is NOT discarded: its
+	// failure is captured in the trace (Observation + Error) so the planner can
+	// observe it next turn and adapt, while sibling successes are preserved.
+	traces := make([]types.StepTrace, len(d.Actions))
 
 	var wg sync.WaitGroup
 	for i, ac := range d.Actions {
 		wg.Add(1)
 		go func(idx int, actionCall planner.ActionCall) {
 			defer wg.Done()
-			
+
 			tCtx, tSpan := tracer.Start(ctx, "executor.execute_action")
 			defer tSpan.End()
 			tSpan.SetAttributes(attribute.String("action", actionCall.Action))
@@ -61,7 +61,9 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 				err := fmt.Errorf("unsupported action: %s", actionCall.Action)
 				tSpan.RecordError(err)
 				tSpan.SetStatus(codes.Error, "unsupported action")
-				results[idx] = result{trace: tr, err: err}
+				tr.Error = err.Error()
+				tr.Observation = "error: " + err.Error()
+				traces[idx] = tr
 				return
 			}
 
@@ -69,31 +71,40 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 			if err != nil {
 				tSpan.RecordError(err)
 				tSpan.SetStatus(codes.Error, actionCall.Action+" failed")
-				results[idx] = result{trace: tr, err: err}
+				tr.Error = err.Error()
+				tr.Observation = "error: " + err.Error()
+				traces[idx] = tr
 				return
 			}
 
 			tr.Query = res.Query
 			tr.Observation = res.Observation
 			tr.Evidence = res.Evidence
-			results[idx] = result{trace: tr, err: nil}
+			traces[idx] = tr
 		}(i, ac)
 	}
 	wg.Wait()
 
-	var traces []types.StepTrace
-	var firstErr error
-	for _, res := range results {
-		if res.err != nil && firstErr == nil {
-			firstErr = res.err
+	failed := 0
+	for i := range traces {
+		if traces[i].Error != "" {
+			failed++
 		}
-		traces = append(traces, res.trace)
+	}
+	span.SetAttributes(
+		attribute.Int("agent.executor.failed_actions", failed),
+		attribute.Int("agent.executor.total_actions", len(traces)),
+	)
+	if failed > 0 {
+		span.SetStatus(codes.Error, fmt.Sprintf("%d of %d actions failed", failed, len(traces)))
 	}
 
-	if firstErr != nil {
-		span.RecordError(firstErr)
-		span.SetStatus(codes.Error, "one or more actions failed")
-		return traces, firstErr
+	// Tool-level failures are observations, not task failures. The only fatal
+	// condition is context cancellation/deadline, which must propagate so the
+	// orchestrator can stop the run instead of looping.
+	if cerr := ctx.Err(); cerr != nil {
+		span.RecordError(cerr)
+		return traces, cerr
 	}
 
 	return traces, nil
