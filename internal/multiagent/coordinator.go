@@ -130,14 +130,18 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 				break
 			}
 
-			// Record planner trace
+			if c.Metrics != nil {
+				c.Metrics.ObserveTokens(newPlan.TokenUsage.PromptTokens, newPlan.TokenUsage.CompletionTokens, newPlan.TokenUsage.TotalTokens, "replanner")
+			}
+			// Record the re-plan trace so the writer knows the plan changed.
 			task.Trace = append(task.Trace, types.StepTrace{
 				Step:        task.StepCount,
 				Goal:        task.Goal,
 				Action:      "plan",
 				Query:       "replanner",
-				Observation: fmt.Sprintf("[replanner] %s — %d additional step(s) planned", newPlan.ThoughtSummary, len(newPlan.Steps)),
+				Observation: fmt.Sprintf("[replanner] %s — %d replacement step(s) planned", newPlan.ThoughtSummary, len(newPlan.Steps)),
 				AgentRole:   RolePlanner,
+				TokenUsage:  newPlan.TokenUsage,
 			})
 			task.StepCount++
 
@@ -175,6 +179,9 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 		return nil, fmt.Errorf("PlannerAgent: %w", err)
 	}
 
+	if c.Metrics != nil {
+		c.Metrics.ObserveTokens(plan.TokenUsage.PromptTokens, plan.TokenUsage.CompletionTokens, plan.TokenUsage.TotalTokens, "planner")
+	}
 	task.Hypothesis = plan.ThoughtSummary
 	task.Trace = append(task.Trace, types.StepTrace{
 		Step:      task.StepCount,
@@ -184,6 +191,7 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 		Observation: fmt.Sprintf("[planner] %s — %d step(s) planned",
 			plan.ThoughtSummary, len(plan.Steps)),
 		AgentRole: RolePlanner,
+		TokenUsage: plan.TokenUsage,
 	})
 	task.StepCount++
 	task.Status = types.StatusRunning
@@ -205,8 +213,12 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 
 	for len(currentSteps) > 0 {
 		// Budget and step-count gate
-		if task.ToolBudget <= 0 {
-			log.Printf("[Coordinator] Tool budget exhausted — stopping research early")
+		totalTokens := 0
+		for _, tr := range task.Trace {
+			totalTokens += tr.TokenUsage.TotalTokens
+		}
+		if task.ToolBudget <= 0 || (task.TokenBudget > 0 && totalTokens >= task.TokenBudget) {
+			log.Printf("[Coordinator] Budget exhausted (tools or tokens) — stopping research early")
 			break
 		}
 		if task.StepCount >= task.MaxSteps {
@@ -477,14 +489,18 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 		return "low", err
 	}
 
+	if c.Metrics != nil {
+		c.Metrics.ObserveTokens(output.TokenUsage.PromptTokens, output.TokenUsage.CompletionTokens, output.TokenUsage.TotalTokens, "writer")
+	}
+
 	task.Trace = append(task.Trace, types.StepTrace{
-		Step:  task.StepCount,
-		Goal:  task.Goal,
-		Action: "write",
-		Query:  "writer",
-		Observation: fmt.Sprintf("[writer] confidence=%s | %s",
-			output.Confidence, output.EvidenceSummary),
-		AgentRole: RoleWriter,
+		Step:        task.StepCount,
+		Goal:        task.Goal,
+		Action:      "write",
+		Query:       "writer",
+		Observation: fmt.Sprintf("[writer] Confidence: %s | Summary: %s", output.Confidence, output.EvidenceSummary),
+		AgentRole:   RoleWriter,
+		TokenUsage:  output.TokenUsage,
 	})
 	task.StepCount++
 	task.Status = types.StatusCompleted

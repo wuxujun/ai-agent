@@ -141,8 +141,14 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		attribute.String("agent.orchestrator", "legacy"),
 	)
 
-	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
-		log.Printf("[Engine] Task %s reached step limit (%d/%d) or budget limit (%d)", task.ID, task.StepCount, task.MaxSteps, task.ToolBudget)
+	totalTokens := 0
+	for _, tr := range task.Trace {
+		totalTokens += tr.TokenUsage.TotalTokens
+	}
+
+	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 || (task.TokenBudget > 0 && totalTokens >= task.TokenBudget) {
+		log.Printf("[Engine] Task %s reached limit: steps(%d/%d) budget(%d) tokens(%d/%d)",
+			task.ID, task.StepCount, task.MaxSteps, task.ToolBudget, totalTokens, task.TokenBudget)
 		finalAnswer := task.FinalAnswer
 		if finalAnswer == "" {
 			finalAnswer = "stopped by budget or max steps"
@@ -167,6 +173,15 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		return err
 	}
 
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(
+			decision.TokenUsage.PromptTokens,
+			decision.TokenUsage.CompletionTokens,
+			decision.TokenUsage.TotalTokens,
+			"planner",
+		)
+	}
+
 	log.Printf("[Engine] Task %s - Planner thought: %q | Action chosen: %q", task.ID, decision.ThoughtSummary, decision.Action)
 
 	task.Hypothesis = decision.ThoughtSummary
@@ -177,6 +192,12 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 
 	if decision.Stop {
 		log.Printf("[Engine] Task %s - Planner decided to stop. FinalAnswer: %q", task.ID, decision.FinalAnswer)
+		task.Trace = append(task.Trace, types.StepTrace{
+			Step:        task.StepCount + 1,
+			Action:      "stop",
+			Observation: decision.FinalAnswer,
+			TokenUsage:  decision.TokenUsage,
+		})
 		_ = SetTaskCompleted(task, decision.FinalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
@@ -212,6 +233,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 
 	task.StepCount++
 	task.ToolBudget--
+	trace.TokenUsage = decision.TokenUsage
 	task.Trace = append(task.Trace, *trace)
 	_ = SetTaskRunning(task)
 

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 // LLMProvider is the plugin interface for LLM backends.
@@ -18,8 +20,8 @@ type LLMProvider interface {
 	BuildRequest(ctx context.Context, client *http.Client, model, apiKey, baseURL, systemPrompt, userPrompt string, schema map[string]any) (*http.Request, ResponseParser, error)
 }
 
-// ResponseParser extracts the text content from the raw HTTP response body.
-type ResponseParser func(raw []byte) (string, error)
+// ResponseParser extracts the text content and token usage from the raw HTTP response body.
+type ResponseParser func(raw []byte) (string, types.TokenUsage, error)
 
 // providerRegistry maps provider names to their implementations.
 var providerRegistry = map[ProviderType]LLMProvider{}
@@ -82,12 +84,27 @@ func (p *openAIResponsesProvider) BuildRequest(ctx context.Context, client *http
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	parser := func(raw []byte) (string, error) {
+	parser := func(raw []byte) (string, types.TokenUsage, error) {
 		var m map[string]any
+		var usage types.TokenUsage
 		if err := json.Unmarshal(raw, &m); err != nil {
-			return "", err
+			return "", usage, err
 		}
-		return extractStructuredText(m)
+		
+		if u, ok := m["usage"].(map[string]any); ok {
+			if p, ok := u["prompt_tokens"].(float64); ok {
+				usage.PromptTokens = int(p)
+			}
+			if c, ok := u["completion_tokens"].(float64); ok {
+				usage.CompletionTokens = int(c)
+			}
+			if t, ok := u["total_tokens"].(float64); ok {
+				usage.TotalTokens = int(t)
+			}
+		}
+
+		txt, err := extractStructuredText(m)
+		return txt, usage, err
 	}
 	return req, parser, nil
 }
@@ -127,22 +144,32 @@ func (p *openAIChatProvider) BuildRequest(ctx context.Context, client *http.Clie
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	parser := func(raw []byte) (string, error) {
+	parser := func(raw []byte) (string, types.TokenUsage, error) {
 		type chatResponse struct {
 			Choices []struct {
 				Message struct {
 					Content string `json:"content"`
 				} `json:"message"`
 			} `json:"choices"`
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
 		}
 		var r chatResponse
+		var usage types.TokenUsage
 		if err := json.Unmarshal(raw, &r); err != nil {
-			return "", err
+			return "", usage, err
 		}
+		usage.PromptTokens = r.Usage.PromptTokens
+		usage.CompletionTokens = r.Usage.CompletionTokens
+		usage.TotalTokens = r.Usage.TotalTokens
+
 		if len(r.Choices) == 0 {
-			return "", errors.New("empty choices in OpenAI response")
+			return "", usage, errors.New("empty choices in OpenAI response")
 		}
-		return r.Choices[0].Message.Content, nil
+		return r.Choices[0].Message.Content, usage, nil
 	}
 	return req, parser, nil
 }
@@ -176,17 +203,24 @@ func (p *ollamaProvider) BuildRequest(ctx context.Context, client *http.Client, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	parser := func(raw []byte) (string, error) {
+	parser := func(raw []byte) (string, types.TokenUsage, error) {
 		type ollamaResp struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			PromptEvalCount int `json:"prompt_eval_count"`
+			EvalCount       int `json:"eval_count"`
 		}
 		var r ollamaResp
+		var usage types.TokenUsage
 		if err := json.Unmarshal(raw, &r); err != nil {
-			return "", err
+			return "", usage, err
 		}
-		return r.Message.Content, nil
+		usage.PromptTokens = r.PromptEvalCount
+		usage.CompletionTokens = r.EvalCount
+		usage.TotalTokens = r.PromptEvalCount + r.EvalCount
+
+		return r.Message.Content, usage, nil
 	}
 	return req, parser, nil
 }

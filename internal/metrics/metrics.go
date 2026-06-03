@@ -23,6 +23,9 @@ type Snapshot struct {
 	RunAllCalls        int64         `json:"run_all_calls"`
 	TasksCompleted     int64         `json:"tasks_completed"`
 	FallbackHits       int64         `json:"fallback_hits"`
+	PromptTokens       int64         `json:"prompt_tokens"`
+	CompletionTokens   int64         `json:"completion_tokens"`
+	TotalTokens        int64         `json:"total_tokens"`
 }
 
 type Collector struct {
@@ -44,6 +47,10 @@ type Collector struct {
 	runAllCalls    api.Int64Counter
 	tasksCompleted api.Int64Counter
 	fallbackHits   api.Int64Counter
+
+	promptTokens     api.Int64Counter
+	completionTokens api.Int64Counter
+	totalTokens      api.Int64Counter
 }
 
 func NewCollector() *Collector {
@@ -65,6 +72,10 @@ func NewCollector() *Collector {
 	tasksCompleted, _ := meter.Int64Counter("agent.tasks.completed")
 	fallbackHits, _ := meter.Int64Counter("agent.planner.fallback_hits")
 
+	promptTokens, _ := meter.Int64Counter("agent.tokens.prompt")
+	completionTokens, _ := meter.Int64Counter("agent.tokens.completion")
+	totalTokens, _ := meter.Int64Counter("agent.tokens.total")
+
 	return &Collector{
 		plannerCalls:      plannerCalls,
 		plannerFailures:   plannerFailures,
@@ -78,6 +89,9 @@ func NewCollector() *Collector {
 		runAllCalls:       runAllCalls,
 		tasksCompleted:    tasksCompleted,
 		fallbackHits:      fallbackHits,
+		promptTokens:      promptTokens,
+		completionTokens:  completionTokens,
+		totalTokens:       totalTokens,
 	}
 }
 
@@ -158,6 +172,20 @@ func (c *Collector) IncFallbackHit() {
 	c.mu.Unlock()
 
 	c.fallbackHits.Add(context.Background(), 1)
+}
+
+func (c *Collector) ObserveTokens(prompt, completion, total int, role string) {
+	c.mu.Lock()
+	c.s.PromptTokens += int64(prompt)
+	c.s.CompletionTokens += int64(completion)
+	c.s.TotalTokens += int64(total)
+	c.mu.Unlock()
+
+	ctx := context.Background()
+	attrs := api.WithAttributes(attribute.String("role", role))
+	c.promptTokens.Add(ctx, int64(prompt), attrs)
+	c.completionTokens.Add(ctx, int64(completion), attrs)
+	c.totalTokens.Add(ctx, int64(total), attrs)
 }
 
 func (c *Collector) Snapshot() Snapshot {

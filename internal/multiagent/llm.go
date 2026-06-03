@@ -12,6 +12,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"google.golang.org/genai"
 )
 
@@ -50,7 +51,8 @@ func DefaultLLMConfig() LLMConfig {
 // callLLMJSON sends a system+user prompt to the configured LLM and unmarshals
 // the JSON response into dest. schema describes the expected JSON structure for
 // providers that support structured output (OpenAI json_schema, Ollama format).
-func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) error {
+// It returns TokenUsage and error.
+func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
 	if cfg.Provider == planner.ProviderGemini {
 		return callGeminiJSON(ctx, cfg, systemPrompt, userPrompt, dest)
 	}
@@ -59,10 +61,11 @@ func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt st
 
 // ── Gemini path ──────────────────────────────────────────────────────────────
 
-func callGeminiJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, dest any) error {
+func callGeminiJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, dest any) (types.TokenUsage, error) {
+	var usage types.TokenUsage
 	client, err := planner.GetGeminiClient(cfg.APIKey, cfg.BaseURL)
 	if err != nil {
-		return fmt.Errorf("gemini client: %w", err)
+		return usage, fmt.Errorf("gemini client: %w", err)
 	}
 
 	contents := []*genai.Content{
@@ -77,19 +80,26 @@ func callGeminiJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt
 
 	resp, err := client.Models.GenerateContent(ctx, cfg.Model, contents, genCfg)
 	if err != nil {
-		return fmt.Errorf("gemini generate: %w", err)
+		return usage, fmt.Errorf("gemini generate: %w", err)
 	}
-	return parseJSONInto(resp.Text(), dest)
+
+	if resp.UsageMetadata != nil {
+		usage.PromptTokens = int(resp.UsageMetadata.PromptTokenCount)
+		usage.CompletionTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+		usage.TotalTokens = int(resp.UsageMetadata.TotalTokenCount)
+	}
+
+	return usage, parseJSONInto(resp.Text(), dest)
 }
 
 // ── HTTP path (OpenAI / Ollama) ──────────────────────────────────────────────
 
-func callHTTPJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) error {
+func callHTTPJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
 	client := &http.Client{Timeout: cfg.Timeout}
 
 	var (
 		reqBody     map[string]any
-		extractText func([]byte) (string, error)
+		extractText func([]byte) (string, types.TokenUsage, error)
 	)
 
 	switch cfg.Provider {
@@ -142,17 +152,17 @@ func callHTTPJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt s
 		extractText = extractOllamaText
 
 	default:
-		return fmt.Errorf("unsupported provider: %s", cfg.Provider)
+		return types.TokenUsage{}, fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}
 
 	b, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("marshal request: %w", err)
+		return types.TokenUsage{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", cfg.BaseURL, bytes.NewReader(b))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return types.TokenUsage{}, fmt.Errorf("build request: %w", err)
 	}
 	if cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
@@ -161,26 +171,26 @@ func callHTTPJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt s
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("http request: %w", err)
+		return types.TokenUsage{}, fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
 		var buf bytes.Buffer
 		_, _ = buf.ReadFrom(resp.Body)
-		return fmt.Errorf("LLM API status %d: %s", resp.StatusCode, buf.String())
+		return types.TokenUsage{}, fmt.Errorf("LLM API status %d: %s", resp.StatusCode, buf.String())
 	}
 
 	var rawBody bytes.Buffer
 	if _, err := rawBody.ReadFrom(resp.Body); err != nil {
-		return fmt.Errorf("read body: %w", err)
+		return types.TokenUsage{}, fmt.Errorf("read body: %w", err)
 	}
 
-	text, err := extractText(rawBody.Bytes())
+	text, usage, err := extractText(rawBody.Bytes())
 	if err != nil {
-		return fmt.Errorf("extract text: %w", err)
+		return usage, fmt.Errorf("extract text: %w", err)
 	}
-	return parseJSONInto(text, dest)
+	return usage, parseJSONInto(text, dest)
 }
 
 // ── response parsers ─────────────────────────────────────────────────────────
@@ -200,14 +210,27 @@ func parseJSONInto(text string, dest any) error {
 	return fmt.Errorf("could not parse JSON from LLM response: %q", text)
 }
 
-func extractResponsesText(raw []byte) (string, error) {
+func extractResponsesText(raw []byte) (string, types.TokenUsage, error) {
 	var m map[string]any
+	var usage types.TokenUsage
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return "", err
+		return "", usage, err
 	}
+	if u, ok := m["usage"].(map[string]any); ok {
+		if p, ok := u["prompt_tokens"].(float64); ok {
+			usage.PromptTokens = int(p)
+		}
+		if c, ok := u["completion_tokens"].(float64); ok {
+			usage.CompletionTokens = int(c)
+		}
+		if t, ok := u["total_tokens"].(float64); ok {
+			usage.TotalTokens = int(t)
+		}
+	}
+
 	output, ok := m["output"].([]any)
 	if !ok || len(output) == 0 {
-		return "", errors.New("missing output field in responses response")
+		return "", usage, errors.New("missing output field in responses response")
 	}
 	for _, item := range output {
 		obj, ok := item.(map[string]any)
@@ -224,38 +247,55 @@ func extractResponsesText(raw []byte) (string, error) {
 				continue
 			}
 			if txt, ok := part["text"].(string); ok && txt != "" {
-				return txt, nil
+				return txt, usage, nil
 			}
 		}
 	}
-	return "", errors.New("text not found in responses output")
+	return "", usage, errors.New("text not found in responses output")
 }
 
-func extractChatText(raw []byte) (string, error) {
+func extractChatText(raw []byte) (string, types.TokenUsage, error) {
 	var m struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
+	var usage types.TokenUsage
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return "", err
+		return "", usage, err
 	}
+	usage.PromptTokens = m.Usage.PromptTokens
+	usage.CompletionTokens = m.Usage.CompletionTokens
+	usage.TotalTokens = m.Usage.TotalTokens
+
 	if len(m.Choices) == 0 {
-		return "", errors.New("empty choices in chat response")
+		return "", usage, errors.New("empty choices in chat response")
 	}
-	return m.Choices[0].Message.Content, nil
+	return m.Choices[0].Message.Content, usage, nil
 }
 
-func extractOllamaText(raw []byte) (string, error) {
+func extractOllamaText(raw []byte) (string, types.TokenUsage, error) {
 	var m struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		PromptEvalCount int `json:"prompt_eval_count"`
+		EvalCount       int `json:"eval_count"`
 	}
+	var usage types.TokenUsage
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return "", err
+		return "", usage, err
 	}
-	return m.Message.Content, nil
+	usage.PromptTokens = m.PromptEvalCount
+	usage.CompletionTokens = m.EvalCount
+	usage.TotalTokens = m.PromptEvalCount + m.EvalCount
+
+	return m.Message.Content, usage, nil
 }

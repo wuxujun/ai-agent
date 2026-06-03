@@ -16,6 +16,12 @@ type Evidence struct {
 	Query string   `json:"query"`
 }
 
+type TokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type StepTrace struct {
 	Step        int        `json:"step"`
 	Goal        string     `json:"goal"`
@@ -25,7 +31,8 @@ type StepTrace struct {
 	Evidence    []Evidence `json:"evidence"`
 	// AgentRole identifies the agent that produced this trace entry.
 	// Empty for single-agent (legacy/eino/adk) modes; set in multi-agent mode.
-	AgentRole AgentRole `json:"agent_role,omitempty"`
+	AgentRole  AgentRole  `json:"agent_role,omitempty"`
+	TokenUsage TokenUsage `json:"token_usage,omitempty"`
 }
 
 type TaskStatus string
@@ -55,6 +62,7 @@ type Task struct {
 	Hypothesis  string      `json:"hypothesis"`
 	Unresolved  []string    `json:"unresolved"`
 	ToolBudget  int         `json:"tool_budget"`
+	TokenBudget int         `json:"token_budget"`
 	Trace       []StepTrace `json:"trace"`
 	FinalAnswer string      `json:"final_answer"`
 	Memories    []Memory    `json:"memories,omitempty"`

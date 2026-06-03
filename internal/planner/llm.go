@@ -114,6 +114,13 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 			return nil, err
 		}
 
+		var usage types.TokenUsage
+		if resp.UsageMetadata != nil {
+			usage.PromptTokens = int(resp.UsageMetadata.PromptTokenCount)
+			usage.CompletionTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+			usage.TotalTokens = int(resp.UsageMetadata.TotalTokenCount)
+		}
+
 		textValue := resp.Text()
 		var decision PlanDecision
 		if err := unmarshalDecision(textValue, &decision); err != nil {
@@ -138,6 +145,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 		log.Printf("[LLM Planner] Task %s decision - Thought: %q | Action: %q | Stop: %t | FinalAnswer: %q | Parameters: %+v",
 			task.ID, decision.ThoughtSummary, decision.Action, decision.Stop, decision.FinalAnswer, decision.Parameters)
 
+		decision.TokenUsage = usage
 		return &decision, nil
 	}
 
@@ -185,7 +193,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 		return nil, err
 	}
 
-	textValue, err := respParser(rawBody.Bytes())
+	textValue, usage, err := respParser(rawBody.Bytes())
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "parse response failed")
@@ -216,6 +224,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 	log.Printf("[LLM Planner] Task %s decision - Thought: %q | Action: %q | Stop: %t | FinalAnswer: %q | Parameters: %+v",
 		task.ID, decision.ThoughtSummary, decision.Action, decision.Stop, decision.FinalAnswer, decision.Parameters)
 
+	decision.TokenUsage = usage
 	return &decision, nil
 }
 

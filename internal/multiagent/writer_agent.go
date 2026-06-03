@@ -57,9 +57,11 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 	userPrompt := w.buildPrompt(goal, evidence, memories)
 
 	var output WriterOutput
-	if err := callLLMJSON(ctx, w.Config, writerSystemPrompt, userPrompt, w.jsonSchema(), &output); err != nil {
+	usage, err := callLLMJSON(ctx, w.Config, writerSystemPrompt, userPrompt, w.jsonSchema(), &output)
+	if err != nil {
 		return nil, fmt.Errorf("WriterAgent LLM call failed: %w", err)
 	}
+	output.TokenUsage = usage
 
 	log.Printf("[WriterAgent] Synthesis complete — confidence=%s", output.Confidence)
 	return &output, nil

@@ -14,6 +14,7 @@ type PlanDecision struct {
 	FinalAnswer    string         `json:"final_answer"`
 	Action         string         `json:"action"`
 	Parameters     map[string]any `json:"parameters"`
+	TokenUsage     types.TokenUsage `json:"token_usage,omitempty"`
 }
 
 type Planner interface {

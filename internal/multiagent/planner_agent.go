@@ -92,9 +92,11 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 	)
 
 	var plan ResearchPlan
-	if err := callLLMJSON(ctx, p.Config, plannerSystemPrompt, userPrompt, p.jsonSchema(), &plan); err != nil {
+	usage, err := callLLMJSON(ctx, p.Config, plannerSystemPrompt, userPrompt, p.jsonSchema(), &plan)
+	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent LLM call failed: %w", err)
 	}
+	plan.TokenUsage = usage
 
 	if len(plan.Steps) == 0 {
 		return nil, fmt.Errorf("PlannerAgent returned an empty steps list")
@@ -143,9 +145,11 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 	)
 
 	var plan ResearchPlan
-	if err := callLLMJSON(ctx, p.Config, replannerSystemPrompt, userPrompt, p.jsonSchema(), &plan); err != nil {
+	usage, err := callLLMJSON(ctx, p.Config, replannerSystemPrompt, userPrompt, p.jsonSchema(), &plan)
+	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent Replan LLM call failed: %w", err)
 	}
+	plan.TokenUsage = usage
 
 	log.Printf("[PlannerAgent] Revised plan created: %q — %d steps", plan.ThoughtSummary, len(plan.Steps))
 	for i, s := range plan.Steps {
