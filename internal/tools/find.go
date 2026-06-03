@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"strings"
@@ -13,6 +14,11 @@ type FindFilesTool struct{}
 func (t *FindFilesTool) Name() string {
 	return "find_files"
 }
+
+func (t *FindFilesTool) RiskLevel() types.RiskLevel {
+	return types.RiskLevelLow
+}
+
 
 func (t *FindFilesTool) Description() string {
 	return "Find files matching a pattern in the workspace"

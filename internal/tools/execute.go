@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"strings"
@@ -13,6 +14,11 @@ type ExecuteCodeTool struct{}
 func (t *ExecuteCodeTool) Name() string {
 	return "execute_code"
 }
+
+func (t *ExecuteCodeTool) RiskLevel() types.RiskLevel {
+	return types.RiskLevelHigh
+}
+
 
 func (t *ExecuteCodeTool) Description() string {
 	return "Execute a command in the workspace"

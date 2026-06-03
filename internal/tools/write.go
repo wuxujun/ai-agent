@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"os"
@@ -14,6 +15,11 @@ type WriteFileTool struct{}
 func (t *WriteFileTool) Name() string {
 	return "write_file"
 }
+
+func (t *WriteFileTool) RiskLevel() types.RiskLevel {
+	return types.RiskLevelHigh
+}
+
 
 func (t *WriteFileTool) Description() string {
 	return "Write content to a file in the workspace"

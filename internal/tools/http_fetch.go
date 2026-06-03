@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"io"
@@ -15,6 +16,11 @@ type HttpFetchTool struct{}
 func (t *HttpFetchTool) Name() string {
 	return "http_fetch"
 }
+
+func (t *HttpFetchTool) RiskLevel() types.RiskLevel {
+	return types.RiskLevelLow
+}
+
 
 func (t *HttpFetchTool) Description() string {
 	return "Fetch content from an HTTP/HTTPS URL"

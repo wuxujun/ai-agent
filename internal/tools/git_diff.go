@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"strings"
@@ -13,6 +14,11 @@ type GitDiffTool struct{}
 func (t *GitDiffTool) Name() string {
 	return "git_diff"
 }
+
+func (t *GitDiffTool) RiskLevel() types.RiskLevel {
+	return types.RiskLevelLow
+}
+
 
 func (t *GitDiffTool) Description() string {
 	return "Get the git diff for the workspace or a specific file"

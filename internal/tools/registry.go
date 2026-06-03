@@ -23,6 +23,7 @@ type Tool interface {
 	// registered tool, so adding a tool no longer requires hand-editing the
 	// planner schema.
 	Parameters() map[string]any
+	RiskLevel() types.RiskLevel
 	Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error)
 }
 

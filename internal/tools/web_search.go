@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"io"
@@ -16,6 +17,11 @@ type WebSearchTool struct{}
 func (t *WebSearchTool) Name() string {
 	return "web_search"
 }
+
+func (t *WebSearchTool) RiskLevel() types.RiskLevel {
+	return types.RiskLevelLow
+}
+
 
 func (t *WebSearchTool) Description() string {
 	return "Search the web using DuckDuckGo HTML"

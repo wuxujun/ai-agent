@@ -42,6 +42,8 @@ type Engine struct {
 	einoRunner any  // compose.Runnable[*einoStepState, *types.Task] after successful compile
 	einoReady  bool // true once einoRunner has been successfully compiled
 
+	EventCallback func(taskID string, status types.TaskStatus)
+
 	// adkRunner is compiled once and cached for reuse across all runAdkNext calls.
 	adkOnce    sync.Once
 	adkRunner  any // *runner.Runner
@@ -183,6 +185,16 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		return nil
 	}
 
+	tool, ok := tools.Get(decision.Action)
+	if ok && tool.RiskLevel() == types.RiskLevelHigh {
+		if err := e.SuspendForApproval(ctx, task, decision.Action); err != nil {
+			log.Printf("[Engine Error] Action %q rejected or approval failed: %v", decision.Action, err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "approval failed")
+			return err
+		}
+	}
+
 	log.Printf("[Engine] Task %s - Executing action %q with parameters: %+v", task.ID, decision.Action, decision.Parameters)
 	xStart := time.Now()
 	trace, err := e.Executor.Execute(ctx, task, decision)
@@ -211,6 +223,38 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	)
 
 	return nil
+}
+
+func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string) error {
+	task.Status = types.StatusAwaitingApproval
+	if e.Store != nil {
+		if err := e.Store.SaveFullTask(ctx, task); err != nil {
+			return err
+		}
+	}
+	if e.EventCallback != nil {
+		e.EventCallback(task.ID, types.StatusAwaitingApproval)
+	}
+
+	ch := RegisterApproval(task.ID)
+	defer RemoveApproval(task.ID)
+
+	select {
+	case approved := <-ch:
+		if !approved {
+			return fmt.Errorf("action %q rejected by user", action)
+		}
+		task.Status = types.StatusRunning
+		if e.Store != nil {
+			_ = e.Store.SaveFullTask(ctx, task)
+		}
+		if e.EventCallback != nil {
+			e.EventCallback(task.ID, types.StatusRunning)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {

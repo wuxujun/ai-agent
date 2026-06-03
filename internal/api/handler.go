@@ -60,6 +60,8 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.GET("/:id", h.getTask)
 		tasks.GET("", h.listTasks)
 		tasks.GET("/:id/stream", h.streamTask)
+		tasks.POST("/:id/approve", h.approveTask)
+		tasks.POST("/:id/reject", h.rejectTask)
 	}
 	api.GET("/metrics", h.getMetrics)
 
@@ -239,6 +241,24 @@ func (h *Handler) getMetrics(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, h.metrics.Snapshot())
+}
+
+func (h *Handler) approveTask(c *gin.Context) {
+	taskID := c.Param("id")
+	if orchestrator.ResolveApproval(taskID, true) {
+		c.JSON(http.StatusOK, gin.H{"message": "task action approved"})
+	} else {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
+	}
+}
+
+func (h *Handler) rejectTask(c *gin.Context) {
+	taskID := c.Param("id")
+	if orchestrator.ResolveApproval(taskID, false) {
+		c.JSON(http.StatusOK, gin.H{"message": "task action rejected"})
+	} else {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
+	}
 }
 
 // listTasks handles GET /api/tasks — supports pagination and status filtering.

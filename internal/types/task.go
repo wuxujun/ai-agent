@@ -31,10 +31,18 @@ type StepTrace struct {
 type TaskStatus string
 
 const (
-	StatusCreated   TaskStatus = "created"
-	StatusRunning   TaskStatus = "running"
-	StatusCompleted TaskStatus = "completed"
-	StatusFailed    TaskStatus = "failed"
+	StatusCreated          TaskStatus = "created"
+	StatusRunning          TaskStatus = "running"
+	StatusAwaitingApproval TaskStatus = "awaiting_approval"
+	StatusCompleted        TaskStatus = "completed"
+	StatusFailed           TaskStatus = "failed"
+)
+
+type RiskLevel string
+
+const (
+	RiskLevelLow  RiskLevel = "low"
+	RiskLevelHigh RiskLevel = "high"
 )
 
 type Task struct {

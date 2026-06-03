@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/metrics"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -39,6 +40,7 @@ type Coordinator struct {
 	Researcher Researcher
 	Writer     Writer
 	Metrics    *metrics.Collector
+	SuspendForApproval func(ctx context.Context, task *types.Task, action string) error
 }
 
 // NewCoordinator creates a Coordinator wired to the default LLM configuration
@@ -390,6 +392,15 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 
 		log.Printf("[Coordinator] Executing research step %d: ID=%s, Action=%s, Desc=%q",
 			task.StepCount+1, step.ID, step.Action, step.Description)
+
+		tool, ok := tools.Get(step.Action)
+		if ok && tool.RiskLevel() == types.RiskLevelHigh && c.SuspendForApproval != nil {
+			if err := c.SuspendForApproval(ctx, task, step.Action); err != nil {
+				log.Printf("[Coordinator Error] Action %q rejected or approval failed: %v", step.Action, err)
+				anyFailed = true
+				break
+			}
+		}
 
 		start := time.Now()
 		ev, err := c.Researcher.Research(ctx, task.Workspace, step)

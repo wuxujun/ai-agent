@@ -15,6 +15,11 @@ func (t *SearchTextTool) Name() string {
 	return "search_text"
 }
 
+func (t *SearchTextTool) RiskLevel() types.RiskLevel {
+	return types.RiskLevelLow
+}
+
+
 func (t *SearchTextTool) Description() string {
 	return "Search for text matching a regex query in the workspace"
 }
