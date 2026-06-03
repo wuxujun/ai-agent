@@ -141,7 +141,11 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 		return state, err
 	}
 
-	log.Printf("[Engine-Eino] Task %s - Planner thought: %q | Action chosen: %q", task.ID, decision.ThoughtSummary, decision.Action)
+	var actionNames []string
+	for _, ac := range decision.Actions {
+		actionNames = append(actionNames, ac.Action)
+	}
+	log.Printf("[Engine-Eino] Task %s - Planner thought: %q | Actions chosen: %v", task.ID, decision.ThoughtSummary, actionNames)
 
 	task.Hypothesis = decision.ThoughtSummary
 	state.Decision = decision
@@ -164,22 +168,27 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 		return state, nil
 	}
 
-	log.Printf("[Engine-Eino] Task %s - Executing action %q with parameters: %+v", task.ID, decision.Action, decision.Parameters)
+	var actionNames []string
+	for _, ac := range decision.Actions {
+		actionNames = append(actionNames, ac.Action)
+	}
+
+	log.Printf("[Engine-Eino] Task %s - Executing actions %v", task.ID, actionNames)
 	xStart := time.Now()
-	trace, err := e.Executor.Execute(ctx, task, decision)
+	traces, err := e.Executor.Execute(ctx, task, decision)
 	if e.Metrics != nil {
-		e.Metrics.ObserveExecutor(time.Since(xStart), err, decision.Action)
+		e.Metrics.ObserveExecutor(time.Since(xStart), err, "batch")
 	}
 	if err != nil {
-		log.Printf("[Engine-Eino] Executor failed for task %s, action %q: %v", task.ID, decision.Action, err)
+		log.Printf("[Engine-Eino] Executor failed for task %s, actions %v: %v", task.ID, actionNames, err)
 		return state, err
 	}
 
-	log.Printf("[Engine-Eino] Task %s - Action execution success. Observation: %q", task.ID, trace.Observation)
+	log.Printf("[Engine-Eino] Task %s - Action execution success. %d traces produced", task.ID, len(traces))
 
-	task.StepCount++
-	task.ToolBudget--
-	task.Trace = append(task.Trace, *trace)
+	task.StepCount += len(traces)
+	task.ToolBudget -= len(traces)
+	task.Trace = append(task.Trace, traces...)
 	_ = SetTaskRunning(task)
 
 	log.Printf("[Engine-Eino] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)

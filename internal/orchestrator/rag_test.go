@@ -14,13 +14,15 @@ import (
 
 type mockExecutor struct{}
 
-func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, dec *planner.PlanDecision) (*types.StepTrace, error) {
-	return &types.StepTrace{
-		Step:        task.StepCount,
-		Goal:        task.Goal,
-		Action:      dec.Action,
-		Query:       fmt.Sprintf("%v", dec.Parameters["path"]),
-		Observation: "mock observation: read SECRET=12345",
+func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, dec *planner.PlanDecision) ([]types.StepTrace, error) {
+	return []types.StepTrace{
+		{
+			Step:        task.StepCount,
+			Goal:        task.Goal,
+			Action:      dec.Actions[0].Action,
+			Query:       fmt.Sprintf("%v", dec.Actions[0].Parameters["path"]),
+			Observation: "mock observation: read SECRET=12345",
+		},
 	}, nil
 }
 
@@ -42,6 +44,12 @@ func TestRagMemoryCrossTaskKnowledgeSharing(t *testing.T) {
 			ThoughtSummary: "Done with task",
 			Stop:           true,
 			FinalAnswer:    "The credentials are standard-username/standard-password",
+			Actions: []planner.ActionCall{
+				{
+					Action:     "none",
+					Parameters: map[string]any{},
+				},
+			},
 		},
 	}
 	engine := &orchestrator.Engine{
@@ -109,6 +117,12 @@ func TestRagMemoryCrossTaskKnowledgeSharing(t *testing.T) {
 			ThoughtSummary: "inspected memory, now we can stop",
 			Stop:           true,
 			FinalAnswer:    "got it from memory",
+			Actions: []planner.ActionCall{
+				{
+					Action:     "none",
+					Parameters: map[string]any{},
+				},
+			},
 		},
 	}
 	engine.Planner = capturingPlanner

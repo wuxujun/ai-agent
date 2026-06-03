@@ -16,36 +16,45 @@ func ValidateDecision(d *PlanDecision) error {
 		"none":         true,
 	}
 
-	if !valid[d.Action] {
-		return fmt.Errorf("invalid action: %s", d.Action)
+	if len(d.Actions) == 0 {
+		return errors.New("decision must contain at least one action")
 	}
 
-	if d.Stop && d.Action != "none" {
-		return errors.New("stop=true requires action=none")
-	}
-	if !d.Stop && d.Action == "none" {
-		return errors.New("action=none requires stop=true")
-	}
-
-	switch d.Action {
-	case "find_files":
-		return validateFindFiles(d.Parameters)
-	case "search_text":
-		return validateSearchText(d.Parameters)
-	case "read_file":
-		return validateReadFile(d.Parameters)
-	case "write_file":
-		return validateWriteFile(d.Parameters)
-	case "execute_code":
-		return validateExecuteCode(d.Parameters)
-	case "none":
-		if strings.TrimSpace(d.FinalAnswer) == "" {
-			return errors.New("stop decision requires final_answer")
+	for _, ac := range d.Actions {
+		if !valid[ac.Action] {
+			return fmt.Errorf("invalid action: %s", ac.Action)
 		}
-		return nil
-	default:
-		return nil
+
+		if d.Stop && ac.Action != "none" {
+			return errors.New("stop=true requires action=none")
+		}
+		if !d.Stop && ac.Action == "none" {
+			return errors.New("action=none requires stop=true")
+		}
+
+		var err error
+		switch ac.Action {
+		case "find_files":
+			err = validateFindFiles(ac.Parameters)
+		case "search_text":
+			err = validateSearchText(ac.Parameters)
+		case "read_file":
+			err = validateReadFile(ac.Parameters)
+		case "write_file":
+			err = validateWriteFile(ac.Parameters)
+		case "execute_code":
+			err = validateExecuteCode(ac.Parameters)
+		case "none":
+			if strings.TrimSpace(d.FinalAnswer) == "" {
+				err = errors.New("stop decision requires final_answer")
+			}
+		}
+
+		if err != nil {
+			return fmt.Errorf("validation failed for action %s: %w", ac.Action, err)
+		}
 	}
+	return nil
 }
 
 func validateFindFiles(params map[string]any) error {

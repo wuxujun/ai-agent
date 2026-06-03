@@ -187,11 +187,16 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		)
 	}
 
-	log.Printf("[Engine] Task %s - Planner thought: %q | Action chosen: %q", task.ID, decision.ThoughtSummary, decision.Action)
+	var actionNames []string
+	for _, ac := range decision.Actions {
+		actionNames = append(actionNames, ac.Action)
+	}
+
+	log.Printf("[Engine] Task %s - Planner thought: %q | Actions chosen: %v", task.ID, decision.ThoughtSummary, actionNames)
 
 	task.Hypothesis = decision.ThoughtSummary
 	span.SetAttributes(
-		attribute.String("agent.planner.action", decision.Action),
+		attribute.StringSlice("agent.planner.actions", actionNames),
 		attribute.Bool("agent.planner.stop", decision.Stop),
 	)
 
@@ -211,35 +216,39 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		return nil
 	}
 
-	tool, ok := tools.Get(decision.Action)
-	if ok && tool.RiskLevel() == types.RiskLevelHigh {
-		if err := e.SuspendForApproval(ctx, task, decision.Action); err != nil {
-			log.Printf("[Engine Error] Action %q rejected or approval failed: %v", decision.Action, err)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "approval failed")
-			return err
+	for _, ac := range decision.Actions {
+		tool, ok := tools.Get(ac.Action)
+		if ok && tool.RiskLevel() == types.RiskLevelHigh {
+			if err := e.SuspendForApproval(ctx, task, ac.Action); err != nil {
+				log.Printf("[Engine Error] Action %q rejected or approval failed: %v", ac.Action, err)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "approval failed")
+				return err
+			}
 		}
 	}
 
-	log.Printf("[Engine] Task %s - Executing action %q with parameters: %+v", task.ID, decision.Action, decision.Parameters)
+	log.Printf("[Engine] Task %s - Executing actions %v", task.ID, actionNames)
 	xStart := time.Now()
-	trace, err := e.Executor.Execute(ctx, task, decision)
+	traces, err := e.Executor.Execute(ctx, task, decision)
 	if e.Metrics != nil {
-		e.Metrics.ObserveExecutor(time.Since(xStart), err, decision.Action)
+		e.Metrics.ObserveExecutor(time.Since(xStart), err, "batch")
 	}
 	if err != nil {
-		log.Printf("[Engine Error] Executor failed for task %s, action %q: %v", task.ID, decision.Action, err)
+		log.Printf("[Engine Error] Executor failed for task %s, actions %v: %v", task.ID, actionNames, err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "executor failure")
 		return err
 	}
 
-	log.Printf("[Engine] Task %s - Action execution success. Observation: %q", task.ID, trace.Observation)
+	log.Printf("[Engine] Task %s - Action execution success. %d traces produced", task.ID, len(traces))
 
-	task.StepCount++
-	task.ToolBudget--
-	trace.TokenUsage = decision.TokenUsage
-	task.Trace = append(task.Trace, *trace)
+	task.StepCount += len(traces)
+	task.ToolBudget -= len(traces)
+	for i := range traces {
+		traces[i].TokenUsage = decision.TokenUsage
+	}
+	task.Trace = append(task.Trace, traces...)
 	_ = SetTaskRunning(task)
 
 	log.Printf("[Engine] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)

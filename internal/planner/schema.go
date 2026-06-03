@@ -8,12 +8,16 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+type ActionCall struct {
+	Action     string         `json:"action"`
+	Parameters map[string]any `json:"parameters"`
+}
+
 type PlanDecision struct {
-	ThoughtSummary string         `json:"thought_summary"`
-	Stop           bool           `json:"stop"`
-	FinalAnswer    string         `json:"final_answer"`
-	Action         string         `json:"action"`
-	Parameters     map[string]any `json:"parameters"`
+	ThoughtSummary string           `json:"thought_summary"`
+	Stop           bool             `json:"stop"`
+	FinalAnswer    string           `json:"final_answer"`
+	Actions        []ActionCall     `json:"actions"`
 	TokenUsage     types.TokenUsage `json:"token_usage,omitempty"`
 }
 
@@ -49,6 +53,25 @@ func PlannerDecisionSchema() map[string]any {
 	}
 	sort.Strings(paramKeys)
 
+	actionCallSchema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"action": map[string]any{
+				"type":        "string",
+				"enum":        actions,
+				"description": "The single next action to execute. Use none only when stop is true.",
+			},
+			"parameters": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           paramProps,
+				"required":             paramKeys,
+			},
+		},
+		"required": []string{"action", "parameters"},
+	}
+
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -65,18 +88,13 @@ func PlannerDecisionSchema() map[string]any {
 				"type":        "string",
 				"description": "If stop is true, provide a concise final answer; otherwise empty string.",
 			},
-			"action": map[string]any{
-				"type":        "string",
-				"enum":        actions,
-				"description": "The single next action to execute. Use none only when stop is true.",
-			},
-			"parameters": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties":           paramProps,
-				"required":             paramKeys,
+			"actions": map[string]any{
+				"type":        "array",
+				"description": "One or more independent tool actions to execute in parallel. If no tools are needed, use a single 'none' action.",
+				"items":       actionCallSchema,
+				"minItems":    1,
 			},
 		},
-		"required": []string{"thought_summary", "stop", "final_answer", "action", "parameters"},
+		"required": []string{"thought_summary", "stop", "final_answer", "actions"},
 	}
 }

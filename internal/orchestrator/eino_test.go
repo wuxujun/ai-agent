@@ -23,17 +23,24 @@ type stubExecutor struct {
 	calls int
 }
 
-func (e *stubExecutor) Execute(ctx context.Context, task *types.Task, decision *planner.PlanDecision) (*types.StepTrace, error) {
+func (e *stubExecutor) Execute(ctx context.Context, task *types.Task, decision *planner.PlanDecision) ([]types.StepTrace, error) {
 	e.calls++
-	return e.trace, nil
+	if e.trace != nil {
+		return []types.StepTrace{*e.trace}, nil
+	}
+	return nil, nil
 }
 
 func TestEinoNextExecutesPlannerDecision(t *testing.T) {
 	p := &stubPlanner{
 		decision: &planner.PlanDecision{
 			ThoughtSummary: "search for matching text",
-			Action:         "search_text",
-			Parameters:     map[string]any{"query": "needle"},
+			Actions: []planner.ActionCall{
+				{
+					Action:     "search_text",
+					Parameters: map[string]any{"query": "needle"},
+				},
+			},
 		},
 	}
 	x := &stubExecutor{
@@ -72,8 +79,12 @@ func TestLegacyNextExecutesPlannerDecision(t *testing.T) {
 	p := &stubPlanner{
 		decision: &planner.PlanDecision{
 			ThoughtSummary: "search for matching text",
-			Action:         "search_text",
-			Parameters:     map[string]any{"query": "needle"},
+			Actions: []planner.ActionCall{
+				{
+					Action:     "search_text",
+					Parameters: map[string]any{"query": "needle"},
+				},
+			},
 		},
 	}
 	x := &stubExecutor{
@@ -123,8 +134,12 @@ func TestEinoNextStopsWhenPlannerStops(t *testing.T) {
 			ThoughtSummary: "enough evidence",
 			Stop:           true,
 			FinalAnswer:    "done",
-			Action:         "none",
-			Parameters:     map[string]any{},
+			Actions: []planner.ActionCall{
+				{
+					Action:     "none",
+					Parameters: map[string]any{},
+				},
+			},
 		},
 	}
 	x := &stubExecutor{trace: &types.StepTrace{}}

@@ -153,13 +153,17 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			return nil, err
 		}
 
+		var actionNames []string
+		for _, ac := range decision.Actions {
+			actionNames = append(actionNames, ac.Action)
+		}
 		span.SetAttributes(
-			attribute.String("agent.planner.action", decision.Action),
+			attribute.StringSlice("agent.planner.actions", actionNames),
 			attribute.Bool("agent.planner.stop", decision.Stop),
 		)
 
-		log.Printf("[LLM Planner] Task %s decision - Thought: %q | Action: %q | Stop: %t | FinalAnswer: %q | Parameters: %+v",
-			task.ID, decision.ThoughtSummary, decision.Action, decision.Stop, decision.FinalAnswer, decision.Parameters)
+		log.Printf("[LLM Planner] Task %s decision - Thought: %q | Actions: %v | Stop: %t | FinalAnswer: %q | NumActions: %d",
+			task.ID, decision.ThoughtSummary, actionNames, decision.Stop, decision.FinalAnswer, len(decision.Actions))
 
 		decision.TokenUsage = usage
 		return &decision, nil
@@ -226,13 +230,17 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		return nil, err
 	}
 
+	var actionNames []string
+	for _, ac := range decision.Actions {
+		actionNames = append(actionNames, ac.Action)
+	}
 	span.SetAttributes(
-		attribute.String("agent.planner.action", decision.Action),
+		attribute.StringSlice("agent.planner.actions", actionNames),
 		attribute.Bool("agent.planner.stop", decision.Stop),
 	)
 
-	log.Printf("[LLM Planner] Task %s decision - Thought: %q | Action: %q | Stop: %t | FinalAnswer: %q | Parameters: %+v",
-		task.ID, decision.ThoughtSummary, decision.Action, decision.Stop, decision.FinalAnswer, decision.Parameters)
+	log.Printf("[LLM Planner] Task %s decision - Thought: %q | Actions: %v | Stop: %t | FinalAnswer: %q | NumActions: %d",
+		task.ID, decision.ThoughtSummary, actionNames, decision.Stop, decision.FinalAnswer, len(decision.Actions))
 
 	decision.TokenUsage = usage
 	return &decision, nil

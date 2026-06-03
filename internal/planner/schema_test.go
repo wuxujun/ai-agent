@@ -14,9 +14,21 @@ func TestSchemaActionEnumCoversRegisteredTools(t *testing.T) {
 	if !ok {
 		t.Fatal("schema missing properties")
 	}
-	action, ok := props["action"].(map[string]any)
+	actionsArray, ok := props["actions"].(map[string]any)
 	if !ok {
-		t.Fatal("schema missing action property")
+		t.Fatal("schema missing actions property")
+	}
+	items, ok := actionsArray["items"].(map[string]any)
+	if !ok {
+		t.Fatal("actions missing items")
+	}
+	itemProps, ok := items["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("items missing properties")
+	}
+	action, ok := itemProps["action"].(map[string]any)
+	if !ok {
+		t.Fatal("item missing action property")
 	}
 	enum, ok := action["enum"].([]string)
 	if !ok {
@@ -43,7 +55,10 @@ func TestSchemaActionEnumCoversRegisteredTools(t *testing.T) {
 func TestSchemaParametersIncludeURL(t *testing.T) {
 	schema := PlannerDecisionSchema()
 	props := schema["properties"].(map[string]any)
-	params := props["parameters"].(map[string]any)
+	actionsArray := props["actions"].(map[string]any)
+	items := actionsArray["items"].(map[string]any)
+	itemProps := items["properties"].(map[string]any)
+	params := itemProps["parameters"].(map[string]any)
 
 	paramProps, ok := params["properties"].(map[string]any)
 	if !ok {

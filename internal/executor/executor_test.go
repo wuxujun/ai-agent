@@ -31,22 +31,30 @@ func TestExecutorWriteFileAndExecuteCode(t *testing.T) {
 
 	// 2. Test write_file action
 	writeDec := &planner.PlanDecision{
-		Action: "write_file",
-		Parameters: map[string]any{
-			"path":    "hello.py",
-			"content": "print('Hello from executed code!')\n",
-			"pattern": "",
-			"query":   "",
-			"glob":    "",
-			"command": "",
-			"args":    "",
+		Actions: []planner.ActionCall{
+			{
+				Action: "write_file",
+				Parameters: map[string]any{
+					"path":    "hello.py",
+					"content": "print('Hello from executed code!')\n",
+					"pattern": "",
+					"query":   "",
+					"glob":    "",
+					"command": "",
+					"args":    "",
+				},
+			},
 		},
 	}
 
-	trace, err := execInst.Execute(ctx, task, writeDec)
+	traces, err := execInst.Execute(ctx, task, writeDec)
 	if err != nil {
 		t.Fatalf("failed to execute write_file: %v", err)
 	}
+	if len(traces) == 0 {
+		t.Fatalf("no traces returned")
+	}
+	trace := traces[0]
 
 	if !strings.Contains(trace.Observation, "successfully wrote") {
 		t.Errorf("expected observation to confirm write, got: %q", trace.Observation)
@@ -63,22 +71,30 @@ func TestExecutorWriteFileAndExecuteCode(t *testing.T) {
 
 	// 3. Test execute_code action (running python3 on hello.py)
 	execDec := &planner.PlanDecision{
-		Action: "execute_code",
-		Parameters: map[string]any{
-			"command": "python3",
-			"args":    "hello.py",
-			"pattern": "",
-			"query":   "",
-			"glob":    "",
-			"path":    "",
-			"content": "",
+		Actions: []planner.ActionCall{
+			{
+				Action: "execute_code",
+				Parameters: map[string]any{
+					"command": "python3",
+					"args":    "hello.py",
+					"pattern": "",
+					"query":   "",
+					"glob":    "",
+					"path":    "",
+					"content": "",
+				},
+			},
 		},
 	}
 
-	trace2, err := execInst.Execute(ctx, task, execDec)
+	traces2, err := execInst.Execute(ctx, task, execDec)
 	if err != nil {
 		t.Fatalf("failed to execute execute_code: %v", err)
 	}
+	if len(traces2) == 0 {
+		t.Fatalf("no traces returned")
+	}
+	trace2 := traces2[0]
 
 	if !strings.Contains(trace2.Observation, "command executed") {
 		t.Errorf("expected observation to contain command executed, got: %q", trace2.Observation)

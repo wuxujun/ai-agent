@@ -24,9 +24,13 @@ func TestLLMPlannerProviders(t *testing.T) {
 		ThoughtSummary: "Finding files",
 		Stop:           false,
 		FinalAnswer:    "",
-		Action:         "find_files",
-		Parameters: map[string]any{
-			"pattern": "*",
+		Actions: []ActionCall{
+			{
+				Action: "find_files",
+				Parameters: map[string]any{
+					"pattern": "*",
+				},
+			},
 		},
 	}
 
@@ -58,8 +62,8 @@ func TestLLMPlannerProviders(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if decision.Action != expectedDecision.Action {
-			t.Errorf("expected action %q, got %q", expectedDecision.Action, decision.Action)
+		if len(decision.Actions) == 0 || decision.Actions[0].Action != expectedDecision.Actions[0].Action {
+			t.Errorf("expected action %q, got %+v", expectedDecision.Actions[0].Action, decision.Actions)
 		}
 	})
 
@@ -88,8 +92,8 @@ func TestLLMPlannerProviders(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if decision.Action != expectedDecision.Action {
-			t.Errorf("expected action %q, got %q", expectedDecision.Action, decision.Action)
+		if len(decision.Actions) == 0 || decision.Actions[0].Action != expectedDecision.Actions[0].Action {
+			t.Errorf("expected action %q, got %+v", expectedDecision.Actions[0].Action, decision.Actions)
 		}
 	})
 
@@ -113,8 +117,8 @@ func TestLLMPlannerProviders(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if decision.Action != expectedDecision.Action {
-			t.Errorf("expected action %q, got %q", expectedDecision.Action, decision.Action)
+		if len(decision.Actions) == 0 || decision.Actions[0].Action != expectedDecision.Actions[0].Action {
+			t.Errorf("expected action %q, got %+v", expectedDecision.Actions[0].Action, decision.Actions)
 		}
 	})
 
@@ -148,21 +152,25 @@ func TestLLMPlannerProviders(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if decision.Action != expectedDecision.Action {
-			t.Errorf("expected action %q, got %q", expectedDecision.Action, decision.Action)
+		if len(decision.Actions) == 0 || decision.Actions[0].Action != expectedDecision.Actions[0].Action {
+			t.Errorf("expected action %q, got %+v", expectedDecision.Actions[0].Action, decision.Actions)
 		}
 	})
 }
 
 func TestUnmarshalDecisionFallback(t *testing.T) {
-	rawInput := `thought_summary\nThe file content confirms that CAIE refers to the Cambridge Assessment International Education, specifically for AS level exams in 2026. This is sufficient to answer the prompt.{
+rawInput := `thought_summary\nThe file content confirms that CAIE refers to the Cambridge Assessment International Education, specifically for AS level exams in 2026. This is sufficient to answer the prompt.{
   "thought_summary": "Finding files",
   "stop": false,
   "final_answer": "",
-  "action": "find_files",
-  "parameters": {
-    "pattern": "*"
-  }
+  "actions": [
+    {
+      "action": "find_files",
+      "parameters": {
+        "pattern": "*"
+      }
+    }
+  ]
 }`
 
 	var decision PlanDecision
@@ -171,8 +179,8 @@ func TestUnmarshalDecisionFallback(t *testing.T) {
 		t.Fatalf("failed to unmarshal with fallback: %v", err)
 	}
 
-	if decision.Action != "find_files" {
-		t.Errorf("expected action find_files, got %s", decision.Action)
+	if len(decision.Actions) == 0 || decision.Actions[0].Action != "find_files" {
+		t.Errorf("expected action find_files, got %+v", decision.Actions)
 	}
 	if decision.ThoughtSummary != "Finding files" {
 		t.Errorf("expected thought_summary 'Finding files', got %q", decision.ThoughtSummary)
