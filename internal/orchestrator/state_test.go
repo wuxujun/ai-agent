@@ -49,7 +49,7 @@ func TestStateTransitions(t *testing.T) {
 
 type errorPlanner struct{}
 
-func (e *errorPlanner) PlanNext(ctx context.Context, task *types.Task) (*planner.PlanDecision, error) {
+func (e *errorPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*planner.PlanDecision, error) {
 	return nil, errors.New("simulated planner error")
 }
 

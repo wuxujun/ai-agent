@@ -18,7 +18,7 @@ type PlanDecision struct {
 }
 
 type Planner interface {
-	PlanNext(ctx context.Context, task *types.Task) (*PlanDecision, error)
+	PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*PlanDecision, error)
 }
 
 // PlannerDecisionSchema builds the JSON Schema constraining the planner LLM's

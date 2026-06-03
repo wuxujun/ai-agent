@@ -128,7 +128,11 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 	}
 
 	pStart := time.Now()
-	decision, err := e.Planner.PlanNext(ctx, task)
+	decision, err := e.Planner.PlanNext(ctx, state.Task, func(chunk string) {
+		if e.TokenCallback != nil {
+			e.TokenCallback(state.Task.ID, chunk)
+		}
+	})
 	if e.Metrics != nil {
 		e.Metrics.ObservePlanner(time.Since(pStart), err)
 	}

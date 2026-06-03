@@ -19,7 +19,7 @@ type FallbackPlanner struct {
 	Metrics   *metrics.Collector
 }
 
-func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecision, error) {
+func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*PlanDecision, error) {
 	ctx, span := fallbackTracer.Start(ctx, "planner.fallback")
 	defer span.End()
 
@@ -29,7 +29,7 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task) (*Plan
 
 	if f.Primary != nil {
 		log.Printf("[Fallback Planner] Trying primary planner for task %s", task.ID)
-		decision, err := f.Primary.PlanNext(ctx, task)
+		decision, err := f.Primary.PlanNext(ctx, task, onChunk)
 		if err == nil {
 			span.SetAttributes(attribute.Bool("agent.fallback.used", false))
 			log.Printf("[Fallback Planner] Primary planner succeeded for task %s", task.ID)
@@ -45,7 +45,7 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task) (*Plan
 		}
 		span.SetAttributes(attribute.Bool("agent.fallback.used", true))
 		log.Printf("[Fallback Planner] Falling back to secondary planner for task %s", task.ID)
-		decision, err := f.Secondary.PlanNext(ctx, task)
+		decision, err := f.Secondary.PlanNext(ctx, task, onChunk)
 		if err != nil {
 			log.Printf("[Fallback Planner Error] Secondary planner also failed for task %s: %v", task.ID, err)
 			return nil, err

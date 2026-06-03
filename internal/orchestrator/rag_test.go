@@ -28,7 +28,7 @@ type staticMockPlanner struct {
 	decision *planner.PlanDecision
 }
 
-func (s *staticMockPlanner) PlanNext(ctx context.Context, task *types.Task) (*planner.PlanDecision, error) {
+func (s *staticMockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*planner.PlanDecision, error) {
 	return s.decision, nil
 }
 
@@ -142,7 +142,7 @@ type capturingMockPlanner struct {
 	decision   *planner.PlanDecision
 }
 
-func (c *capturingMockPlanner) PlanNext(ctx context.Context, task *types.Task) (*planner.PlanDecision, error) {
+func (c *capturingMockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*planner.PlanDecision, error) {
 	if c.onPlanNext != nil {
 		c.onPlanNext(task)
 	}

@@ -13,7 +13,7 @@ type stubPlanner struct {
 	calls    int
 }
 
-func (p *stubPlanner) PlanNext(ctx context.Context, task *types.Task) (*planner.PlanDecision, error) {
+func (p *stubPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*planner.PlanDecision, error) {
 	p.calls++
 	return p.decision, nil
 }

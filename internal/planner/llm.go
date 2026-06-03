@@ -61,7 +61,7 @@ func NewLLMPlannerWithProvider(provider ProviderType, apiKey, model, baseURL str
 	}
 }
 
-func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecision, error) {
+func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*PlanDecision, error) {
 	ctx, span := tracer.Start(ctx, "planner.plan_next")
 	defer span.End()
 
@@ -105,23 +105,39 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 			ResponseSchema:   PlannerDecisionGenAISchema(),
 		}
 
-		log.Printf("[LLM Planner] Sending request to Gemini: model=%s", p.Model)
-		resp, err := client.Models.GenerateContent(ctx, p.Model, contents, config)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "gemini request failed")
-			log.Printf("[LLM Planner Error] Task %s - Gemini request failed: %v", task.ID, err)
-			return nil, err
-		}
-
+		log.Printf("[LLM Planner] Sending stream request to Gemini: model=%s", p.Model)
+		iter := client.Models.GenerateContentStream(ctx, p.Model, contents, config)
+		
+		var textBuf strings.Builder
 		var usage types.TokenUsage
-		if resp.UsageMetadata != nil {
-			usage.PromptTokens = int(resp.UsageMetadata.PromptTokenCount)
-			usage.CompletionTokens = int(resp.UsageMetadata.CandidatesTokenCount)
-			usage.TotalTokens = int(resp.UsageMetadata.TotalTokenCount)
+		
+		for resp, err := range iter {
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "gemini request failed")
+				log.Printf("[LLM Planner Error] Task %s - Gemini stream failed: %v", task.ID, err)
+				return nil, err
+			}
+			
+			if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil && len(resp.Candidates[0].Content.Parts) > 0 {
+				chunk := resp.Candidates[0].Content.Parts[0].Text
+				if chunk != "" {
+					textBuf.WriteString(chunk)
+					
+					if onChunk != nil {
+						onChunk(chunk)
+					}
+				}
+			}
+			
+			if resp.UsageMetadata != nil {
+				usage.PromptTokens = int(resp.UsageMetadata.PromptTokenCount)
+				usage.CompletionTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+				usage.TotalTokens = int(resp.UsageMetadata.TotalTokenCount)
+			}
 		}
 
-		textValue := resp.Text()
+		textValue := textBuf.String()
 		var decision PlanDecision
 		if err := unmarshalDecision(textValue, &decision); err != nil {
 			span.RecordError(err)
@@ -185,15 +201,9 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecis
 		return nil, err
 	}
 
-	var rawBody bytes.Buffer
-	if _, err := rawBody.ReadFrom(resp.Body); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "read body failed")
-		log.Printf("[LLM Planner Error] Task %s - failed to read response body: %v", task.ID, err)
-		return nil, err
-	}
+	// Removed raw body reading; the respParser handles streaming the body directly
 
-	textValue, usage, err := respParser(rawBody.Bytes())
+	textValue, usage, err := respParser(resp, onChunk)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "parse response failed")

@@ -10,7 +10,7 @@ import (
 
 type MockPlanner struct{}
 
-func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task) (*PlanDecision, error) {
+func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*PlanDecision, error) {
 	log.Printf("[Mock Planner] Generating decision for task %s (StepCount: %d)", task.ID, task.StepCount)
 
 	var decision *PlanDecision

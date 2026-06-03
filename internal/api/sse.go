@@ -19,6 +19,7 @@ type StepEvent struct {
 	Status types.TaskStatus `json:"status"`
 	Step   *types.StepTrace `json:"step,omitempty"`
 	Final  string           `json:"final_answer,omitempty"`
+	Token  string           `json:"token,omitempty"` // For streaming tokens
 }
 
 // EventBus manages per-task SSE subscriber channels.

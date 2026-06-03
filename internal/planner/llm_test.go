@@ -53,7 +53,7 @@ func TestLLMPlannerProviders(t *testing.T) {
 		defer server.Close()
 
 		planner := NewLLMPlannerWithProvider(ProviderOpenAIResponses, "test-key", "gpt-4.1", server.URL)
-		decision, err := planner.PlanNext(context.Background(), task)
+		decision, err := planner.PlanNext(context.Background(), task, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -69,19 +69,21 @@ func TestLLMPlannerProviders(t *testing.T) {
 			resp := map[string]any{
 				"choices": []any{
 					map[string]any{
-						"message": map[string]any{
+						"delta": map[string]any{
 							"content": expectedJSONStr,
 						},
 					},
 				},
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
+			w.Header().Set("Content-Type", "text/event-stream")
+			b, _ := json.Marshal(resp)
+			w.Write([]byte("data: " + string(b) + "\n\n"))
+			w.Write([]byte("data: [DONE]\n\n"))
 		}))
 		defer server.Close()
 
 		planner := NewLLMPlannerWithProvider(ProviderOpenAI, "test-key", "gpt-4o", server.URL)
-		decision, err := planner.PlanNext(context.Background(), task)
+		decision, err := planner.PlanNext(context.Background(), task, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -98,14 +100,15 @@ func TestLLMPlannerProviders(t *testing.T) {
 				"message": map[string]any{
 					"content": expectedJSONStr,
 				},
+				"done": true,
 			}
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/x-ndjson")
 			_ = json.NewEncoder(w).Encode(resp)
 		}))
 		defer server.Close()
 
 		planner := NewLLMPlannerWithProvider(ProviderOllama, "", "llama3", server.URL)
-		decision, err := planner.PlanNext(context.Background(), task)
+		decision, err := planner.PlanNext(context.Background(), task, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -133,13 +136,14 @@ func TestLLMPlannerProviders(t *testing.T) {
 					},
 				},
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
+			w.Header().Set("Content-Type", "text/event-stream")
+			b, _ := json.Marshal(resp)
+			w.Write([]byte("data: " + string(b) + "\n\n"))
 		}))
 		defer server.Close()
 
 		planner := NewLLMPlannerWithProvider(ProviderGemini, "test-key", "gemini-2.5-flash", server.URL)
-		decision, err := planner.PlanNext(context.Background(), task)
+		decision, err := planner.PlanNext(context.Background(), task, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

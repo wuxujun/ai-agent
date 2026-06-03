@@ -43,6 +43,7 @@ type Engine struct {
 	einoReady  bool // true once einoRunner has been successfully compiled
 
 	EventCallback func(taskID string, status types.TaskStatus)
+	TokenCallback func(taskID string, token string)
 
 	// adkRunner is compiled once and cached for reuse across all runAdkNext calls.
 	adkOnce    sync.Once
@@ -162,7 +163,11 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	}
 
 	pStart := time.Now()
-	decision, err := e.Planner.PlanNext(ctx, task)
+	decision, err := e.Planner.PlanNext(ctx, task, func(chunk string) {
+		if e.TokenCallback != nil {
+			e.TokenCallback(task.ID, chunk)
+		}
+	})
 	if e.Metrics != nil {
 		e.Metrics.ObservePlanner(time.Since(pStart), err)
 	}
