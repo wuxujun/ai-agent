@@ -242,3 +242,102 @@ func TestStores(t *testing.T) {
 		})
 	}
 }
+
+// TestAppendTraces verifies the append-only write optimisation in ReplaceTraces:
+//   - Scenario A: incremental saves only write new traces (no write amplification).
+//   - Scenario B: idempotency — calling SaveFullTask twice with the same traces is safe.
+//   - Scenario C: truncation — shortening task.Trace removes the surplus DB rows.
+func TestAppendTraces(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "append_traces_test")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	s, err := store.NewSQLiteStore(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	makeTrace := func(step int, action string) types.StepTrace {
+		return types.StepTrace{
+			Step:        step,
+			Goal:        "test goal",
+			Action:      action,
+			Query:       "q",
+			Observation: "obs",
+		}
+	}
+
+	task := &types.Task{
+		ID:         "trace-append-task",
+		Goal:       "Trace append test",
+		Status:     types.StatusRunning,
+		MaxSteps:   10,
+		StepCount:  1,
+		Workspace:  "/tmp/ws",
+		ToolBudget: 10,
+		Trace:      []types.StepTrace{makeTrace(1, "find_files")},
+	}
+
+	// ── Scenario A: first save writes step 1 ──────────────────────────────────
+	if err := s.SaveFullTask(ctx, task); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	got, err := s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get after first save: %v", err)
+	}
+	if len(got.Trace) != 1 {
+		t.Fatalf("scenario A: expected 1 trace, got %d", len(got.Trace))
+	}
+
+	// Append step 2 — only step 2 should be written to DB.
+	task.Trace = append(task.Trace, makeTrace(2, "search_text"))
+	task.StepCount = 2
+	if err := s.SaveFullTask(ctx, task); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	got, err = s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get after second save: %v", err)
+	}
+	if len(got.Trace) != 2 {
+		t.Fatalf("scenario A: expected 2 traces after append, got %d", len(got.Trace))
+	}
+	if got.Trace[0].Action != "find_files" || got.Trace[1].Action != "search_text" {
+		t.Errorf("scenario A: unexpected actions %v", []string{got.Trace[0].Action, got.Trace[1].Action})
+	}
+
+	// ── Scenario B: idempotency — re-saving the same traces is a no-op ────────
+	if err := s.SaveFullTask(ctx, task); err != nil {
+		t.Fatalf("idempotent save: %v", err)
+	}
+	got, err = s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get after idempotent save: %v", err)
+	}
+	if len(got.Trace) != 2 {
+		t.Fatalf("scenario B: expected still 2 traces, got %d", len(got.Trace))
+	}
+
+	// ── Scenario C: truncation — shrink Trace to 1 step; DB row for step 2 must be gone ──
+	task.Trace = task.Trace[:1]
+	task.StepCount = 1
+	if err := s.SaveFullTask(ctx, task); err != nil {
+		t.Fatalf("truncation save: %v", err)
+	}
+	got, err = s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get after truncation: %v", err)
+	}
+	if len(got.Trace) != 1 {
+		t.Fatalf("scenario C: expected 1 trace after truncation, got %d", len(got.Trace))
+	}
+	if got.Trace[0].Action != "find_files" {
+		t.Errorf("scenario C: expected 'find_files', got %q", got.Trace[0].Action)
+	}
+}

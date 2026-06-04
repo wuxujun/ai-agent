@@ -1,12 +1,17 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"strings"
+	"sync"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
 )
 
+// Config holds all application configuration loaded from the config file and
+// environment variables. Fields are grouped by subsystem.
 type Config struct {
 	Store struct {
 		Type string `mapstructure:"type"`
@@ -14,7 +19,7 @@ type Config struct {
 	} `mapstructure:"store"`
 
 	Orchestrator struct {
-		Mode                string `mapstructure:"mode"`
+		Mode               string `mapstructure:"mode"`
 		MaxConcurrentTasks int    `mapstructure:"max_concurrent_tasks"`
 	} `mapstructure:"orchestrator"`
 
@@ -53,13 +58,16 @@ type Config struct {
 	} `mapstructure:"skill"`
 }
 
-var globalConfig *Config
+// mu guards globalConfig for concurrent reads/writes.
+// Hot path: RLock for Get(); Cold path: Lock for Reload().
+var (
+	mu           sync.RWMutex
+	globalConfig *Config
+)
 
-func LoadConfig() *Config {
-	if globalConfig != nil {
-		return globalConfig
-	}
-
+// setupViper registers file paths, env-var bindings, and default values on the
+// package-level viper instance. Idempotent and safe to call multiple times.
+func setupViper() {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
@@ -85,6 +93,39 @@ func LoadConfig() *Config {
 	_ = viper.BindEnv("llm.openai_api_key", "OPENAI_API_KEY")
 	_ = viper.BindEnv("llm.gemini_api_key", "GEMINI_API_KEY")
 	_ = viper.BindEnv("llm.google_api_key", "GOOGLE_API_KEY")
+}
+
+// unmarshalConfig reads the current viper state into a fresh Config struct.
+// Returns an error if unmarshalling fails; does NOT update globalConfig.
+func unmarshalConfig() (*Config, error) {
+	var c Config
+	if err := viper.Unmarshal(&c); err != nil {
+		return nil, fmt.Errorf("config unmarshal failed: %w", err)
+	}
+	return &c, nil
+}
+
+// LoadConfig loads the configuration once and caches it. Subsequent calls
+// return the cached copy. Use Reload() to force a refresh.
+func LoadConfig() *Config {
+	// Fast path: already initialised.
+	mu.RLock()
+	if globalConfig != nil {
+		defer mu.RUnlock()
+		return globalConfig
+	}
+	mu.RUnlock()
+
+	// Slow path: first load.
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Double-check after acquiring write lock.
+	if globalConfig != nil {
+		return globalConfig
+	}
+
+	setupViper()
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
@@ -94,18 +135,156 @@ func LoadConfig() *Config {
 		}
 	}
 
-	var c Config
-	if err := viper.Unmarshal(&c); err != nil {
-		log.Fatalf("[Config] Unable to decode into struct: %v", err)
+	c, err := unmarshalConfig()
+	if err != nil {
+		log.Fatalf("[Config] %v", err)
 	}
 
-	globalConfig = &c
+	globalConfig = c
 	return globalConfig
 }
 
+// Get returns the current (possibly hot-updated) configuration snapshot.
+// Safe for concurrent use; callers should NOT cache the returned pointer across
+// calls — always call Get() at the point of use to pick up live updates.
 func Get() *Config {
 	return LoadConfig()
 }
+
+// Reload re-reads the configuration file and environment variables, atomically
+// replaces the global config, and prints a redacted diff of what changed.
+//
+// This is the hot-reload path triggered by SIGHUP or the /api/config/reload
+// endpoint. On error the existing configuration is preserved unchanged.
+func Reload() (*Config, []string, error) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-read the config file (picks up any on-disk changes).
+	if err := viper.ReadInConfig(); err != nil {
+		if _, notFound := err.(viper.ConfigFileNotFoundError); !notFound {
+			return nil, nil, fmt.Errorf("config reload: read file failed: %w", err)
+		}
+		// No config file is not fatal; env-vars still apply.
+	}
+
+	newCfg, err := unmarshalConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("config reload: %w", err)
+	}
+
+	// Build a human-readable, redacted diff before swapping.
+	changes := diffConfigs(globalConfig, newCfg)
+	globalConfig = newCfg
+
+	if len(changes) == 0 {
+		log.Println("[Config] Reload complete — no changes detected.")
+	} else {
+		log.Printf("[Config] Reload complete — %d change(s):", len(changes))
+		for _, c := range changes {
+			log.Printf("[Config]   %s", c)
+		}
+	}
+	return globalConfig, changes, nil
+}
+
+// Watch registers a viper OnConfigChange hook so that the config is
+// automatically hot-reloaded whenever the config file is modified on disk.
+// It also starts viper's filesystem watcher goroutine.
+//
+// Call Watch() once from main() after the first LoadConfig(). Requires that a
+// config file was found (viper.ConfigFileUsed() != "").
+func Watch() {
+	if viper.ConfigFileUsed() == "" {
+		log.Println("[Config] Watch: no config file in use; filesystem watch not started.")
+		return
+	}
+
+	viper.OnConfigChange(func(e fsnotify.Event) {
+		log.Printf("[Config] Config file changed, triggering hot reload...")
+		if _, changes, err := Reload(); err != nil {
+			log.Printf("[Config] Hot reload failed (keeping previous config): %v", err)
+		} else if len(changes) > 0 {
+			log.Printf("[Config] Hot reload applied %d change(s).", len(changes))
+		}
+	})
+	viper.WatchConfig()
+	log.Printf("[Config] Watching config file for changes: %s", viper.ConfigFileUsed())
+}
+
+// ── Diff helper ───────────────────────────────────────────────────────────────
+
+// diffConfigs returns a slice of human-readable change descriptions comparing
+// old to new. API Keys are redacted to "***" so they never appear in logs.
+func diffConfigs(old, new *Config) []string {
+	if old == nil {
+		return nil
+	}
+	var changes []string
+
+	addIf := func(field, o, n string) {
+		if o != n {
+			// Redact fields whose names suggest they contain secrets.
+			if looksLikeSecret(field) {
+				o = redact(o)
+				n = redact(n)
+			}
+			changes = append(changes, fmt.Sprintf("%s: %q → %q", field, o, n))
+		}
+	}
+	addIfInt := func(field string, o, n int) {
+		if o != n {
+			changes = append(changes, fmt.Sprintf("%s: %d → %d", field, o, n))
+		}
+	}
+
+	// LLM
+	addIf("llm.provider", old.LLM.Provider, new.LLM.Provider)
+	addIf("llm.api_key", old.LLM.APIKey, new.LLM.APIKey)
+	addIf("llm.openai_api_key", old.LLM.OpenAIAPIKey, new.LLM.OpenAIAPIKey)
+	addIf("llm.gemini_api_key", old.LLM.GeminiAPIKey, new.LLM.GeminiAPIKey)
+	addIf("llm.google_api_key", old.LLM.GoogleAPIKey, new.LLM.GoogleAPIKey)
+	addIf("llm.model", old.LLM.Model, new.LLM.Model)
+	addIf("llm.base_url", old.LLM.BaseURL, new.LLM.BaseURL)
+	addIfInt("llm.timeout_seconds", old.LLM.TimeoutSeconds, new.LLM.TimeoutSeconds)
+
+	// Store (DSN may contain a password)
+	addIf("store.type", old.Store.Type, new.Store.Type)
+	addIf("store.dsn", old.Store.DSN, new.Store.DSN)
+
+	// Orchestrator
+	addIf("orchestrator.mode", old.Orchestrator.Mode, new.Orchestrator.Mode)
+	addIfInt("orchestrator.max_concurrent_tasks", old.Orchestrator.MaxConcurrentTasks, new.Orchestrator.MaxConcurrentTasks)
+
+	// RAG
+	addIf("rag.search_url", old.RAG.SearchURL, new.RAG.SearchURL)
+	addIf("rag.search_method", old.RAG.SearchMethod, new.RAG.SearchMethod)
+
+	// Tool / Log / Skill
+	addIfInt("tool.timeout_seconds", old.Tool.TimeoutSeconds, new.Tool.TimeoutSeconds)
+	addIf("log.level", old.Log.Level, new.Log.Level)
+	addIf("skill.root", old.Skill.Root, new.Skill.Root)
+
+	return changes
+}
+
+func looksLikeSecret(field string) bool {
+	lower := strings.ToLower(field)
+	return strings.Contains(lower, "key") ||
+		strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "password") ||
+		strings.Contains(lower, "dsn") ||
+		strings.Contains(lower, "token")
+}
+
+func redact(v string) string {
+	if v == "" {
+		return ""
+	}
+	return "***"
+}
+
+// ── Helper methods ────────────────────────────────────────────────────────────
 
 // Helper methods to resolve dynamic fallback logic for API Keys and Providers
 func (c *Config) ResolveLLMProvider() string {

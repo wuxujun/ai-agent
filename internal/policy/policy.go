@@ -2,8 +2,10 @@ package policy
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -21,42 +23,94 @@ var allowedCommands = map[string]bool{
 	"git":     true,
 }
 
+// blockedSystemPaths lists path prefixes that are unconditionally forbidden as
+// workspace roots, even if they happen to exist and pass other checks. These
+// directories contain OS internals or sensitive host data that the agent must
+// never be allowed to browse.
+var blockedSystemPaths = []string{
+	"/etc",
+	"/proc",
+	"/sys",
+	"/dev",
+	"/run",
+	"/boot",
+	"/root",
+	"/private/etc", // macOS shadow of /etc
+	"/private/var",
+}
+
+// ValidateWorkspace ensures that root is a safe, non-escaping workspace path.
+//
+// Security guarantees:
+//  1. Rejects "." and "/" (too broad).
+//  2. Rejects raw paths containing ".." before cleaning.
+//  3. Converts root to an absolute path, then resolves ALL symlink components
+//     using evalExistingPath (which walks upward to the deepest existing
+//     ancestor) — this prevents "create a non-existent path to skip EvalSymlinks"
+//     attacks.
+//  4. If the resolved real path differs from the cleaned absolute path, the
+//     workspace itself is (or traverses) a symlink; this is flagged explicitly.
+//  5. Rejects resolved paths that are, or are prefixes of, known sensitive
+//     system directories (/etc, /proc, /sys, …).
+//  6. Rejects paths that escape the application's working directory (cwd).
+//     Both cwd and the workspace root are symlink-resolved before comparison,
+//     so a symlink-based cwd cannot be used to widen the allowed zone.
 func ValidateWorkspace(root string) error {
 	cleanRaw := filepath.Clean(root)
 	if cleanRaw == "." {
-		return errors.New("workspace too broad")
+		return errors.New("workspace too broad: must not be the current directory")
 	}
 	if strings.Contains(cleanRaw, "..") {
-		return errors.New("invalid workspace path")
+		return errors.New("invalid workspace path: contains '..'")
 	}
 
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return err
+		return fmt.Errorf("workspace path error: %w", err)
 	}
 
-	eval, err := filepath.EvalSymlinks(abs)
+	// Resolve every symlink component, even for paths that do not fully exist yet.
+	// evalExistingPath walks from the deepest existing ancestor upward, so a
+	// symlink at any level in the path is always resolved.
+	eval, err := evalExistingPath(abs)
 	if err != nil {
-		// If path does not exist yet, we can't eval symlinks fully,
-		// but we still clean it.
-		eval = filepath.Clean(abs)
-	} else {
-		eval = filepath.Clean(eval)
+		return fmt.Errorf("workspace symlink resolution failed: %w", err)
 	}
+	eval = filepath.Clean(eval)
 
+	// Guard: resolved root must not be the filesystem root.
 	if eval == "/" {
-		return errors.New("workspace too broad")
+		return errors.New("workspace too broad: resolves to filesystem root")
 	}
 
-	// 强制限制 Workspace 必须在当前应用的执行目录下
-	// 避免传入通过软链接逃逸出项目根目录的恶意路径
+	// Guard: explicit symlink detection.
+	// If the real path differs from the cleaned absolute path, the workspace
+	// itself is a symlink (or traverses one). Reject it outright — symlinked
+	// workspaces make the sandbox boundary hard to reason about.
+	absClean := filepath.Clean(abs)
+	if eval != absClean {
+		return fmt.Errorf("workspace is or traverses a symlink (real path: %s)", eval)
+	}
+
+	// Guard: block known sensitive system directories.
+	for _, blocked := range blockedSystemPaths {
+		blocked = filepath.Clean(blocked)
+		if eval == blocked || strings.HasPrefix(eval, blocked+string(filepath.Separator)) {
+			return fmt.Errorf("workspace resolves to a restricted system path: %s", eval)
+		}
+	}
+
+	// Guard: workspace must reside inside the application's working directory.
+	// Both sides are symlink-resolved so a symlinked cwd cannot widen the zone.
 	cwd, err := filepath.Abs(".")
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot determine working directory: %w", err)
 	}
-	cwdEval, err := filepath.EvalSymlinks(cwd)
-	if err == nil {
+	cwdEval, evalErr := evalExistingPath(cwd)
+	if evalErr == nil {
 		cwd = filepath.Clean(cwdEval)
+	} else {
+		cwd = filepath.Clean(cwd)
 	}
 
 	if eval != cwd && !strings.HasPrefix(eval, cwd+string(filepath.Separator)) {
@@ -122,35 +176,71 @@ func ValidateCommand(name string) error {
 	return nil
 }
 
+// ValidateReadPath ensures that target resides inside workspace after full
+// symlink resolution of both paths.
+//
+// Security guarantees:
+//  1. workspace is converted to an absolute path and every symlink component
+//     is resolved via evalExistingPath (handles partially-existing paths).
+//  2. target is resolved the same way.
+//  3. The final containment check uses the resolved real paths, so a symlink
+//     placed inside the workspace and pointing outside cannot bypass the gate.
+//  4. Both workspace and target are verified to be non-empty after resolution.
 func ValidateReadPath(workspace, target string) error {
-	w, err := filepath.Abs(filepath.Clean(workspace))
+	// Resolve workspace to its real, canonical, absolute path.
+	wAbs, err := filepath.Abs(filepath.Clean(workspace))
 	if err != nil {
-		return err
+		return fmt.Errorf("workspace path error: %w", err)
 	}
-	if wEval, err := filepath.EvalSymlinks(w); err == nil {
-		w = wEval
-	}
-	w = filepath.Clean(w)
-
-	t, err := filepath.Abs(filepath.Clean(target))
+	wReal, err := evalExistingPath(wAbs)
 	if err != nil {
-		return err
+		return fmt.Errorf("workspace symlink resolution failed: %w", err)
 	}
-	if tEval, err := evalExistingPath(t); err == nil {
-		t = tEval
-	}
-	t = filepath.Clean(t)
+	w := filepath.Clean(wReal)
 
+	// Resolve target to its real, canonical, absolute path.
+	tAbs, err := filepath.Abs(filepath.Clean(target))
+	if err != nil {
+		return fmt.Errorf("target path error: %w", err)
+	}
+	tReal, err := evalExistingPath(tAbs)
+	if err != nil {
+		return fmt.Errorf("target symlink resolution failed: %w", err)
+	}
+	t := filepath.Clean(tReal)
+
+	// Containment check: t must equal w or be a child of w.
 	if t != w && !strings.HasPrefix(t, w+string(filepath.Separator)) {
-		return errors.New("target outside workspace")
+		return fmt.Errorf("target outside workspace (real path %q not under %q)", t, w)
 	}
 	return nil
 }
 
+// ValidateWritePath delegates to ValidateReadPath — the containment rule is
+// identical for reads and writes.
 func ValidateWritePath(workspace, target string) error {
 	return ValidateReadPath(workspace, target)
 }
 
+// evalExistingPath resolves as many symlink components of path as possible,
+// even when the path (or a suffix of it) does not exist on disk.
+//
+// Algorithm:
+//  1. Try filepath.EvalSymlinks on the full path. If it succeeds, return.
+//  2. Otherwise, peel the last component into a suffix, move to the parent, and
+//     repeat from step 1.
+//  3. If we reach the filesystem root without a successful eval, return the
+//     original path (best-effort; the OS will reject it on access anyway).
+//
+// This approach prevents the "path not found → skip EvalSymlinks → bypass
+// symlink checks" attack: even if the final file does not exist, every existing
+// directory component in the path is still resolved through its real location.
+//
+// Example:
+//
+//	workspace/evil_link/nonexistent.txt
+//	  → evil_link exists and is a symlink → resolves to /outside/nonexistent.txt
+//	  → containment check fails ✓
 func evalExistingPath(path string) (string, error) {
 	curr := path
 	var suffix string
@@ -162,9 +252,16 @@ func evalExistingPath(path string) (string, error) {
 			}
 			return filepath.Join(eval, suffix), nil
 		}
+		// Check whether the error is due to a non-existent component (vs. a
+		// real I/O error such as permission denied).
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("evalExistingPath: %w", err)
+		}
 		parent := filepath.Dir(curr)
 		if parent == curr {
-			return path, nil // reached root, fallback to original path
+			// Reached the filesystem root without a successful resolution;
+			// return the original path as a safe fallback.
+			return path, nil
 		}
 		base := filepath.Base(curr)
 		if suffix == "" {

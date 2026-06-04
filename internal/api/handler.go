@@ -64,6 +64,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.POST("/:id/reject", h.rejectTask)
 	}
 	api.GET("/metrics", h.getMetrics)
+	api.POST("/config/reload", h.reloadConfig)
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
@@ -295,4 +296,36 @@ func (h *Handler) listTasks(c *gin.Context) {
 		"limit":  f.Limit,
 		"offset": f.Offset,
 	})
+}
+
+// reloadConfig handles POST /api/config/reload.
+//
+// It atomically re-reads the configuration file and environment variables,
+// updates the global config singleton, and returns a redacted diff so the
+// caller can verify which values changed. API keys are never echoed back —
+// they appear as "***" in the response.
+//
+// Intended for:
+//   - API-key rotation without a process restart.
+//   - Model/timeout/log-level tuning in production.
+func (h *Handler) reloadConfig(c *gin.Context) {
+	cfg, changes, err := config.Reload()
+	if err != nil {
+		log.Printf("[Config] Manual reload failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	resp := gin.H{
+		"status":     "ok",
+		"no_changes": len(changes) == 0,
+		"changes":    changes,
+		// Return a few non-sensitive resolved values so the caller can confirm
+		// which provider and model are now active.
+		"active_provider": cfg.ResolveLLMProvider(),
+		"active_model":    cfg.ResolveLLMModel(cfg.ResolveLLMProvider()),
+	}
+	c.JSON(http.StatusOK, resp)
 }

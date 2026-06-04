@@ -61,24 +61,43 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 }
 
 // getEinoRunner returns the compiled Eino chain runner, compiling it lazily on
-// the first successful call. Unlike sync.Once, a compilation failure does NOT
-// permanently poison the cache: subsequent calls will retry compilation, which
-// is useful when a transient error (e.g. a missing env var) is corrected at
-// runtime without restarting the server.
+// the first successful call and caching it for all subsequent calls.
 //
-// Thread-safety: einoMu serialises concurrent first-call compilation.
-// After einoReady is true the mutex is acquired read-only (fast path) but we
-// keep the simple full-lock approach because compilation is a cold path.
+// Concurrency model — sync.RWMutex with double-check locking:
+//
+//  1. Hot path (runner already compiled, the common case):
+//     Acquires only an RLock, so any number of concurrent requests can read
+//     the cached runner simultaneously without blocking each other.
+//
+//  2. Cold path (first call or retry after a previous failure):
+//     Releases the RLock, acquires a full Lock, then re-checks einoReady
+//     (double-check) before compiling. This prevents two goroutines that both
+//     saw einoReady==false from compiling the chain twice.
+//
+// Unlike sync.Once, a compilation failure does NOT permanently poison the
+// cache: einoReady stays false so subsequent requests will retry, which is
+// useful when a transient error (e.g. a missing env var or network blip) is
+// corrected at runtime without restarting the server.
 func (e *Engine) getEinoRunner(ctx context.Context) (compose.Runnable[*einoStepState, *types.Task], error) {
+	// ── Hot path: read lock allows full concurrency when runner is ready ──────
+	e.einoMu.RLock()
+	if e.einoReady {
+		runner := e.einoRunner.(compose.Runnable[*einoStepState, *types.Task])
+		e.einoMu.RUnlock()
+		return runner, nil
+	}
+	e.einoMu.RUnlock()
+
+	// ── Cold path: upgrade to write lock for compilation ──────────────────────
 	e.einoMu.Lock()
 	defer e.einoMu.Unlock()
 
+	// Double-check: another goroutine may have compiled while we waited for Lock.
 	if e.einoReady {
-		// Fast path: runner already compiled and cached.
 		return e.einoRunner.(compose.Runnable[*einoStepState, *types.Task]), nil
 	}
 
-	// Slow path: compile the chain. On failure we return the error but leave
+	// Still not ready — compile now. On failure we return the error but leave
 	// einoReady=false so the next request can retry.
 	log.Printf("[Engine-Eino] Compiling Eino step chain (first use or retry after failure)")
 	r, err := e.compileEinoStepChain(ctx)
@@ -87,6 +106,7 @@ func (e *Engine) getEinoRunner(ctx context.Context) (compose.Runnable[*einoStepS
 	}
 	e.einoRunner = r
 	e.einoReady = true
+	log.Printf("[Engine-Eino] Eino step chain compiled and cached successfully")
 	return r, nil
 }
 

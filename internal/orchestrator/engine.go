@@ -36,9 +36,14 @@ type Engine struct {
 	Store       store.Store
 
 	// einoRunner is compiled once and cached for the lifetime of the Engine.
-	// A sync.Mutex guards lazy initialisation; unlike sync.Once, a failed
+	// A sync.RWMutex guards lazy initialisation; unlike sync.Once, a failed
 	// compilation attempt can be retried on the next call.
-	einoMu     sync.Mutex
+	//
+	// Hot path (runner already compiled): acquired as RLock so concurrent
+	// requests do not block each other at all.
+	// Cold path (first compile or retry): upgraded to full Lock with a
+	// double-check to prevent redundant compilations.
+	einoMu     sync.RWMutex
 	einoRunner any  // compose.Runnable[*einoStepState, *types.Task] after successful compile
 	einoReady  bool // true once einoRunner has been successfully compiled
 

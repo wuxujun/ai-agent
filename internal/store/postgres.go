@@ -114,35 +114,71 @@ final_answer=EXCLUDED.final_answer
 	return err
 }
 
-// ReplaceTraces saves traces using UPSERT to avoid write amplification, and deletes stale traces.
+// ReplaceTraces persists step traces for a task using an append-only strategy to
+// avoid write amplification.
+//
+// Strategy:
+//  1. Query the highest step number already persisted in the DB (maxPersistedStep).
+//  2. Only INSERT traces whose step > maxPersistedStep — historical traces are
+//     never re-written, reducing per-save writes from O(N) to O(K) where K is the
+//     number of new steps added since the last save (typically 1).
+//  3. Handle the truncation/reset case (traces shortened) by deleting rows whose
+//     step > len(traces) before inserting new ones.
+//  4. INSERT ... ON CONFLICT DO NOTHING provides idempotency for retries.
+//
+// Overall complexity across a full task lifetime drops from O(N²) to O(N).
 func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces []types.StepTrace) error {
+	if len(traces) == 0 {
+		// Nothing to write; clean up any orphaned rows from a prior reset.
+		_, err := p.db.ExecContext(ctx, `DELETE FROM traces WHERE task_id = $1`, taskID)
+		return err
+	}
+
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
-	// Delete any stale traces beyond the current trace length (e.g. if task was truncated/reset)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = $1 AND step >= $2`, taskID, len(traces)); err != nil {
+	// Step 1: Find the highest step already persisted for this task.
+	var maxPersistedStep int
+	row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(step), 0) FROM traces WHERE task_id = $1`, taskID)
+	if err := row.Scan(&maxPersistedStep); err != nil {
 		return err
 	}
 
+	// Step 2: Handle truncation — delete rows beyond the new trace length.
+	// This covers task-reset or step-rollback scenarios.
+	if maxPersistedStep > len(traces) {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM traces WHERE task_id = $1 AND step > $2`, taskID, len(traces),
+		); err != nil {
+			return err
+		}
+		// Re-read maxPersistedStep after truncation so we don't skip re-inserting
+		// rows that were just deleted (edge case: truncate then immediately append).
+		maxPersistedStep = len(traces)
+	}
+
+	// Step 3: INSERT only the truly new traces (step > maxPersistedStep).
+	// ON CONFLICT DO NOTHING makes concurrent or retry calls safe: a row that
+	// already exists at (task_id, step) is silently skipped without error.
 	for _, tr := range traces {
+		if tr.Step <= maxPersistedStep {
+			// Already persisted in a previous save — skip to avoid redundant writes.
+			continue
+		}
 		ev, err := json.Marshal(tr.Evidence)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-INSERT INTO traces (task_id, step, goal, action, query, observation, evidence_json, agent_role)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-ON CONFLICT(task_id, step) DO UPDATE SET
-	goal = EXCLUDED.goal,
-	action = EXCLUDED.action,
-	query = EXCLUDED.query,
-	observation = EXCLUDED.observation,
-	evidence_json = EXCLUDED.evidence_json,
-	agent_role = EXCLUDED.agent_role
-`, taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole)); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO traces
+				(task_id, step, goal, action, query, observation, evidence_json, agent_role)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (task_id, step) DO NOTHING`,
+			taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
+		); err != nil {
 			return err
 		}
 	}
@@ -167,7 +203,7 @@ func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) erro
 	}
 	if err := p.ReplaceTraces(ctx, task.ID, task.Trace); err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "replace traces failed")
+		span.SetStatus(codes.Error, "append traces failed")
 		return err
 	}
 

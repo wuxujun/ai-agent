@@ -32,12 +32,22 @@ const (
 	ProviderOllama          ProviderType = "ollama"
 )
 
+// LLMPlanner calls an LLM to produce a PlanDecision for each agent step.
+//
+// APIKey, Model, and BaseURL stored in the struct act as *static overrides*:
+// if a field is non-empty it takes precedence over the live configuration.
+// If a field is empty, PlanNext resolves the value from config.Get() at call
+// time, so a hot-config-reload (e.g. API-key rotation) is picked up
+// automatically without restarting the server.
 type LLMPlanner struct {
 	Provider ProviderType
-	APIKey   string
-	Model    string
-	BaseURL  string
-	Client   *http.Client
+	// APIKey overrides config.Get().ResolveLLMAPIKey when non-empty.
+	APIKey string
+	// Model overrides config.Get().ResolveLLMModel when non-empty.
+	Model string
+	// BaseURL overrides config.Get().ResolveLLMBaseURL when non-empty.
+	BaseURL string
+	Client  *http.Client
 }
 
 func NewLLMPlanner(apiKey, model, baseURL string) *LLMPlanner {
@@ -61,24 +71,57 @@ func NewLLMPlannerWithProvider(provider ProviderType, apiKey, model, baseURL str
 	}
 }
 
+// resolveCredentials returns the effective (provider, apiKey, model, baseURL)
+// for this call by merging the struct's static overrides with the current live
+// config. This is called at the top of PlanNext so that any config hot-reload
+// (e.g. API key rotation) is reflected immediately on the next LLM request.
+func (p *LLMPlanner) resolveCredentials() (provider ProviderType, apiKey, model, baseURL string) {
+	cfg := config.Get() // always read the latest snapshot
+
+	provider = p.Provider
+	if provider == "" {
+		provider = ProviderType(cfg.ResolveLLMProvider())
+	}
+
+	apiKey = p.APIKey
+	if apiKey == "" {
+		apiKey = cfg.ResolveLLMAPIKey(string(provider))
+	}
+
+	model = p.Model
+	if model == "" {
+		model = cfg.ResolveLLMModel(string(provider))
+	}
+
+	baseURL = p.BaseURL
+	if baseURL == "" {
+		baseURL = cfg.ResolveLLMBaseURL(string(provider))
+	}
+	return
+}
+
 func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*PlanDecision, error) {
 	ctx, span := tracer.Start(ctx, "planner.plan_next")
 	defer span.End()
 
+	// Resolve credentials at call time so hot-reloaded config (e.g. rotated API
+	// keys) is picked up without restarting the server.
+	provider, apiKey, model, baseURL := p.resolveCredentials()
+
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
-		attribute.String("llm.provider", string(p.Provider)),
-		attribute.String("llm.model", p.Model),
+		attribute.String("llm.provider", string(provider)),
+		attribute.String("llm.model", model),
 		attribute.Int("agent.task.step_count", task.StepCount),
 	)
 
-	log.Printf("[LLM Planner] Starting planning for task %s, step_count: %d, provider: %s, model: %s", task.ID, task.StepCount, p.Provider, p.Model)
+	log.Printf("[LLM Planner] Starting planning for task %s, step_count: %d, provider: %s, model: %s", task.ID, task.StepCount, provider, model)
 
 	systemPrompt := BuildSystemPrompt()
 	userPrompt := BuildUserPrompt(task)
 
-	if p.Provider == ProviderGemini {
-		client, err := GetGeminiClient(p.APIKey, p.BaseURL)
+	if provider == ProviderGemini {
+		client, err := GetGeminiClient(apiKey, baseURL)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "failed to create genai client")
@@ -105,8 +148,8 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			ResponseSchema:   PlannerDecisionGenAISchema(),
 		}
 
-		log.Printf("[LLM Planner] Sending stream request to Gemini: model=%s", p.Model)
-		iter := client.Models.GenerateContentStream(ctx, p.Model, contents, config)
+		log.Printf("[LLM Planner] Sending stream request to Gemini: model=%s", model)
+		iter := client.Models.GenerateContentStream(ctx, model, contents, config)
 		
 		var textBuf strings.Builder
 		var usage types.TokenUsage
@@ -169,12 +212,12 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		return &decision, nil
 	}
 
-	prov, err := lookupProvider(p.Provider)
+	prov, err := lookupProvider(provider)
 	if err != nil {
 		return nil, err
 	}
 
-	req, respParser, err := prov.BuildRequest(ctx, p.Client, p.Model, p.APIKey, p.BaseURL, systemPrompt, userPrompt, PlannerDecisionSchema())
+	req, respParser, err := prov.BuildRequest(ctx, p.Client, model, apiKey, baseURL, systemPrompt, userPrompt, PlannerDecisionSchema())
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "build request failed")
@@ -182,7 +225,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		return nil, err
 	}
 
-	log.Printf("[LLM Planner] Sending request to API (%s): %s", p.Provider, p.BaseURL)
+	log.Printf("[LLM Planner] Sending request to API (%s): %s", provider, baseURL)
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		span.RecordError(err)
