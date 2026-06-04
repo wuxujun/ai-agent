@@ -4,9 +4,17 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/skills"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+// SkillRegistry is the optional skill capability layer injected into the
+// planner prompt. It is a package-level variable (set once at startup in main)
+// rather than a constructor parameter so the existing planner constructors and
+// BuildUserPrompt callers stay source-compatible. A nil registry simply means
+// no skills are advertised — skills.PromptSection handles nil gracefully.
+var SkillRegistry *skills.Registry
 
 func BuildSystemPrompt() string {
 	return `You are the planner for a multi-step search agent.
@@ -24,6 +32,7 @@ Rules:
 - If no useful next step exists, stop.
 - Never use an action not listed in the tool list.
 - Use read_file only after you have a likely target file.
+- For a specialized task, first call use_skill to load the matching skill's instructions, then follow them step by step.
 - Keep thought_summary short and concrete.`
 }
 
@@ -44,6 +53,10 @@ func BuildUserPrompt(task *types.Task) string {
 	}
 	toolsString := strings.Join(toolsList, "\n")
 
+	// Progressive disclosure: advertise only the skill name+description here;
+	// the full SKILL.md body is loaded on demand via the use_skill tool.
+	skillsString := skills.PromptSection(SkillRegistry)
+
 	return fmt.Sprintf(`Task goal:
 %s%s
 
@@ -54,7 +67,7 @@ Current status:
 - status: %s
 
 Available tools:
-%s
+%s%s
 
 Unresolved questions:
 %s
@@ -73,6 +86,7 @@ Decision requirements:
 		task.ToolBudget,
 		task.Status,
 		toolsString,
+		skillsString,
 		formatUnresolved(task.Unresolved),
 		summarizeTrace(task.Trace),
 	)

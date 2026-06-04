@@ -45,6 +45,12 @@ type Config struct {
 	Tool struct {
 		TimeoutSeconds int `mapstructure:"timeout_seconds"`
 	} `mapstructure:"tool"`
+
+	Skill struct {
+		// Root is the directory scanned for <name>/SKILL.md skill packages,
+		// relative to the server's working directory unless absolute.
+		Root string `mapstructure:"root"`
+	} `mapstructure:"skill"`
 }
 
 var globalConfig *Config
@@ -73,6 +79,7 @@ func LoadConfig() *Config {
 	viper.SetDefault("llm.timeout_seconds", 30)
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("tool.timeout_seconds", 120)
+	viper.SetDefault("skill.root", "skills")
 
 	// Explicit bindings for standard env variables
 	_ = viper.BindEnv("llm.openai_api_key", "OPENAI_API_KEY")
