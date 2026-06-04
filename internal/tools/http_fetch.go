@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 )
@@ -40,7 +41,9 @@ func (t *HttpFetchTool) Execute(ctx context.Context, workspace string, params ma
 		return nil, fmt.Errorf("http_fetch policy violation: %w", err)
 	}
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -53,15 +56,13 @@ func (t *HttpFetchTool) Execute(ctx context.Context, workspace string, params ma
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Use LimitReader to prevent DoS/OOM from extremely large files (e.g. infinite streams)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4000))
 	if err != nil {
 		return nil, err
 	}
 
 	content := string(body)
-	if len(content) > 4000 {
-		content = content[:4000] // truncate to fit in observation
-	}
 
 	return &ToolResult{
 		Query:       url,

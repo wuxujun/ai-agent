@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 	"net/url"
 	"regexp"
 	"strings"
@@ -40,7 +41,9 @@ func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params ma
 
 	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
@@ -54,7 +57,8 @@ func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params ma
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Ensure we do not load massive payloads, 512KB is enough for a DDG page
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if err != nil {
 		return nil, err
 	}

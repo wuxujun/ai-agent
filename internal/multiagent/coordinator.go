@@ -41,6 +41,7 @@ type Coordinator struct {
 	Writer     Writer
 	Metrics    *metrics.Collector
 	SuspendForApproval func(ctx context.Context, task *types.Task, action string) error
+	EventCallback      func(taskID string, status types.TaskStatus)
 }
 
 // NewCoordinator creates a Coordinator wired to the default LLM configuration
@@ -81,6 +82,9 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		return err
 	}
 	span.SetAttributes(attribute.Int("multiagent.plan.step_count", len(plan.Steps)))
+	if c.EventCallback != nil {
+		c.EventCallback(task.ID, task.Status)
+	}
 
 	var allEvidence []StepEvidence
 	currentSteps := plan.Steps
@@ -148,6 +152,9 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 			// Prepare new steps for the next iteration
 			currentSteps = newPlan.Steps
 			task.Status = types.StatusRunning
+			if c.EventCallback != nil {
+				c.EventCallback(task.ID, task.Status)
+			}
 			continue
 		}
 
@@ -386,6 +393,9 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 	}
 	task.StepCount += len(batch)
 	task.ToolBudget -= len(batch)
+	if c.EventCallback != nil {
+		c.EventCallback(task.ID, task.Status)
+	}
 	task.Status = types.StatusRunning
 	return
 }
