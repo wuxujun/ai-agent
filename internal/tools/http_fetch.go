@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 type HttpFetchTool struct{}
@@ -21,6 +21,9 @@ func (t *HttpFetchTool) RiskLevel() types.RiskLevel {
 	return types.RiskLevelLow
 }
 
+func (t *HttpFetchTool) RetryPolicy() RetryPolicy {
+	return RetryPolicy{MaxRetries: 2, Backoff: time.Second}
+}
 
 func (t *HttpFetchTool) Description() string {
 	return "Fetch content from an HTTP/HTTPS URL"

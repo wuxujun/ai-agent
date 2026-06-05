@@ -1,15 +1,16 @@
 package tools
 
 import (
-	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 type WebSearchTool struct{}
@@ -22,6 +23,9 @@ func (t *WebSearchTool) RiskLevel() types.RiskLevel {
 	return types.RiskLevelLow
 }
 
+func (t *WebSearchTool) RetryPolicy() RetryPolicy {
+	return RetryPolicy{MaxRetries: 2, Backoff: time.Second}
+}
 
 func (t *WebSearchTool) Description() string {
 	return "Search the web using DuckDuckGo HTML"

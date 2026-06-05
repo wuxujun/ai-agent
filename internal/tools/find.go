@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -17,6 +18,10 @@ func (t *FindFilesTool) Name() string {
 
 func (t *FindFilesTool) RiskLevel() types.RiskLevel {
 	return types.RiskLevelLow
+}
+
+func (t *FindFilesTool) RetryPolicy() RetryPolicy {
+	return RetryPolicy{MaxRetries: 2, Backoff: time.Second}
 }
 
 func (t *FindFilesTool) Description() string {

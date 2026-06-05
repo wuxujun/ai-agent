@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 // toolMiddleware wraps a Tool to provide standard execution features:
@@ -19,18 +21,17 @@ type toolMiddleware struct {
 
 func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	timeout := toolTimeout()
+	retryPolicy := retryPolicyFor(m.Tool)
 
 	var lastErr error
 	var result *ToolResult
-
-	maxRetries := 2
 
 	// Fast fail for context cancellation
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= retryPolicy.MaxRetries; attempt++ {
 		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		res, err := m.Tool.Execute(execCtx, workspace, params)
 		cancel()
@@ -48,10 +49,10 @@ func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params m
 			return nil, err
 		}
 
-		if attempt < maxRetries {
+		if attempt < retryPolicy.MaxRetries {
 			log.Printf("[Tool %s] Execute failed (attempt %d): %v, retrying...", m.Name(), attempt+1, err)
 			select {
-			case <-time.After(time.Second * time.Duration(attempt+1)):
+			case <-time.After(retryPolicy.Backoff * time.Duration(attempt+1)):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -59,7 +60,7 @@ func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params m
 	}
 
 	if lastErr != nil && result == nil {
-		return nil, fmt.Errorf("tool %s failed after %d attempts: %w", m.Name(), maxRetries+1, lastErr)
+		return nil, fmt.Errorf("tool %s failed after %d attempts: %w", m.Name(), retryPolicy.MaxRetries+1, lastErr)
 	}
 
 	// 1. Truncate Observation
@@ -77,4 +78,24 @@ func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params m
 	}
 
 	return result, nil
+}
+
+func retryPolicyFor(t Tool) RetryPolicy {
+	if t.RiskLevel() == types.RiskLevelHigh {
+		return RetryPolicy{}
+	}
+
+	provider, ok := t.(retryPolicyProvider)
+	if !ok {
+		return RetryPolicy{}
+	}
+
+	policy := provider.RetryPolicy()
+	if policy.MaxRetries < 0 {
+		policy.MaxRetries = 0
+	}
+	if policy.Backoff <= 0 {
+		policy.Backoff = time.Second
+	}
+	return policy
 }

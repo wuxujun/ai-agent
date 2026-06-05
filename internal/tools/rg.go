@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -17,6 +18,10 @@ func (t *SearchTextTool) Name() string {
 
 func (t *SearchTextTool) RiskLevel() types.RiskLevel {
 	return types.RiskLevelLow
+}
+
+func (t *SearchTextTool) RetryPolicy() RetryPolicy {
+	return RetryPolicy{MaxRetries: 2, Backoff: time.Second}
 }
 
 func (t *SearchTextTool) Description() string {

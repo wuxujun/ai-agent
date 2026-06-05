@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -25,6 +26,18 @@ type Tool interface {
 	Parameters() map[string]any
 	RiskLevel() types.RiskLevel
 	Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error)
+}
+
+// RetryPolicy controls middleware-level retry behavior for a tool.
+// MaxRetries is the number of retries after the initial attempt. Backoff is the
+// delay before the first retry; later retries use a linear multiple of it.
+type RetryPolicy struct {
+	MaxRetries int
+	Backoff    time.Duration
+}
+
+type retryPolicyProvider interface {
+	RetryPolicy() RetryPolicy
 }
 
 type Registry struct {
