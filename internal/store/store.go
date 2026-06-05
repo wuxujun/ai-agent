@@ -46,6 +46,10 @@ type Store interface {
 	// If embedding is provided, it can perform vector similarity search.
 	QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error)
 
+	// TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
+	// It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
+	TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error)
+
 	// Close releases any resources held by the store.
 	Close() error
 }

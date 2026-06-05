@@ -239,3 +239,30 @@ func keywordOverlap(query, text string) float32 {
 	return matches / float32(len(qWords))
 }
 
+// TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
+// It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
+func (m *MemoryStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	task, exists := m.tasks[id]
+	if !exists {
+		return false, sql.ErrNoRows
+	}
+
+	matched := false
+	for _, status := range from {
+		if task.Status == status {
+			matched = true
+			break
+		}
+	}
+
+	if !matched {
+		return false, nil
+	}
+
+	task.Status = to
+	return true, nil
+}
+

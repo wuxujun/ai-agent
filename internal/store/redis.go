@@ -267,3 +267,55 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 	return res, nil
 }
 
+var transitionScript = redis.NewScript(`
+	local taskKey = KEYS[1]
+	local toStatus = ARGV[1]
+	
+	local val = redis.call('GET', taskKey)
+	if not val then
+		return -1
+	end
+	
+	local task = cjson.decode(val)
+	local matched = false
+	for i = 2, #ARGV do
+		if task["status"] == ARGV[i] then
+			matched = true
+			break
+		end
+	end
+	
+	if not matched then
+		return 0
+	end
+	
+	task["status"] = toStatus
+	redis.call('SET', taskKey, cjson.encode(task))
+	return 1
+`)
+
+// TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
+// It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
+func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+	ctx, span := tracer.Start(ctx, "store.redis.try_transition_task_status")
+	defer span.End()
+
+	args := make([]any, 0, len(from)+1)
+	args = append(args, string(to))
+	for _, f := range from {
+		args = append(args, string(f))
+	}
+
+	res, err := transitionScript.Run(ctx, r.client, []string{r.taskKey(id)}, args...).Int64()
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "redis transition script failed")
+		return false, err
+	}
+
+	if res == -1 {
+		return false, sql.ErrNoRows
+	}
+	return res == 1, nil
+}
+

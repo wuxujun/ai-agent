@@ -239,6 +239,40 @@ func TestStores(t *testing.T) {
 			if mems2[0].ID != mem2.ID {
 				t.Errorf("expected keyword match to favor %q, got %q", mem2.ID, mems2[0].ID)
 			}
+
+			// ── Scenario D: TryTransitionTaskStatus ────────
+			// 1. Invalid status from list (should fail)
+			success, err := s.TryTransitionTaskStatus(ctx, task.ID, []types.TaskStatus{types.StatusCompleted}, types.StatusRunning)
+			if err != nil {
+				t.Fatalf("TryTransitionTaskStatus error: %v", err)
+			}
+			if success {
+				t.Errorf("expected transition to fail, but succeeded")
+			}
+
+			// 2. Valid status transition (should succeed)
+			success, err = s.TryTransitionTaskStatus(ctx, task.ID, []types.TaskStatus{types.StatusCreated}, types.StatusRunning)
+			if err != nil {
+				t.Fatalf("TryTransitionTaskStatus error: %v", err)
+			}
+			if !success {
+				t.Errorf("expected transition to succeed, but failed")
+			}
+
+			// Verify status in DB is indeed updated
+			gotTrans, err := s.GetTask(ctx, task.ID)
+			if err != nil {
+				t.Fatalf("failed to retrieve task: %v", err)
+			}
+			if gotTrans.Status != types.StatusRunning {
+				t.Errorf("expected status to be 'running', got %s", gotTrans.Status)
+			}
+
+			// 3. Try transition on non-existent task
+			_, err = s.TryTransitionTaskStatus(ctx, "non-existent-task-id", []types.TaskStatus{types.StatusCreated}, types.StatusRunning)
+			if err != sql.ErrNoRows {
+				t.Errorf("expected sql.ErrNoRows for non-existent task, got %v", err)
+			}
 		})
 	}
 }

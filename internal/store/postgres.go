@@ -420,3 +420,37 @@ FROM memories
 	return res, rows.Err()
 }
 
+// TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
+// It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
+func (p *PostgresStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+	if len(from) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(from))
+	args := make([]any, 0, len(from)+2)
+	args = append(args, to, id)
+	for i, f := range from {
+		placeholders[i] = fmt.Sprintf("$%d", i+3)
+		args = append(args, f)
+	}
+	query := fmt.Sprintf("UPDATE tasks SET status = $1 WHERE id = $2 AND status IN (%s)", strings.Join(placeholders, ","))
+
+	res, err := p.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if rows == 0 {
+		var exists bool
+		err = p.db.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = $1`, id).Scan(&exists)
+		if err == sql.ErrNoRows {
+			return false, sql.ErrNoRows
+		}
+		return false, nil
+	}
+	return true, nil
+}
+

@@ -217,11 +217,38 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
+	h.activeTasksMu.Lock()
+	if _, exists := h.activeTasks[task.ID]; exists {
+		h.activeTasksMu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "task is already running",
+			"task_id": task.ID,
+		})
+		return
+	}
+	h.activeTasksMu.Unlock()
+
+	// Perform atomic state transition in DB to prevent multi-instance concurrency
+	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusCreated, types.StatusAwaitingApproval}, types.StatusRunning)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	if !success {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "task status has changed or is already running",
+			"task_id": task.ID,
+		})
+		return
+	}
+
 	bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	h.activeTasksMu.Lock()
 	if _, exists := h.activeTasks[task.ID]; exists {
 		h.activeTasksMu.Unlock()
 		bgCancel()
+		// Revert status update in DB on collision
+		_, _ = h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusRunning}, task.Status)
 		c.JSON(http.StatusConflict, gin.H{
 			"error":   "task is already running",
 			"task_id": task.ID,
@@ -232,14 +259,6 @@ func (h *Handler) runAll(c *gin.Context) {
 	h.activeTasksMu.Unlock()
 
 	task.Status = types.StatusRunning
-	if saveErr := h.store.SaveFullTask(loadCtx, task); saveErr != nil {
-		h.activeTasksMu.Lock()
-		delete(h.activeTasks, task.ID)
-		h.activeTasksMu.Unlock()
-		bgCancel()
-		c.Error(saveErr)
-		return
-	}
 
 	// Run asynchronously so the HTTP handler returns immediately (202 Accepted).
 	// The caller should poll GET /api/tasks/:id to observe completion.
