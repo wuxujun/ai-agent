@@ -183,6 +183,13 @@ func main() {
 			Status: status,
 		})
 	}
+	eng.ApprovalCallback = func(taskID string, approval *types.ApprovalRequest) {
+		api.GetBus().Publish(taskID, api.StepEvent{
+			TaskID:   taskID,
+			Status:   types.StatusAwaitingApproval,
+			Approval: approval,
+		})
+	}
 	eng.StepCallback = func(taskID string, status types.TaskStatus, step *types.StepTrace) {
 		api.GetBus().Publish(taskID, api.StepEvent{
 			TaskID: taskID,

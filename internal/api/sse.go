@@ -15,11 +15,12 @@ import (
 
 // StepEvent is a Server-Sent Event payload pushed to the client after each step.
 type StepEvent struct {
-	TaskID string           `json:"task_id"`
-	Status types.TaskStatus `json:"status"`
-	Step   *types.StepTrace `json:"step,omitempty"`
-	Final  string           `json:"final_answer,omitempty"`
-	Token  string           `json:"token,omitempty"` // For streaming tokens
+	TaskID   string                 `json:"task_id"`
+	Status   types.TaskStatus       `json:"status"`
+	Step     *types.StepTrace       `json:"step,omitempty"`
+	Final    string                 `json:"final_answer,omitempty"`
+	Token    string                 `json:"token,omitempty"` // For streaming tokens
+	Approval *types.ApprovalRequest `json:"approval,omitempty"`
 }
 
 // EventBus manages per-task SSE subscriber channels.

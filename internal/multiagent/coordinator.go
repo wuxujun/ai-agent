@@ -37,11 +37,11 @@ type Writer interface {
 //
 // It updates task.Trace and task.Status in-place.
 type Coordinator struct {
-	Planner    Planner
-	Researcher Researcher
-	Writer     Writer
-	Metrics    *metrics.Collector
-	SuspendForApproval func(ctx context.Context, task *types.Task, action string) error
+	Planner            Planner
+	Researcher         Researcher
+	Writer             Writer
+	Metrics            *metrics.Collector
+	SuspendForApproval func(ctx context.Context, task *types.Task, action string, params map[string]any) error
 	EventCallback      func(taskID string, status types.TaskStatus)
 }
 
@@ -190,13 +190,13 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	}
 	task.Hypothesis = plan.ThoughtSummary
 	task.Trace = append(task.Trace, types.StepTrace{
-		Step:      task.StepCount,
-		Goal:      task.Goal,
-		Action:    "plan",
-		Query:     "planner",
+		Step:   task.StepCount,
+		Goal:   task.Goal,
+		Action: "plan",
+		Query:  "planner",
 		Observation: fmt.Sprintf("[planner] %s — %d step(s) planned",
 			plan.ThoughtSummary, len(plan.Steps)),
-		AgentRole: RolePlanner,
+		AgentRole:  RolePlanner,
 		TokenUsage: plan.TokenUsage,
 	})
 	task.StepCount++
@@ -415,7 +415,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 
 		tool, ok := tools.Get(step.Action)
 		if ok && tool.RiskLevel() == types.RiskLevelHigh && c.SuspendForApproval != nil {
-			if err := c.SuspendForApproval(ctx, task, step.Action); err != nil {
+			if err := c.SuspendForApproval(ctx, task, step.Action, stepToParams(step)); err != nil {
 				log.Error("Action rejected or approval failed", "action", step.Action, "error", err)
 				anyFailed = true
 				break

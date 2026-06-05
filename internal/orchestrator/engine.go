@@ -47,9 +47,10 @@ type Engine struct {
 	einoRunner any  // compose.Runnable[*einoStepState, *types.Task] after successful compile
 	einoReady  bool // true once einoRunner has been successfully compiled
 
-	EventCallback func(taskID string, status types.TaskStatus)
-	StepCallback  func(taskID string, status types.TaskStatus, step *types.StepTrace)
-	TokenCallback func(taskID string, token string)
+	EventCallback    func(taskID string, status types.TaskStatus)
+	ApprovalCallback func(taskID string, approval *types.ApprovalRequest)
+	StepCallback     func(taskID string, status types.TaskStatus, step *types.StepTrace)
+	TokenCallback    func(taskID string, token string)
 
 	// adkRunner is compiled once and cached for reuse across all runAdkNext calls.
 	adkOnce   sync.Once
@@ -227,7 +228,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	for _, ac := range decision.Actions {
 		tool, ok := tools.Get(ac.Action)
 		if ok && tool.RiskLevel() == types.RiskLevelHigh {
-			if err := e.SuspendForApproval(ctx, task, ac.Action); err != nil {
+			if err := e.SuspendForApproval(ctx, task, ac.Action, ac.Parameters); err != nil {
 				engineLog.Error("action rejected or approval failed", "action", ac.Action, "error", err)
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "approval failed")
@@ -283,7 +284,11 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	return nil
 }
 
-func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string) error {
+func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) error {
+	approval := e.BuildApprovalRequest(task, action, params)
+	ch := RegisterApproval(task.ID, approval)
+	defer RemoveApproval(task.ID)
+
 	task.Status = types.StatusAwaitingApproval
 	if e.Store != nil {
 		if err := e.Store.SaveFullTask(ctx, task); err != nil {
@@ -293,9 +298,9 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 	if e.EventCallback != nil {
 		e.EventCallback(task.ID, types.StatusAwaitingApproval)
 	}
-
-	ch := RegisterApproval(task.ID)
-	defer RemoveApproval(task.ID)
+	if e.ApprovalCallback != nil {
+		e.ApprovalCallback(task.ID, approval)
+	}
 
 	select {
 	case approved := <-ch:

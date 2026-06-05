@@ -56,6 +56,16 @@ const (
 	RiskLevelHigh RiskLevel = "high"
 )
 
+type ApprovalRequest struct {
+	TaskID           string         `json:"task_id"`
+	Action           string         `json:"action"`
+	RiskLevel        RiskLevel      `json:"risk_level"`
+	Workspace        string         `json:"workspace"`
+	Parameters       map[string]any `json:"parameters,omitempty"`
+	ParameterSummary []string       `json:"parameter_summary,omitempty"`
+	Preview          string         `json:"preview,omitempty"`
+}
+
 type Task struct {
 	ID          string      `json:"id"`
 	Goal        string      `json:"goal"`
@@ -71,4 +81,3 @@ type Task struct {
 	FinalAnswer string      `json:"final_answer"`
 	Memories    []Memory    `json:"memories,omitempty"`
 }
-

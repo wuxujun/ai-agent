@@ -339,8 +339,9 @@ func (h *Handler) getMetrics(c *gin.Context) {
 
 func (h *Handler) approveTask(c *gin.Context) {
 	taskID := c.Param("id")
+	approval, _ := orchestrator.CurrentApproval(taskID)
 	if orchestrator.ResolveApproval(taskID, true) {
-		c.JSON(http.StatusOK, gin.H{"message": "task action approved"})
+		c.JSON(http.StatusOK, gin.H{"message": "task action approved", "approval": approval})
 	} else {
 		c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
 	}
@@ -348,8 +349,9 @@ func (h *Handler) approveTask(c *gin.Context) {
 
 func (h *Handler) rejectTask(c *gin.Context) {
 	taskID := c.Param("id")
+	approval, _ := orchestrator.CurrentApproval(taskID)
 	if orchestrator.ResolveApproval(taskID, false) {
-		c.JSON(http.StatusOK, gin.H{"message": "task action rejected"})
+		c.JSON(http.StatusOK, gin.H{"message": "task action rejected", "approval": approval})
 	} else {
 		c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
 	}
