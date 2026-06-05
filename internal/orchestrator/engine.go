@@ -336,6 +336,7 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 			engineLog.Warn("task canceled", "task_id", task.ID, "error", ctx.Err())
 			span.RecordError(ctx.Err())
 			span.SetStatus(codes.Error, "context canceled")
+			_ = SetTaskFailed(task, "task canceled: "+ctx.Err().Error())
 			return ctx.Err()
 		default:
 		}

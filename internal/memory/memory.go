@@ -58,7 +58,8 @@ func CreateMemoryFromTask(ctx context.Context, task *types.Task) (*types.Memory,
 }
 
 // DeduplicateMemories filters out duplicate or highly redundant memories.
-// It filters by duplicate ID, TaskID, and exact normalized matches of Goal or FinalAnswer.
+// It filters by duplicate ID, TaskID, and exact normalized matches of Goal or FinalAnswer,
+// as well as by semantic similarity based on their vector embeddings (if available).
 func DeduplicateMemories(memories []types.Memory) []types.Memory {
 	if len(memories) <= 1 {
 		return memories
@@ -68,6 +69,10 @@ func DeduplicateMemories(memories []types.Memory) []types.Memory {
 	seenTaskIDs := make(map[string]bool)
 	seenGoals := make(map[string]bool)
 	seenAnswers := make(map[string]bool)
+
+	// Threshold for semantic duplicate detection (cosine similarity).
+	// Memories with cosine similarity higher than this value are considered redundant.
+	const semanticThreshold = 0.85
 
 	var deduped []types.Memory
 
@@ -88,6 +93,25 @@ func DeduplicateMemories(memories []types.Memory) []types.Memory {
 			continue
 		}
 		if answer != "" && seenAnswers[answer] {
+			continue
+		}
+
+		// Check semantic similarity against already accepted memories
+		isSemanticDuplicate := false
+		if len(mem.Embedding) > 0 {
+			for _, other := range deduped {
+				if len(other.Embedding) > 0 {
+					sim := CosineSimilarity(mem.Embedding, other.Embedding)
+					if sim >= semanticThreshold {
+						log.Debug("deduplicating semantically similar memory", "id", mem.ID, "other_id", other.ID, "similarity", sim)
+						isSemanticDuplicate = true
+						break
+					}
+				}
+			}
+		}
+
+		if isSemanticDuplicate {
 			continue
 		}
 

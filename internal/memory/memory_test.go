@@ -170,3 +170,24 @@ func TestDeduplicateMemories(t *testing.T) {
 		t.Errorf("unexpected deduped result order or keys: %+v", deduped)
 	}
 }
+
+func TestSemanticDeduplicateMemories(t *testing.T) {
+	emb1 := []float32{1.0, 0.0, 0.0}
+	emb2 := []float32{0.99, 0.1, 0.0} // High similarity (approx 0.995)
+	emb3 := []float32{0.0, 1.0, 0.0} // Low similarity (0.0)
+
+	mems := []types.Memory{
+		{ID: "mem-1", TaskID: "task-1", Goal: "Goal 1", FinalAnswer: "Answer 1", Embedding: emb1},
+		{ID: "mem-2", TaskID: "task-2", Goal: "Goal 2", FinalAnswer: "Answer 2", Embedding: emb2}, // Semantically redundant
+		{ID: "mem-3", TaskID: "task-3", Goal: "Goal 3", FinalAnswer: "Answer 3", Embedding: emb3}, // Semantically distinct
+	}
+
+	deduped := memory.DeduplicateMemories(mems)
+	if len(deduped) != 2 {
+		t.Fatalf("expected 2 memories after semantic deduplication, got %d", len(deduped))
+	}
+
+	if deduped[0].ID != "mem-1" || deduped[1].ID != "mem-3" {
+		t.Errorf("unexpected deduped result: %+v", deduped)
+	}
+}

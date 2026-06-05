@@ -26,6 +26,9 @@ type Handler struct {
 	metrics *metrics.Collector
 	wg      sync.WaitGroup // tracks background run-all goroutines for graceful shutdown
 	taskSem chan struct{}  // bounded worker pool for concurrency control
+
+	activeTasks   map[string]context.CancelFunc
+	activeTasksMu sync.Mutex
 }
 
 type CreateTaskRequest struct {
@@ -44,10 +47,11 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	}
 	
 	h := &Handler{
-		store:   st,
-		engine:  eng,
-		metrics: mc,
-		taskSem: make(chan struct{}, maxTasks),
+		store:       st,
+		engine:      eng,
+		metrics:     mc,
+		taskSem:     make(chan struct{}, maxTasks),
+		activeTasks: make(map[string]context.CancelFunc),
 	}
 
 	r.Use(ErrorMiddleware())
@@ -64,6 +68,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.GET("/:id/stream", h.streamTask)
 		tasks.POST("/:id/approve", h.approveTask)
 		tasks.POST("/:id/reject", h.rejectTask)
+		tasks.DELETE("/:id/cancel", h.cancelTask)
 	}
 	api.GET("/metrics", h.getMetrics)
 	api.POST("/config/reload", h.reloadConfig)
@@ -183,6 +188,12 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
+	task.Status = types.StatusRunning
+	if saveErr := h.store.SaveFullTask(loadCtx, task); saveErr != nil {
+		c.Error(saveErr)
+		return
+	}
+
 	// Run asynchronously so the HTTP handler returns immediately (202 Accepted).
 	// The caller should poll GET /api/tasks/:id to observe completion.
 	h.wg.Add(1)
@@ -194,7 +205,17 @@ func (h *Handler) runAll(c *gin.Context) {
 		defer func() { <-h.taskSem }()
 
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer bgCancel()
+		h.activeTasksMu.Lock()
+		h.activeTasks[task.ID] = bgCancel
+		h.activeTasksMu.Unlock()
+
+		defer func() {
+			h.activeTasksMu.Lock()
+			delete(h.activeTasks, task.ID)
+			h.activeTasksMu.Unlock()
+			bgCancel()
+		}()
+
 		log.Info("starting async run-all for task", "task_id", task.ID)
 		execErr := h.engine.RunAll(bgCtx, task)
 		saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -330,4 +351,58 @@ func (h *Handler) reloadConfig(c *gin.Context) {
 		"active_model":    cfg.ResolveLLMModel(cfg.ResolveLLMProvider()),
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// cancelTask handles DELETE /api/tasks/:id/cancel.
+// It cancels a running task if it is active in the current process, or marks it as failed in the DB.
+func (h *Handler) cancelTask(c *gin.Context) {
+	taskID := c.Param("id")
+
+	h.activeTasksMu.Lock()
+	cancel, exists := h.activeTasks[taskID]
+	if exists {
+		delete(h.activeTasks, taskID)
+	}
+	h.activeTasksMu.Unlock()
+
+	if !exists {
+		// If not in activeTasks, check if the task exists in the db and is running.
+		// If so, mark it failed to cancel it.
+		ctx, dbCancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer dbCancel()
+		task, err := h.store.GetTask(ctx, taskID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+				return
+			}
+			c.Error(err)
+			return
+		}
+
+		if task.Status == types.StatusRunning {
+			task.Status = types.StatusFailed
+			task.FinalAnswer = "Failed: task canceled via API"
+			if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
+				c.Error(saveErr)
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"message": "task cancelled (marked failed in database)",
+				"task_id": taskID,
+			})
+			return
+		}
+
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task is not running", "status": task.Status})
+		return
+	}
+
+	// Trigger the context cancellation
+	cancel()
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "task cancellation signal sent",
+		"task_id": taskID,
+	})
 }
