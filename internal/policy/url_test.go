@@ -1,12 +1,17 @@
-package policy_test
+package policy
 
 import (
+	"net"
 	"testing"
-
-	"github.com/wuxujun/ai-agent/internal/policy"
 )
 
 func TestValidateURL_Allows(t *testing.T) {
+	originalLookupIP := lookupIP
+	lookupIP = func(host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	}
+	t.Cleanup(func() { lookupIP = originalLookupIP })
+
 	// Public hosts/IPs that should be permitted.
 	allowed := []string{
 		"https://example.com",
@@ -15,7 +20,7 @@ func TestValidateURL_Allows(t *testing.T) {
 		"https://8.8.8.8/resolve",
 	}
 	for _, u := range allowed {
-		if err := policy.ValidateURL(u); err != nil {
+		if err := ValidateURL(u); err != nil {
 			t.Errorf("ValidateURL(%q) = %v, want nil", u, err)
 		}
 	}
@@ -32,13 +37,13 @@ func TestValidateURL_Blocks(t *testing.T) {
 		"http://172.16.0.1",
 		"http://100.64.0.1", // carrier-grade NAT
 		"http://0.0.0.0",
-		"ftp://example.com",      // scheme not allowed
-		"file:///etc/passwd",     // scheme not allowed
-		"justastring",            // no scheme/host
-		"",                       // empty
+		"ftp://example.com",  // scheme not allowed
+		"file:///etc/passwd", // scheme not allowed
+		"justastring",        // no scheme/host
+		"",                   // empty
 	}
 	for _, u := range blocked {
-		if err := policy.ValidateURL(u); err == nil {
+		if err := ValidateURL(u); err == nil {
 			t.Errorf("ValidateURL(%q) = nil, want error", u)
 		}
 	}

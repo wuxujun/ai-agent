@@ -2,14 +2,16 @@ package planner
 
 import (
 	"context"
+	"net/http"
 	"sync"
 
 	"google.golang.org/genai"
 )
 
 var (
-	geminiClientsMu sync.RWMutex
-	geminiClients   = make(map[string]*genai.Client)
+	geminiClientsMu  sync.RWMutex
+	geminiClients    = make(map[string]*genai.Client)
+	geminiHTTPClient *http.Client
 )
 
 // GetGeminiClient returns a singleton gemini client for the given apiKey and baseURL.
@@ -34,6 +36,9 @@ func GetGeminiClient(apiKey, baseURL string) (*genai.Client, error) {
 	opts := &genai.ClientConfig{APIKey: apiKey}
 	if baseURL != "" {
 		opts.HTTPOptions = genai.HTTPOptions{BaseURL: baseURL}
+	}
+	if geminiHTTPClient != nil {
+		opts.HTTPClient = geminiHTTPClient
 	}
 	// Use context.Background() to keep the client alive indefinitely
 	client, err := genai.NewClient(context.Background(), opts)

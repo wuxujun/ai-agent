@@ -23,6 +23,8 @@ var allowedCommands = map[string]bool{
 	"git":     true,
 }
 
+var lookupIP = net.LookupIP
+
 // blockedSystemPaths lists path prefixes that are unconditionally forbidden as
 // workspace roots, even if they happen to exist and pass other checks. These
 // directories contain OS internals or sensitive host data that the agent must
@@ -142,7 +144,7 @@ func ValidateURL(raw string) error {
 	if ip := net.ParseIP(host); ip != nil {
 		ips = []net.IP{ip}
 	} else {
-		resolved, err := net.LookupIP(host)
+		resolved, err := lookupIP(host)
 		if err != nil {
 			return errors.New("cannot resolve url host")
 		}
@@ -272,4 +274,3 @@ func evalExistingPath(path string) (string, error) {
 		curr = parent
 	}
 }
-

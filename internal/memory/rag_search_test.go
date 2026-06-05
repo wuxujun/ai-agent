@@ -1,22 +1,44 @@
-package memory_test
+package memory
 
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/config"
-	"github.com/wuxujun/ai-agent/internal/memory"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func withRAGHTTPClient(t *testing.T, fn func(*http.Request) (int, string)) {
+	t.Helper()
+	original := ragHTTPClient
+	ragHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			status, body := fn(req)
+			return &http.Response{
+				StatusCode: status,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}),
+	}
+	t.Cleanup(func() { ragHTTPClient = original })
+}
 
 func TestSearchThirdPartyRAG_GET(t *testing.T) {
 	ctx := context.Background()
 
-	// Mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withRAGHTTPClient(t, func(r *http.Request) (int, string) {
 		if r.Method != "GET" {
 			t.Errorf("expected GET request, got %s", r.Method)
 		}
@@ -34,23 +56,22 @@ func TestSearchThirdPartyRAG_GET(t *testing.T) {
 			},
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
-	}))
-	defer server.Close()
+		b, _ := json.Marshal(response)
+		return http.StatusOK, string(b)
+	})
 
 	// Configure config variables
 	cfg := config.Get()
 	originalURL := cfg.RAG.SearchURL
 	originalMethod := cfg.RAG.SearchMethod
-	cfg.RAG.SearchURL = server.URL
+	cfg.RAG.SearchURL = "https://rag.test/search"
 	cfg.RAG.SearchMethod = "GET"
 	defer func() {
 		cfg.RAG.SearchURL = originalURL
 		cfg.RAG.SearchMethod = originalMethod
 	}()
 
-	mems, err := memory.SearchThirdPartyRAG(ctx, "test-query")
+	mems, err := SearchThirdPartyRAG(ctx, "test-query")
 	if err != nil {
 		t.Fatalf("SearchThirdPartyRAG failed: %v", err)
 	}
@@ -67,8 +88,7 @@ func TestSearchThirdPartyRAG_GET(t *testing.T) {
 func TestSearchThirdPartyRAG_POST_Object(t *testing.T) {
 	ctx := context.Background()
 
-	// Mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withRAGHTTPClient(t, func(r *http.Request) (int, string) {
 		if r.Method != "POST" {
 			t.Errorf("expected POST request, got %s", r.Method)
 		}
@@ -83,31 +103,30 @@ func TestSearchThirdPartyRAG_POST_Object(t *testing.T) {
 		response := map[string]any{
 			"results": []map[string]any{
 				{
-					"uuid":        "custom-uuid-1",
-					"title":       "search database password",
-					"content":     "found password in secrets.json",
+					"uuid":         "custom-uuid-1",
+					"title":        "search database password",
+					"content":      "found password in secrets.json",
 					"final_answer": "secrets.json contains standard-username/standard-password",
 				},
 			},
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
-	}))
-	defer server.Close()
+		b, _ := json.Marshal(response)
+		return http.StatusOK, string(b)
+	})
 
 	// Configure config variables
 	cfg := config.Get()
 	originalURL := cfg.RAG.SearchURL
 	originalMethod := cfg.RAG.SearchMethod
-	cfg.RAG.SearchURL = server.URL
+	cfg.RAG.SearchURL = "https://rag.test/search"
 	cfg.RAG.SearchMethod = "POST"
 	defer func() {
 		cfg.RAG.SearchURL = originalURL
 		cfg.RAG.SearchMethod = originalMethod
 	}()
 
-	mems, err := memory.SearchThirdPartyRAG(ctx, "post-query")
+	mems, err := SearchThirdPartyRAG(ctx, "post-query")
 	if err != nil {
 		t.Fatalf("SearchThirdPartyRAG failed: %v", err)
 	}
@@ -134,18 +153,16 @@ func TestSearchThirdPartyRAG_POST_Object(t *testing.T) {
 func TestSearchThirdPartyRAG_HttpErrors(t *testing.T) {
 	ctx := context.Background()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("internal database down"))
-	}))
-	defer server.Close()
+	withRAGHTTPClient(t, func(r *http.Request) (int, string) {
+		return http.StatusInternalServerError, "internal database down"
+	})
 
 	cfg := config.Get()
 	originalURL := cfg.RAG.SearchURL
-	cfg.RAG.SearchURL = server.URL
+	cfg.RAG.SearchURL = "https://rag.test/search"
 	defer func() { cfg.RAG.SearchURL = originalURL }()
 
-	_, err := memory.SearchThirdPartyRAG(ctx, "error-query")
+	_, err := SearchThirdPartyRAG(ctx, "error-query")
 	if err == nil {
 		t.Fatal("expected search to fail on 500 status code")
 	}

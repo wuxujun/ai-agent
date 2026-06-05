@@ -16,6 +16,8 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+var ragHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 // SearchThirdPartyRAG queries an external/third-party RAG URL to retrieve relevant historical memories/knowledge.
 func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, error) {
 	cfg := config.Get()
@@ -33,8 +35,6 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 
 	var req *http.Request
 	var err error
-
-	client := &http.Client{Timeout: 10 * time.Second}
 
 	if strings.ToUpper(method) == "POST" {
 		body := map[string]string{"query": query}
@@ -64,7 +64,7 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 		}
 	}
 
-	resp, err := client.Do(req)
+	resp, err := ragHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request to third-party RAG failed: %w", err)
 	}

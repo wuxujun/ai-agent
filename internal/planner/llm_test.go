@@ -3,12 +3,32 @@ package planner
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func fakeHTTPClient(status int, contentType, body string) *http.Client {
+	return &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: status,
+				Header:     http.Header{"Content-Type": []string{contentType}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}),
+	}
+}
 
 func TestLLMPlannerProviders(t *testing.T) {
 	// Sample task
@@ -38,25 +58,22 @@ func TestLLMPlannerProviders(t *testing.T) {
 	expectedJSONStr := string(expectedJSONBytes)
 
 	t.Run("openai-responses", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Mock OpenAI responses API format
-			resp := map[string]any{
-				"output": []any{
-					map[string]any{
-						"content": []any{
-							map[string]any{
-								"text": expectedJSONStr,
-							},
+		// Mock OpenAI responses API format
+		resp := map[string]any{
+			"output": []any{
+				map[string]any{
+					"content": []any{
+						map[string]any{
+							"text": expectedJSONStr,
 						},
 					},
 				},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-		}))
-		defer server.Close()
+			},
+		}
+		b, _ := json.Marshal(resp)
 
-		planner := NewLLMPlannerWithProvider(ProviderOpenAIResponses, "test-key", "gpt-4.1", server.URL)
+		planner := NewLLMPlannerWithProvider(ProviderOpenAIResponses, "test-key", "gpt-4.1", "https://llm.test/responses")
+		planner.Client = fakeHTTPClient(http.StatusOK, "application/json", string(b))
 		decision, err := planner.PlanNext(context.Background(), task, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -68,25 +85,21 @@ func TestLLMPlannerProviders(t *testing.T) {
 	})
 
 	t.Run("openai", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Mock OpenAI chat completions format
-			resp := map[string]any{
-				"choices": []any{
-					map[string]any{
-						"delta": map[string]any{
-							"content": expectedJSONStr,
-						},
+		// Mock OpenAI chat completions format
+		resp := map[string]any{
+			"choices": []any{
+				map[string]any{
+					"delta": map[string]any{
+						"content": expectedJSONStr,
 					},
 				},
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			b, _ := json.Marshal(resp)
-			w.Write([]byte("data: " + string(b) + "\n\n"))
-			w.Write([]byte("data: [DONE]\n\n"))
-		}))
-		defer server.Close()
+			},
+		}
+		b, _ := json.Marshal(resp)
+		body := "data: " + string(b) + "\n\n" + "data: [DONE]\n\n"
 
-		planner := NewLLMPlannerWithProvider(ProviderOpenAI, "test-key", "gpt-4o", server.URL)
+		planner := NewLLMPlannerWithProvider(ProviderOpenAI, "test-key", "gpt-4o", "https://llm.test/chat/completions")
+		planner.Client = fakeHTTPClient(http.StatusOK, "text/event-stream", body)
 		decision, err := planner.PlanNext(context.Background(), task, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -98,20 +111,17 @@ func TestLLMPlannerProviders(t *testing.T) {
 	})
 
 	t.Run("ollama", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Mock Ollama chat response format
-			resp := map[string]any{
-				"message": map[string]any{
-					"content": expectedJSONStr,
-				},
-				"done": true,
-			}
-			w.Header().Set("Content-Type", "application/x-ndjson")
-			_ = json.NewEncoder(w).Encode(resp)
-		}))
-		defer server.Close()
+		// Mock Ollama chat response format
+		resp := map[string]any{
+			"message": map[string]any{
+				"content": expectedJSONStr,
+			},
+			"done": true,
+		}
+		b, _ := json.Marshal(resp)
 
-		planner := NewLLMPlannerWithProvider(ProviderOllama, "", "llama3", server.URL)
+		planner := NewLLMPlannerWithProvider(ProviderOllama, "", "llama3", "https://ollama.test/api/chat")
+		planner.Client = fakeHTTPClient(http.StatusOK, "application/x-ndjson", string(b)+"\n")
 		decision, err := planner.PlanNext(context.Background(), task, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -123,30 +133,28 @@ func TestLLMPlannerProviders(t *testing.T) {
 	})
 
 	t.Run("gemini", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Mock Gemini SDK response format
-			resp := map[string]any{
-				"candidates": []any{
-					map[string]any{
-						"content": map[string]any{
-							"parts": []any{
-								map[string]any{
-									"text": expectedJSONStr,
-								},
+		// Mock Gemini SDK response format
+		resp := map[string]any{
+			"candidates": []any{
+				map[string]any{
+					"content": map[string]any{
+						"parts": []any{
+							map[string]any{
+								"text": expectedJSONStr,
 							},
-							"role": "model",
 						},
-						"finishReason": "STOP",
+						"role": "model",
 					},
+					"finishReason": "STOP",
 				},
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			b, _ := json.Marshal(resp)
-			w.Write([]byte("data: " + string(b) + "\n\n"))
-		}))
-		defer server.Close()
+			},
+		}
+		b, _ := json.Marshal(resp)
+		originalHTTPClient := geminiHTTPClient
+		geminiHTTPClient = fakeHTTPClient(http.StatusOK, "text/event-stream", "data: "+string(b)+"\n\n")
+		t.Cleanup(func() { geminiHTTPClient = originalHTTPClient })
 
-		planner := NewLLMPlannerWithProvider(ProviderGemini, "test-key", "gemini-2.5-flash", server.URL)
+		planner := NewLLMPlannerWithProvider(ProviderGemini, "test-key", "gemini-2.5-flash", "https://gemini.test")
 		decision, err := planner.PlanNext(context.Background(), task, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -159,7 +167,7 @@ func TestLLMPlannerProviders(t *testing.T) {
 }
 
 func TestUnmarshalDecisionFallback(t *testing.T) {
-rawInput := `thought_summary\nThe file content confirms that CAIE refers to the Cambridge Assessment International Education, specifically for AS level exams in 2026. This is sufficient to answer the prompt.{
+	rawInput := `thought_summary\nThe file content confirms that CAIE refers to the Cambridge Assessment International Education, specifically for AS level exams in 2026. This is sufficient to answer the prompt.{
   "thought_summary": "Finding files",
   "stop": false,
   "final_answer": "",

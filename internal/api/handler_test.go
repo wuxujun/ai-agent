@@ -16,11 +16,18 @@ import (
 )
 
 type mockPlanner struct {
-	blockCh chan struct{}
+	blockCh   chan struct{}
+	startedCh chan struct{}
 }
 
 func (mp *mockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*planner.PlanDecision, error) {
 	if mp.blockCh != nil {
+		if mp.startedCh != nil {
+			select {
+			case mp.startedCh <- struct{}{}:
+			default:
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -44,6 +51,30 @@ func setupTestRouter(st store.Store, eng *orchestrator.Engine) *gin.Engine {
 	r := gin.New()
 	api.RegisterRoutes(r, st, eng, nil)
 	return r
+}
+
+func waitForTaskStatus(t *testing.T, st store.Store, taskID string, want types.TaskStatus) *types.Task {
+	t.Helper()
+
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		task, err := st.GetTask(context.Background(), taskID)
+		if err != nil {
+			t.Fatalf("failed to get task: %v", err)
+		}
+		if task.Status == want {
+			return task
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for task %s status %s; last status %s", taskID, want, task.Status)
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestCancelTask_NotFound(t *testing.T) {
@@ -109,7 +140,8 @@ func TestCancelTask_Orphaned(t *testing.T) {
 func TestCancelTask_Active(t *testing.T) {
 	st := store.NewMemoryStore()
 	blockCh := make(chan struct{})
-	mp := &mockPlanner{blockCh: blockCh}
+	startedCh := make(chan struct{}, 1)
+	mp := &mockPlanner{blockCh: blockCh, startedCh: startedCh}
 	engine := &orchestrator.Engine{
 		Mode:     orchestrator.ModeLegacy,
 		Planner:  mp,
@@ -135,14 +167,12 @@ func TestCancelTask_Active(t *testing.T) {
 		t.Fatalf("expected run-all status 202, got %d", wRun.Code)
 	}
 
-	// Give it a tiny moment to start running and hit the block
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify it is running
-	taskCheck, _ := st.GetTask(context.Background(), "task-active")
-	if taskCheck.Status != types.StatusRunning {
-		t.Errorf("expected task to be running, got %s", taskCheck.Status)
+	select {
+	case <-startedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for planner to start")
 	}
+	waitForTaskStatus(t, st, "task-active", types.StatusRunning)
 
 	// Cancel it
 	wCancel := httptest.NewRecorder()
@@ -153,14 +183,8 @@ func TestCancelTask_Active(t *testing.T) {
 		t.Errorf("expected status 200, got %d", wCancel.Code)
 	}
 
-	// Give it some time to process cancellation and persist
-	time.Sleep(100 * time.Millisecond)
-
 	// Verify that the task status is failed/canceled in the store
-	updatedTask, err := st.GetTask(context.Background(), "task-active")
-	if err != nil {
-		t.Fatalf("failed to get task: %v", err)
-	}
+	updatedTask := waitForTaskStatus(t, st, "task-active", types.StatusFailed)
 	if updatedTask.Status != types.StatusFailed {
 		t.Errorf("expected status failed, got %s", updatedTask.Status)
 	}
