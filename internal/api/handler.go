@@ -39,13 +39,13 @@ type CreateTaskRequest struct {
 	ToolBudget int    `json:"tool_budget"`
 }
 
-func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector) {
+func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector) *Handler {
 	cfg := config.Get()
 	maxTasks := cfg.Orchestrator.MaxConcurrentTasks
 	if maxTasks <= 0 {
 		maxTasks = 10
 	}
-	
+
 	h := &Handler{
 		store:       st,
 		engine:      eng,
@@ -76,11 +76,40 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
+
+	return h
 }
 
 // Wait blocks until all background run-all goroutines complete. Call during shutdown.
 func (h *Handler) Wait() {
 	h.wg.Wait()
+}
+
+// Shutdown cancels active background tasks and waits for them to exit or for ctx to expire.
+func (h *Handler) Shutdown(ctx context.Context) error {
+	h.activeTasksMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(h.activeTasks))
+	for _, cancel := range h.activeTasks {
+		cancels = append(cancels, cancel)
+	}
+	h.activeTasksMu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		h.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (h *Handler) createTask(c *gin.Context) {
@@ -188,8 +217,26 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
+	bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	h.activeTasksMu.Lock()
+	if _, exists := h.activeTasks[task.ID]; exists {
+		h.activeTasksMu.Unlock()
+		bgCancel()
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "task is already running",
+			"task_id": task.ID,
+		})
+		return
+	}
+	h.activeTasks[task.ID] = bgCancel
+	h.activeTasksMu.Unlock()
+
 	task.Status = types.StatusRunning
 	if saveErr := h.store.SaveFullTask(loadCtx, task); saveErr != nil {
+		h.activeTasksMu.Lock()
+		delete(h.activeTasks, task.ID)
+		h.activeTasksMu.Unlock()
+		bgCancel()
 		c.Error(saveErr)
 		return
 	}
@@ -199,22 +246,26 @@ func (h *Handler) runAll(c *gin.Context) {
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-
-		// Wait for a concurrency slot
-		h.taskSem <- struct{}{}
-		defer func() { <-h.taskSem }()
-
-		bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		h.activeTasksMu.Lock()
-		h.activeTasks[task.ID] = bgCancel
-		h.activeTasksMu.Unlock()
-
 		defer func() {
 			h.activeTasksMu.Lock()
 			delete(h.activeTasks, task.ID)
 			h.activeTasksMu.Unlock()
 			bgCancel()
 		}()
+
+		// Wait for a concurrency slot, but honor cancellation while queued.
+		select {
+		case h.taskSem <- struct{}{}:
+			defer func() { <-h.taskSem }()
+		case <-bgCtx.Done():
+			_ = orchestrator.SetTaskFailed(task, "task canceled: "+bgCtx.Err().Error())
+			saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer saveCancel()
+			if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
+				log.Error("failed to save canceled queued task", "task_id", task.ID, "error", saveErr)
+			}
+			return
+		}
 
 		log.Info("starting async run-all for task", "task_id", task.ID)
 		execErr := h.engine.RunAll(bgCtx, task)

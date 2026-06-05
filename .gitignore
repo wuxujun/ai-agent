@@ -3,7 +3,7 @@
 .gocache
 node_modules
 dist
-server
+/server
 
 /data
 /workspace

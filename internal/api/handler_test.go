@@ -165,3 +165,45 @@ func TestCancelTask_Active(t *testing.T) {
 		t.Errorf("expected status failed, got %s", updatedTask.Status)
 	}
 }
+
+func TestRunAllDuplicateActiveTaskReturnsConflict(t *testing.T) {
+	st := store.NewMemoryStore()
+	blockCh := make(chan struct{})
+	mp := &mockPlanner{blockCh: blockCh}
+	engine := &orchestrator.Engine{
+		Mode:     orchestrator.ModeLegacy,
+		Planner:  mp,
+		Executor: &mockExecutor{},
+		Store:    st,
+	}
+	r := setupTestRouter(st, engine)
+
+	task := &types.Task{
+		ID:         "task-duplicate",
+		Status:     types.StatusCreated,
+		MaxSteps:   5,
+		ToolBudget: 10,
+	}
+	_ = st.SaveFullTask(context.Background(), task)
+
+	wFirst := httptest.NewRecorder()
+	reqFirst, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-duplicate/run-all", nil)
+	r.ServeHTTP(wFirst, reqFirst)
+	if wFirst.Code != http.StatusAccepted {
+		t.Fatalf("expected first run-all status 202, got %d", wFirst.Code)
+	}
+
+	wSecond := httptest.NewRecorder()
+	reqSecond, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-duplicate/run-all", nil)
+	r.ServeHTTP(wSecond, reqSecond)
+	if wSecond.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate run-all status 409, got %d", wSecond.Code)
+	}
+
+	wCancel := httptest.NewRecorder()
+	reqCancel, _ := http.NewRequest(http.MethodDelete, "/api/tasks/task-duplicate/cancel", nil)
+	r.ServeHTTP(wCancel, reqCancel)
+	if wCancel.Code != http.StatusOK {
+		t.Fatalf("expected cancel status 200, got %d", wCancel.Code)
+	}
+}
