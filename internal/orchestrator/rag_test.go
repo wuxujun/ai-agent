@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/planner"
@@ -85,8 +86,15 @@ func TestRagMemoryCrossTaskKnowledgeSharing(t *testing.T) {
 		t.Fatalf("failed to save task1: %v", err)
 	}
 
-	// Verify memory was indeed stored
-	mems, err := st.QueryMemories(ctx, "credentials", nil, 1)
+	// Verify memory was indeed stored (since indexing is async, poll for it)
+	var mems []*types.Memory
+	for i := 0; i < 20; i++ {
+		mems, err = st.QueryMemories(ctx, "credentials", nil, 1)
+		if err == nil && len(mems) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("failed to query store memories: %v", err)
 	}

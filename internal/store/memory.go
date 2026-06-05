@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -31,7 +32,6 @@ func NewMemoryStore() *MemoryStore {
 // SaveFullTask saves or updates a task and its traces in memory.
 func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Clone to avoid concurrent mutation issues
 	cloned := *task
@@ -45,17 +45,31 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 	}
 
 	m.tasks[task.ID] = &cloned
+	m.mu.Unlock()
 
 	if task.Status == types.StatusCompleted {
-		// Automatically index completed task as a long-term memory for cross-task RAG
-		if mem, err := memory.CreateMemoryFromTask(ctx, task); err == nil {
+		// Asynchronously index completed task as a long-term memory for cross-task RAG.
+		// Since generating embeddings can take time (e.g. hitting remote APIs),
+		// we run this outside of the write lock to prevent blocking memory storage.
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			mem, err := memory.CreateMemoryFromTask(bgCtx, &cloned)
+			if err != nil {
+				log.Warn("failed to create memory from completed task in memory store", "task_id", cloned.ID, "error", err)
+				return
+			}
+
+			m.mu.Lock()
 			clonedMem := *mem
 			if mem.Embedding != nil {
 				clonedMem.Embedding = make([]float32, len(mem.Embedding))
 				copy(clonedMem.Embedding, mem.Embedding)
 			}
 			m.memories[mem.ID] = &clonedMem
-		}
+			m.mu.Unlock()
+		}()
 	}
 
 	return nil
