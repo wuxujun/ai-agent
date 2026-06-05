@@ -137,10 +137,10 @@ func main() {
 	mc := metrics.NewCollector()
 
 	plannerClient := planner.NewLLMPlannerWithProvider(
-		llmProvider,
-		apiKey,
-		model,
-		baseURL,
+		"",
+		"",
+		"",
+		"",
 	)
 
 	fallbackPlanner := &planner.MockPlanner{}

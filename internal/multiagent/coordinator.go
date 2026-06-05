@@ -48,11 +48,10 @@ type Coordinator struct {
 // NewCoordinator creates a Coordinator wired to the default LLM configuration
 // derived from environment variables (same vars as the main planner).
 func NewCoordinator(mc *metrics.Collector) *Coordinator {
-	cfg := DefaultLLMConfig()
 	return &Coordinator{
-		Planner:    &PlannerAgent{Config: cfg},
+		Planner:    &PlannerAgent{},
 		Researcher: &ResearcherAgent{},
-		Writer:     &WriterAgent{Config: cfg},
+		Writer:     &WriterAgent{},
 		Metrics:    mc,
 	}
 }

@@ -91,7 +91,11 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 	)
 
 	var plan ResearchPlan
-	usage, err := callLLMJSON(ctx, p.Config, plannerSystemPrompt, userPrompt, p.jsonSchema(), &plan)
+	cfg := p.Config
+	if cfg.Provider == "" {
+		cfg = DefaultLLMConfig()
+	}
+	usage, err := callLLMJSON(ctx, cfg, plannerSystemPrompt, userPrompt, p.jsonSchema(), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent LLM call failed: %w", err)
 	}
@@ -144,7 +148,11 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 	)
 
 	var plan ResearchPlan
-	usage, err := callLLMJSON(ctx, p.Config, replannerSystemPrompt, userPrompt, p.jsonSchema(), &plan)
+	cfg := p.Config
+	if cfg.Provider == "" {
+		cfg = DefaultLLMConfig()
+	}
+	usage, err := callLLMJSON(ctx, cfg, replannerSystemPrompt, userPrompt, p.jsonSchema(), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent Replan LLM call failed: %w", err)
 	}
