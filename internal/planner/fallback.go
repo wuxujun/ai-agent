@@ -3,7 +3,6 @@ package planner
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -25,18 +24,18 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task, onChun
 
 	span.SetAttributes(attribute.String("agent.task.id", task.ID))
 
-	log.Printf("[Fallback Planner] Executing PlanNext for task %s", task.ID)
+	log.Info("executing PlanNext", "task_id", task.ID)
 
 	if f.Primary != nil {
-		log.Printf("[Fallback Planner] Trying primary planner for task %s", task.ID)
+		log.Info("trying primary planner", "task_id", task.ID)
 		decision, err := f.Primary.PlanNext(ctx, task, onChunk)
 		if err == nil {
 			span.SetAttributes(attribute.Bool("agent.fallback.used", false))
-			log.Printf("[Fallback Planner] Primary planner succeeded for task %s", task.ID)
+			log.Info("primary planner succeeded", "task_id", task.ID)
 			return decision, nil
 		}
 		span.RecordError(err)
-		log.Printf("[Fallback Planner Warning] Primary planner failed for task %s: %v", task.ID, err)
+		log.Warn("primary planner failed", "task_id", task.ID, "error", err)
 	}
 
 	if f.Secondary != nil {
@@ -44,16 +43,16 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task, onChun
 			f.Metrics.IncFallbackHit()
 		}
 		span.SetAttributes(attribute.Bool("agent.fallback.used", true))
-		log.Printf("[Fallback Planner] Falling back to secondary planner for task %s", task.ID)
+		log.Info("falling back to secondary planner", "task_id", task.ID)
 		decision, err := f.Secondary.PlanNext(ctx, task, onChunk)
 		if err != nil {
-			log.Printf("[Fallback Planner Error] Secondary planner also failed for task %s: %v", task.ID, err)
+			log.Error("secondary planner also failed", "task_id", task.ID, "error", err)
 			return nil, err
 		}
-		log.Printf("[Fallback Planner] Secondary planner succeeded for task %s", task.ID)
+		log.Info("secondary planner succeeded", "task_id", task.ID)
 		return decision, nil
 	}
 
-	log.Printf("[Fallback Planner Error] No planner available to plan next step for task %s", task.ID)
+	log.Error("no planner available", "task_id", task.ID)
 	return nil, fmt.Errorf("no planner available")
 }

@@ -3,7 +3,6 @@ package multiagent
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -52,7 +51,7 @@ func (w *WriterAgent) jsonSchema() map[string]any {
 
 // Write calls the LLM to synthesise all gathered evidence into a WriterOutput.
 func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*WriterOutput, error) {
-	log.Printf("[WriterAgent] Synthesising answer for goal %q with %d evidence item(s)", goal, len(evidence))
+	log.Info("Synthesising answer", "goal", goal, "evidence_items", len(evidence))
 
 	userPrompt := w.buildPrompt(goal, evidence, memories)
 
@@ -63,7 +62,7 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 	}
 	output.TokenUsage = usage
 
-	log.Printf("[WriterAgent] Synthesis complete — confidence=%s", output.Confidence)
+	log.Info("Synthesis complete", "confidence", output.Confidence)
 	return &output, nil
 }
 

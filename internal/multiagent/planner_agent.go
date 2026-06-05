@@ -3,7 +3,6 @@ package multiagent
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -81,7 +80,7 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 
 // Plan calls the LLM to produce a ResearchPlan for the given goal.
 func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memories []types.Memory) (*ResearchPlan, error) {
-	log.Printf("[PlannerAgent] Decomposing goal into research plan: %q", goal)
+	log.Info("Decomposing goal into research plan", "goal", goal)
 
 	memorySection := formatMemories(memories)
 
@@ -102,9 +101,9 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 		return nil, fmt.Errorf("PlannerAgent returned an empty steps list")
 	}
 
-	log.Printf("[PlannerAgent] Plan created: %q — %d steps", plan.ThoughtSummary, len(plan.Steps))
+	log.Info("Plan created", "summary", plan.ThoughtSummary, "steps", len(plan.Steps))
 	for i, s := range plan.Steps {
-		log.Printf("[PlannerAgent]   step %d: action=%s  desc=%q", i+1, s.Action, s.Description)
+		log.Info("Planned step", "num", i+1, "action", s.Action, "desc", s.Description)
 	}
 	return &plan, nil
 }
@@ -133,7 +132,7 @@ Rules:
 
 // Replan calls the LLM to generate a revised ResearchPlan when a execution step fails.
 func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace, memories []types.Memory) (*ResearchPlan, error) {
-	log.Printf("[PlannerAgent] Re-planning goal: %q due to step execution failure", goal)
+	log.Info("Re-planning goal due to step execution failure", "goal", goal)
 
 	memorySection := formatMemories(memories)
 
@@ -151,9 +150,9 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 	}
 	plan.TokenUsage = usage
 
-	log.Printf("[PlannerAgent] Revised plan created: %q — %d steps", plan.ThoughtSummary, len(plan.Steps))
+	log.Info("Revised plan created", "summary", plan.ThoughtSummary, "steps", len(plan.Steps))
 	for i, s := range plan.Steps {
-		log.Printf("[PlannerAgent]   revised step %d: action=%s  desc=%q", i+1, s.Action, s.Description)
+		log.Info("Revised step", "num", i+1, "action", s.Action, "desc", s.Description)
 	}
 	return &plan, nil
 }

@@ -5,17 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"google.golang.org/genai"
 )
+
+var log = logger.Component("memory")
 
 // CosineSimilarity calculates the cosine similarity between two float vectors.
 func CosineSimilarity(v1, v2 []float32) float32 {
@@ -64,7 +66,7 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	}
 
 	if err != nil {
-		log.Printf("[Memory/RAG Warning] Remote embedding failed (falling back to local): %v", err)
+		log.Warn("Remote embedding failed (falling back to local)", "error", err)
 		return localEmbedding(text), nil
 	}
 

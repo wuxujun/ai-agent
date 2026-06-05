@@ -2,12 +2,12 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
+	"github.com/wuxujun/ai-agent/internal/logger"
 )
 
 // Config holds all application configuration loaded from the config file and
@@ -129,15 +129,17 @@ func LoadConfig() *Config {
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			log.Println("[Config] No config file found. Using default values and environment variables.")
+			logger.Warn("no config file found, using defaults and environment variables")
 		} else {
-			log.Fatalf("[Config] Error reading config file: %v", err)
+			logger.Error("error reading config file", "error", err)
+			panic(fmt.Sprintf("fatal config error: %v", err))
 		}
 	}
 
 	c, err := unmarshalConfig()
 	if err != nil {
-		log.Fatalf("[Config] %v", err)
+		logger.Error("config unmarshal failed", "error", err)
+		panic(fmt.Sprintf("fatal config error: %v", err))
 	}
 
 	globalConfig = c
@@ -178,11 +180,11 @@ func Reload() (*Config, []string, error) {
 	globalConfig = newCfg
 
 	if len(changes) == 0 {
-		log.Println("[Config] Reload complete — no changes detected.")
+		logger.Info("reload complete, no changes detected")
 	} else {
-		log.Printf("[Config] Reload complete — %d change(s):", len(changes))
+		logger.Info("reload complete", "change_count", len(changes))
 		for _, c := range changes {
-			log.Printf("[Config]   %s", c)
+			logger.Info("config change", "diff", c)
 		}
 	}
 	return globalConfig, changes, nil
@@ -196,20 +198,20 @@ func Reload() (*Config, []string, error) {
 // config file was found (viper.ConfigFileUsed() != "").
 func Watch() {
 	if viper.ConfigFileUsed() == "" {
-		log.Println("[Config] Watch: no config file in use; filesystem watch not started.")
+		logger.Warn("Watch: no config file in use; filesystem watch not started")
 		return
 	}
 
 	viper.OnConfigChange(func(e fsnotify.Event) {
-		log.Printf("[Config] Config file changed, triggering hot reload...")
+		logger.Info("config file changed, triggering hot reload")
 		if _, changes, err := Reload(); err != nil {
-			log.Printf("[Config] Hot reload failed (keeping previous config): %v", err)
+			logger.Error("hot reload failed, keeping previous config", "error", err)
 		} else if len(changes) > 0 {
-			log.Printf("[Config] Hot reload applied %d change(s).", len(changes))
+			logger.Info("hot reload applied changes", "change_count", len(changes))
 		}
 	})
 	viper.WatchConfig()
-	log.Printf("[Config] Watching config file for changes: %s", viper.ConfigFileUsed())
+	logger.Info("watching config file for changes", "file", viper.ConfigFileUsed())
 }
 
 // ── Diff helper ───────────────────────────────────────────────────────────────

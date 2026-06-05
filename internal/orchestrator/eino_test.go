@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -118,6 +119,80 @@ func TestLegacyNextExecutesPlannerDecision(t *testing.T) {
 	}
 	if len(task.Trace) != 1 {
 		t.Fatalf("trace len = %d, want 1", len(task.Trace))
+	}
+}
+
+func TestRunAllPublishesStepProgressAndPersistsEachTurn(t *testing.T) {
+	p := &stubPlanner{
+		decision: &planner.PlanDecision{
+			ThoughtSummary: "keep searching",
+			Actions: []planner.ActionCall{
+				{
+					Action:     "search_text",
+					Parameters: map[string]any{"query": "needle"},
+				},
+			},
+		},
+	}
+	x := &stubExecutor{
+		trace: &types.StepTrace{
+			Action:      "search_text",
+			Query:       "needle",
+			Observation: "found 1 evidence items",
+		},
+	}
+	st := store.NewMemoryStore()
+	t.Cleanup(func() { _ = st.Close() })
+
+	var events []types.StepTrace
+	engine := &Engine{
+		Planner:  p,
+		Executor: x,
+		Mode:     ModeLegacy,
+		Store:    st,
+		StepCallback: func(taskID string, status types.TaskStatus, step *types.StepTrace) {
+			if taskID != "task-run-all-progress" {
+				t.Errorf("taskID = %q, want task-run-all-progress", taskID)
+			}
+			if status != types.StatusRunning {
+				t.Errorf("status = %q, want running", status)
+			}
+			events = append(events, *step)
+		},
+	}
+	task := &types.Task{
+		ID:         "task-run-all-progress",
+		Goal:       "find needle",
+		Status:     types.StatusCreated,
+		MaxSteps:   2,
+		ToolBudget: 2,
+	}
+
+	if err := engine.RunAll(context.Background(), task); err != nil {
+		t.Fatalf("RunAll returned error: %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("step events = %d, want 2", len(events))
+	}
+	for i, event := range events {
+		if event.Action != "search_text" {
+			t.Fatalf("event %d action = %q, want search_text", i, event.Action)
+		}
+	}
+	if task.Status != types.StatusCompleted {
+		t.Fatalf("task status = %q, want completed", task.Status)
+	}
+
+	persisted, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask returned error: %v", err)
+	}
+	if persisted.Status != types.StatusCompleted {
+		t.Fatalf("persisted status = %q, want completed", persisted.Status)
+	}
+	if len(persisted.Trace) != 2 {
+		t.Fatalf("persisted trace len = %d, want 2", len(persisted.Trace))
 	}
 }
 

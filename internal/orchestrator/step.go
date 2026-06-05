@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"log"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -13,7 +12,7 @@ func (e *Engine) runStepNext(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next_step")
 	defer span.End()
 
-	log.Printf("[Step Engine] Running step %d for task %s", task.StepCount, task.ID)
+	log.Info("running step", "task_id", task.ID, "step", task.StepCount)
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
@@ -22,7 +21,12 @@ func (e *Engine) runStepNext(ctx context.Context, task *types.Task) error {
 	)
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
-		log.Printf("[Step Engine] Task %s reached step limit (%d/%d) or budget limit (%d)", task.ID, task.StepCount, task.MaxSteps, task.ToolBudget)
+		log.Info("step limit or budget reached",
+			"task_id", task.ID,
+			"step", task.StepCount,
+			"max_steps", task.MaxSteps,
+			"budget", task.ToolBudget,
+		)
 		finalAnswer := task.FinalAnswer
 		if finalAnswer == "" {
 			finalAnswer = "stopped by budget or max steps"
@@ -40,7 +44,10 @@ func (e *Engine) runStepNext(ctx context.Context, task *types.Task) error {
 	case 2:
 		err = stepReadBestFile(task)
 	default:
-		log.Printf("[Step Engine] Step count %d beyond static sequence. Completing task %s", task.StepCount, task.ID)
+		log.Info("step count beyond static sequence, completing task",
+			"task_id", task.ID,
+			"step", task.StepCount,
+		)
 		finalAnswer := task.FinalAnswer
 		if finalAnswer == "" {
 			finalAnswer = "completed search sequence"
@@ -50,7 +57,7 @@ func (e *Engine) runStepNext(ctx context.Context, task *types.Task) error {
 	}
 
 	if err != nil {
-		log.Printf("[Step Engine Error] Task %s failed at step %d: %v", task.ID, task.StepCount, err)
+		log.Error("step failed", "task_id", task.ID, "step", task.StepCount, "error", err)
 		span.RecordError(err)
 		return err
 	}
@@ -58,6 +65,6 @@ func (e *Engine) runStepNext(ctx context.Context, task *types.Task) error {
 	task.StepCount++
 	task.ToolBudget--
 
-	log.Printf("[Step Engine] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)
+	log.Info("step completed", "task_id", task.ID, "step", task.StepCount, "budget", task.ToolBudget)
 	return nil
 }

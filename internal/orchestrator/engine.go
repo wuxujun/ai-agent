@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/config"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
@@ -25,15 +25,15 @@ import (
 )
 
 type Engine struct {
-	Planner     planner.Planner
-	Executor    executor.Executor
-	Metrics     *metrics.Collector
-	Mode        Mode
-	AdkModel    model.LLM
+	Planner  planner.Planner
+	Executor executor.Executor
+	Metrics  *metrics.Collector
+	Mode     Mode
+	AdkModel model.LLM
 	// Coordinator is required when Mode == ModeMultiAgent.
 	Coordinator *multiagent.Coordinator
 	// Store handles database persistence and long-term memory.
-	Store       store.Store
+	Store store.Store
 
 	// einoRunner is compiled once and cached for the lifetime of the Engine.
 	// A sync.RWMutex guards lazy initialisation; unlike sync.Once, a failed
@@ -48,15 +48,20 @@ type Engine struct {
 	einoReady  bool // true once einoRunner has been successfully compiled
 
 	EventCallback func(taskID string, status types.TaskStatus)
+	StepCallback  func(taskID string, status types.TaskStatus, step *types.StepTrace)
 	TokenCallback func(taskID string, token string)
 
 	// adkRunner is compiled once and cached for reuse across all runAdkNext calls.
-	adkOnce    sync.Once
-	adkRunner  any // *runner.Runner
-	adkErr     error
+	adkOnce   sync.Once
+	adkRunner any // *runner.Runner
+	adkErr    error
 }
 
 var tracer = otel.Tracer("ai-agent/orchestrator")
+
+// engineLog is the package-level logger for engine.go; the package-level "log"
+// var is declared in eino.go and shared across the package.
+var engineLog = logger.Component("orchestrator")
 
 type Mode string
 
@@ -69,10 +74,10 @@ const (
 )
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
-	log.Printf("[Engine] Running next execution step for task %s (mode: %q)", task.ID, e.Mode)
+	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(e.Mode))
 	defer func() {
 		if err != nil {
-			log.Printf("[Engine Error] Task %s step execution failed: %v", task.ID, err)
+			engineLog.Error("step execution failed", "task_id", task.ID, "error", err)
 			_ = SetTaskFailed(task, err.Error())
 		}
 	}()
@@ -84,21 +89,21 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		if config.Get().RAG.SearchURL != "" {
 			if extMems, extErr := memory.SearchThirdPartyRAG(ctx, task.Goal); extErr == nil && len(extMems) > 0 {
 				retrievedMems = append(retrievedMems, extMems...)
-				log.Printf("[Engine] Retrieved %d memories from third-party RAG URL for task %s", len(extMems), task.ID)
+				engineLog.Info("retrieved memories from third-party RAG URL", "task_id", task.ID, "count", len(extMems))
 			} else if extErr != nil {
-				log.Printf("[Engine Warning] Failed to query third-party RAG URL: %v", extErr)
+				engineLog.Warn("failed to query third-party RAG URL", "error", extErr)
 			}
 		}
 
 		// 2. Query local Store for up to 5 candidates
 		if e.Store != nil {
-			log.Printf("[Engine] Querying local long-term memory for task: %s (Goal: %q)", task.ID, task.Goal)
+			engineLog.Info("querying local long-term memory", "task_id", task.ID, "goal", task.Goal)
 			if emb, embErr := memory.GetEmbedding(ctx, task.Goal); embErr == nil {
 				if mems, queryErr := e.Store.QueryMemories(ctx, task.Goal, emb, 5); queryErr == nil && len(mems) > 0 {
 					for _, m := range mems {
 						retrievedMems = append(retrievedMems, *m)
 					}
-					log.Printf("[Engine] Retrieved %d relevant local historical memories for task %s", len(mems), task.ID)
+					engineLog.Info("retrieved relevant local historical memories", "task_id", task.ID, "count", len(mems))
 				}
 			}
 		}
@@ -110,10 +115,9 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 				deduped = deduped[:3]
 			}
 			task.Memories = deduped
-			log.Printf("[Engine] Final RAG memories count after deduplication and filtering: %d for task %s", len(task.Memories), task.ID)
+			engineLog.Info("final RAG memories after deduplication", "task_id", task.ID, "count", len(task.Memories))
 		}
 	}
-
 
 	switch e.Mode {
 	case "", ModeEino:
@@ -136,7 +140,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next")
 	defer span.End()
 
-	log.Printf("[Engine] Running step %d/%d (budget: %d) for task %s", task.StepCount+1, task.MaxSteps, task.ToolBudget, task.ID)
+	engineLog.Info("running step", "step", task.StepCount+1, "max_steps", task.MaxSteps, "budget", task.ToolBudget, "task_id", task.ID)
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
@@ -153,8 +157,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	}
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 || (task.TokenBudget > 0 && totalTokens >= task.TokenBudget) {
-		log.Printf("[Engine] Task %s reached limit: steps(%d/%d) budget(%d) tokens(%d/%d)",
-			task.ID, task.StepCount, task.MaxSteps, task.ToolBudget, totalTokens, task.TokenBudget)
+		engineLog.Info("task reached limit", "task_id", task.ID, "step", task.StepCount, "max_steps", task.MaxSteps, "budget", task.ToolBudget, "tokens", totalTokens, "token_budget", task.TokenBudget)
 		finalAnswer := task.FinalAnswer
 		if finalAnswer == "" {
 			finalAnswer = "stopped by budget or max steps"
@@ -177,7 +180,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		e.Metrics.ObservePlanner(time.Since(pStart), err)
 	}
 	if err != nil {
-		log.Printf("[Engine Error] Planner failed for task %s: %v", task.ID, err)
+		engineLog.Error("planner failed", "task_id", task.ID, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner failure")
 		return err
@@ -197,7 +200,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		actionNames = append(actionNames, ac.Action)
 	}
 
-	log.Printf("[Engine] Task %s - Planner thought: %q | Actions chosen: %v", task.ID, decision.ThoughtSummary, actionNames)
+	engineLog.Info("planner decided", "task_id", task.ID, "thought", decision.ThoughtSummary, "actions", actionNames)
 
 	task.Hypothesis = decision.ThoughtSummary
 	span.SetAttributes(
@@ -206,7 +209,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	)
 
 	if decision.Stop {
-		log.Printf("[Engine] Task %s - Planner decided to stop. FinalAnswer: %q", task.ID, decision.FinalAnswer)
+		engineLog.Info("planner decided to stop", "task_id", task.ID, "final_answer", decision.FinalAnswer)
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount + 1,
 			Action:      "stop",
@@ -225,7 +228,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		tool, ok := tools.Get(ac.Action)
 		if ok && tool.RiskLevel() == types.RiskLevelHigh {
 			if err := e.SuspendForApproval(ctx, task, ac.Action); err != nil {
-				log.Printf("[Engine Error] Action %q rejected or approval failed: %v", ac.Action, err)
+				engineLog.Error("action rejected or approval failed", "action", ac.Action, "error", err)
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "approval failed")
 				return err
@@ -233,7 +236,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		}
 	}
 
-	log.Printf("[Engine] Task %s - Executing actions %v", task.ID, actionNames)
+	engineLog.Info("executing actions", "task_id", task.ID, "actions", actionNames)
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)
 
@@ -249,17 +252,17 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		e.Metrics.ObserveExecutor(time.Since(xStart), obsErr, "batch")
 	}
 	if err != nil {
-		log.Printf("[Engine Error] Executor aborted for task %s, actions %v: %v", task.ID, actionNames, err)
+		engineLog.Error("executor aborted", "task_id", task.ID, "actions", actionNames, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "executor aborted")
 		return err
 	}
 
 	if failed > 0 {
-		log.Printf("[Engine] Task %s - %d/%d actions failed; recorded as observations, continuing", task.ID, failed, len(traces))
+		engineLog.Warn("some actions failed; recorded as observations, continuing", "task_id", task.ID, "failed", failed, "total", len(traces))
 		span.SetAttributes(attribute.Int("agent.executor.failed_actions", failed))
 	} else {
-		log.Printf("[Engine] Task %s - Action execution success. %d traces produced", task.ID, len(traces))
+		engineLog.Info("action execution success", "task_id", task.ID, "traces", len(traces))
 	}
 
 	task.StepCount += len(traces)
@@ -270,7 +273,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	task.Trace = append(task.Trace, traces...)
 	_ = SetTaskRunning(task)
 
-	log.Printf("[Engine] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)
+	engineLog.Info("step completed", "step", task.StepCount, "task_id", task.ID, "remaining_budget", task.ToolBudget)
 
 	span.SetAttributes(
 		attribute.Int("agent.task.step_count_after", task.StepCount),
@@ -316,7 +319,7 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.run_all")
 	defer span.End()
 
-	log.Printf("[Engine] Starting task %s to completion. Goal: %q", task.ID, task.Goal)
+	engineLog.Info("starting task to completion", "task_id", task.ID, "goal", task.Goal)
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
@@ -330,38 +333,55 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	for task.Status != types.StatusCompleted && task.Status != types.StatusFailed {
 		select {
 		case <-ctx.Done():
-			log.Printf("[Engine Warning] Task %s canceled: %v", task.ID, ctx.Err())
+			engineLog.Warn("task canceled", "task_id", task.ID, "error", ctx.Err())
 			span.RecordError(ctx.Err())
 			span.SetStatus(codes.Error, "context canceled")
 			return ctx.Err()
 		default:
 		}
 
+		traceStart := len(task.Trace)
 		if err := e.Next(ctx, task); err != nil {
-			log.Printf("[Engine Error] Execution step failed for task %s: %v", task.ID, err)
+			engineLog.Error("execution step failed", "task_id", task.ID, "error", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "run_all failed")
 			return err
 		}
+
+		if e.Store != nil {
+			if err := e.Store.SaveFullTask(ctx, task); err != nil {
+				engineLog.Error("failed to persist run-all progress", "task_id", task.ID, "error", err)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "persist progress failed")
+				return err
+			}
+		}
+
+		if e.StepCallback != nil {
+			for i := traceStart; i < len(task.Trace); i++ {
+				step := task.Trace[i]
+				e.StepCallback(task.ID, task.Status, &step)
+			}
+		}
 	}
 
-	log.Printf("[Engine] Task %s finished. Status: %s | FinalAnswer: %q", task.ID, task.Status, task.FinalAnswer)
+	engineLog.Info("task finished", "task_id", task.ID, "status", string(task.Status), "final_answer", task.FinalAnswer)
 	span.SetAttributes(attribute.String("agent.task.final_answer", task.FinalAnswer))
 	return nil
 }
 
 func stepFindTextFiles(task *types.Task) error {
-	log.Printf("[Engine] Legacy static path - Finding text files for task %s", task.ID)
+	engineLog.Info("legacy static path - finding text files", "task_id", task.ID)
 	task.Hypothesis = "Relevant evidence is likely inside text or markdown files"
 
 	txtFiles, err := tools.FindFiles(task.Workspace, "*.txt")
 	if err != nil {
-		log.Printf("[Engine Error] Legacy static path - FindFiles (*.txt) failed: %v", err)
+		engineLog.Error("legacy static path - FindFiles (*.txt) failed", "error", err)
 		return err
 	}
 	mdFiles, err := tools.FindFiles(task.Workspace, "*.md")
 	if err != nil {
-		log.Printf("[Engine Error] Legacy static path - FindFiles (*.md) failed: %v", err)
+		engineLog.Error("legacy static path - FindFiles (*.md) failed", "error", err)
 		return err
 	}
 
@@ -370,7 +390,7 @@ func stepFindTextFiles(task *types.Task) error {
 		files = files[:20]
 	}
 
-	log.Printf("[Engine] Legacy static path - Found %d text/markdown files for task %s", len(files), task.ID)
+	engineLog.Info("legacy static path - found text/markdown files", "task_id", task.ID, "count", len(files))
 
 	task.Trace = append(task.Trace, types.StepTrace{
 		Step:        task.StepCount,
@@ -390,19 +410,19 @@ func stepFindTextFiles(task *types.Task) error {
 func stepSearchKeyword(task *types.Task) error {
 	query, err := lastWord(task.Goal)
 	if err != nil {
-		log.Printf("[Engine Error] Legacy static path - Failed to extract keyword: %v", err)
+		engineLog.Error("legacy static path - failed to extract keyword", "error", err)
 		return err
 	}
-	log.Printf("[Engine] Legacy static path - Searching keyword %q for task %s", query, task.ID)
+	engineLog.Info("legacy static path - searching keyword", "keyword", query, "task_id", task.ID)
 	task.Hypothesis = "Search the most likely keyword in candidate text files"
 
 	evidence, _, err := tools.SearchWithRG(task.Workspace, query, "*.txt")
 	if err != nil {
-		log.Printf("[Engine Error] Legacy static path - SearchWithRG failed: %v", err)
+		engineLog.Error("legacy static path - SearchWithRG failed", "error", err)
 		return err
 	}
 
-	log.Printf("[Engine] Legacy static path - Found %d evidence items for task %s", len(evidence), task.ID)
+	engineLog.Info("legacy static path - found evidence items", "task_id", task.ID, "count", len(evidence))
 
 	task.Trace = append(task.Trace, types.StepTrace{
 		Step:        task.StepCount,
@@ -421,18 +441,18 @@ func stepSearchKeyword(task *types.Task) error {
 }
 
 func stepReadBestFile(task *types.Task) error {
-	log.Printf("[Engine] Legacy static path - Reading best file for task %s", task.ID)
+	engineLog.Info("legacy static path - reading best file", "task_id", task.ID)
 	if len(task.Trace) < 2 || len(task.Trace[1].Evidence) == 0 {
-		log.Printf("[Engine] Legacy static path - Not enough evidence to select a file for task %s", task.ID)
+		engineLog.Info("legacy static path - not enough evidence to select a file", "task_id", task.ID)
 		_ = SetTaskCompleted(task, "not enough evidence to select a file")
 		return nil
 	}
 
 	target := task.Trace[1].Evidence[0].Path
-	log.Printf("[Engine] Legacy static path - Target best file identified: %s for task %s", target, task.ID)
+	engineLog.Info("legacy static path - target best file identified", "task_id", task.ID, "file", target)
 	content, err := tools.ReadFile(task.Workspace, target)
 	if err != nil {
-		log.Printf("[Engine Error] Legacy static path - ReadFile failed: %v", err)
+		engineLog.Error("legacy static path - ReadFile failed", "error", err)
 		return err
 	}
 

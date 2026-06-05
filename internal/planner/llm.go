@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/logger"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -22,6 +22,7 @@ import (
 )
 
 var tracer = otel.Tracer("ai-agent/planner")
+var log = logger.Component("planner")
 
 type ProviderType string
 
@@ -115,7 +116,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		attribute.Int("agent.task.step_count", task.StepCount),
 	)
 
-	log.Printf("[LLM Planner] Starting planning for task %s, step_count: %d, provider: %s, model: %s", task.ID, task.StepCount, provider, model)
+	log.Info("starting planning", "task_id", task.ID, "step_count", task.StepCount, "provider", provider, "model", model)
 
 	systemPrompt := BuildSystemPrompt()
 	userPrompt := BuildUserPrompt(task)
@@ -125,7 +126,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "failed to create genai client")
-			log.Printf("[LLM Planner Error] Task %s - failed to create genai client: %v", task.ID, err)
+			log.Error("failed to create genai client", "task_id", task.ID, "error", err)
 			return nil, err
 		}
 
@@ -148,7 +149,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			ResponseSchema:   PlannerDecisionGenAISchema(),
 		}
 
-		log.Printf("[LLM Planner] Sending stream request to Gemini: model=%s", model)
+		log.Info("sending stream request to Gemini", "model", model)
 		iter := client.Models.GenerateContentStream(ctx, model, contents, config)
 		
 		var textBuf strings.Builder
@@ -158,7 +159,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			if err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "gemini request failed")
-				log.Printf("[LLM Planner Error] Task %s - Gemini stream failed: %v", task.ID, err)
+				log.Error("Gemini stream failed", "task_id", task.ID, "error", err)
 				return nil, err
 			}
 			
@@ -185,14 +186,14 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		if err := unmarshalDecision(textValue, &decision); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "decision unmarshal failed")
-			log.Printf("[LLM Planner Error] Task %s - failed to unmarshal Gemini response %q: %v", task.ID, textValue, err)
+			log.Error("failed to unmarshal Gemini response", "task_id", task.ID, "raw", textValue, "error", err)
 			return nil, fmt.Errorf("invalid planner decision: %w", err)
 		}
 
 		if err := ValidateDecision(&decision); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "decision validation failed")
-			log.Printf("[LLM Planner Error] Task %s - validation failed for decision %+v: %v", task.ID, decision, err)
+			log.Error("validation failed for decision", "task_id", task.ID, "decision", decision, "error", err)
 			return nil, err
 		}
 
@@ -205,8 +206,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			attribute.Bool("agent.planner.stop", decision.Stop),
 		)
 
-		log.Printf("[LLM Planner] Task %s decision - Thought: %q | Actions: %v | Stop: %t | FinalAnswer: %q | NumActions: %d",
-			task.ID, decision.ThoughtSummary, actionNames, decision.Stop, decision.FinalAnswer, len(decision.Actions))
+		log.Info("decision ready", "task_id", task.ID, "thought", decision.ThoughtSummary, "actions", actionNames, "stop", decision.Stop, "final_answer", decision.FinalAnswer, "num_actions", len(decision.Actions))
 
 		decision.TokenUsage = usage
 		return &decision, nil
@@ -221,22 +221,22 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "build request failed")
-		log.Printf("[LLM Planner Error] Task %s - failed to build request: %v", task.ID, err)
+		log.Error("failed to build request", "task_id", task.ID, "error", err)
 		return nil, err
 	}
 
-	log.Printf("[LLM Planner] Sending request to API (%s): %s", provider, baseURL)
+	log.Info("sending request to API", "provider", provider, "base_url", baseURL)
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner request failed")
-		log.Printf("[LLM Planner Error] Task %s - request failed: %v", task.ID, err)
+		log.Error("request failed", "task_id", task.ID, "error", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
-	log.Printf("[LLM Planner] API response received with status %d", resp.StatusCode)
+	log.Info("API response received", "status_code", resp.StatusCode)
 
 	if resp.StatusCode >= 300 {
 		var bodyErr bytes.Buffer
@@ -244,7 +244,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		err := fmt.Errorf("planner API returned status %d: %s", resp.StatusCode, bodyErr.String())
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner API error")
-		log.Printf("[LLM Planner Error] Task %s - API returned status %d: %s", task.ID, resp.StatusCode, bodyErr.String())
+		log.Error("API returned error status", "task_id", task.ID, "status_code", resp.StatusCode, "body", bodyErr.String())
 		return nil, err
 	}
 
@@ -254,7 +254,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "parse response failed")
-		log.Printf("[LLM Planner Error] Task %s - failed to parse response: %v", task.ID, err)
+		log.Error("failed to parse response", "task_id", task.ID, "error", err)
 		return nil, err
 	}
 
@@ -262,14 +262,14 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	if err := unmarshalDecision(textValue, &decision); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "decision unmarshal failed")
-		log.Printf("[LLM Planner Error] Task %s - failed to unmarshal decision JSON: %v", task.ID, err)
+		log.Error("failed to unmarshal decision JSON", "task_id", task.ID, "error", err)
 		return nil, fmt.Errorf("invalid planner decision: %w", err)
 	}
 
 	if err := ValidateDecision(&decision); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "decision validation failed")
-		log.Printf("[LLM Planner Error] Task %s - validation failed for decision %+v: %v", task.ID, decision, err)
+		log.Error("validation failed for decision", "task_id", task.ID, "decision", decision, "error", err)
 		return nil, err
 	}
 
@@ -282,8 +282,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		attribute.Bool("agent.planner.stop", decision.Stop),
 	)
 
-	log.Printf("[LLM Planner] Task %s decision - Thought: %q | Actions: %v | Stop: %t | FinalAnswer: %q | NumActions: %d",
-		task.ID, decision.ThoughtSummary, actionNames, decision.Stop, decision.FinalAnswer, len(decision.Actions))
+	log.Info("decision ready", "task_id", task.ID, "thought", decision.ThoughtSummary, "actions", actionNames, "stop", decision.Stop, "final_answer", decision.FinalAnswer, "num_actions", len(decision.Actions))
 
 	decision.TokenUsage = usage
 	return &decision, nil
@@ -401,7 +400,7 @@ func unmarshalDecision(textValue string, decision *PlanDecision) error {
 	if firstIdx != -1 && lastIdx != -1 && firstIdx < lastIdx {
 		cleaned := textValue[firstIdx : lastIdx+1]
 		if err := json.Unmarshal([]byte(cleaned), decision); err == nil {
-			log.Printf("[LLM Planner] Successfully parsed decision JSON after extracting from raw response")
+			log.Info("successfully parsed decision JSON after extracting from raw response")
 			return nil
 		}
 	}

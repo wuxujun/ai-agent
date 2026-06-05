@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,7 +29,7 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 		method = "GET"
 	}
 
-	log.Printf("[RAG/External] Querying third-party URL %s for query %q (method: %s)", ragURL, query, method)
+	log.Info("Querying third-party RAG", "url", ragURL, "query", query, "method", method)
 
 	var req *http.Request
 	var err error

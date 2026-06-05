@@ -2,7 +2,6 @@ package planner
 
 import (
 	"context"
-	"log"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -11,7 +10,7 @@ import (
 type MockPlanner struct{}
 
 func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*PlanDecision, error) {
-	log.Printf("[Mock Planner] Generating decision for task %s (StepCount: %d)", task.ID, task.StepCount)
+	log.Info("generating decision", "task_id", task.ID, "step_count", task.StepCount)
 
 	var decision *PlanDecision
 
@@ -82,8 +81,7 @@ func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fu
 		}
 	}
 
-	log.Printf("[Mock Planner] Task %s decision - Thought: %q | NumActions: %d | Stop: %t | FinalAnswer: %q",
-		task.ID, decision.ThoughtSummary, len(decision.Actions), decision.Stop, decision.FinalAnswer)
+	log.Info("decision ready", "task_id", task.ID, "thought", decision.ThoughtSummary, "num_actions", len(decision.Actions), "stop", decision.Stop, "final_answer", decision.FinalAnswer)
 
 	return decision, nil
 }

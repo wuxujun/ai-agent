@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"log"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
@@ -19,6 +19,8 @@ import (
 )
 
 var tracer = otel.Tracer("ai-agent/store")
+
+var log = logger.Component("store")
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -230,11 +232,11 @@ func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 			defer cancel()
 			mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
 			if err != nil {
-				log.Printf("[Store] Warning: failed to create memory for task %s: %v", taskSnap.ID, err)
+				log.Warn("failed to create memory for task", "task_id", taskSnap.ID, "error", err)
 				return
 			}
 			if err := s.SaveMemory(asyncCtx, mem); err != nil {
-				log.Printf("[Store] Warning: failed to save memory for task %s: %v", taskSnap.ID, err)
+				log.Warn("failed to save memory for task", "task_id", taskSnap.ID, "error", err)
 			}
 		}()
 	}

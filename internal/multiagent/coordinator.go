@@ -3,10 +3,10 @@ package multiagent
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -16,6 +16,7 @@ import (
 )
 
 var tracer = otel.Tracer("ai-agent/multiagent")
+var log = logger.Component("multiagent")
 
 type Planner interface {
 	Plan(ctx context.Context, goal, workspace string, memories []types.Memory) (*ResearchPlan, error)
@@ -72,7 +73,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		attribute.String("agent.task.goal", task.Goal),
 	)
 
-	log.Printf("[Coordinator] Starting multi-agent workflow for task %s — goal: %q", task.ID, task.Goal)
+	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal)
 
 	// ── Phase 1: Plan ──────────────────────────────────────────────────────────
 	plan, err := c.runPlanPhase(ctx, task)
@@ -99,7 +100,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 
 		select {
 		case <-ctx.Done():
-			log.Printf("[Coordinator] Context cancelled during execution flow")
+			log.Info("Context cancelled during execution flow")
 			return ctx.Err()
 		default:
 		}
@@ -113,8 +114,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		// Adaptive Step Depth expansion: if confidence is low, and we have budget/steps left, request Planner to generate more steps
 		if conf == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && task.StepCount < task.MaxSteps {
 			depthIterations++
-			log.Printf("[Coordinator] Confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion (iteration %d/%d)",
-				depthIterations, maxDepthIterations)
+			log.Info("Confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion", "iteration", depthIterations, "max_iterations", maxDepthIterations)
 
 			// Record adaptive depth trace
 			task.Trace = append(task.Trace, types.StepTrace{
@@ -130,7 +130,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 			// Re-plan additional steps based on traces history
 			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
 			if replanErr != nil || len(newPlan.Steps) == 0 {
-				log.Printf("[Coordinator Error] Adaptive replan failed or returned empty steps — stopping loop")
+				log.Error("Adaptive replan failed or returned empty steps — stopping loop")
 				break
 			}
 
@@ -161,7 +161,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		break
 	}
 
-	log.Printf("[Coordinator] Workflow complete for task %s — status=%s", task.ID, task.Status)
+	log.Info("Workflow complete", "task_id", task.ID, "status", task.Status)
 	span.SetAttributes(
 		attribute.String("agent.task.final_status", string(task.Status)),
 		attribute.String("agent.task.final_answer", task.FinalAnswer),
@@ -172,7 +172,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 // ── phase helpers ─────────────────────────────────────────────────────────────
 
 func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*ResearchPlan, error) {
-	log.Printf("[Coordinator] Phase 1 — Planning for task %s", task.ID)
+	log.Info("Phase 1 — Planning", "task_id", task.ID)
 
 	start := time.Now()
 	plan, err := c.Planner.Plan(ctx, task.Goal, task.Workspace, task.Memories)
@@ -203,12 +203,12 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	task.StepCount++
 	task.Status = types.StatusRunning
 
-	log.Printf("[Coordinator] Phase 1 done — %d steps planned in %s", len(plan.Steps), elapsed)
+	log.Info("Phase 1 done", "steps_planned", len(plan.Steps), "elapsed", elapsed)
 	return plan, nil
 }
 
 func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, steps []ResearchStep) []StepEvidence {
-	log.Printf("[Coordinator] Phase 2 — Researching step(s) for task %s", task.ID)
+	log.Info("Phase 2 — Researching", "task_id", task.ID)
 
 	var allEvidence []StepEvidence
 
@@ -225,18 +225,18 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			totalTokens += tr.TokenUsage.TotalTokens
 		}
 		if task.ToolBudget <= 0 || (task.TokenBudget > 0 && totalTokens >= task.TokenBudget) {
-			log.Printf("[Coordinator] Budget exhausted (tools or tokens) — stopping research early")
+			log.Info("Budget exhausted (tools or tokens) — stopping research early")
 			break
 		}
 		if task.StepCount >= task.MaxSteps {
-			log.Printf("[Coordinator] Max steps reached — stopping research early")
+			log.Info("Max steps reached — stopping research early")
 			break
 		}
 
 		// Context cancellation check
 		select {
 		case <-ctx.Done():
-			log.Printf("[Coordinator] Context cancelled during research phase")
+			log.Info("Context cancelled during research phase")
 			return allEvidence
 		default:
 		}
@@ -250,10 +250,10 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		var anyFailed bool
 
 		if isParallel && len(batch) > 1 {
-			log.Printf("[Coordinator] Executing %d read-only steps in parallel", len(batch))
+			log.Info("Executing read-only steps in parallel", "count", len(batch))
 			batchEvidence, anyFailed = c.runBatchParallel(ctx, task, batch)
 		} else {
-			log.Printf("[Coordinator] Executing %d step(s) serially", len(batch))
+			log.Info("Executing steps serially", "count", len(batch))
 			batchEvidence, anyFailed = c.runBatchSerial(ctx, task, batch)
 		}
 
@@ -262,13 +262,13 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		// Trigger re-planning if any step in the batch failed
 		if anyFailed && replansCount < maxReplans {
 			replansCount++
-			log.Printf("[Coordinator] Triggering collaborative replan/error-correction loop (replan count: %d)", replansCount)
+			log.Info("Triggering collaborative replan/error-correction loop", "replan_count", replansCount)
 
 			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
 			if replanErr != nil {
-				log.Printf("[Coordinator Error] Replanner failed: %v — continuing with remaining steps", replanErr)
+				log.Error("Replanner failed — continuing with remaining steps", "error", replanErr)
 			} else if len(newPlan.Steps) > 0 {
-				log.Printf("[Coordinator] Replanner generated %d revised steps.", len(newPlan.Steps))
+				log.Info("Replanner generated revised steps", "count", len(newPlan.Steps))
 				task.Trace = append(task.Trace, types.StepTrace{
 					Step:        task.StepCount,
 					Goal:        task.Goal,
@@ -284,7 +284,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		}
 	}
 
-	log.Printf("[Coordinator] Phase 2 done — %d evidence item(s) gathered", len(allEvidence))
+	log.Info("Phase 2 done", "evidence_items", len(allEvidence))
 	return allEvidence
 }
 
@@ -412,13 +412,12 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 		default:
 		}
 
-		log.Printf("[Coordinator] Executing research step %d: ID=%s, Action=%s, Desc=%q",
-			task.StepCount+1, step.ID, step.Action, step.Description)
+		log.Info("Executing research step", "step_num", task.StepCount+1, "step_id", step.ID, "action", step.Action, "desc", step.Description)
 
 		tool, ok := tools.Get(step.Action)
 		if ok && tool.RiskLevel() == types.RiskLevelHigh && c.SuspendForApproval != nil {
 			if err := c.SuspendForApproval(ctx, task, step.Action); err != nil {
-				log.Printf("[Coordinator Error] Action %q rejected or approval failed: %v", step.Action, err)
+				log.Error("Action rejected or approval failed", "action", step.Action, "error", err)
 				anyFailed = true
 				break
 			}
@@ -471,7 +470,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 }
 
 func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {
-	log.Printf("[Coordinator] Phase 3 — Writing final answer for task %s", task.ID)
+	log.Info("Phase 3 — Writing final answer", "task_id", task.ID)
 
 	start := time.Now()
 	output, err := c.Writer.Write(ctx, task.Goal, evidence, task.Memories)
@@ -482,7 +481,7 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	}
 
 	if err != nil {
-		log.Printf("[Coordinator] WriterAgent failed for task %s: %v — using fallback answer", task.ID, err)
+		log.Error("WriterAgent failed — using fallback answer", "task_id", task.ID, "error", err)
 		// Graceful fallback: task completes with a best-effort summary
 		fallback := "Research complete but synthesis failed. See trace for gathered evidence."
 		task.Trace = append(task.Trace, types.StepTrace{
@@ -520,7 +519,7 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 		c.Metrics.IncCompleted()
 	}
 
-	log.Printf("[Coordinator] Phase 3 done — answer written (confidence=%s) in %s", output.Confidence, elapsed)
+	log.Info("Phase 3 done — answer written", "confidence", output.Confidence, "elapsed", elapsed)
 	return output.Confidence, nil
 }
 

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"log"
 	"net/http"
 	"strconv"
 	"sync"
@@ -11,12 +10,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+var log = logger.Component("api")
 
 type Handler struct {
 	store   store.Store
@@ -193,15 +195,15 @@ func (h *Handler) runAll(c *gin.Context) {
 
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer bgCancel()
-		log.Printf("[Handler] Starting async run-all for task %s", task.ID)
+		log.Info("starting async run-all for task", "task_id", task.ID)
 		execErr := h.engine.RunAll(bgCtx, task)
 		saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer saveCancel()
 		if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
-			log.Printf("[Handler Error] Failed to save task %s after run-all: %v", task.ID, saveErr)
+			log.Error("failed to save task after run-all", "task_id", task.ID, "error", saveErr)
 		}
 		if execErr != nil {
-			log.Printf("[Handler Error] run-all failed for task %s: %v", task.ID, execErr)
+			log.Error("run-all failed for task", "task_id", task.ID, "error", execErr)
 		}
 		// Publish terminal event to SSE subscribers
 		finalEvent := StepEvent{
@@ -311,7 +313,7 @@ func (h *Handler) listTasks(c *gin.Context) {
 func (h *Handler) reloadConfig(c *gin.Context) {
 	cfg, changes, err := config.Reload()
 	if err != nil {
-		log.Printf("[Config] Manual reload failed: %v", err)
+		log.Error("manual config reload failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})

@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -31,11 +30,11 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 	}
 
 	if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
-		log.Printf("[MultiAgent Engine] Task %s already finished (%s) — skipping", task.ID, task.Status)
+		log.Info("task already finished, skipping", "task_id", task.ID, "status", string(task.Status))
 		return nil
 	}
 
-	log.Printf("[MultiAgent Engine] Starting full multi-agent workflow for task %s", task.ID)
+	log.Info("starting multi-agent workflow", "task_id", task.ID)
 
 	if err := e.Coordinator.Run(ctx, task); err != nil {
 		span.RecordError(err)
@@ -49,7 +48,10 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 		attribute.Int("agent.task.step_count_after", task.StepCount),
 	)
 
-	log.Printf("[MultiAgent Engine] Workflow complete for task %s — status=%s steps=%d",
-		task.ID, task.Status, task.StepCount)
+	log.Info("multi-agent workflow complete",
+		"task_id", task.ID,
+		"status", string(task.Status),
+		"steps", task.StepCount,
+	)
 	return nil
 }

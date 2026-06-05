@@ -3,15 +3,22 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/cloudwego/eino/compose"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 )
+
+// olog is the shared structured logger for the orchestrator package.
+// Named "olog" to avoid conflicting with adk.go's stdlib "log" import.
+var olog = logger.Component("orchestrator")
+
+// log is a package-level logger alias to olog to support other files.
+var log = olog
 
 type einoStepState struct {
 	Task     *types.Task
@@ -22,7 +29,7 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next")
 	defer span.End()
 
-	log.Printf("[Engine-Eino] Running step %d/%d (budget: %d) for task %s", task.StepCount+1, task.MaxSteps, task.ToolBudget, task.ID)
+	olog.Info("running step", "step", task.StepCount+1, "max_steps", task.MaxSteps, "budget", task.ToolBudget, "task_id", task.ID)
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
@@ -38,16 +45,16 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "compile eino chain failed")
-		log.Printf("[Engine-Eino Error] Task %s - failed to compile Eino chain: %v", task.ID, err)
+		olog.Error("failed to compile eino chain", "task_id", task.ID, "error", err)
 		return err
 	}
 
-	log.Printf("[Engine-Eino] Invoking Eino step chain for task %s", task.ID)
+	olog.Info("invoking eino step chain", "task_id", task.ID)
 	output, err := runner.Invoke(ctx, &einoStepState{Task: task})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "eino chain failed")
-		log.Printf("[Engine-Eino Error] Task %s - Eino chain invocation failed: %v", task.ID, err)
+		olog.Error("eino chain invocation failed", "task_id", task.ID, "error", err)
 		return err
 	}
 
@@ -99,14 +106,14 @@ func (e *Engine) getEinoRunner(ctx context.Context) (compose.Runnable[*einoStepS
 
 	// Still not ready — compile now. On failure we return the error but leave
 	// einoReady=false so the next request can retry.
-	log.Printf("[Engine-Eino] Compiling Eino step chain (first use or retry after failure)")
+	olog.Info("compiling eino step chain (first use or retry after failure)")
 	r, err := e.compileEinoStepChain(ctx)
 	if err != nil {
 		return nil, err
 	}
 	e.einoRunner = r
 	e.einoReady = true
-	log.Printf("[Engine-Eino] Eino step chain compiled and cached successfully")
+	olog.Info("eino step chain compiled and cached successfully")
 	return r, nil
 }
 
@@ -130,7 +137,7 @@ func (e *Engine) checkBudget(ctx context.Context, state *einoStepState) (*einoSt
 		return state, nil
 	}
 
-	log.Printf("[Engine-Eino] Task %s reached step limit (%d/%d) or budget limit (%d)", task.ID, task.StepCount, task.MaxSteps, task.ToolBudget)
+	olog.Info("task reached step or budget limit", "task_id", task.ID, "step", task.StepCount, "max_steps", task.MaxSteps, "budget", task.ToolBudget)
 	finalAnswer := task.FinalAnswer
 	if finalAnswer == "" {
 		finalAnswer = "stopped by budget or max steps"
@@ -158,7 +165,7 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 		e.Metrics.ObservePlanner(time.Since(pStart), err)
 	}
 	if err != nil {
-		log.Printf("[Engine-Eino] Planner failed for task %s: %v", task.ID, err)
+		olog.Error("planner failed", "task_id", task.ID, "error", err)
 		return state, err
 	}
 
@@ -166,13 +173,13 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 	for _, ac := range decision.Actions {
 		actionNames = append(actionNames, ac.Action)
 	}
-	log.Printf("[Engine-Eino] Task %s - Planner thought: %q | Actions chosen: %v", task.ID, decision.ThoughtSummary, actionNames)
+	olog.Info("planner decided", "task_id", task.ID, "thought", decision.ThoughtSummary, "actions", actionNames)
 
 	task.Hypothesis = decision.ThoughtSummary
 	state.Decision = decision
 
 	if decision.Stop {
-		log.Printf("[Engine-Eino] Task %s - Planner decided to stop. FinalAnswer: %q", task.ID, decision.FinalAnswer)
+		olog.Info("planner decided to stop", "task_id", task.ID, "final_answer", decision.FinalAnswer)
 		_ = SetTaskCompleted(task, decision.FinalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
@@ -194,7 +201,7 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 		actionNames = append(actionNames, ac.Action)
 	}
 
-	log.Printf("[Engine-Eino] Task %s - Executing actions %v", task.ID, actionNames)
+	olog.Info("executing actions", "task_id", task.ID, "actions", actionNames)
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)
 
@@ -210,14 +217,14 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 		e.Metrics.ObserveExecutor(time.Since(xStart), obsErr, "batch")
 	}
 	if err != nil {
-		log.Printf("[Engine-Eino] Executor aborted for task %s, actions %v: %v", task.ID, actionNames, err)
+		olog.Error("executor aborted", "task_id", task.ID, "actions", actionNames, "error", err)
 		return state, err
 	}
 
 	if failed > 0 {
-		log.Printf("[Engine-Eino] Task %s - %d/%d actions failed; recorded as observations, continuing", task.ID, failed, len(traces))
+		olog.Warn("some actions failed; recorded as observations, continuing", "task_id", task.ID, "failed", failed, "total", len(traces))
 	} else {
-		log.Printf("[Engine-Eino] Task %s - Action execution success. %d traces produced", task.ID, len(traces))
+		olog.Info("action execution success", "task_id", task.ID, "traces", len(traces))
 	}
 
 	task.StepCount += len(traces)
@@ -225,7 +232,7 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 	task.Trace = append(task.Trace, traces...)
 	_ = SetTaskRunning(task)
 
-	log.Printf("[Engine-Eino] Step %d completed for task %s. Remaining budget: %d", task.StepCount, task.ID, task.ToolBudget)
+	olog.Info("step completed", "step", task.StepCount, "task_id", task.ID, "remaining_budget", task.ToolBudget)
 	return state, nil
 }
 

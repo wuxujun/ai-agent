@@ -3,7 +3,6 @@ package multiagent
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -18,7 +17,7 @@ type ResearcherAgent struct{}
 // Errors inside individual tool calls are treated as non-fatal: the observation
 // records the error and the caller can decide whether to continue.
 func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
-	log.Printf("[ResearcherAgent] Step %s: action=%s  desc=%q", step.ID, step.Action, step.Description)
+	log.Info("Research step starting", "step_id", step.ID, "action", step.Action, "desc", step.Description)
 
 	// Validate workspace boundary before any operation.
 	if err := policy.ValidateWorkspace(workspace); err != nil {
@@ -35,7 +34,7 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 	if !ok {
 		ev.Observation = fmt.Sprintf("unsupported action %q — skipping", step.Action)
 		ev.Failed = true
-		log.Printf("[ResearcherAgent] Step %s unsupported action: %s", step.ID, step.Action)
+		log.Info("Unsupported action", "step_id", step.ID, "action", step.Action)
 		return ev, nil
 	}
 
@@ -49,13 +48,13 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 	if err != nil {
 		ev.Observation = fmt.Sprintf("%s error: %v", step.Action, err)
 		ev.Failed = true
-		log.Printf("[ResearcherAgent] Step %s %s error: %v", step.ID, step.Action, err)
+		log.Info("Step tool error", "step_id", step.ID, "action", step.Action, "error", err)
 		return ev, nil // non-fatal
 	}
 	ev.Observation = result.Observation
 	ev.Evidence = result.Evidence
 
-	log.Printf("[ResearcherAgent] Step %s done: %s (evidence=%d)", step.ID, ev.Observation, len(ev.Evidence))
+	log.Info("Research step done", "step_id", step.ID, "observation", ev.Observation, "evidence_count", len(ev.Evidence))
 	return ev, nil
 }
 
