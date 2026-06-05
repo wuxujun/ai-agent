@@ -19,7 +19,6 @@ func (t *SearchTextTool) RiskLevel() types.RiskLevel {
 	return types.RiskLevelLow
 }
 
-
 func (t *SearchTextTool) Description() string {
 	return "Search for text matching a regex query in the workspace"
 }
@@ -37,7 +36,7 @@ func (t *SearchTextTool) Execute(ctx context.Context, workspace string, params m
 	}
 	query, _ := params["query"].(string)
 	glob, _ := params["glob"].(string)
-	evidence, _, err := SearchWithRG(workspace, query, glob)
+	evidence, _, err := SearchWithRG(ctx, workspace, query, glob)
 	if err != nil {
 		return nil, err
 	}
@@ -52,14 +51,14 @@ func init() {
 	Register(&SearchTextTool{})
 }
 
-func SearchWithRG(workspace string, query string, glob string) ([]types.Evidence, string, error) {
+func SearchWithRG(ctx context.Context, workspace string, query string, glob string) ([]types.Evidence, string, error) {
 	args := []string{"-n", "--no-heading", "--color", "never"}
 	if glob != "" {
 		args = append(args, "-g", glob)
 	}
 	args = append(args, query, ".")
 
-	out, err := RunCommand(workspace, "rg", args...)
+	out, err := RunCommand(ctx, workspace, "rg", args...)
 	if err != nil && strings.TrimSpace(out) == "" {
 		return nil, "", err
 	}

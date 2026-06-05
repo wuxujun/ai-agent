@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -9,7 +10,7 @@ import (
 // GrepFiles searches for a regex pattern across all files in the workspace using ripgrep.
 // It is similar to SearchWithRG but uses regex matching (-e flag) and accepts a case-insensitive option.
 // Returns matched evidence items (up to 20), the raw output, and any error.
-func GrepFiles(workspace, pattern, glob string, caseInsensitive bool) ([]types.Evidence, string, error) {
+func GrepFiles(ctx context.Context, workspace, pattern, glob string, caseInsensitive bool) ([]types.Evidence, string, error) {
 	args := []string{"-n", "--no-heading", "--color", "never"}
 	if caseInsensitive {
 		args = append(args, "-i")
@@ -20,7 +21,7 @@ func GrepFiles(workspace, pattern, glob string, caseInsensitive bool) ([]types.E
 	// Use -e for explicit regex pattern to prevent ambiguity with file arguments
 	args = append(args, "-e", pattern, ".")
 
-	out, err := RunCommand(workspace, "rg", args...)
+	out, err := RunCommand(ctx, workspace, "rg", args...)
 	if err != nil && strings.TrimSpace(out) == "" {
 		return nil, "", err
 	}

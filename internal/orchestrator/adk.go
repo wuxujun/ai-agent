@@ -68,7 +68,7 @@ func findFilesHandler(ctx tool.Context, args FindFilesArgs) (FindFilesResult, er
 		log.Error("find_files: no workspace in context", "error", err)
 		return FindFilesResult{}, err
 	}
-	files, err := tools.FindFiles(workspace, args.Pattern)
+	files, err := tools.FindFiles(ctx, workspace, args.Pattern)
 	if err != nil {
 		log.Error("find_files failed", "pattern", args.Pattern, "error", err)
 		return FindFilesResult{}, err
@@ -85,7 +85,7 @@ func searchTextHandler(ctx tool.Context, args SearchTextArgs) (SearchTextResult,
 		log.Error("search_text: no workspace in context", "error", err)
 		return SearchTextResult{}, err
 	}
-	evidence, _, err := tools.SearchWithRG(workspace, args.Query, args.Glob)
+	evidence, _, err := tools.SearchWithRG(ctx, workspace, args.Query, args.Glob)
 	if err != nil {
 		log.Error("search_text failed", "query", args.Query, "error", err)
 		return SearchTextResult{}, err

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -18,12 +19,12 @@ type toolMiddleware struct {
 
 func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	timeout := toolTimeout()
-	
+
 	var lastErr error
 	var result *ToolResult
-	
+
 	maxRetries := 2
-	
+
 	// Fast fail for context cancellation
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -40,9 +41,20 @@ func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params m
 		}
 		lastErr = err
 
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		if attempt < maxRetries {
 			log.Printf("[Tool %s] Execute failed (attempt %d): %v, retrying...", m.Name(), attempt+1, err)
-			time.Sleep(time.Second * time.Duration(attempt+1))
+			select {
+			case <-time.After(time.Second * time.Duration(attempt+1)):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 	}
 

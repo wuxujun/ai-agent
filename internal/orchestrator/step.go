@@ -38,11 +38,11 @@ func (e *Engine) runStepNext(ctx context.Context, task *types.Task) error {
 	var err error
 	switch task.StepCount {
 	case 0:
-		err = stepFindTextFiles(task)
+		err = stepFindTextFiles(ctx, task)
 	case 1:
-		err = stepSearchKeyword(task)
+		err = stepSearchKeyword(ctx, task)
 	case 2:
-		err = stepReadBestFile(task)
+		err = stepReadBestFile(ctx, task)
 	default:
 		log.Info("step count beyond static sequence, completing task",
 			"task_id", task.ID,

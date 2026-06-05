@@ -1,12 +1,12 @@
 package tools
 
 import (
-	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 type FindFilesTool struct{}
@@ -18,7 +18,6 @@ func (t *FindFilesTool) Name() string {
 func (t *FindFilesTool) RiskLevel() types.RiskLevel {
 	return types.RiskLevelLow
 }
-
 
 func (t *FindFilesTool) Description() string {
 	return "Find files matching a pattern in the workspace"
@@ -35,7 +34,7 @@ func (t *FindFilesTool) Execute(ctx context.Context, workspace string, params ma
 		return nil, fmt.Errorf("find_files policy violation: %w", err)
 	}
 	pattern, _ := params["pattern"].(string)
-	files, err := FindFiles(workspace, pattern)
+	files, err := FindFiles(ctx, workspace, pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +57,8 @@ func init() {
 	Register(&FindFilesTool{})
 }
 
-func FindFiles(workspace string, pattern string) ([]string, error) {
-	out, err := RunCommand(workspace, "find", ".", "-type", "f", "-name", pattern)
+func FindFiles(ctx context.Context, workspace string, pattern string) ([]string, error) {
+	out, err := RunCommand(ctx, workspace, "find", ".", "-type", "f", "-name", pattern)
 	if err != nil && strings.TrimSpace(out) == "" {
 		return nil, err
 	}

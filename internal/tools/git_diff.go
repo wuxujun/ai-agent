@@ -1,12 +1,12 @@
 package tools
 
 import (
-	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 type GitDiffTool struct{}
@@ -18,7 +18,6 @@ func (t *GitDiffTool) Name() string {
 func (t *GitDiffTool) RiskLevel() types.RiskLevel {
 	return types.RiskLevelLow
 }
-
 
 func (t *GitDiffTool) Description() string {
 	return "Get the git diff for the workspace or a specific file"
@@ -41,7 +40,7 @@ func (t *GitDiffTool) Execute(ctx context.Context, workspace string, params map[
 		args = append(args, path)
 	}
 
-	out, err := RunCommand(workspace, "git", args...)
+	out, err := RunCommand(ctx, workspace, "git", args...)
 	if err != nil {
 		return nil, fmt.Errorf("git_diff failed: %w", err)
 	}

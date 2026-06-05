@@ -371,16 +371,16 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	return nil
 }
 
-func stepFindTextFiles(task *types.Task) error {
+func stepFindTextFiles(ctx context.Context, task *types.Task) error {
 	engineLog.Info("legacy static path - finding text files", "task_id", task.ID)
 	task.Hypothesis = "Relevant evidence is likely inside text or markdown files"
 
-	txtFiles, err := tools.FindFiles(task.Workspace, "*.txt")
+	txtFiles, err := tools.FindFiles(ctx, task.Workspace, "*.txt")
 	if err != nil {
 		engineLog.Error("legacy static path - FindFiles (*.txt) failed", "error", err)
 		return err
 	}
-	mdFiles, err := tools.FindFiles(task.Workspace, "*.md")
+	mdFiles, err := tools.FindFiles(ctx, task.Workspace, "*.md")
 	if err != nil {
 		engineLog.Error("legacy static path - FindFiles (*.md) failed", "error", err)
 		return err
@@ -408,7 +408,7 @@ func stepFindTextFiles(task *types.Task) error {
 	return nil
 }
 
-func stepSearchKeyword(task *types.Task) error {
+func stepSearchKeyword(ctx context.Context, task *types.Task) error {
 	query, err := lastWord(task.Goal)
 	if err != nil {
 		engineLog.Error("legacy static path - failed to extract keyword", "error", err)
@@ -417,7 +417,7 @@ func stepSearchKeyword(task *types.Task) error {
 	engineLog.Info("legacy static path - searching keyword", "keyword", query, "task_id", task.ID)
 	task.Hypothesis = "Search the most likely keyword in candidate text files"
 
-	evidence, _, err := tools.SearchWithRG(task.Workspace, query, "*.txt")
+	evidence, _, err := tools.SearchWithRG(ctx, task.Workspace, query, "*.txt")
 	if err != nil {
 		engineLog.Error("legacy static path - SearchWithRG failed", "error", err)
 		return err
@@ -441,7 +441,7 @@ func stepSearchKeyword(task *types.Task) error {
 	return nil
 }
 
-func stepReadBestFile(task *types.Task) error {
+func stepReadBestFile(ctx context.Context, task *types.Task) error {
 	engineLog.Info("legacy static path - reading best file", "task_id", task.ID)
 	if len(task.Trace) < 2 || len(task.Trace[1].Evidence) == 0 {
 		engineLog.Info("legacy static path - not enough evidence to select a file", "task_id", task.ID)
