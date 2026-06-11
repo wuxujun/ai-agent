@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"math"
 	"net/http"
@@ -40,6 +41,11 @@ func CosineSimilarity(v1, v2 []float32) float32 {
 // If the LLM provider has an API key, it calls the provider's API.
 // Otherwise, or if the API call fails, it falls back to a deterministic local embedding.
 func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
+	// If running under go test, always use local embedding to avoid external API calls
+	if flag.Lookup("test.v") != nil {
+		return localEmbedding(text), nil
+	}
+
 	cfg := multiagent.DefaultLLMConfig()
 
 	// If no API key is set, go straight to local fallback to avoid timeouts
