@@ -21,6 +21,11 @@ type Config struct {
 	Orchestrator struct {
 		Mode               string `mapstructure:"mode"`
 		MaxConcurrentTasks int    `mapstructure:"max_concurrent_tasks"`
+		// RunAllTimeoutSeconds caps the wall-clock budget of a single
+		// background run-all goroutine (the one launched by POST /api/tasks/:id/run-all).
+		// 0 falls back to the package default (600s). Long multiagent tasks may
+		// need this raised; strict SLA deployments can lower it.
+		RunAllTimeoutSeconds int `mapstructure:"run_all_timeout_seconds"`
 	} `mapstructure:"orchestrator"`
 
 	LLM struct {
@@ -83,6 +88,7 @@ func setupViper() {
 	viper.SetDefault("store.dsn", "data/agent.db")
 	viper.SetDefault("orchestrator.mode", "eino")
 	viper.SetDefault("orchestrator.max_concurrent_tasks", 10)
+	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
 	viper.SetDefault("llm.provider", "openai-responses")
 	viper.SetDefault("llm.timeout_seconds", 30)
 	viper.SetDefault("log.level", "info")
@@ -257,6 +263,7 @@ func diffConfigs(old, new *Config) []string {
 	// Orchestrator
 	addIf("orchestrator.mode", old.Orchestrator.Mode, new.Orchestrator.Mode)
 	addIfInt("orchestrator.max_concurrent_tasks", old.Orchestrator.MaxConcurrentTasks, new.Orchestrator.MaxConcurrentTasks)
+	addIfInt("orchestrator.run_all_timeout_seconds", old.Orchestrator.RunAllTimeoutSeconds, new.Orchestrator.RunAllTimeoutSeconds)
 
 	// RAG
 	addIf("rag.search_url", old.RAG.SearchURL, new.RAG.SearchURL)

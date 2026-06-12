@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 )
@@ -29,6 +30,18 @@ func (t *ReadFileTool) Parameters() map[string]any {
 	return map[string]any{
 		"path": map[string]any{"type": "string", "description": "Workspace-relative file path to read"},
 	}
+}
+
+func (t *ReadFileTool) Validate(params map[string]any) error {
+	path, _ := params["path"].(string)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("read_file requires non-empty path")
+	}
+	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
+		return fmt.Errorf("invalid read_file path")
+	}
+	return nil
 }
 
 func (t *ReadFileTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {

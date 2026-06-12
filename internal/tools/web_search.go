@@ -37,6 +37,14 @@ func (t *WebSearchTool) Parameters() map[string]any {
 	}
 }
 
+func (t *WebSearchTool) Validate(params map[string]any) error {
+	query, _ := params["query"].(string)
+	if strings.TrimSpace(query) == "" {
+		return fmt.Errorf("web_search requires non-empty query")
+	}
+	return nil
+}
+
 func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	query, _ := params["query"].(string)
 	if query == "" {

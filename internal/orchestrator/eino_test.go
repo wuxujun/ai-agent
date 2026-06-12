@@ -262,6 +262,81 @@ func TestEinoNextStopsWhenBudgetExhausted(t *testing.T) {
 	}
 }
 
+// TestEinoNextStopsWhenTokenBudgetExhausted verifies the eino-mode token gate
+// added alongside TokenBudget persistence. It complements the legacy gate
+// already exercised indirectly via engine.go runLegacyNext.
+func TestEinoNextStopsWhenTokenBudgetExhausted(t *testing.T) {
+	p := &stubPlanner{decision: &planner.PlanDecision{}}
+	x := &stubExecutor{trace: &types.StepTrace{}}
+	engine := &Engine{Planner: p, Executor: x}
+	task := &types.Task{
+		ID:          "task-token-cap",
+		Goal:        "answer",
+		Status:      "running",
+		MaxSteps:    5,
+		ToolBudget:  5,
+		TokenBudget: 100,
+		Trace: []types.StepTrace{
+			{Step: 1, Action: "search_text", TokenUsage: types.TokenUsage{TotalTokens: 60}},
+			{Step: 2, Action: "search_text", TokenUsage: types.TokenUsage{TotalTokens: 50}},
+		},
+	}
+
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+
+	if p.calls != 0 {
+		t.Fatalf("planner calls = %d, want 0 (gate should fire before planner runs)", p.calls)
+	}
+	if x.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", x.calls)
+	}
+	if task.Status != types.StatusCompleted {
+		t.Fatalf("task status = %q, want completed", task.Status)
+	}
+	if task.FinalAnswer != "stopped by token budget" {
+		t.Fatalf("final answer = %q, want token budget stop message", task.FinalAnswer)
+	}
+}
+
+// TestEinoTokenUsagePropagatesToTrace ensures the eino executor copies
+// decision.TokenUsage onto each trace entry, so cumulative token usage on
+// subsequent calls is visible to the token-budget gate. Without this propagation,
+// the gate's running sum over task.Trace would always be zero in eino mode.
+func TestEinoTokenUsagePropagatesToTrace(t *testing.T) {
+	p := &stubPlanner{
+		decision: &planner.PlanDecision{
+			ThoughtSummary: "search",
+			Actions: []planner.ActionCall{
+				{Action: "search_text", Parameters: map[string]any{"query": "needle"}},
+			},
+			TokenUsage: types.TokenUsage{PromptTokens: 30, CompletionTokens: 20, TotalTokens: 50},
+		},
+	}
+	x := &stubExecutor{
+		trace: &types.StepTrace{
+			Step:        1,
+			Action:      "search_text",
+			Query:       "needle",
+			Observation: "found",
+		},
+	}
+	engine := &Engine{Planner: p, Executor: x}
+	task := &types.Task{ID: "task-tokens", Goal: "go", Status: "created", MaxSteps: 3, ToolBudget: 2}
+
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+
+	if len(task.Trace) != 1 {
+		t.Fatalf("trace len = %d, want 1", len(task.Trace))
+	}
+	if got := task.Trace[0].TokenUsage.TotalTokens; got != 50 {
+		t.Fatalf("trace TokenUsage.TotalTokens = %d, want 50 (propagated from decision)", got)
+	}
+}
+
 // TestGetEinoRunnerConcurrency verifies that concurrent calls to getEinoRunner:
 //  1. Compile the chain exactly once (no redundant compilations).
 //  2. All callers receive the identical runner instance (pointer equality).

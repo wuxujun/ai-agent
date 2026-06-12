@@ -286,8 +286,8 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 
 func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) error {
 	approval := e.BuildApprovalRequest(task, action, params)
-	ch := RegisterApproval(task.ID, approval)
-	defer RemoveApproval(task.ID)
+	approvalID, ch := RegisterApproval(task.ID, approval)
+	defer RemoveApproval(approvalID)
 
 	task.Status = types.StatusAwaitingApproval
 	if e.Store != nil {

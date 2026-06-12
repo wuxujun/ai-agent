@@ -2,13 +2,16 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wuxujun/ai-agent/internal/api"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -190,6 +193,113 @@ func TestCancelTask_Active(t *testing.T) {
 	}
 }
 
+// TestCreateTaskPersistsTokenBudget verifies that token_budget in the POST body
+// flows through CreateTaskRequest into the persisted Task. This closes the
+// silent break where the field was on the type but unreachable via the API,
+// making the token budget gate a dead branch.
+func TestCreateTaskPersistsTokenBudget(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(st, nil)
+
+	body := `{"id":"task-tb","goal":"x","workspace":"./testdata","max_steps":3,"tool_budget":3,"token_budget":2500}`
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var created types.Task
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if created.TokenBudget != 2500 {
+		t.Errorf("response TokenBudget = %d, want 2500", created.TokenBudget)
+	}
+
+	got, err := st.GetTask(context.Background(), "task-tb")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.TokenBudget != 2500 {
+		t.Errorf("persisted TokenBudget = %d, want 2500", got.TokenBudget)
+	}
+}
+
+// TestRunAllAlreadyRunningInDBDoesNotLeakReservation covers the cleanup path
+// that #7 hardened: when the DB TryTransitionTaskStatus rejects (because the
+// task is already Running in the persisted store — possibly from a peer
+// process), the handler now reserves the in-process activeTasks slot BEFORE
+// the DB call and must release it on rejection. If the cleanup leaked, a
+// subsequent runAll on the same task ID would return 409 forever, even after
+// the DB row is corrected.
+func TestRunAllAlreadyRunningInDBDoesNotLeakReservation(t *testing.T) {
+	st := store.NewMemoryStore()
+	mp := &mockPlanner{}
+	engine := &orchestrator.Engine{
+		Mode:     orchestrator.ModeLegacy,
+		Planner:  mp,
+		Executor: &mockExecutor{},
+		Store:    st,
+	}
+	r := setupTestRouter(st, engine)
+
+	// Simulate a stale in-DB Running row (e.g. left over from a peer process
+	// or a crash). Status is not in {Created, AwaitingApproval}, so the
+	// TryTransitionTaskStatus inside runAll will return false.
+	task := &types.Task{
+		ID:         "task-stale-running",
+		Status:     types.StatusRunning,
+		MaxSteps:   5,
+		ToolBudget: 10,
+	}
+	_ = st.SaveFullTask(context.Background(), task)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-stale-running/run-all", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected first run-all to 409 on DB rejection, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Now flip the DB row back to a startable state. If the previous run-all
+	// leaked an activeTasks entry, this second call would still see the
+	// reservation and 409. The fix uses compare-and-delete cleanup so the slot
+	// is released.
+	task.Status = types.StatusCreated
+	_ = st.SaveFullTask(context.Background(), task)
+
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-stale-running/run-all", nil)
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusAccepted {
+		t.Fatalf("expected second run-all to 202 after DB row corrected, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// Drain the running task so the test doesn't leak a goroutine that
+	// outlives the test binary.
+	wCancel := httptest.NewRecorder()
+	reqCancel, _ := http.NewRequest(http.MethodDelete, "/api/tasks/task-stale-running/cancel", nil)
+	r.ServeHTTP(wCancel, reqCancel)
+	if wCancel.Code != http.StatusOK {
+		t.Errorf("cleanup cancel returned %d", wCancel.Code)
+	}
+}
+
+// TestRunAllTimeoutConfigHasDefault is a smoke test that the new
+// orchestrator.run_all_timeout_seconds knob is registered with a sane default,
+// so existing deployments running without this key still get the original
+// 10-minute budget rather than a zero-timeout context that cancels instantly.
+func TestRunAllTimeoutConfigHasDefault(t *testing.T) {
+	cfg := config.Get()
+	if cfg.Orchestrator.RunAllTimeoutSeconds <= 0 {
+		t.Fatalf("RunAllTimeoutSeconds default = %d, want positive (>= 600)", cfg.Orchestrator.RunAllTimeoutSeconds)
+	}
+}
+
 func TestRunAllDuplicateActiveTaskReturnsConflict(t *testing.T) {
 	st := store.NewMemoryStore()
 	blockCh := make(chan struct{})
@@ -231,3 +341,174 @@ func TestRunAllDuplicateActiveTaskReturnsConflict(t *testing.T) {
 		t.Fatalf("expected cancel status 200, got %d", wCancel.Code)
 	}
 }
+
+// TestApproveSinglePendingResolvesImplicitly covers the common path: exactly
+// one pending approval for a task → POST /approve with no body succeeds and
+// returns the approval payload.
+func TestApproveSinglePendingResolvesImplicitly(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(st, nil)
+
+	id, ch := orchestrator.RegisterApproval("task-approve-single", &types.ApprovalRequest{
+		TaskID: "task-approve-single",
+		Action: "write_file",
+	})
+	t.Cleanup(func() { orchestrator.RemoveApproval(id) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-approve-single/approve", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case got := <-ch:
+		if got != true {
+			t.Errorf("approval channel received %v, want true", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("approval channel not signaled after /approve")
+	}
+
+	var body struct {
+		Message  string                 `json:"message"`
+		Approval *types.ApprovalRequest `json:"approval"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Approval == nil || body.Approval.ID != id {
+		t.Errorf("response approval = %+v, want ID %q", body.Approval, id)
+	}
+}
+
+// TestApproveMultiPendingReturnsConflict guards the disambiguation contract:
+// when >1 approvals are pending for the same task, an implicit /approve must
+// surface 409 with the pending IDs so the client can pick one.
+func TestApproveMultiPendingReturnsConflict(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(st, nil)
+
+	taskID := "task-approve-multi"
+	id1, _ := orchestrator.RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "first"})
+	id2, _ := orchestrator.RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "second"})
+	t.Cleanup(func() {
+		orchestrator.RemoveApproval(id1)
+		orchestrator.RemoveApproval(id2)
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/approve", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 on ambiguous pending, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Error        string   `json:"error"`
+		PendingCount int      `json:"pending_count"`
+		ApprovalIDs  []string `json:"approval_ids"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.PendingCount != 2 {
+		t.Errorf("pending_count = %d, want 2", body.PendingCount)
+	}
+	gotIDs := map[string]bool{}
+	for _, id := range body.ApprovalIDs {
+		gotIDs[id] = true
+	}
+	if !gotIDs[id1] || !gotIDs[id2] {
+		t.Errorf("approval_ids = %v, want both %q and %q", body.ApprovalIDs, id1, id2)
+	}
+
+	// Both must still be pending — the conflict response must NOT have resolved either.
+	if got := orchestrator.PendingApprovalCount(taskID); got != 2 {
+		t.Errorf("pending count after 409 = %d, want 2 (neither should have been resolved)", got)
+	}
+}
+
+// TestRejectByApprovalIDResolvesSpecificEntry covers the explicit-ID path: the
+// client picks one of the IDs the 409 surfaced and rejects it; only that
+// entry's channel must receive false, and the sibling must stay pending.
+func TestRejectByApprovalIDResolvesSpecificEntry(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(st, nil)
+
+	taskID := "task-reject-explicit"
+	id1, ch1 := orchestrator.RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "first"})
+	id2, ch2 := orchestrator.RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "second"})
+	t.Cleanup(func() {
+		orchestrator.RemoveApproval(id1)
+		orchestrator.RemoveApproval(id2)
+	})
+
+	body := `{"approval_id":"` + id2 + `"}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/reject", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case got := <-ch2:
+		if got != false {
+			t.Errorf("ch2 received %v, want false", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ch2 not signaled after /reject")
+	}
+
+	// ch1 must still be blocking — only the targeted entry was resolved.
+	select {
+	case got := <-ch1:
+		t.Fatalf("ch1 unexpectedly received %v; only id2 was rejected", got)
+	case <-time.After(50 * time.Millisecond):
+		// Expected: id1 still pending.
+	}
+
+	if got := orchestrator.PendingApprovalCount(taskID); got != 1 {
+		t.Errorf("after rejecting id2, pending count = %d, want 1", got)
+	}
+}
+
+// TestApproveByApprovalIDNotFoundReturns404 guards the negative path:
+// an unknown approval_id must 404 rather than resolving the unrelated single
+// pending entry that happens to share the task.
+func TestApproveByApprovalIDNotFoundReturns404(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(st, nil)
+
+	taskID := "task-approve-unknown-id"
+	id, ch := orchestrator.RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "real"})
+	t.Cleanup(func() { orchestrator.RemoveApproval(id) })
+
+	body := `{"approval_id":"definitely-not-a-real-id"}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/approve", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown approval_id, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The real pending entry must not have been resolved as collateral damage.
+	select {
+	case got := <-ch:
+		t.Fatalf("real pending was unexpectedly resolved with %v after a 404 on a different ID", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if got := orchestrator.PendingApprovalCount(taskID); got != 1 {
+		t.Errorf("pending count after 404 = %d, want 1 (real entry untouched)", got)
+	}
+}
+

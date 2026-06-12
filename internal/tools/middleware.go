@@ -19,6 +19,13 @@ type toolMiddleware struct {
 	Tool
 }
 
+// Unwrap exposes the wrapped tool so callers (notably planner.ValidateDecision)
+// can reach through to optional interfaces the underlying tool implements
+// (e.g. planner.Validator) without making toolMiddleware aware of them.
+func (m *toolMiddleware) Unwrap() Tool {
+	return m.Tool
+}
+
 func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	timeout := toolTimeout()
 	retryPolicy := retryPolicyFor(m.Tool)

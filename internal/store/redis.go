@@ -61,7 +61,12 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 		attribute.Int("agent.task.trace_count", len(task.Trace)),
 	)
 
-	data, err := json.Marshal(task)
+	// Persist a copy of the task with Memory.Embedding stripped so the on-disk
+	// shape matches the SQL backends. The caller's task struct is left intact.
+	persistable := *task
+	persistable.Memories = memoriesForPersistence(task.Memories)
+
+	data, err := json.Marshal(&persistable)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "serialize task failed")

@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS memories (
 	// Migrate: add agent_role column to traces if it doesn't exist yet.
 	// SQLite returns an error if the column already exists; we ignore it.
 	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN agent_role TEXT NOT NULL DEFAULT ''`)
+	// Migrate: token_budget and memories_json on tasks. These were added to
+	// close two silent breaks: TokenBudget was never persisted (so the planner
+	// token budget gate was always a dead branch) and task.Memories survived
+	// only in the in-memory store (so cross-process recovery dropped the RAG
+	// context). Both ALTERs are idempotent — SQLite returns an error if the
+	// column already exists, which we ignore.
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN token_budget INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN memories_json TEXT NOT NULL DEFAULT '[]'`)
 	_, _ = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
 	// Index for time-bounded memory retrieval (QueryMemories uses ORDER BY timestamp DESC)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp DESC)`)
@@ -99,9 +107,14 @@ func (s *SQLiteStore) SaveTask(ctx context.Context, task *types.Task) error {
 		return err
 	}
 
+	memoriesJSON, err := json.Marshal(memoriesForPersistence(task.Memories))
+	if err != nil {
+		return err
+	}
+
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, final_answer)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, memories_json, final_answer)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 goal=excluded.goal,
 status=excluded.status,
@@ -111,10 +124,12 @@ workspace=excluded.workspace,
 hypothesis=excluded.hypothesis,
 unresolved_json=excluded.unresolved_json,
 tool_budget=excluded.tool_budget,
+token_budget=excluded.token_budget,
+memories_json=excluded.memories_json,
 final_answer=excluded.final_answer
 `,
 		task.ID, task.Goal, task.Status, task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.FinalAnswer,
+		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, string(memoriesJSON), task.FinalAnswer,
 	)
 	return err
 }
@@ -252,16 +267,17 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*types.Task, erro
 	span.SetAttributes(attribute.String("agent.task.id", id))
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, final_answer
+SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, memories_json, final_answer
 FROM tasks WHERE id = ?
 `, id)
 
 	var task types.Task
 	var unresolvedJSON string
+	var memoriesJSON string
 
 	err := row.Scan(
 		&task.ID, &task.Goal, &task.Status, &task.MaxSteps, &task.StepCount,
-		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.FinalAnswer,
+		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &memoriesJSON, &task.FinalAnswer,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -275,6 +291,9 @@ FROM tasks WHERE id = ?
 	span.SetAttributes(attribute.Bool("agent.store.found", true))
 
 	if err := json.Unmarshal([]byte(unresolvedJSON), &task.Unresolved); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(memoriesJSON), &task.Memories); err != nil {
 		return nil, err
 	}
 
@@ -322,7 +341,7 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Tas
 	// Build query dynamically so we only add a WHERE clause when needed.
 	// Using a fixed column list avoids SELECT * surprises on schema changes.
 	const base = `
-SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, final_answer
+SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, memories_json, final_answer
 FROM tasks`
 
 	var (
@@ -348,13 +367,17 @@ FROM tasks`
 	for rows.Next() {
 		var t types.Task
 		var unresolvedJSON string
+		var memoriesJSON string
 		if err := rows.Scan(
 			&t.ID, &t.Goal, &t.Status, &t.MaxSteps, &t.StepCount,
-			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.FinalAnswer,
+			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &memoriesJSON, &t.FinalAnswer,
 		); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(unresolvedJSON), &t.Unresolved); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(memoriesJSON), &t.Memories); err != nil {
 			return nil, err
 		}
 		tasks = append(tasks, &t)

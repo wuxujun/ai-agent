@@ -27,8 +27,19 @@ type Handler struct {
 	wg      sync.WaitGroup // tracks background run-all goroutines for graceful shutdown
 	taskSem chan struct{}  // bounded worker pool for concurrency control
 
-	activeTasks   map[string]context.CancelFunc
+	// activeTasks maps task IDs to the run-all reservation that owns the slot.
+	// Storing a pointer (not the raw CancelFunc) gives us identity equality so
+	// a goroutine's deferred cleanup only removes its OWN entry — preventing
+	// a stale defer from erasing the entry that a subsequent runAll installed.
+	activeTasks   map[string]*activeRun
 	activeTasksMu sync.Mutex
+}
+
+// activeRun is a uniquely allocated reservation token stored in
+// Handler.activeTasks. The token's pointer identity is what callers compare
+// against; the cancel function is the bgCtx cancel that cancelTask should fire.
+type activeRun struct {
+	cancel context.CancelFunc
 }
 
 type CreateTaskRequest struct {
@@ -37,6 +48,10 @@ type CreateTaskRequest struct {
 	Workspace  string `json:"workspace"`
 	MaxSteps   int    `json:"max_steps"`
 	ToolBudget int    `json:"tool_budget"`
+	// TokenBudget caps cumulative planner+executor token usage across the task.
+	// 0 (default) disables the limit; positive values stop the task once the
+	// summed TokenUsage across trace entries reaches the budget.
+	TokenBudget int `json:"token_budget"`
 }
 
 func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector) *Handler {
@@ -51,7 +66,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		engine:      eng,
 		metrics:     mc,
 		taskSem:     make(chan struct{}, maxTasks),
-		activeTasks: make(map[string]context.CancelFunc),
+		activeTasks: make(map[string]*activeRun),
 	}
 
 	r.Use(ErrorMiddleware())
@@ -89,8 +104,8 @@ func (h *Handler) Wait() {
 func (h *Handler) Shutdown(ctx context.Context) error {
 	h.activeTasksMu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(h.activeTasks))
-	for _, cancel := range h.activeTasks {
-		cancels = append(cancels, cancel)
+	for _, run := range h.activeTasks {
+		cancels = append(cancels, run.cancel)
 	}
 	h.activeTasksMu.Unlock()
 
@@ -144,12 +159,13 @@ func (h *Handler) createTask(c *gin.Context) {
 	}
 
 	task := &types.Task{
-		ID:         req.ID,
-		Goal:       req.Goal,
-		Workspace:  req.Workspace,
-		MaxSteps:   req.MaxSteps,
-		ToolBudget: req.ToolBudget,
-		Status:     types.StatusCreated,
+		ID:          req.ID,
+		Goal:        req.Goal,
+		Workspace:   req.Workspace,
+		MaxSteps:    req.MaxSteps,
+		ToolBudget:  req.ToolBudget,
+		TokenBudget: req.TokenBudget,
+		Status:      types.StatusCreated,
 	}
 
 	if err := h.store.SaveFullTask(ctx, task); err != nil {
@@ -217,24 +233,51 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
+	// Reserve the in-process slot BEFORE the DB transition so we never have to
+	// roll the DB back on collision. The slot is keyed by pointer identity
+	// (activeRun token) so a stale deferred cleanup can't clobber a slot that
+	// a subsequent runAll re-installed for the same task. We use a configurable
+	// per-task wall-clock budget here; the engine still owns its own
+	// step/tool/token budgets independently.
+	timeout := time.Duration(config.Get().Orchestrator.RunAllTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	bgCtx, bgCancel := context.WithTimeout(context.Background(), timeout)
+	run := &activeRun{cancel: bgCancel}
+
 	h.activeTasksMu.Lock()
 	if _, exists := h.activeTasks[task.ID]; exists {
 		h.activeTasksMu.Unlock()
+		bgCancel()
 		c.JSON(http.StatusConflict, gin.H{
 			"error":   "task is already running",
 			"task_id": task.ID,
 		})
 		return
 	}
+	h.activeTasks[task.ID] = run
 	h.activeTasksMu.Unlock()
 
-	// Perform atomic state transition in DB to prevent multi-instance concurrency
+	// Perform atomic DB state transition to guard against multi-instance races.
+	// The activeTasks reservation already serializes in-process callers; this
+	// check protects against a peer process holding its own reservation.
 	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusCreated, types.StatusAwaitingApproval}, types.StatusRunning)
-	if err != nil {
-		c.Error(err)
-		return
-	}
-	if !success {
+	if err != nil || !success {
+		// Reservation cleanup with compare-and-delete so we never erase a slot
+		// some other goroutine just installed (cannot happen today because the
+		// activeTasks mutex serializes inserts, but kept defensive).
+		h.activeTasksMu.Lock()
+		if cur, ok := h.activeTasks[task.ID]; ok && cur == run {
+			delete(h.activeTasks, task.ID)
+		}
+		h.activeTasksMu.Unlock()
+		bgCancel()
+
+		if err != nil {
+			c.Error(err)
+			return
+		}
 		c.JSON(http.StatusConflict, gin.H{
 			"error":   "task status has changed or is already running",
 			"task_id": task.ID,
@@ -242,23 +285,13 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
-	bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	h.activeTasksMu.Lock()
-	if _, exists := h.activeTasks[task.ID]; exists {
-		h.activeTasksMu.Unlock()
-		bgCancel()
-		// Revert status update in DB on collision
-		_, _ = h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusRunning}, task.Status)
-		c.JSON(http.StatusConflict, gin.H{
-			"error":   "task is already running",
-			"task_id": task.ID,
-		})
-		return
-	}
-	h.activeTasks[task.ID] = bgCancel
-	h.activeTasksMu.Unlock()
-
 	task.Status = types.StatusRunning
+
+	// Snapshot the fields used in the response BEFORE handing the task pointer
+	// to the goroutine. The goroutine may mutate task.Status (via engine /
+	// SetTaskFailed) concurrently with gin's JSON marshalling otherwise.
+	respID := task.ID
+	respStatus := task.Status
 
 	// Run asynchronously so the HTTP handler returns immediately (202 Accepted).
 	// The caller should poll GET /api/tasks/:id to observe completion.
@@ -267,7 +300,9 @@ func (h *Handler) runAll(c *gin.Context) {
 		defer h.wg.Done()
 		defer func() {
 			h.activeTasksMu.Lock()
-			delete(h.activeTasks, task.ID)
+			if cur, ok := h.activeTasks[task.ID]; ok && cur == run {
+				delete(h.activeTasks, task.ID)
+			}
 			h.activeTasksMu.Unlock()
 			bgCancel()
 		}()
@@ -307,8 +342,8 @@ func (h *Handler) runAll(c *gin.Context) {
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"message": "task is running in background",
-		"task_id": task.ID,
-		"status":  task.Status,
+		"task_id": respID,
+		"status":  respStatus,
 	})
 }
 
@@ -337,24 +372,81 @@ func (h *Handler) getMetrics(c *gin.Context) {
 	c.JSON(http.StatusOK, h.metrics.Snapshot())
 }
 
+// approvalAction is the optional JSON body for /approve and /reject. When
+// approval_id is empty, the unique pending approval for the task is resolved;
+// when ambiguous (>1 pending) the handler returns 409 with the pending IDs.
+type approvalAction struct {
+	ApprovalID string `json:"approval_id"`
+}
+
 func (h *Handler) approveTask(c *gin.Context) {
-	taskID := c.Param("id")
-	approval, _ := orchestrator.CurrentApproval(taskID)
-	if orchestrator.ResolveApproval(taskID, true) {
-		c.JSON(http.StatusOK, gin.H{"message": "task action approved", "approval": approval})
-	} else {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
-	}
+	h.resolveTaskApproval(c, true)
 }
 
 func (h *Handler) rejectTask(c *gin.Context) {
+	h.resolveTaskApproval(c, false)
+}
+
+func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 	taskID := c.Param("id")
-	approval, _ := orchestrator.CurrentApproval(taskID)
-	if orchestrator.ResolveApproval(taskID, false) {
-		c.JSON(http.StatusOK, gin.H{"message": "task action rejected", "approval": approval})
-	} else {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
+
+	var body approvalAction
+	// Best-effort decode: an empty/malformed body is fine — we'll fall back to
+	// the single-pending lookup. ShouldBindBodyWith would be stricter but
+	// changes semantics for callers that omit the body.
+	_ = c.ShouldBindJSON(&body)
+
+	if body.ApprovalID != "" {
+		approval, ok := orchestrator.GetApprovalByID(body.ApprovalID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
+			return
+		}
+		if !orchestrator.ResolveApprovalByID(body.ApprovalID, approved) {
+			// Lost the race with another resolver between Get and Resolve.
+			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
+			return
+		}
+		c.JSON(http.StatusOK, h.approvalResponseMessage(approved, approval))
+		return
 	}
+
+	pending := orchestrator.ListPendingApprovals(taskID)
+	switch len(pending) {
+	case 0:
+		c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
+		return
+	case 1:
+		approval := pending[0]
+		if !orchestrator.ResolveApproval(taskID, approved) {
+			// Lost the race — another resolver beat us between List and Resolve.
+			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
+			return
+		}
+		c.JSON(http.StatusOK, h.approvalResponseMessage(approved, approval))
+		return
+	default:
+		// Multiple pending — the API contract requires explicit approval_id
+		// to disambiguate. Surface the IDs so the caller can pick.
+		ids := make([]string, 0, len(pending))
+		for _, p := range pending {
+			ids = append(ids, p.ID)
+		}
+		c.JSON(http.StatusConflict, gin.H{
+			"error":          "multiple pending approvals; specify approval_id",
+			"pending_count":  len(pending),
+			"approval_ids":   ids,
+			"pending":        pending,
+		})
+		return
+	}
+}
+
+func (h *Handler) approvalResponseMessage(approved bool, approval *types.ApprovalRequest) gin.H {
+	if approved {
+		return gin.H{"message": "task action approved", "approval": approval}
+	}
+	return gin.H{"message": "task action rejected", "approval": approval}
 }
 
 // listTasks handles GET /api/tasks — supports pagination and status filtering.
@@ -431,7 +523,7 @@ func (h *Handler) cancelTask(c *gin.Context) {
 	taskID := c.Param("id")
 
 	h.activeTasksMu.Lock()
-	cancel, exists := h.activeTasks[taskID]
+	run, exists := h.activeTasks[taskID]
 	if exists {
 		delete(h.activeTasks, taskID)
 	}
@@ -471,7 +563,7 @@ func (h *Handler) cancelTask(c *gin.Context) {
 	}
 
 	// Trigger the context cancellation
-	cancel()
+	run.cancel()
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "task cancellation signal sent",

@@ -72,15 +72,27 @@ func TestStores(t *testing.T) {
 
 			// 2. Save a task
 			task := &types.Task{
-				ID:         "task-123",
-				Goal:       "Build a cool agent",
-				Status:     types.StatusCreated,
-				MaxSteps:   10,
-				StepCount:  1,
-				Workspace:  "/tmp/workspace",
-				Hypothesis: "Initial hypothesis",
-				Unresolved: []string{"subtask-a", "subtask-b"},
-				ToolBudget: 5,
+				ID:          "task-123",
+				Goal:        "Build a cool agent",
+				Status:      types.StatusCreated,
+				MaxSteps:    10,
+				StepCount:   1,
+				Workspace:   "/tmp/workspace",
+				Hypothesis:  "Initial hypothesis",
+				Unresolved:  []string{"subtask-a", "subtask-b"},
+				ToolBudget:  5,
+				TokenBudget: 1234,
+				Memories: []types.Memory{
+					{
+						ID:          "mem-rag-1",
+						TaskID:      "prev-task-a",
+						Goal:        "earlier related goal",
+						FinalAnswer: "earlier answer",
+						KeyFindings: "earlier findings",
+						Timestamp:   time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+						Embedding:   []float32{0.1, 0.2, 0.3},
+					},
+				},
 				Trace: []types.StepTrace{
 					{
 						Step:        1,
@@ -144,8 +156,34 @@ func TestStores(t *testing.T) {
 			if retrieved.ToolBudget != task.ToolBudget {
 				t.Errorf("expected ToolBudget %d, got %d", task.ToolBudget, retrieved.ToolBudget)
 			}
+			if retrieved.TokenBudget != task.TokenBudget {
+				t.Errorf("expected TokenBudget %d, got %d", task.TokenBudget, retrieved.TokenBudget)
+			}
 			if retrieved.FinalAnswer != task.FinalAnswer {
 				t.Errorf("expected FinalAnswer %q, got %q", task.FinalAnswer, retrieved.FinalAnswer)
+			}
+
+			// Memories roundtrip: persisted records keep prompt-facing fields but
+			// drop Embedding (~1.5 KB per record). MemoryStore is the in-process
+			// exception — it clones the whole struct including embeddings, since
+			// QueryMemories still consumes them on the in-memory path.
+			if len(retrieved.Memories) != len(task.Memories) {
+				t.Fatalf("expected Memories len %d, got %d", len(task.Memories), len(retrieved.Memories))
+			}
+			gotMem := retrieved.Memories[0]
+			wantMem := task.Memories[0]
+			if gotMem.ID != wantMem.ID || gotMem.Goal != wantMem.Goal || gotMem.FinalAnswer != wantMem.FinalAnswer || gotMem.KeyFindings != wantMem.KeyFindings {
+				t.Errorf("Memories[0] mismatch: got %+v, want %+v", gotMem, wantMem)
+			}
+			if name == "MemoryStore" {
+				// in-memory store preserves embeddings for QueryMemories
+				if len(gotMem.Embedding) != len(wantMem.Embedding) {
+					t.Errorf("MemoryStore: expected Embedding kept (len %d), got %d", len(wantMem.Embedding), len(gotMem.Embedding))
+				}
+			} else {
+				if gotMem.Embedding != nil {
+					t.Errorf("%s: expected Embedding stripped on persistence, got %v", name, gotMem.Embedding)
+				}
 			}
 
 			// 4. Verify step traces

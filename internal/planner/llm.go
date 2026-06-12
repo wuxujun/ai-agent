@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -118,143 +117,28 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 
 	log.Info("starting planning", "task_id", task.ID, "step_count", task.StepCount, "provider", provider, "model", model)
 
-	systemPrompt := BuildSystemPrompt()
-	userPrompt := BuildUserPrompt(task)
-
-	if provider == ProviderGemini {
-		client, err := GetGeminiClient(apiKey, baseURL)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "failed to create genai client")
-			log.Error("failed to create genai client", "task_id", task.ID, "error", err)
-			return nil, err
-		}
-
-		contents := []*genai.Content{
-			{
-				Role: "user",
-				Parts: []*genai.Part{
-					{Text: userPrompt},
-				},
-			},
-		}
-
-		config := &genai.GenerateContentConfig{
-			SystemInstruction: &genai.Content{
-				Parts: []*genai.Part{
-					{Text: systemPrompt},
-				},
-			},
-			ResponseMIMEType: "application/json",
-			ResponseSchema:   PlannerDecisionGenAISchema(),
-		}
-
-		log.Info("sending stream request to Gemini", "model", model)
-		iter := client.Models.GenerateContentStream(ctx, model, contents, config)
-		
-		var textBuf strings.Builder
-		var usage types.TokenUsage
-		
-		for resp, err := range iter {
-			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, "gemini request failed")
-				log.Error("Gemini stream failed", "task_id", task.ID, "error", err)
-				return nil, err
-			}
-			
-			if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil && len(resp.Candidates[0].Content.Parts) > 0 {
-				chunk := resp.Candidates[0].Content.Parts[0].Text
-				if chunk != "" {
-					textBuf.WriteString(chunk)
-					
-					if onChunk != nil {
-						onChunk(chunk)
-					}
-				}
-			}
-			
-			if resp.UsageMetadata != nil {
-				usage.PromptTokens = int(resp.UsageMetadata.PromptTokenCount)
-				usage.CompletionTokens = int(resp.UsageMetadata.CandidatesTokenCount)
-				usage.TotalTokens = int(resp.UsageMetadata.TotalTokenCount)
-			}
-		}
-
-		textValue := textBuf.String()
-		var decision PlanDecision
-		if err := unmarshalDecision(textValue, &decision); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "decision unmarshal failed")
-			log.Error("failed to unmarshal Gemini response", "task_id", task.ID, "raw", textValue, "error", err)
-			return nil, fmt.Errorf("invalid planner decision: %w", err)
-		}
-
-		if err := ValidateDecision(&decision); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "decision validation failed")
-			log.Error("validation failed for decision", "task_id", task.ID, "decision", decision, "error", err)
-			return nil, err
-		}
-
-		var actionNames []string
-		for _, ac := range decision.Actions {
-			actionNames = append(actionNames, ac.Action)
-		}
-		span.SetAttributes(
-			attribute.StringSlice("agent.planner.actions", actionNames),
-			attribute.Bool("agent.planner.stop", decision.Stop),
-		)
-
-		log.Info("decision ready", "task_id", task.ID, "thought", decision.ThoughtSummary, "actions", actionNames, "stop", decision.Stop, "final_answer", decision.FinalAnswer, "num_actions", len(decision.Actions))
-
-		decision.TokenUsage = usage
-		return &decision, nil
-	}
-
 	prov, err := lookupProvider(provider)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "lookup provider failed")
 		return nil, err
 	}
 
-	req, respParser, err := prov.BuildRequest(ctx, p.Client, model, apiKey, baseURL, systemPrompt, userPrompt, PlannerDecisionSchema())
+	req := PlanRequest{
+		Client:       p.Client,
+		Model:        model,
+		APIKey:       apiKey,
+		BaseURL:      baseURL,
+		SystemPrompt: BuildSystemPrompt(),
+		UserPrompt:   BuildUserPrompt(task),
+	}
+
+	log.Info("sending request to provider", "provider", provider, "base_url", baseURL)
+	textValue, usage, err := prov.Plan(ctx, req, onChunk)
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "build request failed")
-		log.Error("failed to build request", "task_id", task.ID, "error", err)
-		return nil, err
-	}
-
-	log.Info("sending request to API", "provider", provider, "base_url", baseURL)
-	resp, err := p.Client.Do(req)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "planner request failed")
-		log.Error("request failed", "task_id", task.ID, "error", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
-	log.Info("API response received", "status_code", resp.StatusCode)
-
-	if resp.StatusCode >= 300 {
-		var bodyErr bytes.Buffer
-		_, _ = bodyErr.ReadFrom(resp.Body)
-		err := fmt.Errorf("planner API returned status %d: %s", resp.StatusCode, bodyErr.String())
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "planner API error")
-		log.Error("API returned error status", "task_id", task.ID, "status_code", resp.StatusCode, "body", bodyErr.String())
-		return nil, err
-	}
-
-	// Removed raw body reading; the respParser handles streaming the body directly
-
-	textValue, usage, err := respParser(resp, onChunk)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "parse response failed")
-		log.Error("failed to parse response", "task_id", task.ID, "error", err)
+		span.SetStatus(codes.Error, "planner provider failed")
+		log.Error("provider Plan failed", "task_id", task.ID, "provider", provider, "error", err)
 		return nil, err
 	}
 
@@ -262,7 +146,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	if err := unmarshalDecision(textValue, &decision); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "decision unmarshal failed")
-		log.Error("failed to unmarshal decision JSON", "task_id", task.ID, "error", err)
+		log.Error("failed to unmarshal decision JSON", "task_id", task.ID, "raw", textValue, "error", err)
 		return nil, fmt.Errorf("invalid planner decision: %w", err)
 	}
 

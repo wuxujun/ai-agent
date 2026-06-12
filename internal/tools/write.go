@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
 )
@@ -30,6 +31,21 @@ func (t *WriteFileTool) Parameters() map[string]any {
 		"path":    map[string]any{"type": "string", "description": "Workspace-relative file path to write"},
 		"content": map[string]any{"type": "string", "description": "Content to write to the file"},
 	}
+}
+
+func (t *WriteFileTool) Validate(params map[string]any) error {
+	path, _ := params["path"].(string)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("write_file requires non-empty path")
+	}
+	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
+		return fmt.Errorf("invalid write_file path")
+	}
+	if _, ok := params["content"].(string); !ok {
+		return fmt.Errorf("write_file requires content string parameter")
+	}
+	return nil
 }
 
 func (t *WriteFileTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {

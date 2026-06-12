@@ -1,6 +1,11 @@
 package planner
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/wuxujun/ai-agent/internal/tools"
+)
 
 // TestValidateDecisionAcceptsRegisteredTools is the regression test for the bug
 // where ValidateDecision hardcoded only six actions, so registry tools that the
@@ -38,6 +43,65 @@ func TestValidateDecisionRejectsUnknownAction(t *testing.T) {
 	}
 	if err := ValidateDecision(d); err == nil {
 		t.Error("expected unknown action to be rejected, got nil error")
+	}
+}
+
+// TestValidateDecisionDispatchesPerToolValidate is the regression test for the
+// silent break where http_fetch / git_diff / web_search / use_skill all bypassed
+// planner-side validation: validate.go used to hardcode a switch over a handful
+// of tool names, so anything outside that set fell through to "no checks" and
+// only failed at execute time. Now ValidateDecision dispatches to the tool's
+// own Validate(params) via the Validator interface — registering a new tool
+// with a Validate method makes its parameter checks immediately effective.
+func TestValidateDecisionDispatchesPerToolValidate(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		params map[string]any
+	}{
+		// Before the fix: http_fetch fell through, no URL check at plan time,
+		// only failed when Execute tried to dial an empty string.
+		{"http_fetch_empty_url", "http_fetch", map[string]any{"url": ""}},
+		// Likewise for malformed scheme — empty trim still works, but a value
+		// without http(s) scheme is now rejected at plan time.
+		{"http_fetch_bad_scheme", "http_fetch", map[string]any{"url": "ftp://example.com"}},
+		// git_diff now rejects path traversal at validation time.
+		{"git_diff_traversal", "git_diff", map[string]any{"path": "../etc/passwd"}},
+		{"git_diff_absolute", "git_diff", map[string]any{"path": "/etc/passwd"}},
+		// web_search requires non-empty query.
+		{"web_search_empty_query", "web_search", map[string]any{"query": "   "}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := &PlanDecision{
+				ThoughtSummary: "t",
+				Actions:        []ActionCall{{Action: c.action, Parameters: c.params}},
+			}
+			err := ValidateDecision(d)
+			if err == nil {
+				t.Fatalf("expected per-tool Validate to reject %s with params %#v, got nil", c.action, c.params)
+			}
+			// Error message must mention the action so callers can pinpoint
+			// which tool failed validation.
+			if !strings.Contains(err.Error(), c.action) {
+				t.Errorf("error message should reference action %q, got %q", c.action, err.Error())
+			}
+		})
+	}
+}
+
+// TestEveryRegisteredToolImplementsValidator guards the invariant the
+// validate.go refactor relies on: ValidateDecision now dispatches to each
+// tool's own Validate(params) instead of a hardcoded switch, so a tool that
+// forgets to implement Validate silently falls through to "no plan-time
+// checks" — the exact regression the refactor was meant to close. Iterating
+// DefaultRegistry catches that at test time the moment a new tool is added,
+// rather than at execute time in production.
+func TestEveryRegisteredToolImplementsValidator(t *testing.T) {
+	for _, tool := range tools.DefaultRegistry.List() {
+		if _, ok := unwrapValidator(tool); !ok {
+			t.Errorf("tool %q does not implement planner.Validator — plan-time validation will silently no-op for it", tool.Name())
+		}
 	}
 }
 

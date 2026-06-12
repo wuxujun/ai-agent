@@ -30,6 +30,18 @@ func (t *ExecuteCodeTool) Parameters() map[string]any {
 	}
 }
 
+func (t *ExecuteCodeTool) Validate(params map[string]any) error {
+	command, _ := params["command"].(string)
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return fmt.Errorf("execute_code requires non-empty command")
+	}
+	if _, ok := params["args"].(string); !ok {
+		return fmt.Errorf("execute_code requires args string parameter")
+	}
+	return nil
+}
+
 func (t *ExecuteCodeTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("execute_code policy violation: %w", err)

@@ -35,6 +35,19 @@ func (t *SearchTextTool) Parameters() map[string]any {
 	}
 }
 
+func (t *SearchTextTool) Validate(params map[string]any) error {
+	query, _ := params["query"].(string)
+	if strings.TrimSpace(query) == "" {
+		return fmt.Errorf("search_text requires non-empty query")
+	}
+	if glob, ok := params["glob"].(string); ok {
+		if len(glob) > 100 {
+			return fmt.Errorf("glob too long")
+		}
+	}
+	return nil
+}
+
 func (t *SearchTextTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("search_text policy violation: %w", err)

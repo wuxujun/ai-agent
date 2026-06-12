@@ -29,6 +29,19 @@ func (t *GitDiffTool) Parameters() map[string]any {
 	}
 }
 
+func (t *GitDiffTool) Validate(params map[string]any) error {
+	path, _ := params["path"].(string)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		// Whole-workspace diff is the documented default.
+		return nil
+	}
+	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
+		return fmt.Errorf("invalid git_diff path")
+	}
+	return nil
+}
+
 func (t *GitDiffTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("git_diff policy violation: %w", err)

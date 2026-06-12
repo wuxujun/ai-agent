@@ -34,6 +34,14 @@ func (t *FindFilesTool) Parameters() map[string]any {
 	}
 }
 
+func (t *FindFilesTool) Validate(params map[string]any) error {
+	pattern, _ := params["pattern"].(string)
+	if strings.TrimSpace(pattern) == "" {
+		return fmt.Errorf("find_files requires non-empty pattern")
+	}
+	return nil
+}
+
 func (t *FindFilesTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("find_files policy violation: %w", err)

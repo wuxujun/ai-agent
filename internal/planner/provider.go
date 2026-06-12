@@ -13,33 +13,66 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
-// LLMProvider is the plugin interface for LLM backends.
-// Implement this interface to add a new provider without modifying LLMPlanner.
+// PlanRequest carries the per-call inputs every provider needs to issue one
+// planning round-trip. It deliberately omits the response schema: each provider
+// owns its own schema construction (HTTP backends use PlannerDecisionSchema;
+// the Gemini backend uses PlannerDecisionGenAISchema) so the contract does not
+// leak transport-specific types.
+type PlanRequest struct {
+	Client       *http.Client
+	Model        string
+	APIKey       string
+	BaseURL      string
+	SystemPrompt string
+	UserPrompt   string
+}
+
+// LLMProvider is the plugin interface for LLM backends. Implement Plan to add
+// a new provider; non-HTTP backends (Gemini SDK, etc.) plug in via the same
+// interface without forcing the planner to know about *http.Request.
 type LLMProvider interface {
 	// Name returns the provider identifier (used for logging and metrics).
 	Name() ProviderType
-	// BuildRequest constructs the HTTP request to send to the LLM API.
-	BuildRequest(ctx context.Context, client *http.Client, model, apiKey, baseURL, systemPrompt, userPrompt string, schema map[string]any) (*http.Request, ResponseParser, error)
+	// Plan performs a single planning round-trip and returns the decision text
+	// to unmarshal plus the token usage. onChunk is called as incremental output
+	// arrives (streaming providers); it may be nil.
+	Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error)
 }
-
-// ResponseParser extracts the text content and token usage from the raw HTTP response.
-// The onChunk callback (if non-nil) is called as incremental output arrives.
-type ResponseParser func(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error)
 
 // providerRegistry maps provider names to their implementations.
 var providerRegistry = map[ProviderType]LLMProvider{}
 
-// RegisterProvider registers a custom LLM provider.
-// Call this from an init() function or before creating the LLMPlanner.
+// RegisterProvider registers a custom LLM provider. Safe to call from init().
 func RegisterProvider(p LLMProvider) {
 	providerRegistry[p.Name()] = p
 }
 
 func init() {
-	// Register the built-in HTTP-based providers.
 	RegisterProvider(&openAIResponsesProvider{})
 	RegisterProvider(&openAIChatProvider{})
 	RegisterProvider(&ollamaProvider{})
+	RegisterProvider(&geminiProvider{})
+}
+
+// runHTTPPlan is the shared scaffolding for HTTP-shaped providers: build the
+// request, dispatch it, surface a useful error on non-2xx, then hand the
+// response body to the provider-specific parser. Centralising this keeps the
+// status-code / body-on-error handling identical across the OpenAI and Ollama
+// providers — previously it lived inside LLMPlanner.PlanNext and was easy to
+// drift.
+func runHTTPPlan(req *http.Request, client *http.Client, parser func(*http.Response, func(string)) (string, types.TokenUsage, error), onChunk func(string)) (string, types.TokenUsage, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", types.TokenUsage{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		var bodyErr bytes.Buffer
+		_, _ = bodyErr.ReadFrom(resp.Body)
+		return "", types.TokenUsage{}, fmt.Errorf("planner API returned status %d: %s", resp.StatusCode, bodyErr.String())
+	}
+	return parser(resp, onChunk)
 }
 
 // ── OpenAI Responses API ──────────────────────────────────────────────────────
@@ -48,20 +81,20 @@ type openAIResponsesProvider struct{}
 
 func (p *openAIResponsesProvider) Name() ProviderType { return ProviderOpenAIResponses }
 
-func (p *openAIResponsesProvider) BuildRequest(ctx context.Context, client *http.Client, model, apiKey, baseURL, systemPrompt, userPrompt string, schema map[string]any) (*http.Request, ResponseParser, error) {
+func (p *openAIResponsesProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
 	reqBody := map[string]any{
-		"model": model,
+		"model": req.Model,
 		"input": []map[string]any{
 			{
 				"role": "system",
 				"content": []map[string]any{
-					{"type": "input_text", "text": systemPrompt},
+					{"type": "input_text", "text": req.SystemPrompt},
 				},
 			},
 			{
 				"role": "user",
 				"content": []map[string]any{
-					{"type": "input_text", "text": userPrompt},
+					{"type": "input_text", "text": req.UserPrompt},
 				},
 			},
 		},
@@ -70,57 +103,57 @@ func (p *openAIResponsesProvider) BuildRequest(ctx context.Context, client *http
 				"type":   "json_schema",
 				"name":   "planner_decision",
 				"strict": true,
-				"schema": schema,
+				"schema": PlannerDecisionSchema(),
 			},
 		},
 	}
 	b, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, nil, err
+		return "", types.TokenUsage{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(b))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", req.BaseURL, bytes.NewReader(b))
 	if err != nil {
-		return nil, nil, err
+		return "", types.TokenUsage{}, err
 	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	if req.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	parser := func(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error) {
-		var m map[string]any
-		var usage types.TokenUsage
-		
-		var rawBody bytes.Buffer
-		if _, err := rawBody.ReadFrom(resp.Body); err != nil {
-			return "", usage, err
-		}
-		raw := rawBody.Bytes()
+	return runHTTPPlan(httpReq, req.Client, parseOpenAIResponses, onChunk)
+}
 
-		if err := json.Unmarshal(raw, &m); err != nil {
-			return "", usage, err
-		}
-		
-		if u, ok := m["usage"].(map[string]any); ok {
-			if p, ok := u["prompt_tokens"].(float64); ok {
-				usage.PromptTokens = int(p)
-			}
-			if c, ok := u["completion_tokens"].(float64); ok {
-				usage.CompletionTokens = int(c)
-			}
-			if t, ok := u["total_tokens"].(float64); ok {
-				usage.TotalTokens = int(t)
-			}
-		}
+func parseOpenAIResponses(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error) {
+	var m map[string]any
+	var usage types.TokenUsage
 
-		txt, err := extractStructuredText(m)
-		// No streaming support for responses API yet, but we can emit the whole chunk
-		if onChunk != nil && txt != "" {
-			onChunk(txt)
-		}
-		return txt, usage, err
+	var rawBody bytes.Buffer
+	if _, err := rawBody.ReadFrom(resp.Body); err != nil {
+		return "", usage, err
 	}
-	return req, parser, nil
+	raw := rawBody.Bytes()
+
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return "", usage, err
+	}
+
+	if u, ok := m["usage"].(map[string]any); ok {
+		if p, ok := u["prompt_tokens"].(float64); ok {
+			usage.PromptTokens = int(p)
+		}
+		if c, ok := u["completion_tokens"].(float64); ok {
+			usage.CompletionTokens = int(c)
+		}
+		if t, ok := u["total_tokens"].(float64); ok {
+			usage.TotalTokens = int(t)
+		}
+	}
+
+	txt, err := extractStructuredText(m)
+	if onChunk != nil && txt != "" {
+		onChunk(txt)
+	}
+	return txt, usage, err
 }
 
 // ── OpenAI Chat Completions API ───────────────────────────────────────────────
@@ -129,19 +162,19 @@ type openAIChatProvider struct{}
 
 func (p *openAIChatProvider) Name() ProviderType { return ProviderOpenAI }
 
-func (p *openAIChatProvider) BuildRequest(ctx context.Context, client *http.Client, model, apiKey, baseURL, systemPrompt, userPrompt string, schema map[string]any) (*http.Request, ResponseParser, error) {
+func (p *openAIChatProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
 	reqBody := map[string]any{
-		"model": model,
+		"model": req.Model,
 		"messages": []map[string]any{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userPrompt},
+			{"role": "system", "content": req.SystemPrompt},
+			{"role": "user", "content": req.UserPrompt},
 		},
 		"response_format": map[string]any{
 			"type": "json_schema",
 			"json_schema": map[string]any{
 				"name":   "planner_decision",
 				"strict": true,
-				"schema": schema,
+				"schema": PlannerDecisionSchema(),
 			},
 		},
 		"stream": true,
@@ -151,69 +184,70 @@ func (p *openAIChatProvider) BuildRequest(ctx context.Context, client *http.Clie
 	}
 	b, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, nil, err
+		return "", types.TokenUsage{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(b))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", req.BaseURL, bytes.NewReader(b))
 	if err != nil {
-		return nil, nil, err
+		return "", types.TokenUsage{}, err
 	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	if req.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	parser := func(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error) {
-		var textBuf bytes.Buffer
-		var usage types.TokenUsage
-		
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				break
-			}
-			
-			type chatResponse struct {
-				Choices []struct {
-					Delta struct {
-						Content string `json:"content"`
-					} `json:"delta"`
-				} `json:"choices"`
-				Usage *struct {
-					PromptTokens     int `json:"prompt_tokens"`
-					CompletionTokens int `json:"completion_tokens"`
-					TotalTokens      int `json:"total_tokens"`
-				} `json:"usage"`
-			}
-			var r chatResponse
-			if err := json.Unmarshal([]byte(data), &r); err != nil {
-				continue
-			}
-			
-			if len(r.Choices) > 0 && r.Choices[0].Delta.Content != "" {
-				chunk := r.Choices[0].Delta.Content
-				textBuf.WriteString(chunk)
-				if onChunk != nil {
-					onChunk(chunk)
-				}
-			}
-			if r.Usage != nil {
-				usage.PromptTokens = r.Usage.PromptTokens
-				usage.CompletionTokens = r.Usage.CompletionTokens
-				usage.TotalTokens = r.Usage.TotalTokens
+	return runHTTPPlan(httpReq, req.Client, parseOpenAIChat, onChunk)
+}
+
+func parseOpenAIChat(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error) {
+	var textBuf bytes.Buffer
+	var usage types.TokenUsage
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		type chatResponse struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		var r chatResponse
+		if err := json.Unmarshal([]byte(data), &r); err != nil {
+			continue
+		}
+
+		if len(r.Choices) > 0 && r.Choices[0].Delta.Content != "" {
+			chunk := r.Choices[0].Delta.Content
+			textBuf.WriteString(chunk)
+			if onChunk != nil {
+				onChunk(chunk)
 			}
 		}
-		
-		if textBuf.Len() == 0 {
-			return "", usage, errors.New("empty choices in OpenAI response")
+		if r.Usage != nil {
+			usage.PromptTokens = r.Usage.PromptTokens
+			usage.CompletionTokens = r.Usage.CompletionTokens
+			usage.TotalTokens = r.Usage.TotalTokens
 		}
-		return textBuf.String(), usage, scanner.Err()
 	}
-	return req, parser, nil
+
+	if textBuf.Len() == 0 {
+		return "", usage, errors.New("empty choices in OpenAI response")
+	}
+	return textBuf.String(), usage, scanner.Err()
 }
 
 // ── Ollama API ────────────────────────────────────────────────────────────────
@@ -222,68 +256,69 @@ type ollamaProvider struct{}
 
 func (p *ollamaProvider) Name() ProviderType { return ProviderOllama }
 
-func (p *ollamaProvider) BuildRequest(ctx context.Context, client *http.Client, model, apiKey, baseURL, systemPrompt, userPrompt string, schema map[string]any) (*http.Request, ResponseParser, error) {
+func (p *ollamaProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
 	reqBody := map[string]any{
-		"model": model,
+		"model": req.Model,
 		"messages": []map[string]any{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userPrompt},
+			{"role": "system", "content": req.SystemPrompt},
+			{"role": "user", "content": req.UserPrompt},
 		},
 		"stream": true,
-		"format": schema,
+		"format": PlannerDecisionSchema(),
 	}
 	b, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, nil, err
+		return "", types.TokenUsage{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(b))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", req.BaseURL, bytes.NewReader(b))
 	if err != nil {
-		return nil, nil, err
+		return "", types.TokenUsage{}, err
 	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	if req.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	parser := func(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error) {
-		var textBuf bytes.Buffer
-		var usage types.TokenUsage
-		
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			
-			type ollamaResp struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-				PromptEvalCount int  `json:"prompt_eval_count"`
-				EvalCount       int  `json:"eval_count"`
-				Done            bool `json:"done"`
-			}
-			var r ollamaResp
-			if err := json.Unmarshal(line, &r); err != nil {
-				continue
-			}
-			
-			if r.Message.Content != "" {
-				textBuf.WriteString(r.Message.Content)
-				if onChunk != nil {
-					onChunk(r.Message.Content)
-				}
-			}
-			if r.Done {
-				usage.PromptTokens = r.PromptEvalCount
-				usage.CompletionTokens = r.EvalCount
-				usage.TotalTokens = r.PromptEvalCount + r.EvalCount
+	return runHTTPPlan(httpReq, req.Client, parseOllama, onChunk)
+}
+
+func parseOllama(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error) {
+	var textBuf bytes.Buffer
+	var usage types.TokenUsage
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		type ollamaResp struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			PromptEvalCount int  `json:"prompt_eval_count"`
+			EvalCount       int  `json:"eval_count"`
+			Done            bool `json:"done"`
+		}
+		var r ollamaResp
+		if err := json.Unmarshal(line, &r); err != nil {
+			continue
+		}
+
+		if r.Message.Content != "" {
+			textBuf.WriteString(r.Message.Content)
+			if onChunk != nil {
+				onChunk(r.Message.Content)
 			}
 		}
-		return textBuf.String(), usage, scanner.Err()
+		if r.Done {
+			usage.PromptTokens = r.PromptEvalCount
+			usage.CompletionTokens = r.EvalCount
+			usage.TotalTokens = r.PromptEvalCount + r.EvalCount
+		}
 	}
-	return req, parser, nil
+	return textBuf.String(), usage, scanner.Err()
 }
 
 // lookupProvider returns a registered provider by name, or an error.

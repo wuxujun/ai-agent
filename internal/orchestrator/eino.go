@@ -133,6 +133,30 @@ func (e *Engine) compileEinoStepChain(ctx context.Context) (compose.Runnable[*ei
 
 func (e *Engine) checkBudget(ctx context.Context, state *einoStepState) (*einoStepState, error) {
 	task := state.Task
+
+	// Token budget gate: sum TokenUsage across the trace and stop if the cap is
+	// hit. TokenBudget <= 0 means "unlimited" (matches the field's zero value
+	// and existing behavior for clients that don't set it). Mirrors the legacy
+	// orchestrator's gate at engine.go runLegacyNext.
+	if task.TokenBudget > 0 {
+		totalTokens := 0
+		for _, tr := range task.Trace {
+			totalTokens += tr.TokenUsage.TotalTokens
+		}
+		if totalTokens >= task.TokenBudget {
+			olog.Info("task reached token budget", "task_id", task.ID, "tokens", totalTokens, "token_budget", task.TokenBudget)
+			finalAnswer := task.FinalAnswer
+			if finalAnswer == "" {
+				finalAnswer = "stopped by token budget"
+			}
+			_ = SetTaskCompleted(task, finalAnswer)
+			if e.Metrics != nil {
+				e.Metrics.IncCompleted()
+			}
+			return state, nil
+		}
+	}
+
 	if task.StepCount < task.MaxSteps && task.ToolBudget > 0 {
 		return state, nil
 	}
@@ -229,6 +253,13 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 
 	task.StepCount += len(traces)
 	task.ToolBudget -= len(traces)
+	// Propagate the planner's TokenUsage onto each trace entry so the token
+	// budget gate (checkBudget) can see cumulative usage on subsequent steps.
+	// Legacy mode does the same at engine.go runLegacyNext; without this,
+	// task.Trace entries always carry zero TokenUsage and the gate is dead.
+	for i := range traces {
+		traces[i].TokenUsage = decision.TokenUsage
+	}
 	task.Trace = append(task.Trace, traces...)
 	_ = SetTaskRunning(task)
 

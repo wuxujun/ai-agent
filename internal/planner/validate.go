@@ -8,6 +8,20 @@ import (
 	"github.com/wuxujun/ai-agent/internal/tools"
 )
 
+// Validator is the optional contract a tool can implement to participate in
+// planner-side parameter validation. ValidateDecision dispatches to Validate
+// whenever the underlying tool implements it; tools without Validate are
+// passed through (the tool's own Execute remains the authoritative gate).
+//
+// Implementing this interface keeps validation in lock-step with the tool
+// registry: registering a new tool with a Validate method makes its parameter
+// checks immediately effective, no edits to validate.go required. This closes
+// the previous gap where git_diff / http_fetch / web_search / use_skill all
+// fell through validate.go's hardcoded switch and only failed at execute time.
+type Validator interface {
+	Validate(params map[string]any) error
+}
+
 func ValidateDecision(d *PlanDecision) error {
 	if len(d.Actions) == 0 {
 		return errors.New("decision must contain at least one action")
@@ -17,105 +31,57 @@ func ValidateDecision(d *PlanDecision) error {
 		// "none" is the sentinel stop action and is never a registered tool.
 		// Every other action must correspond to a tool in the registry, so the
 		// set of valid actions stays in lock-step with PlannerDecisionSchema
-		// (both derive from tools.DefaultRegistry). Hardcoding the list here
-		// previously let the schema offer tools (git_diff/http_fetch/web_search)
-		// that the validator then rejected, failing the whole task.
-		if ac.Action != "none" {
-			if _, ok := tools.Get(ac.Action); !ok {
-				return fmt.Errorf("invalid action: %s", ac.Action)
+		// (both derive from tools.DefaultRegistry).
+		if ac.Action == "none" {
+			if !d.Stop {
+				return errors.New("action=none requires stop=true")
 			}
+			if strings.TrimSpace(d.FinalAnswer) == "" {
+				return errors.New("stop decision requires final_answer")
+			}
+			continue
 		}
 
-		if d.Stop && ac.Action != "none" {
+		if d.Stop {
 			return errors.New("stop=true requires action=none")
 		}
-		if !d.Stop && ac.Action == "none" {
-			return errors.New("action=none requires stop=true")
+
+		tool, ok := tools.Get(ac.Action)
+		if !ok {
+			return fmt.Errorf("invalid action: %s", ac.Action)
 		}
 
-		var err error
-		switch ac.Action {
-		case "find_files":
-			err = validateFindFiles(ac.Parameters)
-		case "search_text":
-			err = validateSearchText(ac.Parameters)
-		case "read_file":
-			err = validateReadFile(ac.Parameters)
-		case "write_file":
-			err = validateWriteFile(ac.Parameters)
-		case "execute_code":
-			err = validateExecuteCode(ac.Parameters)
-		case "none":
-			if strings.TrimSpace(d.FinalAnswer) == "" {
-				err = errors.New("stop decision requires final_answer")
+		// Tools that implement the optional Validator interface get their
+		// per-tool checks invoked here. Tools that don't are passed through
+		// (Execute remains the final gate). The middleware wrapper does not
+		// satisfy Validator itself, so we have to unwrap it to the underlying
+		// tool — registry.Register wraps every tool in toolMiddleware.
+		if v, ok := unwrapValidator(tool); ok {
+			if err := v.Validate(ac.Parameters); err != nil {
+				return fmt.Errorf("validation failed for action %s: %w", ac.Action, err)
 			}
 		}
+	}
+	return nil
+}
 
-		if err != nil {
-			return fmt.Errorf("validation failed for action %s: %w", ac.Action, err)
+// unwrapValidator inspects tool for a Validator. Because the default registry
+// wraps every tool in an internal middleware, we accept either:
+//  1. tool itself implementing Validator (rare — bare tool registered manually)
+//  2. tool exposing an Unwrap() tools.Tool whose result implements Validator
+//     (the standard registry path)
+//
+// The Unwrap escape hatch is added to tools.toolMiddleware in the same change
+// to keep the wrapper transparent for validation.
+func unwrapValidator(tool tools.Tool) (Validator, bool) {
+	if v, ok := tool.(Validator); ok {
+		return v, true
+	}
+	type unwrapper interface{ Unwrap() tools.Tool }
+	if u, ok := tool.(unwrapper); ok {
+		if v, ok := u.Unwrap().(Validator); ok {
+			return v, true
 		}
 	}
-	return nil
-}
-
-func validateFindFiles(params map[string]any) error {
-	pattern, _ := params["pattern"].(string)
-	if strings.TrimSpace(pattern) == "" {
-		return errors.New("find_files requires non-empty pattern")
-	}
-	return nil
-}
-
-func validateSearchText(params map[string]any) error {
-	query, _ := params["query"].(string)
-	if strings.TrimSpace(query) == "" {
-		return errors.New("search_text requires non-empty query")
-	}
-	if glob, ok := params["glob"].(string); ok {
-		if len(glob) > 100 {
-			return errors.New("glob too long")
-		}
-	}
-	return nil
-}
-
-func validateReadFile(params map[string]any) error {
-	path, _ := params["path"].(string)
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return errors.New("read_file requires non-empty path")
-	}
-	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
-		return errors.New("invalid read_file path")
-	}
-	return nil
-}
-
-func validateWriteFile(params map[string]any) error {
-	path, _ := params["path"].(string)
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return errors.New("write_file requires non-empty path")
-	}
-	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
-		return errors.New("invalid write_file path")
-	}
-	// content is required to be present as a string type
-	if _, ok := params["content"].(string); !ok {
-		return errors.New("write_file requires content string parameter")
-	}
-	return nil
-}
-
-func validateExecuteCode(params map[string]any) error {
-	command, _ := params["command"].(string)
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return errors.New("execute_code requires non-empty command")
-	}
-	// args is required to be present as a string type
-	if _, ok := params["args"].(string); !ok {
-		return errors.New("execute_code requires args string parameter")
-	}
-	return nil
+	return nil, false
 }
