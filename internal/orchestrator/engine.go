@@ -291,7 +291,15 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 
 	task.Status = types.StatusAwaitingApproval
 	if e.Store != nil {
-		if err := e.Store.SaveFullTask(ctx, task); err != nil {
+		// Persistence must survive caller ctx expiry: the caller's ctx carries
+		// the run-all wall-clock budget and the user's approval-wait window,
+		// neither of which should be allowed to abort the awaiting_approval
+		// write. Without this, a task could observe ctx.Done() below and leave
+		// the DB row in a pre-suspend state, looking lost across restarts.
+		saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := e.Store.SaveFullTask(saveCtx, task)
+		cancel()
+		if err != nil {
 			return err
 		}
 	}
@@ -309,7 +317,9 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		}
 		task.Status = types.StatusRunning
 		if e.Store != nil {
-			_ = e.Store.SaveFullTask(ctx, task)
+			saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = e.Store.SaveFullTask(saveCtx, task)
+			cancel()
 		}
 		if e.EventCallback != nil {
 			e.EventCallback(task.ID, types.StatusRunning)
