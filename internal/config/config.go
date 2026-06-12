@@ -16,6 +16,14 @@ type Config struct {
 	Store struct {
 		Type string `mapstructure:"type"`
 		DSN  string `mapstructure:"dsn"`
+		// MemoryCandidateLimit caps how many recent memory rows each Store
+		// backend loads from disk before in-process cosine/keyword ranking.
+		// Without a cap, large memory tables would scan the full table on
+		// every RAG prefetch; with the default of 200, only the most recent
+		// 200 rows are ever considered. Raise this if recall on older memories
+		// matters more than scan latency. 0 falls back to the package default
+		// (200).
+		MemoryCandidateLimit int `mapstructure:"memory_candidate_limit"`
 	} `mapstructure:"store"`
 
 	Orchestrator struct {
@@ -86,6 +94,7 @@ func setupViper() {
 	// Default values
 	viper.SetDefault("store.type", "sqlite")
 	viper.SetDefault("store.dsn", "data/agent.db")
+	viper.SetDefault("store.memory_candidate_limit", 200)
 	viper.SetDefault("orchestrator.mode", "eino")
 	viper.SetDefault("orchestrator.max_concurrent_tasks", 10)
 	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
@@ -259,6 +268,7 @@ func diffConfigs(old, new *Config) []string {
 	// Store (DSN may contain a password)
 	addIf("store.type", old.Store.Type, new.Store.Type)
 	addIf("store.dsn", old.Store.DSN, new.Store.DSN)
+	addIfInt("store.memory_candidate_limit", old.Store.MemoryCandidateLimit, new.Store.MemoryCandidateLimit)
 
 	// Orchestrator
 	addIf("orchestrator.mode", old.Orchestrator.Mode, new.Orchestrator.Mode)

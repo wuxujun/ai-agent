@@ -378,11 +378,17 @@ embedding_json=EXCLUDED.embedding_json
 }
 
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match in Postgres.
+// Like the SQLite backend, only the most recent store.memory_candidate_limit
+// rows (default 200) are loaded for in-process ranking; logs a warning when the
+// cap is hit so operators can raise the limit if older memories matter.
 func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	candidateLimit := resolveMemoryCandidateLimit()
 	rows, err := p.db.QueryContext(ctx, `
 SELECT id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
 FROM memories
-`)
+ORDER BY timestamp DESC
+LIMIT $1
+`, candidateLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -424,6 +430,13 @@ FROM memories
 			}
 		}
 		ranked = append(ranked, rankResult{mem: &mem, score: score})
+	}
+
+	if len(ranked) >= candidateLimit {
+		log.Warn("memory candidate scan hit store.memory_candidate_limit; older rows excluded from ranking",
+			"candidate_limit", candidateLimit,
+			"backend", "postgres",
+		)
 	}
 
 	sort.Slice(ranked, func(i, j int) bool {

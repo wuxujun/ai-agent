@@ -1,6 +1,25 @@
 package store
 
-import "github.com/wuxujun/ai-agent/internal/types"
+import (
+	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/types"
+)
+
+// defaultMemoryCandidateLimit is the cap applied to candidate memory rows when
+// store.memory_candidate_limit is 0 or negative in config. Mirrors the original
+// hardcoded SQLite limit so existing deployments are unchanged.
+const defaultMemoryCandidateLimit = 200
+
+// resolveMemoryCandidateLimit returns the effective candidate cap for
+// QueryMemories backends. Reads the live config at call time (do not cache)
+// so a hot-reload of store.memory_candidate_limit takes effect on the next
+// RAG prefetch without a restart.
+func resolveMemoryCandidateLimit() int {
+	if cfg := config.Get(); cfg != nil && cfg.Store.MemoryCandidateLimit > 0 {
+		return cfg.Store.MemoryCandidateLimit
+	}
+	return defaultMemoryCandidateLimit
+}
 
 // memoriesForPersistence returns a copy of mems with Embedding cleared on each
 // element. The embedding can be ~1.5 KB per memory (128–1536 float32 values)

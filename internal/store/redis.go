@@ -204,7 +204,12 @@ func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 }
 
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match in Redis.
+// Caps the SCAN at store.memory_candidate_limit keys (default 200) so the
+// in-process ranking loop does not blow up memory on a large memory key space.
+// Logs a warning when the cap is hit so operators can raise it when older
+// memories matter for recall.
 func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	candidateLimit := resolveMemoryCandidateLimit()
 	var cursor uint64
 	var keys []string
 	for {
@@ -215,9 +220,12 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 			return nil, err
 		}
 		keys = append(keys, batch...)
-		if cursor == 0 || len(keys) >= 500 {
+		if cursor == 0 || len(keys) >= candidateLimit {
 			break
 		}
+	}
+	if len(keys) > candidateLimit {
+		keys = keys[:candidateLimit]
 	}
 
 	type rankResult struct {
@@ -255,6 +263,13 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 			}
 		}
 		ranked = append(ranked, rankResult{mem: &mem, score: score})
+	}
+
+	if len(ranked) >= candidateLimit {
+		log.Warn("memory candidate scan hit store.memory_candidate_limit; older rows excluded from ranking",
+			"candidate_limit", candidateLimit,
+			"backend", "redis",
+		)
 	}
 
 	sort.Slice(ranked, func(i, j int) bool {

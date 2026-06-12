@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/viper"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -411,5 +413,101 @@ func TestAppendTraces(t *testing.T) {
 	}
 	if got.Trace[0].Action != "find_files" {
 		t.Errorf("scenario C: expected 'find_files', got %q", got.Trace[0].Action)
+	}
+}
+
+// TestQueryMemoriesRespectsCandidateLimit is the regression test for the silent
+// truncation in SQLiteStore.QueryMemories. Before exposing
+// store.memory_candidate_limit, the constant 200 cap meant that once the
+// memories table grew beyond 200 rows, the oldest rows were silently excluded
+// from cosine/keyword ranking — an older perfect-match memory could be lost
+// behind 200 recent unrelated memories. The fix reads the live config so
+// operators can raise the cap when recall matters more than scan latency.
+//
+// Scenario:
+//  1. Insert 10 memories at strictly increasing timestamps; the OLDEST memory
+//     (mem-0) is the perfect cosine match for our query.
+//  2. With candidate_limit=5, the oldest 5 (including mem-0) are excluded by
+//     the ORDER BY timestamp DESC LIMIT 5 — ranking returns a *recent*
+//     non-match.
+//  3. Raise candidate_limit to 100 (live config reload), repeat the query —
+//     mem-0 must now win, proving the cap is config-driven and hot-reloadable.
+func TestQueryMemoriesRespectsCandidateLimit(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "query_memories_limit_test")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	s, err := store.NewSQLiteStore(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// mem-0 is the OLDEST and the perfect cosine match for the query embedding.
+	// mem-1..mem-9 are progressively newer but orthogonal to the query.
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		emb := []float32{0, 1, 0}
+		if i == 0 {
+			emb = []float32{1, 0, 0}
+		}
+		if err := s.SaveMemory(ctx, &types.Memory{
+			ID:          "mem-" + string(rune('0'+i)),
+			TaskID:      "task",
+			Goal:        "goal-" + string(rune('0'+i)),
+			FinalAnswer: "ans",
+			KeyFindings: "find",
+			Timestamp:   base.Add(time.Duration(i) * time.Minute),
+			Embedding:   emb,
+		}); err != nil {
+			t.Fatalf("save mem-%d: %v", i, err)
+		}
+	}
+
+	queryEmb := []float32{1, 0, 0}
+
+	// Stash the original viper value so test pollution can't leak.
+	originalLimit := viper.GetInt("store.memory_candidate_limit")
+	t.Cleanup(func() {
+		viper.Set("store.memory_candidate_limit", originalLimit)
+		_, _, _ = config.Reload()
+	})
+
+	// Phase 1: cap=5 excludes mem-0 from the candidate set entirely.
+	viper.Set("store.memory_candidate_limit", 5)
+	if _, _, err := config.Reload(); err != nil {
+		t.Fatalf("config reload phase1: %v", err)
+	}
+	got, err := s.QueryMemories(ctx, "", queryEmb, 1)
+	if err != nil {
+		t.Fatalf("QueryMemories phase1: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("phase1: expected 1 result, got %d", len(got))
+	}
+	if got[0].ID == "mem-0" {
+		t.Errorf("phase1: with candidate_limit=5, mem-0 should be excluded by the ORDER BY timestamp DESC cap, but it ranked first — truncation cap not effective")
+	}
+
+	// Phase 2: cap=100 lets mem-0 back into the candidate set; cosine ranking
+	// must surface it as the top result.
+	viper.Set("store.memory_candidate_limit", 100)
+	if _, _, err := config.Reload(); err != nil {
+		t.Fatalf("config reload phase2: %v", err)
+	}
+	got, err = s.QueryMemories(ctx, "", queryEmb, 1)
+	if err != nil {
+		t.Fatalf("QueryMemories phase2: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "mem-0" {
+		ids := make([]string, 0, len(got))
+		for _, m := range got {
+			ids = append(ids, m.ID)
+		}
+		t.Errorf("phase2: with candidate_limit=100, expected mem-0 (perfect cosine match) to win, got %v — config reload of memory_candidate_limit may not be hot-reloadable", ids)
 	}
 }

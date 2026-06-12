@@ -426,16 +426,18 @@ embedding_json=excluded.embedding_json
 
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match.
 // To avoid full-table scans as the memories table grows, only the most recent
-// maxCandidates rows are loaded into memory for in-process cosine ranking.
-const queryCandidateLimit = 200
-
+// store.memory_candidate_limit rows (default 200) are loaded into memory for
+// in-process cosine ranking. When the candidate set fills exactly to that cap,
+// older memories are silently excluded from ranking — we log a warning so
+// operators can raise the limit if recall on older memories matters.
 func (s *SQLiteStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	candidateLimit := resolveMemoryCandidateLimit()
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
 FROM memories
 ORDER BY timestamp DESC
 LIMIT ?
-`, queryCandidateLimit)
+`, candidateLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -477,6 +479,13 @@ LIMIT ?
 			}
 		}
 		ranked = append(ranked, rankResult{mem: &mem, score: score})
+	}
+
+	if len(ranked) >= candidateLimit {
+		log.Warn("memory candidate scan hit store.memory_candidate_limit; older rows excluded from ranking",
+			"candidate_limit", candidateLimit,
+			"backend", "sqlite",
+		)
 	}
 
 	sort.Slice(ranked, func(i, j int) bool {
