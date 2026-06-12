@@ -23,27 +23,55 @@ type StepEvent struct {
 	Approval *types.ApprovalRequest `json:"approval,omitempty"`
 }
 
+// stickyTerminalTTL bounds how long the EventBus replays a task's terminal
+// event to late subscribers. The 15s store-poll backstop in streamTask already
+// catches anything older than this; the sticky cache exists purely to close the
+// short window between Publish() and a subscriber's Subscribe() landing.
+const stickyTerminalTTL = 5 * time.Minute
+
+type stickyEvent struct {
+	event     StepEvent
+	expiresAt time.Time
+}
+
 // EventBus manages per-task SSE subscriber channels.
 type EventBus struct {
-	mu   sync.RWMutex
-	subs map[string][]chan StepEvent
+	mu      sync.RWMutex
+	subs    map[string][]chan StepEvent
+	sticky  map[string]stickyEvent
+	nowFunc func() time.Time
 }
 
 var globalEventBus = &EventBus{
-	subs: make(map[string][]chan StepEvent),
+	subs:    make(map[string][]chan StepEvent),
+	sticky:  make(map[string]stickyEvent),
+	nowFunc: time.Now,
 }
 
 // GetBus returns the singleton EventBus.
 func GetBus() *EventBus { return globalEventBus }
 
 // Subscribe registers a new channel for events on taskID.
-// The caller must call Unsubscribe when done.
-func (b *EventBus) Subscribe(taskID string) chan StepEvent {
+// The caller must call Unsubscribe when done. If a terminal event for taskID
+// was published within the sticky TTL, it is returned so the caller can replay
+// it before entering the live-event loop — this closes the race window between
+// Publish() and a late Subscribe() that would otherwise wait for the 15s
+// store-poll backstop in streamTask.
+func (b *EventBus) Subscribe(taskID string) (chan StepEvent, *StepEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan StepEvent, 32)
 	b.subs[taskID] = append(b.subs[taskID], ch)
-	return ch
+	var sticky *StepEvent
+	if s, ok := b.sticky[taskID]; ok {
+		if b.nowFunc().Before(s.expiresAt) {
+			ev := s.event
+			sticky = &ev
+		} else {
+			delete(b.sticky, taskID)
+		}
+	}
+	return ch, sticky
 }
 
 // Unsubscribe removes and closes a subscriber channel.
@@ -63,18 +91,27 @@ func (b *EventBus) Unsubscribe(taskID string, ch chan StepEvent) {
 	}
 }
 
-// Publish sends an event to all subscribers of taskID.
+// Publish sends an event to all subscribers of taskID. Terminal events
+// (Completed/Failed) are cached for stickyTerminalTTL so subscribers arriving
+// just after the publish can still receive them.
 func (b *EventBus) Publish(taskID string, event StepEvent) {
-	b.mu.RLock()
+	b.mu.Lock()
+	if event.Status == types.StatusCompleted || event.Status == types.StatusFailed {
+		b.sticky[taskID] = stickyEvent{
+			event:     event,
+			expiresAt: b.nowFunc().Add(stickyTerminalTTL),
+		}
+	}
 	chans := make([]chan StepEvent, len(b.subs[taskID]))
 	copy(chans, b.subs[taskID])
-	b.mu.RUnlock()
+	b.mu.Unlock()
 
 	for _, ch := range chans {
 		select {
 		case ch <- event:
 		default:
-			// Slow consumer: drop event rather than block
+			// Slow consumer: drop event rather than block. Terminal events are
+			// recoverable via the sticky cache above and the store-poll backstop.
 		}
 	}
 }
@@ -110,13 +147,22 @@ func (h *Handler) streamTask(c *gin.Context) {
 
 	// Subscribe to live events
 	bus := GetBus()
-	ch := bus.Subscribe(taskID)
+	ch, sticky := bus.Subscribe(taskID)
 	defer bus.Unsubscribe(taskID, ch)
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
 	c.Header("Connection", "keep-alive")
+
+	// Replay a sticky terminal event if one was Publish()'d in the narrow
+	// window between the GetTask check above and Subscribe landing. Without
+	// this, a late subscriber would wait for the 15s poll backstop below.
+	if sticky != nil {
+		writeSSEEvent(c, *sticky)
+		c.Writer.Flush()
+		return
+	}
 
 	clientGone := c.Request.Context().Done()
 
