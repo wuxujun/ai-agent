@@ -120,6 +120,16 @@ func (h *Handler) streamTask(c *gin.Context) {
 
 	clientGone := c.Request.Context().Done()
 
+	// Reliability backstop: Publish drops events for slow consumers (see
+	// Publish), so a terminal event can be lost if this subscriber's buffer is
+	// momentarily full. Poll the store periodically and, once the task reaches a
+	// terminal state, emit an authoritative terminal event and return — even if
+	// the live event was dropped. The store is the source of truth. A
+	// non-terminal poll tick doubles as a keep-alive so proxies don't drop idle
+	// connections.
+	pollTicker := time.NewTicker(15 * time.Second)
+	defer pollTicker.Stop()
+
 	for {
 		select {
 		case <-clientGone:
@@ -135,8 +145,28 @@ func (h *Handler) streamTask(c *gin.Context) {
 			if event.Status == types.StatusCompleted || event.Status == types.StatusFailed {
 				return
 			}
-		case <-time.After(25 * time.Second):
-			// Send a keep-alive comment so the connection is not dropped by proxies
+		case <-pollTicker.C:
+			// Backstop check: has the task reached a terminal state in the store?
+			pollCtx, pollCancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+			latest, err := h.store.GetTask(pollCtx, taskID)
+			pollCancel()
+			if err != nil {
+				// Transient store error: keep the stream alive and retry next tick.
+				fmt.Fprintf(c.Writer, ": keep-alive\n\n")
+				c.Writer.Flush()
+				continue
+			}
+			if latest.Status == types.StatusCompleted || latest.Status == types.StatusFailed {
+				writeSSEEvent(c, StepEvent{
+					TaskID: taskID,
+					Status: latest.Status,
+					Final:  latest.FinalAnswer,
+				})
+				c.Writer.Flush()
+				return
+			}
+			// Non-terminal: send a keep-alive comment so proxies keep the
+			// connection open.
 			fmt.Fprintf(c.Writer, ": keep-alive\n\n")
 			c.Writer.Flush()
 		}

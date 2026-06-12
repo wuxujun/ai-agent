@@ -111,7 +111,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		}
 
 		// Adaptive Step Depth expansion: if confidence is low, and we have budget/steps left, request Planner to generate more steps
-		if conf == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && task.StepCount < task.MaxSteps {
+		if conf == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && task.StepCount < task.MaxSteps && !tokenBudgetExhausted(task) {
 			depthIterations++
 			log.Info("Confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion", "iteration", depthIterations, "max_iterations", maxDepthIterations)
 
@@ -219,11 +219,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 
 	for len(currentSteps) > 0 {
 		// Budget and step-count gate
-		totalTokens := 0
-		for _, tr := range task.Trace {
-			totalTokens += tr.TokenUsage.TotalTokens
-		}
-		if task.ToolBudget <= 0 || (task.TokenBudget > 0 && totalTokens >= task.TokenBudget) {
+		if task.ToolBudget <= 0 || tokenBudgetExhausted(task) {
 			log.Info("Budget exhausted (tools or tokens) — stopping research early")
 			break
 		}
@@ -287,9 +283,22 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 	return allEvidence
 }
 
-// isReadOnlyAction returns true for actions that do not mutate the workspace
-// and are therefore safe to run concurrently in a parallel batch.
+// isReadOnlyAction returns true for actions that are safe to run concurrently
+// in a parallel batch: they must not mutate the workspace AND must not be
+// high-risk in the tool registry.
+//
+// The registry RiskLevel check is the authoritative guard. The parallel batch
+// path (runBatchParallel) does NOT perform approval gating — only the serial
+// path (runBatchSerial) calls SuspendForApproval. Previously this function
+// relied solely on a hardcoded read-only name list, so if a high-risk tool were
+// ever (mis)classified as read-only, it would be executed in the parallel batch
+// and silently bypass approval. By rejecting any RiskLevelHigh tool here, such a
+// tool is forced onto the serial path where approval is enforced — closing the
+// bypass regardless of how the name list evolves.
 func isReadOnlyAction(action string) bool {
+	if tool, ok := tools.Get(action); ok && tool.RiskLevel() == types.RiskLevelHigh {
+		return false
+	}
 	switch action {
 	case "find_files", "search_text", "read_file", "git_diff", "http_fetch", "web_search":
 		return true
@@ -480,8 +489,12 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	}
 
 	if err != nil {
-		log.Error("WriterAgent failed — using fallback answer", "task_id", task.ID, "error", err)
-		// Graceful fallback: task completes with a best-effort summary
+		log.Error("WriterAgent failed — marking task failed with best-effort summary", "task_id", task.ID, "error", err)
+		// The synthesis step failed. Preserve the gathered evidence as a
+		// best-effort answer for callers, but mark the task FAILED so the error
+		// is not masked as a successful completion. Previously this set
+		// StatusCompleted, which made writer errors indistinguishable from a
+		// genuine success at the API/status layer.
 		fallback := "Research complete but synthesis failed. See trace for gathered evidence."
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount,
@@ -489,10 +502,11 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 			Action:      "write",
 			Query:       "writer",
 			Observation: fmt.Sprintf("[writer] synthesis error: %v", err),
+			Error:       err.Error(),
 			AgentRole:   RoleWriter,
 		})
 		task.StepCount++
-		task.Status = types.StatusCompleted
+		task.Status = types.StatusFailed
 		task.FinalAnswer = fallback
 		return "low", err
 	}
@@ -520,6 +534,25 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 
 	log.Info("Phase 3 done — answer written", "confidence", output.Confidence, "elapsed", elapsed)
 	return output.Confidence, nil
+}
+
+// tokenBudgetExhausted reports whether the task has reached or exceeded its
+// token budget, summing TokenUsage across all recorded trace entries
+// (planner, researcher, writer, replanner). TokenBudget <= 0 means "no token
+// limit", in which case this always returns false.
+//
+// It is used as a gate in both the research phase and the adaptive-depth loop
+// so that plan/replan/write iterations cannot keep burning tokens past the
+// budget — previously only the research phase enforced it.
+func tokenBudgetExhausted(task *types.Task) bool {
+	if task.TokenBudget <= 0 {
+		return false
+	}
+	total := 0
+	for _, tr := range task.Trace {
+		total += tr.TokenUsage.TotalTokens
+	}
+	return total >= task.TokenBudget
 }
 
 // buildStepQuery constructs a structured, human-readable query string for

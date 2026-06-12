@@ -112,12 +112,39 @@ export AI_AGENT_ORCHESTRATOR=adk     # 使用 Google ADK for Go 编排
 * **请求方式**：`POST /api/tasks/:id/run`
 * **说明**：执行一次 `Plan-Execute` 闭环，并返回该步执行后的任务最新状态和 Trace 详情。
 
-### 3. 运行全部任务
+### 3. 运行全部任务（异步）
 * **请求方式**：`POST /api/tasks/:id/run-all`
-* **说明**：自动循环执行，直至任务标记为 `completed`（达到最大步数、工具预算耗尽，或 Planner 判定已达成目标）。
+* **返回**：`202 Accepted`，任务在后台 goroutine 中异步执行。
+* **说明**：服务端立即返回，随后在后台自动循环执行，直至任务到达终态 `completed` 或 `failed`（达到最大步数、工具预算耗尽，或 Planner 判定已达成目标）。**权威状态以轮询 `GET /api/tasks/:id` 或订阅 SSE 流为准。**
+* **并发保护**：同一任务重复触发返回 `409 Conflict`；通过 DB 原子状态转换防止多实例并发执行。
 
 ### 4. 获取任务详情
 * **请求方式**：`GET /api/tasks/:id`
 
-### 5. 获取本地监控指标
+### 5. 任务列表
+* **请求方式**：`GET /api/tasks`
+* **Query 参数**：`status`（可选，按状态过滤）、`limit`（默认 50）、`offset`（默认 0）。
+
+### 6. 实时事件流 (SSE)
+* **请求方式**：`GET /api/tasks/:id/stream`
+* **Content-Type**：`text/event-stream`
+* **说明**：每完成一步推送一条 `StepEvent` JSON（`data: {...}\n\n`），任务到达终态时推送终态事件后关闭连接。已处于终态的任务订阅时立即返回一条快照。
+* **可靠性**：实时事件为**尽力推送**（慢消费者可能丢事件）；服务端每 15s 轮询存储作为兜底，确保终态事件最终一定送达，并兼作 keep-alive。客户端如需精确状态，应以 `GET /api/tasks/:id` 为权威来源。
+
+### 7. 审批 / 拒绝高风险动作
+* **请求方式**：`POST /api/tasks/:id/approve` ｜ `POST /api/tasks/:id/reject`
+* **说明**：当任务因高风险工具调用进入 `awaiting_approval` 时，用于放行或拒绝该动作。
+
+### 8. 取消任务
+* **请求方式**：`DELETE /api/tasks/:id/cancel`
+* **说明**：取消运行中的任务。本进程内运行则触发 context 取消；否则在 DB 中将 `running` 任务标记为 `failed`。
+
+### 9. 获取本地监控指标
 * **请求方式**：`GET /api/metrics`
+
+### 10. 热重载配置
+* **请求方式**：`POST /api/config/reload`
+* **说明**：不重启进程即可重新读取配置文件与环境变量（用于 API Key 轮换、模型/超时调优）。返回脱敏后的变更 diff，API Key 以 `***` 显示。
+
+### 健康检查
+* **请求方式**：`GET /ping` → `{"message":"pong"}`

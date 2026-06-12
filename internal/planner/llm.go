@@ -328,9 +328,13 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 	paramProps := map[string]*genai.Schema{}
 	for _, t := range registered {
 		actions = append(actions, t.Name())
-		for name := range t.Parameters() {
-			// All current tool parameters are strings.
-			paramProps[name] = &genai.Schema{Type: genai.TypeString}
+		for name, spec := range t.Parameters() {
+			// Derive the genai parameter type from the tool's JSON-Schema spec
+			// instead of hardcoding TypeString. This keeps the Gemini schema
+			// structurally aligned with the OpenAI PlannerDecisionSchema (which
+			// uses the raw spec) so a non-string parameter added to any tool is
+			// reflected on both planner paths automatically.
+			paramProps[name] = genaiSchemaFromSpec(spec)
 		}
 	}
 	actions = append(actions, "none")
@@ -386,6 +390,37 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 		},
 		Required: []string{"thought_summary", "stop", "final_answer", "actions"},
 	}
+}
+
+// genaiSchemaFromSpec converts a tool parameter's JSON-Schema fragment (as
+// returned by Tool.Parameters(), e.g. {"type":"string","description":"..."})
+// into the equivalent *genai.Schema. Unknown or missing types fall back to
+// string, preserving the previous behaviour for tools that omit a type.
+func genaiSchemaFromSpec(spec any) *genai.Schema {
+	m, ok := spec.(map[string]any)
+	if !ok {
+		return &genai.Schema{Type: genai.TypeString}
+	}
+
+	out := &genai.Schema{Type: genai.TypeString}
+	if desc, ok := m["description"].(string); ok {
+		out.Description = desc
+	}
+	switch t, _ := m["type"].(string); t {
+	case "integer":
+		out.Type = genai.TypeInteger
+	case "number":
+		out.Type = genai.TypeNumber
+	case "boolean":
+		out.Type = genai.TypeBoolean
+	case "array":
+		out.Type = genai.TypeArray
+	case "object":
+		out.Type = genai.TypeObject
+	default: // "string", "", or unknown
+		out.Type = genai.TypeString
+	}
+	return out
 }
 
 func unmarshalDecision(textValue string, decision *PlanDecision) error {
