@@ -214,31 +214,108 @@ func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 		attribute.Int("agent.task.trace_count", len(task.Trace)),
 	)
 
-	if err := s.SaveTask(ctx, task); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "save task failed")
+		span.SetStatus(codes.Error, "begin tx failed")
 		return err
 	}
-	if err := s.ReplaceTraces(ctx, task.ID, task.Trace); err != nil {
+	defer tx.Rollback() //nolint:errcheck
+
+	// 1. Save Task in transaction
+	unresolved, err := json.Marshal(task.Unresolved)
+	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "append traces failed")
+		return err
+	}
+	memoriesJSON, err := json.Marshal(memoriesForPersistence(task.Memories))
+	if err != nil {
+		span.RecordError(err)
 		return err
 	}
 
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, memories_json, final_answer)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+goal=excluded.goal,
+status=excluded.status,
+max_steps=excluded.max_steps,
+step_count=excluded.step_count,
+workspace=excluded.workspace,
+hypothesis=excluded.hypothesis,
+unresolved_json=excluded.unresolved_json,
+tool_budget=excluded.tool_budget,
+token_budget=excluded.token_budget,
+memories_json=excluded.memories_json,
+final_answer=excluded.final_answer
+`,
+		task.ID, task.Goal, task.Status, task.MaxSteps, task.StepCount,
+		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, string(memoriesJSON), task.FinalAnswer,
+	)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "save task in tx failed")
+		return err
+	}
+
+	// 2. Replace Traces in same transaction
+	if len(task.Trace) > 0 {
+		var maxPersistedStep int
+		row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(step), 0) FROM traces WHERE task_id = ?`, task.ID)
+		if err := row.Scan(&maxPersistedStep); err != nil {
+			span.RecordError(err)
+			return err
+		}
+
+		if maxPersistedStep > len(task.Trace) {
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM traces WHERE task_id = ? AND step > ?`, task.ID, len(task.Trace),
+			); err != nil {
+				span.RecordError(err)
+				return err
+			}
+			maxPersistedStep = len(task.Trace)
+		}
+
+		for _, tr := range task.Trace {
+			if tr.Step <= maxPersistedStep {
+				continue
+			}
+			ev, err := json.Marshal(tr.Evidence)
+			if err != nil {
+				span.RecordError(err)
+				return err
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT OR IGNORE INTO traces
+					(task_id, step, goal, action, query, observation, evidence_json, agent_role)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				task.ID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
+			); err != nil {
+				span.RecordError(err)
+				return err
+			}
+		}
+	} else {
+		// Clean up traces if empty
+		if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = ?`, task.ID); err != nil {
+			span.RecordError(err)
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "commit tx failed")
+		return err
+	}
+
+	// 3. Asynchronously index memory if task is completed
 	if task.Status == types.StatusCompleted {
-		// Check if memory already exists to prevent repeated embedding generation
 		var exists int
 		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = ?`, "mem-"+task.ID).Scan(&exists)
 		if err == sql.ErrNoRows {
-			// Index the completed task as a long-term memory for cross-task RAG.
-			// This is done asynchronously with its own context so that:
-			// 1. The Embedding API call (network I/O) never blocks the SaveFullTask
-			//    response path — task saves return immediately.
-			// 2. A cancelled parent context (e.g. request timeout) cannot abort the
-			//    indexing of a task that has already been successfully persisted.
-			//
-			// Deep-copy the slice fields so the goroutine is not racing with the
-			// caller, which may append to task.Trace after SaveFullTask returns.
 			taskSnap := *task
 			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
 			copy(taskSnap.Trace, task.Trace)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -509,6 +510,58 @@ func TestApproveByApprovalIDNotFoundReturns404(t *testing.T) {
 
 	if got := orchestrator.PendingApprovalCount(taskID); got != 1 {
 		t.Errorf("pending count after 404 = %d, want 1 (real entry untouched)", got)
+	}
+}
+
+func TestAuthMiddleware(t *testing.T) {
+	// Set the environment variable for testing
+	t.Setenv("AI_AGENT_API_KEY", "my-test-secret-api-key")
+	cfg, _, err := config.Reload()
+	if err != nil {
+		t.Fatalf("failed to reload config for test: %v", err)
+	}
+	t.Logf("Reloaded config APIKey: %q, Env: %q", cfg.API.APIKey, os.Getenv("AI_AGENT_API_KEY"))
+	defer func() {
+		t.Setenv("AI_AGENT_API_KEY", "")
+		_, _, _ = config.Reload()
+	}()
+
+	st := store.NewMemoryStore()
+	r := setupTestRouter(st, nil)
+
+	// Test 1: No Key provided -> 401
+	w1 := httptest.NewRecorder()
+	req1, _ := http.NewRequest(http.MethodGet, "/api/tasks", nil)
+	r.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 when key is missing, got %d", w1.Code)
+	}
+
+	// Test 2: Invalid Key provided -> 401
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest(http.MethodGet, "/api/tasks", nil)
+	req2.Header.Set("X-API-Key", "wrong-key")
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 when key is wrong, got %d", w2.Code)
+	}
+
+	// Test 3: Correct X-API-Key -> 200
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest(http.MethodGet, "/api/tasks", nil)
+	req3.Header.Set("X-API-Key", "my-test-secret-api-key")
+	r.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Errorf("expected 200 with correct X-API-Key, got %d: %s", w3.Code, w3.Body.String())
+	}
+
+	// Test 4: Correct Authorization Bearer -> 200
+	w4 := httptest.NewRecorder()
+	req4, _ := http.NewRequest(http.MethodGet, "/api/tasks", nil)
+	req4.Header.Set("Authorization", "Bearer my-test-secret-api-key")
+	r.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusOK {
+		t.Errorf("expected 200 with correct Authorization Bearer, got %d: %s", w4.Code, w4.Body.String())
 	}
 }
 

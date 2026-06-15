@@ -1,13 +1,16 @@
 package policy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 var allowedCommands = map[string]bool{
@@ -274,3 +277,57 @@ func evalExistingPath(path string) (string, error) {
 		curr = parent
 	}
 }
+
+// SafeHTTPClient returns an http.Client designed to protect against SSRF and DNS Rebinding.
+// It intercepts and validates IP addresses during connection Dialing and redirection.
+func SafeHTTPClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("SSRF guard: invalid address: %w", err)
+			}
+
+			ips, err := net.LookupIP(host)
+			if err != nil {
+				return nil, fmt.Errorf("SSRF guard: DNS lookup failed: %w", err)
+			}
+
+			// Validate all resolved IPs immediately prior to dialing
+			for _, ip := range ips {
+				if isBlockedIP(ip) {
+					return nil, fmt.Errorf("SSRF guard: connection to private/restricted IP blocked: %s", ip)
+				}
+			}
+
+			return dialer.DialContext(ctx, network, addr)
+		},
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			// Verify each redirect URL's domain/IP
+			urlStr := req.URL.String()
+			if err := ValidateURL(urlStr); err != nil {
+				return fmt.Errorf("SSRF guard redirect violation: %w", err)
+			}
+			return nil
+		},
+	}
+}
+

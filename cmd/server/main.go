@@ -266,15 +266,20 @@ func main() {
 		})
 	}
 
+	addr := cfg.API.Addr
+	if addr == "" {
+		addr = "127.0.0.1:8080"
+	}
+
 	// Wrap Gin in a standard http.Server so we can gracefully shut it down.
 	srv := &http.Server{
-		Addr:    ":8080",
+		Addr:    addr,
 		Handler: r,
 	}
 
 	// Start HTTP server in the background.
 	go func() {
-		slog.Info("HTTP server listening", "addr", ":8080")
+		slog.Info("HTTP server listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("ListenAndServe failed: %v", err)
 		}

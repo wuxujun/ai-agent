@@ -60,9 +60,7 @@ func (t *HttpFetchTool) Execute(ctx context.Context, workspace string, params ma
 		return nil, fmt.Errorf("http_fetch policy violation: %w", err)
 	}
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-	}
+	client := policy.SafeHTTPClient(15 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

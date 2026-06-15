@@ -59,9 +59,7 @@ func (t *WebBrowserTool) Execute(ctx context.Context, workspace string, params m
 		return nil, fmt.Errorf("web_browser policy violation: %w", err)
 	}
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-	}
+	client := policy.SafeHTTPClient(15 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

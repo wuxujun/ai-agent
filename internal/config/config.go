@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -13,6 +14,11 @@ import (
 // Config holds all application configuration loaded from the config file and
 // environment variables. Fields are grouped by subsystem.
 type Config struct {
+	API struct {
+		Addr   string `mapstructure:"addr"`
+		APIKey string `mapstructure:"api_key"`
+	} `mapstructure:"api"`
+
 	Store struct {
 		Type string `mapstructure:"type"`
 		DSN  string `mapstructure:"dsn"`
@@ -92,6 +98,8 @@ func setupViper() {
 	viper.AutomaticEnv()
 
 	// Default values
+	viper.SetDefault("api.addr", "127.0.0.1:8080")
+	viper.SetDefault("api.api_key", "")
 	viper.SetDefault("store.type", "sqlite")
 	viper.SetDefault("store.dsn", "data/agent.db")
 	viper.SetDefault("store.memory_candidate_limit", 200)
@@ -105,6 +113,8 @@ func setupViper() {
 	viper.SetDefault("skill.root", "skills")
 
 	// Explicit bindings for standard env variables
+	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
+	_ = viper.BindEnv("api.api_key", "AI_AGENT_API_KEY")
 	_ = viper.BindEnv("llm.openai_api_key", "OPENAI_API_KEY")
 	_ = viper.BindEnv("llm.gemini_api_key", "GEMINI_API_KEY")
 	_ = viper.BindEnv("llm.google_api_key", "GOOGLE_API_KEY")
@@ -116,6 +126,16 @@ func unmarshalConfig() (*Config, error) {
 	var c Config
 	if err := viper.Unmarshal(&c); err != nil {
 		return nil, fmt.Errorf("config unmarshal failed: %w", err)
+	}
+	if c.API.APIKey == "" {
+		if envKey := os.Getenv("AI_AGENT_API_KEY"); envKey != "" {
+			c.API.APIKey = envKey
+		}
+	}
+	if c.API.Addr == "" {
+		if envAddr := os.Getenv("AI_AGENT_API_ADDR"); envAddr != "" {
+			c.API.Addr = envAddr
+		}
 	}
 	return &c, nil
 }
@@ -254,6 +274,10 @@ func diffConfigs(old, new *Config) []string {
 			changes = append(changes, fmt.Sprintf("%s: %d → %d", field, o, n))
 		}
 	}
+
+	// API
+	addIf("api.addr", old.API.Addr, new.API.Addr)
+	addIf("api.api_key", old.API.APIKey, new.API.APIKey)
 
 	// LLM
 	addIf("llm.provider", old.LLM.Provider, new.LLM.Provider)

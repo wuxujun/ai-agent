@@ -79,6 +79,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	r.Use(SpanAttributesMiddleware())
 
 	api := r.Group("/api")
+	api.Use(AuthMiddleware())
 	tasks := api.Group("/tasks")
 	{
 		tasks.POST("", h.createTask)

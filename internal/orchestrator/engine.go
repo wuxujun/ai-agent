@@ -294,7 +294,9 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	task.StepCount += len(traces)
 	task.ToolBudget -= len(traces)
 	for i := range traces {
-		traces[i].TokenUsage = decision.TokenUsage
+		if i == 0 {
+			traces[i].TokenUsage = decision.TokenUsage
+		}
 	}
 	task.Trace = append(task.Trace, traces...)
 	_ = SetTaskRunning(task)

@@ -258,7 +258,9 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 	// Legacy mode does the same at engine.go runLegacyNext; without this,
 	// task.Trace entries always carry zero TokenUsage and the gate is dead.
 	for i := range traces {
-		traces[i].TokenUsage = decision.TokenUsage
+		if i == 0 {
+			traces[i].TokenUsage = decision.TokenUsage
+		}
 	}
 	task.Trace = append(task.Trace, traces...)
 	_ = SetTaskRunning(task)

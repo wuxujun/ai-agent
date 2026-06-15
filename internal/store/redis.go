@@ -81,6 +81,17 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("failed to save task to redis: %w", err)
 	}
 
+	// Add to tasks:index ZSET
+	err = r.client.ZAdd(ctx, "tasks:index", redis.Z{
+		Score:  float64(time.Now().UnixNano()),
+		Member: task.ID,
+	}).Err()
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "redis zadd failed")
+		return fmt.Errorf("failed to index task in redis: %w", err)
+	}
+
 	if task.Status == types.StatusCompleted {
 		// Check if memory already exists to prevent repeated embedding generation
 		exists, err := r.client.Exists(ctx, r.memoryKey("mem-"+task.ID)).Result()
@@ -137,39 +148,48 @@ func (r *RedisStore) GetTask(ctx context.Context, id string) (*types.Task, error
 	return &task, nil
 }
 
-// ListTasks returns tasks stored in Redis using SCAN. Note: this may be slow for large datasets.
+// ListTasks returns tasks stored in Redis using ZSET index.
 // Status filtering and pagination are applied in-process after fetching.
 func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task, error) {
 	ctx, span := tracer.Start(ctx, "store.list_tasks")
 	defer span.End()
 
-	var cursor uint64
-	var keys []string
-	for {
-		var batch []string
-		var err error
-		batch, cursor, err = r.client.Scan(ctx, cursor, "task:*", 100).Result()
-		if err != nil {
-			span.RecordError(err)
-			return nil, err
-		}
-		keys = append(keys, batch...)
-		if cursor == 0 || len(keys) >= 500 {
-			break
-		}
-	}
-	if len(keys) > 500 {
-		keys = keys[:500]
+	// 1. Get task IDs from index ZSET. Limit to 1000 items to avoid infinite fetch.
+	ids, err := r.client.ZRange(ctx, "tasks:index", 0, 999).Result()
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
 	}
 
-	tasks := make([]*types.Task, 0, len(keys))
-	for _, key := range keys {
-		val, err := r.client.Get(ctx, key).Result()
-		if err != nil {
-			continue // skip missing/expired keys
+	if len(ids) == 0 {
+		span.SetAttributes(attribute.Int("agent.store.task_count", 0))
+		return []*types.Task{}, nil
+	}
+
+	// 2. Fetch payloads in bulk using MGET
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = r.taskKey(id)
+	}
+
+	vals, err := r.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+
+	// 3. Deserialize and filter by status
+	var tasks []*types.Task
+	for _, valVal := range vals {
+		if valVal == nil {
+			continue
+		}
+		valStr, ok := valVal.(string)
+		if !ok {
+			continue
 		}
 		var t types.Task
-		if err := json.Unmarshal([]byte(val), &t); err != nil {
+		if err := json.Unmarshal([]byte(valStr), &t); err != nil {
 			continue
 		}
 		if f.Status != "" && t.Status != f.Status {
@@ -178,7 +198,12 @@ func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task
 		tasks = append(tasks, &t)
 	}
 
-	// Apply pagination
+	// 4. Sort by ID ASC to match SQL consistency
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].ID < tasks[j].ID
+	})
+
+	// 5. Apply pagination
 	limit := resolveLimit(f.Limit, 50, 500)
 	offset := f.Offset
 	if offset >= len(tasks) {
@@ -207,7 +232,7 @@ func (r *RedisStore) memoryKey(id string) string {
 	return "memory:" + id
 }
 
-// SaveMemory persists a memory entry to Redis.
+// SaveMemory persists a memory entry to Redis and index.
 func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	data, err := json.Marshal(mem)
 	if err != nil {
@@ -219,32 +244,43 @@ func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 		return fmt.Errorf("failed to save memory to redis: %w", err)
 	}
 
+	// Add to memories:index ZSET
+	err = r.client.ZAdd(ctx, "memories:index", redis.Z{
+		Score:  float64(mem.Timestamp.UnixNano()),
+		Member: mem.ID,
+	}).Err()
+	if err != nil {
+		return fmt.Errorf("failed to index memory in redis: %w", err)
+	}
+
 	return nil
 }
 
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match in Redis.
-// Caps the SCAN at store.memory_candidate_limit keys (default 200) so the
-// in-process ranking loop does not blow up memory on a large memory key space.
-// Logs a warning when the cap is hit so operators can raise it when older
-// memories matter for recall.
+// Loads up to store.memory_candidate_limit candidates from memories:index ZSET
+// so the in-process ranking loop does not blow up memory on a large memory key space.
 func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
 	candidateLimit := resolveMemoryCandidateLimit()
-	var cursor uint64
-	var keys []string
-	for {
-		var batch []string
-		var err error
-		batch, cursor, err = r.client.Scan(ctx, cursor, "memory:*", 100).Result()
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, batch...)
-		if cursor == 0 || len(keys) >= candidateLimit {
-			break
-		}
+
+	// 1. Get recent memory IDs from ZSET index (newest first)
+	ids, err := r.client.ZRevRange(ctx, "memories:index", 0, int64(candidateLimit-1)).Result()
+	if err != nil {
+		return nil, err
 	}
-	if len(keys) > candidateLimit {
-		keys = keys[:candidateLimit]
+
+	if len(ids) == 0 {
+		return []*types.Memory{}, nil
+	}
+
+	// 2. Fetch payloads in bulk using MGET
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = r.memoryKey(id)
+	}
+
+	vals, err := r.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
 	}
 
 	type rankResult struct {
@@ -253,13 +289,16 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 	}
 	var ranked []rankResult
 
-	for _, key := range keys {
-		val, err := r.client.Get(ctx, key).Result()
-		if err != nil {
+	for _, valVal := range vals {
+		if valVal == nil {
+			continue
+		}
+		valStr, ok := valVal.(string)
+		if !ok {
 			continue
 		}
 		var mem types.Memory
-		if err := json.Unmarshal([]byte(val), &mem); err != nil {
+		if err := json.Unmarshal([]byte(valStr), &mem); err != nil {
 			continue
 		}
 
@@ -282,13 +321,6 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 			}
 		}
 		ranked = append(ranked, rankResult{mem: &mem, score: score})
-	}
-
-	if len(ranked) >= candidateLimit {
-		log.Warn("memory candidate scan hit store.memory_candidate_limit; older rows excluded from ranking",
-			"candidate_limit", candidateLimit,
-			"backend", "redis",
-		)
 	}
 
 	sort.Slice(ranked, func(i, j int) bool {
