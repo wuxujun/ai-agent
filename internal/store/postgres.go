@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/wuxujun/ai-agent/internal/memory"
@@ -221,9 +222,30 @@ func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) erro
 	}
 
 	if task.Status == types.StatusCompleted {
-		// Automatically index completed task as a long-term memory for cross-task RAG
-		if mem, err := memory.CreateMemoryFromTask(ctx, task); err == nil {
-			_ = p.SaveMemory(ctx, mem)
+		// Check if memory already exists to prevent repeated embedding generation
+		var exists int
+		err := p.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = $1`, "mem-"+task.ID).Scan(&exists)
+		if err == sql.ErrNoRows {
+			taskSnap := *task
+			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
+			copy(taskSnap.Trace, task.Trace)
+			taskSnap.Memories = make([]types.Memory, len(task.Memories))
+			copy(taskSnap.Memories, task.Memories)
+			taskSnap.Unresolved = make([]string, len(task.Unresolved))
+			copy(taskSnap.Unresolved, task.Unresolved)
+
+			go func() {
+				asyncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
+				if err != nil {
+					log.Warn("failed to create memory for task in postgres store", "task_id", taskSnap.ID, "error", err)
+					return
+				}
+				if err := p.SaveMemory(asyncCtx, mem); err != nil {
+					log.Warn("failed to save memory for task in postgres store", "task_id", taskSnap.ID, "error", err)
+				}
+			}()
 		}
 	}
 

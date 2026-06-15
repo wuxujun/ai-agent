@@ -17,7 +17,13 @@ type ResearcherAgent struct{}
 // Errors inside individual tool calls are treated as non-fatal: the observation
 // records the error and the caller can decide whether to continue.
 func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
-	log.Info("Research step starting", "step_id", step.ID, "action", step.Action, "desc", step.Description)
+	agentName := "Researcher"
+	teamsCfg := GetTeamsConfig()
+	activeTeam := teamsCfg.GetActiveTeam()
+	if activeTeam.Researcher.Name != "" {
+		agentName = activeTeam.Researcher.Name
+	}
+	log.Info("Research step starting", "step_id", step.ID, "action", step.Action, "desc", step.Description, "agent_name", agentName)
 
 	// Validate workspace boundary before any operation.
 	if err := policy.ValidateWorkspace(workspace); err != nil {

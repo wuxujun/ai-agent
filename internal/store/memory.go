@@ -32,6 +32,7 @@ func NewMemoryStore() *MemoryStore {
 // SaveFullTask saves or updates a task and its traces in memory.
 func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 	m.mu.Lock()
+	_, alreadyIndexed := m.memories["mem-"+task.ID]
 
 	// Clone to avoid concurrent mutation issues
 	cloned := *task
@@ -47,7 +48,7 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 	m.tasks[task.ID] = &cloned
 	m.mu.Unlock()
 
-	if task.Status == types.StatusCompleted {
+	if task.Status == types.StatusCompleted && !alreadyIndexed {
 		// Asynchronously index completed task as a long-term memory for cross-task RAG.
 		// Since generating embeddings can take time (e.g. hitting remote APIs),
 		// we run this outside of the write lock to prevent blocking memory storage.

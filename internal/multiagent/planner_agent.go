@@ -95,7 +95,19 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 	if cfg.Provider == "" {
 		cfg = DefaultLLMConfig()
 	}
-	usage, err := callLLMJSON(ctx, cfg, plannerSystemPrompt, userPrompt, p.jsonSchema(), &plan)
+
+	systemPrompt := plannerSystemPrompt
+	teamsCfg := GetTeamsConfig()
+	activeTeam := teamsCfg.GetActiveTeam()
+	if activeTeam.Planner.SystemPrompt != "" {
+		systemPrompt = activeTeam.Planner.SystemPrompt
+		log.Info("Using custom system prompt for PlannerAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Planner.Name)
+	}
+	if activeTeam.Planner.Provider != "" || activeTeam.Planner.Model != "" {
+		cfg = GetLLMConfig(activeTeam.Planner)
+	}
+
+	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, p.jsonSchema(), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent LLM call failed: %w", err)
 	}
@@ -152,7 +164,19 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 	if cfg.Provider == "" {
 		cfg = DefaultLLMConfig()
 	}
-	usage, err := callLLMJSON(ctx, cfg, replannerSystemPrompt, userPrompt, p.jsonSchema(), &plan)
+
+	systemPrompt := replannerSystemPrompt
+	teamsCfg := GetTeamsConfig()
+	activeTeam := teamsCfg.GetActiveTeam()
+	if activeTeam.Planner.SystemPrompt != "" {
+		systemPrompt = activeTeam.Planner.SystemPrompt + "\n\nCRITICAL: One of the previous execution steps has FAILED. You must analyze the execution history, explain in thought_summary why it failed, and generate revised next steps (between 1 and 5 steps) to achieve the goal. Do not repeat the exact same failed step unless you use different arguments or parameters."
+		log.Info("Using custom system prompt for ReplannerAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Planner.Name)
+	}
+	if activeTeam.Planner.Provider != "" || activeTeam.Planner.Model != "" {
+		cfg = GetLLMConfig(activeTeam.Planner)
+	}
+
+	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, p.jsonSchema(), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent Replan LLM call failed: %w", err)
 	}

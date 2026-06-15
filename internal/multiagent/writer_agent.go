@@ -60,7 +60,19 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 	if cfg.Provider == "" {
 		cfg = DefaultLLMConfig()
 	}
-	usage, err := callLLMJSON(ctx, cfg, writerSystemPrompt, userPrompt, w.jsonSchema(), &output)
+
+	systemPrompt := writerSystemPrompt
+	teamsCfg := GetTeamsConfig()
+	activeTeam := teamsCfg.GetActiveTeam()
+	if activeTeam.Writer.SystemPrompt != "" {
+		systemPrompt = activeTeam.Writer.SystemPrompt
+		log.Info("Using custom system prompt for WriterAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Writer.Name)
+	}
+	if activeTeam.Writer.Provider != "" || activeTeam.Writer.Model != "" {
+		cfg = GetLLMConfig(activeTeam.Writer)
+	}
+
+	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, w.jsonSchema(), &output)
 	if err != nil {
 		return nil, fmt.Errorf("WriterAgent LLM call failed: %w", err)
 	}

@@ -226,35 +226,40 @@ func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 	}
 
 	if task.Status == types.StatusCompleted {
-		// Index the completed task as a long-term memory for cross-task RAG.
-		// This is done asynchronously with its own context so that:
-		// 1. The Embedding API call (network I/O) never blocks the SaveFullTask
-		//    response path — task saves return immediately.
-		// 2. A cancelled parent context (e.g. request timeout) cannot abort the
-		//    indexing of a task that has already been successfully persisted.
-		//
-		// Deep-copy the slice fields so the goroutine is not racing with the
-		// caller, which may append to task.Trace after SaveFullTask returns.
-		taskSnap := *task
-		taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
-		copy(taskSnap.Trace, task.Trace)
-		taskSnap.Memories = make([]types.Memory, len(task.Memories))
-		copy(taskSnap.Memories, task.Memories)
-		taskSnap.Unresolved = make([]string, len(task.Unresolved))
-		copy(taskSnap.Unresolved, task.Unresolved)
+		// Check if memory already exists to prevent repeated embedding generation
+		var exists int
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = ?`, "mem-"+task.ID).Scan(&exists)
+		if err == sql.ErrNoRows {
+			// Index the completed task as a long-term memory for cross-task RAG.
+			// This is done asynchronously with its own context so that:
+			// 1. The Embedding API call (network I/O) never blocks the SaveFullTask
+			//    response path — task saves return immediately.
+			// 2. A cancelled parent context (e.g. request timeout) cannot abort the
+			//    indexing of a task that has already been successfully persisted.
+			//
+			// Deep-copy the slice fields so the goroutine is not racing with the
+			// caller, which may append to task.Trace after SaveFullTask returns.
+			taskSnap := *task
+			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
+			copy(taskSnap.Trace, task.Trace)
+			taskSnap.Memories = make([]types.Memory, len(task.Memories))
+			copy(taskSnap.Memories, task.Memories)
+			taskSnap.Unresolved = make([]string, len(task.Unresolved))
+			copy(taskSnap.Unresolved, task.Unresolved)
 
-		go func() {
-			asyncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
-			if err != nil {
-				log.Warn("failed to create memory for task", "task_id", taskSnap.ID, "error", err)
-				return
-			}
-			if err := s.SaveMemory(asyncCtx, mem); err != nil {
-				log.Warn("failed to save memory for task", "task_id", taskSnap.ID, "error", err)
-			}
-		}()
+			go func() {
+				asyncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
+				if err != nil {
+					log.Warn("failed to create memory for task", "task_id", taskSnap.ID, "error", err)
+					return
+				}
+				if err := s.SaveMemory(asyncCtx, mem); err != nil {
+					log.Warn("failed to save memory for task", "task_id", taskSnap.ID, "error", err)
+				}
+			}()
+		}
 	}
 
 	return nil

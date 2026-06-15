@@ -72,7 +72,8 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		attribute.String("agent.task.goal", task.Goal),
 	)
 
-	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal)
+	teamsCfg := GetTeamsConfig()
+	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam)
 
 	// ── Phase 1: Plan ──────────────────────────────────────────────────────────
 	plan, err := c.runPlanPhase(ctx, task)
