@@ -365,8 +365,8 @@ func TestApproveSinglePendingResolvesImplicitly(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got != true {
-			t.Errorf("approval channel received %v, want true", got)
+		if got.Approved != true {
+			t.Errorf("approval channel received %v, want true", got.Approved)
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("approval channel not signaled after /approve")
@@ -459,8 +459,8 @@ func TestRejectByApprovalIDResolvesSpecificEntry(t *testing.T) {
 
 	select {
 	case got := <-ch2:
-		if got != false {
-			t.Errorf("ch2 received %v, want false", got)
+		if got.Approved != false {
+			t.Errorf("ch2 received %v, want false", got.Approved)
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("ch2 not signaled after /reject")

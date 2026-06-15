@@ -15,7 +15,7 @@ import (
 type approvalEntry struct {
 	id      string
 	taskID  string
-	ch      chan bool
+	ch      chan types.ApprovalResult
 	request *types.ApprovalRequest
 }
 
@@ -42,12 +42,12 @@ var newApprovalID = func() string {
 //
 // Concurrent or overlapping calls for the same task are no longer destructive:
 // each call produces an independent entry and its own channel.
-func RegisterApproval(taskID string, request *types.ApprovalRequest) (string, chan bool) {
+func RegisterApproval(taskID string, request *types.ApprovalRequest) (string, chan types.ApprovalResult) {
 	approvalMu.Lock()
 	defer approvalMu.Unlock()
 
 	id := newApprovalID()
-	ch := make(chan bool, 1)
+	ch := make(chan types.ApprovalResult, 1)
 	entry := &approvalEntry{
 		id:      id,
 		taskID:  taskID,
@@ -135,7 +135,7 @@ func PendingApprovalCount(taskID string) int {
 // ResolveApproval resolves the unique pending approval for taskID. Returns
 // false if zero or more than one are pending — callers must then use
 // ResolveApprovalByID, after listing the pending ones, to disambiguate.
-func ResolveApproval(taskID string, approved bool) bool {
+func ResolveApproval(taskID string, result types.ApprovalResult) bool {
 	approvalMu.Lock()
 	ids := taskIndex[taskID]
 	if len(ids) != 1 {
@@ -151,13 +151,13 @@ func ResolveApproval(taskID string, approved bool) bool {
 	delete(approvals, id)
 	removeFromTaskIndex(taskID, id)
 	approvalMu.Unlock()
-	entry.ch <- approved
+	entry.ch <- result
 	return true
 }
 
 // ResolveApprovalByID resolves a specific approval by its ID. Required when
 // more than one approval is pending for the same task.
-func ResolveApprovalByID(approvalID string, approved bool) bool {
+func ResolveApprovalByID(approvalID string, result types.ApprovalResult) bool {
 	approvalMu.Lock()
 	entry, ok := approvals[approvalID]
 	if !ok {
@@ -167,7 +167,7 @@ func ResolveApprovalByID(approvalID string, approved bool) bool {
 	delete(approvals, approvalID)
 	removeFromTaskIndex(entry.taskID, approvalID)
 	approvalMu.Unlock()
-	entry.ch <- approved
+	entry.ch <- result
 	return true
 }
 

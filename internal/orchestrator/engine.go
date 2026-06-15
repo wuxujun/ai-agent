@@ -225,16 +225,33 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		return nil
 	}
 
-	for _, ac := range decision.Actions {
+	rejected := false
+	for i := range decision.Actions {
+		ac := &decision.Actions[i]
 		tool, ok := tools.Get(ac.Action)
 		if ok && tool.RiskLevel() == types.RiskLevelHigh {
-			if err := e.SuspendForApproval(ctx, task, ac.Action, ac.Parameters); err != nil {
-				engineLog.Error("action rejected or approval failed", "action", ac.Action, "error", err)
+			approved, newParams, err := e.SuspendForApproval(ctx, task, ac.Action, ac.Parameters)
+			if err != nil {
+				engineLog.Error("action approval error", "action", ac.Action, "error", err)
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "approval failed")
 				return err
 			}
+			if !approved {
+				rejected = true
+				break
+			}
+			if newParams != nil {
+				ac.Parameters = newParams
+			}
 		}
+	}
+
+	if rejected {
+		// Action rejected by user. The rejection trace has already been appended
+		// in SuspendForApproval. We skip executing the tools and return nil to
+		// allow the planner to adapt in the next cycle.
+		return nil
 	}
 
 	engineLog.Info("executing actions", "task_id", task.ID, "actions", actionNames)
@@ -284,7 +301,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	return nil
 }
 
-func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) error {
+func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error) {
 	approval := e.BuildApprovalRequest(task, action, params)
 	approvalID, ch := RegisterApproval(task.ID, approval)
 	defer RemoveApproval(approvalID)
@@ -300,7 +317,7 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		err := e.Store.SaveFullTask(saveCtx, task)
 		cancel()
 		if err != nil {
-			return err
+			return false, nil, err
 		}
 	}
 	if e.EventCallback != nil {
@@ -311,10 +328,43 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 	}
 
 	select {
-	case approved := <-ch:
-		if !approved {
-			return fmt.Errorf("action %q rejected by user", action)
+	case res := <-ch:
+		if !res.Approved {
+			msg := res.Message
+			if msg == "" {
+				msg = "No reason provided"
+			}
+			role := types.AgentRoleSingle
+			if e.Mode == ModeMultiAgent {
+				role = types.AgentRoleResearcher
+			}
+			task.Trace = append(task.Trace, types.StepTrace{
+				Step:        task.StepCount + 1,
+				Goal:        task.Goal,
+				Action:      action,
+				Observation: fmt.Sprintf("Action rejected by user. Reason: %s", msg),
+				Error:       fmt.Sprintf("Action %s rejected by user: %s", action, msg),
+				Evidence: []types.Evidence{{
+					Path:  "user_feedback",
+					Lines: []string{msg},
+					Query: "disapproval",
+				}},
+				AgentRole: role,
+			})
+			task.StepCount += 1
+
+			task.Status = types.StatusRunning
+			if e.Store != nil {
+				saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_ = e.Store.SaveFullTask(saveCtx, task)
+				cancel()
+			}
+			if e.EventCallback != nil {
+				e.EventCallback(task.ID, types.StatusRunning)
+			}
+			return false, nil, nil
 		}
+
 		task.Status = types.StatusRunning
 		if e.Store != nil {
 			saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -324,9 +374,9 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		if e.EventCallback != nil {
 			e.EventCallback(task.ID, types.StatusRunning)
 		}
-		return nil
+		return true, res.Parameters, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, nil, ctx.Err()
 	}
 }
 

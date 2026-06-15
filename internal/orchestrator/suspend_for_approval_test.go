@@ -89,7 +89,8 @@ func TestSuspendForApprovalAwaitingSaveUsesDetachedCtx(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- engine.SuspendForApproval(callerCtx, task, "write_file", map[string]any{"path": "x.txt", "content": "hi"})
+		_, _, err := engine.SuspendForApproval(callerCtx, task, "write_file", map[string]any{"path": "x.txt", "content": "hi"})
+		done <- err
 	}()
 
 	select {
@@ -141,7 +142,7 @@ func TestSuspendForApprovalPostApprovalSaveUsesDetachedCtx(t *testing.T) {
 		defer close(resolved)
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			if ResolveApproval(task.ID, true) {
+			if ResolveApproval(task.ID, types.ApprovalResult{Approved: true}) {
 				return
 			}
 			time.Sleep(2 * time.Millisecond)
@@ -149,8 +150,12 @@ func TestSuspendForApprovalPostApprovalSaveUsesDetachedCtx(t *testing.T) {
 	}()
 
 	callerCtx := context.Background()
-	if err := engine.SuspendForApproval(callerCtx, task, "write_file", map[string]any{"path": "x.txt", "content": "hi"}); err != nil {
+	approved, _, err := engine.SuspendForApproval(callerCtx, task, "write_file", map[string]any{"path": "x.txt", "content": "hi"})
+	if err != nil {
 		t.Fatalf("SuspendForApproval err = %v, want nil after approval", err)
+	}
+	if !approved {
+		t.Fatal("expected approved to be true")
 	}
 	<-resolved
 
@@ -171,5 +176,95 @@ func TestSuspendForApprovalPostApprovalSaveUsesDetachedCtx(t *testing.T) {
 		if !s.hasDeadline {
 			t.Errorf("save #%d (status=%q) ctx had no deadline — persistence path must wrap with context.WithTimeout", i, s.status)
 		}
+	}
+}
+
+func TestSuspendForApprovalRejectionTracesFeedback(t *testing.T) {
+	resetApprovalState(t)
+
+	st := &ctxAwareStore{}
+	engine := &Engine{Store: st}
+	task := &types.Task{ID: "task-rejection-feedback", Workspace: t.TempDir(), Goal: "test goal"}
+
+	// Resolver goroutine that rejects the request with a feedback message.
+	resolved := make(chan struct{})
+	go func() {
+		defer close(resolved)
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if ResolveApproval(task.ID, types.ApprovalResult{
+				Approved: false,
+				Message:  "please use a different path",
+			}) {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	callerCtx := context.Background()
+	approved, _, err := engine.SuspendForApproval(callerCtx, task, "write_file", map[string]any{"path": "x.txt", "content": "hi"})
+	if err != nil {
+		t.Fatalf("SuspendForApproval err = %v, want nil", err)
+	}
+	if approved {
+		t.Fatal("expected approved to be false")
+	}
+	<-resolved
+
+	// Assert trace contains the rejection feedback as evidence
+	if len(task.Trace) != 1 {
+		t.Fatalf("expected 1 trace entry, got %d", len(task.Trace))
+	}
+	tr := task.Trace[0]
+	if tr.Action != "write_file" {
+		t.Errorf("trace action = %q, want write_file", tr.Action)
+	}
+	if tr.Error == "" || tr.Observation == "" {
+		t.Errorf("expected non-empty Error and Observation in rejection trace")
+	}
+	if len(tr.Evidence) != 1 || tr.Evidence[0].Path != "user_feedback" {
+		t.Errorf("expected 1 evidence entry from user_feedback, got %v", tr.Evidence)
+	}
+	if len(tr.Evidence[0].Lines) != 1 || tr.Evidence[0].Lines[0] != "please use a different path" {
+		t.Errorf("expected feedback message, got %v", tr.Evidence[0].Lines)
+	}
+}
+
+func TestSuspendForApprovalParametersModified(t *testing.T) {
+	resetApprovalState(t)
+
+	st := &ctxAwareStore{}
+	engine := &Engine{Store: st}
+	task := &types.Task{ID: "task-parameters-modified", Workspace: t.TempDir(), Goal: "test goal"}
+
+	// Resolver goroutine that approves with modified parameters.
+	resolved := make(chan struct{})
+	go func() {
+		defer close(resolved)
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if ResolveApproval(task.ID, types.ApprovalResult{
+				Approved:   true,
+				Parameters: map[string]any{"path": "modified.txt", "content": "hi"},
+			}) {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	callerCtx := context.Background()
+	approved, newParams, err := engine.SuspendForApproval(callerCtx, task, "write_file", map[string]any{"path": "x.txt", "content": "hi"})
+	if err != nil {
+		t.Fatalf("SuspendForApproval err = %v, want nil", err)
+	}
+	if !approved {
+		t.Fatal("expected approved to be true")
+	}
+	<-resolved
+
+	if newParams == nil || newParams["path"] != "modified.txt" {
+		t.Errorf("expected modified path 'modified.txt', got %v", newParams)
 	}
 }

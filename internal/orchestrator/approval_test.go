@@ -62,24 +62,24 @@ func TestResolveApprovalRefusesAmbiguity(t *testing.T) {
 	id1, ch1 := RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "a"})
 	id2, ch2 := RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "b"})
 
-	if ResolveApproval(taskID, true) {
+	if ResolveApproval(taskID, types.ApprovalResult{Approved: true}) {
 		t.Fatal("ResolveApproval must return false when >1 are pending")
 	}
 
 	// ResolveApprovalByID disambiguates explicitly.
-	if !ResolveApprovalByID(id1, true) {
+	if !ResolveApprovalByID(id1, types.ApprovalResult{Approved: true}) {
 		t.Fatalf("ResolveApprovalByID(%q) returned false", id1)
 	}
-	if got := <-ch1; got != true {
-		t.Errorf("ch1 received %v, want true", got)
+	if got := <-ch1; got.Approved != true {
+		t.Errorf("ch1 received %v, want true", got.Approved)
 	}
 
 	// After resolving one, exactly one remains — implicit Resolve now succeeds.
-	if !ResolveApproval(taskID, false) {
+	if !ResolveApproval(taskID, types.ApprovalResult{Approved: false}) {
 		t.Fatal("ResolveApproval must succeed when exactly one is pending")
 	}
-	if got := <-ch2; got != false {
-		t.Errorf("ch2 received %v, want false", got)
+	if got := <-ch2; got.Approved != false {
+		t.Errorf("ch2 received %v, want false", got.Approved)
 	}
 
 	if got := PendingApprovalCount(taskID); got != 0 {
@@ -102,7 +102,8 @@ func TestRemoveApprovalClosesChannel(t *testing.T) {
 	done := make(chan bool, 1)
 	go func() {
 		// Receive on the channel; closed channel yields zero value (false).
-		done <- <-ch
+		res := <-ch
+		done <- res.Approved
 	}()
 
 	RemoveApproval(id)
@@ -129,7 +130,7 @@ func TestConcurrentRegisterApproval(t *testing.T) {
 
 	const N = 50
 	ids := make([]string, N)
-	chans := make([]chan bool, N)
+	chans := make([]chan types.ApprovalResult, N)
 
 	var wg sync.WaitGroup
 	wg.Add(N)

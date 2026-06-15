@@ -63,3 +63,86 @@ func TestPartitionBatchForcesHighRiskSerial(t *testing.T) {
 		t.Errorf("expected remaining step in remainder, got %+v", remainder)
 	}
 }
+
+func TestEstimateTokensPerStep(t *testing.T) {
+	task := &types.Task{
+		Trace: []types.StepTrace{
+			{Action: "plan", TokenUsage: types.TokenUsage{TotalTokens: 1000}}, // planning step, should be ignored
+			{Action: "read_file", TokenUsage: types.TokenUsage{TotalTokens: 1500}},
+			{Action: "search_text", TokenUsage: types.TokenUsage{TotalTokens: 2500}},
+			{Action: "stop", TokenUsage: types.TokenUsage{TotalTokens: 500}}, // stop step, should be ignored
+		},
+	}
+
+	// 1. Estimate should be average of research steps: (1500 + 2500) / 2 = 2000
+	est := estimateTokensPerStep(task)
+	if est != 2000 {
+		t.Errorf("expected estimated tokens per step to be 2000, got %d", est)
+	}
+
+	// 2. Default estimate when no history is present
+	emptyTask := &types.Task{}
+	estDefault := estimateTokensPerStep(emptyTask)
+	if estDefault != 2000 {
+		t.Errorf("expected default estimate to be 2000, got %d", estDefault)
+	}
+}
+
+func TestLookAheadTokenBudgetDefense(t *testing.T) {
+	// Setup a task with a token budget of 5000 tokens
+	task := &types.Task{
+		TokenBudget: 5000,
+		Trace: []types.StepTrace{
+			{Action: "read_file", TokenUsage: types.TokenUsage{TotalTokens: 1000}}, // 1000 tokens used
+		},
+	}
+
+	// Total tokens used so far: 1000. Remaining: 4000.
+	// Estimated tokens per step: 1000.
+	// Maximum parallel steps allowed: 4000 / 1000 = 4 steps.
+
+	// Case 1: We have 6 steps to execute.
+	steps := []ResearchStep{
+		{ID: "s1", Action: "read_file"},
+		{ID: "s2", Action: "read_file"},
+		{ID: "s3", Action: "read_file"},
+		{ID: "s4", Action: "read_file"},
+		{ID: "s5", Action: "read_file"},
+		{ID: "s6", Action: "read_file"},
+	}
+
+	// Partition the steps with a large tool/step limit
+	batch, remainder, isParallel := partitionBatch(steps, 10, 10)
+	if !isParallel {
+		t.Fatal("expected batch to be parallelizable")
+	}
+	if len(batch) != 6 {
+		t.Fatalf("expected partitioned batch of size 6, got %d", len(batch))
+	}
+
+	// Apply look-ahead defense manually, simulating the implementation in runResearchPhase:
+	used := totalTokensUsed(task)
+	remaining := task.TokenBudget - used
+	estPerStep := estimateTokensPerStep(task)
+	maxParallel := remaining / estPerStep
+	if maxParallel < 1 {
+		maxParallel = 1
+	}
+
+	// Clamp batch size
+	if len(batch) > maxParallel {
+		trimmed := batch[maxParallel:]
+		batch = batch[:maxParallel]
+		steps = append(trimmed, remainder...)
+	}
+
+	if len(batch) != 4 {
+		t.Errorf("expected batch size to be clamped to 4, got %d", len(batch))
+	}
+	if len(steps) != 2 {
+		t.Errorf("expected remaining steps to be 2, got %d", len(steps))
+	}
+	if steps[0].ID != "s5" || steps[1].ID != "s6" {
+		t.Errorf("expected remainder steps to be s5 and s6, got %+v", steps)
+	}
+}

@@ -41,7 +41,7 @@ type Coordinator struct {
 	Researcher         Researcher
 	Writer             Writer
 	Metrics            *metrics.Collector
-	SuspendForApproval func(ctx context.Context, task *types.Task, action string, params map[string]any) error
+	SuspendForApproval func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
 	EventCallback      func(taskID string, status types.TaskStatus)
 }
 
@@ -242,6 +242,31 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		batch, remainder, isParallel := partitionBatch(currentSteps, task.ToolBudget, task.MaxSteps-task.StepCount)
 		currentSteps = remainder
 
+		// Look-ahead token budget defense: clamp parallel batch size if remaining budget is tight
+		if task.TokenBudget > 0 && isParallel && len(batch) > 1 {
+			used := totalTokensUsed(task)
+			remaining := task.TokenBudget - used
+			if remaining > 0 {
+				estPerStep := estimateTokensPerStep(task)
+				maxParallel := remaining / estPerStep
+				if maxParallel < 1 {
+					maxParallel = 1
+				}
+				if len(batch) > maxParallel {
+					log.Info("Look-ahead token budget defense triggered: clamping parallel batch size",
+						"original_size", len(batch),
+						"clamped_size", maxParallel,
+						"remaining_budget", remaining,
+						"estimated_tokens_per_step", estPerStep,
+					)
+					// Return the trimmed steps back to the front of currentSteps
+					trimmed := batch[maxParallel:]
+					batch = batch[:maxParallel]
+					currentSteps = append(trimmed, currentSteps...)
+				}
+			}
+		}
+
 		var batchEvidence []StepEvidence
 		var anyFailed bool
 
@@ -425,10 +450,20 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 
 		tool, ok := tools.Get(step.Action)
 		if ok && tool.RiskLevel() == types.RiskLevelHigh && c.SuspendForApproval != nil {
-			if err := c.SuspendForApproval(ctx, task, step.Action, stepToParams(step)); err != nil {
-				log.Error("Action rejected or approval failed", "action", step.Action, "error", err)
+			approved, newParams, err := c.SuspendForApproval(ctx, task, step.Action, stepToParams(step))
+			if err != nil {
+				log.Error("Action approval error", "action", step.Action, "error", err)
 				anyFailed = true
 				break
+			}
+			if !approved {
+				// Rejection trace is already appended inside SuspendForApproval.
+				// We mark it as failed and break so that Phase 2's replanner triggers.
+				anyFailed = true
+				break
+			}
+			if newParams != nil {
+				paramsToStep(newParams, &step)
 			}
 		}
 
@@ -537,6 +572,14 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	return output.Confidence, nil
 }
 
+func totalTokensUsed(task *types.Task) int {
+	total := 0
+	for _, tr := range task.Trace {
+		total += tr.TokenUsage.TotalTokens
+	}
+	return total
+}
+
 // tokenBudgetExhausted reports whether the task has reached or exceeded its
 // token budget, summing TokenUsage across all recorded trace entries
 // (planner, researcher, writer, replanner). TokenBudget <= 0 means "no token
@@ -549,11 +592,22 @@ func tokenBudgetExhausted(task *types.Task) bool {
 	if task.TokenBudget <= 0 {
 		return false
 	}
-	total := 0
+	return totalTokensUsed(task) >= task.TokenBudget
+}
+
+func estimateTokensPerStep(task *types.Task) int {
+	totalTokens := 0
+	stepCount := 0
 	for _, tr := range task.Trace {
-		total += tr.TokenUsage.TotalTokens
+		if tr.Action != "" && tr.Action != "plan" && tr.Action != "stop" && tr.TokenUsage.TotalTokens > 0 {
+			totalTokens += tr.TokenUsage.TotalTokens
+			stepCount++
+		}
 	}
-	return total >= task.TokenBudget
+	if stepCount > 0 {
+		return totalTokens / stepCount
+	}
+	return 2000 // default fallback estimate
 }
 
 // buildStepQuery constructs a structured, human-readable query string for
@@ -590,5 +644,32 @@ func buildStepQuery(step ResearchStep) string {
 		return fmt.Sprintf("query=%q", step.SearchQuery)
 	default:
 		return fmt.Sprintf("action=%q", step.Action)
+	}
+}
+
+func paramsToStep(params map[string]any, step *ResearchStep) {
+	if pattern, ok := params["pattern"].(string); ok {
+		step.FileGlob = pattern
+	}
+	if glob, ok := params["glob"].(string); ok {
+		step.FileGlob = glob
+	}
+	if query, ok := params["query"].(string); ok {
+		step.SearchQuery = query
+	}
+	if path, ok := params["path"].(string); ok {
+		step.FilePath = path
+	}
+	if content, ok := params["content"].(string); ok {
+		step.Content = content
+	}
+	if command, ok := params["command"].(string); ok {
+		step.Command = command
+	}
+	if args, ok := params["args"].(string); ok {
+		step.Args = args
+	}
+	if url, ok := params["url"].(string); ok {
+		step.URL = url
 	}
 }

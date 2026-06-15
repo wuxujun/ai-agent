@@ -71,6 +71,12 @@ type ApprovalRequest struct {
 	Preview          string         `json:"preview,omitempty"`
 }
 
+type ApprovalResult struct {
+	Approved   bool           `json:"approved"`
+	Message    string         `json:"message,omitempty"`
+	Parameters map[string]any `json:"parameters,omitempty"`
+}
+
 type Task struct {
 	ID          string      `json:"id"`
 	Goal        string      `json:"goal"`

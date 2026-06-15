@@ -376,7 +376,9 @@ func (h *Handler) getMetrics(c *gin.Context) {
 // approval_id is empty, the unique pending approval for the task is resolved;
 // when ambiguous (>1 pending) the handler returns 409 with the pending IDs.
 type approvalAction struct {
-	ApprovalID string `json:"approval_id"`
+	ApprovalID string         `json:"approval_id"`
+	Message    string         `json:"message"`
+	Parameters map[string]any `json:"parameters"`
 }
 
 func (h *Handler) approveTask(c *gin.Context) {
@@ -396,13 +398,19 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 	// changes semantics for callers that omit the body.
 	_ = c.ShouldBindJSON(&body)
 
+	result := types.ApprovalResult{
+		Approved:   approved,
+		Message:    body.Message,
+		Parameters: body.Parameters,
+	}
+
 	if body.ApprovalID != "" {
 		approval, ok := orchestrator.GetApprovalByID(body.ApprovalID)
 		if !ok {
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
 			return
 		}
-		if !orchestrator.ResolveApprovalByID(body.ApprovalID, approved) {
+		if !orchestrator.ResolveApprovalByID(body.ApprovalID, result) {
 			// Lost the race with another resolver between Get and Resolve.
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
 			return
@@ -418,7 +426,7 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 		return
 	case 1:
 		approval := pending[0]
-		if !orchestrator.ResolveApproval(taskID, approved) {
+		if !orchestrator.ResolveApproval(taskID, result) {
 			// Lost the race — another resolver beat us between List and Resolve.
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
 			return
