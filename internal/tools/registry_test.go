@@ -14,6 +14,7 @@ func TestDefaultRegistryHasAllTools(t *testing.T) {
 	want := []string{
 		"find_files", "search_text", "read_file", "write_file",
 		"execute_code", "git_diff", "http_fetch", "web_search",
+		"web_browser", "sql_query", "apply_patch",
 	}
 	for _, name := range want {
 		if _, ok := Get(name); !ok {
