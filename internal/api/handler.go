@@ -33,6 +33,12 @@ type Handler struct {
 	// a stale defer from erasing the entry that a subsequent runAll installed.
 	activeTasks   map[string]*activeRun
 	activeTasksMu sync.Mutex
+
+	// approvalBus is the optional Redis-backed distributed approval/cancel bus.
+	// When non-nil, approve and cancel API calls that cannot be resolved
+	// locally (task running on a peer instance) are broadcast via Redis Pub/Sub
+	// so the executing instance can pick them up.
+	approvalBus *orchestrator.ApprovalBus
 }
 
 // activeRun is a uniquely allocated reservation token stored in
@@ -100,19 +106,31 @@ func (h *Handler) Wait() {
 	h.wg.Wait()
 }
 
+// SetApprovalBus wires the optional distributed approval/cancel bus. Must be
+// called before any tasks are started. Safe to call with a nil bus (no-op).
+func (h *Handler) SetApprovalBus(bus *orchestrator.ApprovalBus) {
+	h.approvalBus = bus
+}
+
 // Shutdown cancels active background tasks and waits for them to exit or for ctx to expire.
 func (h *Handler) Shutdown(ctx context.Context) error {
+	// Snapshot and cancel all active tasks.
 	h.activeTasksMu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(h.activeTasks))
-	for _, run := range h.activeTasks {
-		cancels = append(cancels, run.cancel)
+	type runEntry struct {
+		taskID string
+		run    *activeRun
+	}
+	entries := make([]runEntry, 0, len(h.activeTasks))
+	for id, run := range h.activeTasks {
+		entries = append(entries, runEntry{taskID: id, run: run})
 	}
 	h.activeTasksMu.Unlock()
 
-	for _, cancel := range cancels {
-		cancel()
+	for _, e := range entries {
+		e.run.cancel()
 	}
 
+	// Wait for goroutines to finish flushing.
 	done := make(chan struct{})
 	go func() {
 		h.Wait()
@@ -121,10 +139,47 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
-		return nil
 	case <-ctx.Done():
+		log.Warn("Shutdown timed out; some tasks may not have flushed cleanly")
+	}
+
+	// ── P1: Graceful-shutdown rollback ──────────────────────────────────────
+	// Tasks that were forcibly interrupted are currently stored with status
+	// "failed" (set by SetTaskFailed inside RunAll). Roll them back to
+	// "paused" so the next process restart can resume them via /run-all
+	// (which now accepts StatusPaused as a valid start state).
+	rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer rollbackCancel()
+	for _, e := range entries {
+		task, err := h.store.GetTask(rollbackCtx, e.taskID)
+		if err != nil {
+			log.Error("shutdown rollback: failed to fetch task", "task_id", e.taskID, "error", err)
+			continue
+		}
+		// Only roll back tasks that were running/queued — completed or already
+		// failed-for-a-real-reason tasks must not be touched.
+		if task.Status != types.StatusFailed && task.Status != types.StatusRunning {
+			continue
+		}
+		if task.Status == types.StatusFailed && task.FinalAnswer != "" &&
+			len(task.FinalAnswer) > 20 {
+			// Heuristic: a task with a real FinalAnswer failed for a business
+			// reason — do not resurrect it. Only tasks that failed due to
+			// context cancellation (short/empty FinalAnswer) get paused.
+			continue
+		}
+		task.Status = types.StatusPaused
+		if saveErr := h.store.SaveFullTask(rollbackCtx, task); saveErr != nil {
+			log.Error("shutdown rollback: failed to pause task", "task_id", e.taskID, "error", saveErr)
+		} else {
+			log.Info("shutdown rollback: task paused for resumption", "task_id", e.taskID)
+		}
+	}
+
+	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	return nil
 }
 
 func (h *Handler) createTask(c *gin.Context) {
@@ -262,7 +317,9 @@ func (h *Handler) runAll(c *gin.Context) {
 	// Perform atomic DB state transition to guard against multi-instance races.
 	// The activeTasks reservation already serializes in-process callers; this
 	// check protects against a peer process holding its own reservation.
-	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusCreated, types.StatusAwaitingApproval}, types.StatusRunning)
+	// StatusPaused is accepted here to support resuming tasks that were
+	// interrupted by a previous graceful shutdown (P1 rollback).
+	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusCreated, types.StatusAwaitingApproval, types.StatusPaused}, types.StatusRunning)
 	if err != nil || !success {
 		// Reservation cleanup with compare-and-delete so we never erase a slot
 		// some other goroutine just installed (cannot happen today because the
@@ -407,6 +464,14 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 	if body.ApprovalID != "" {
 		approval, ok := orchestrator.GetApprovalByID(body.ApprovalID)
 		if !ok {
+			// ── P0: Not found locally — broadcast via Redis so executing instance picks it up ──
+			if h.approvalBus != nil {
+				if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), body.ApprovalID, taskID, result); pubErr != nil {
+					log.Warn("approval bus publish failed", "error", pubErr)
+				}
+				c.JSON(http.StatusAccepted, gin.H{"message": "approval signal forwarded to cluster", "approval_id": body.ApprovalID})
+				return
+			}
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
 			return
 		}
@@ -422,6 +487,14 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 	pending := orchestrator.ListPendingApprovals(taskID)
 	switch len(pending) {
 	case 0:
+		// ── P0: Not found locally — broadcast via Redis ──
+		if h.approvalBus != nil {
+			if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), "", taskID, result); pubErr != nil {
+				log.Warn("approval bus publish failed", "error", pubErr)
+			}
+			c.JSON(http.StatusAccepted, gin.H{"message": "approval signal forwarded to cluster", "task_id": taskID})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})
 		return
 	case 1:
@@ -530,6 +603,61 @@ func (h *Handler) reloadConfig(c *gin.Context) {
 func (h *Handler) cancelTask(c *gin.Context) {
 	taskID := c.Param("id")
 
+	if h.CancelTaskByID(taskID) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "task cancellation signal sent",
+			"task_id": taskID,
+		})
+		return
+	}
+
+	// ── P0: Not in local activeTasks — the task may be running on a peer
+	// instance. Broadcast the cancel signal via Redis so the executing
+	// instance can pick it up and cancel its context.
+	if h.approvalBus != nil {
+		if pubErr := h.approvalBus.PublishCancel(c.Request.Context(), taskID); pubErr != nil {
+			log.Warn("cancel bus publish failed", "task_id", taskID, "error", pubErr)
+		}
+		c.JSON(http.StatusAccepted, gin.H{
+			"message": "cancel signal forwarded to cluster",
+			"task_id": taskID,
+		})
+		return
+	}
+	// No bus — fall back to the legacy DB-level cancel.
+	ctx, dbCancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	defer dbCancel()
+	task, err := h.store.GetTask(ctx, taskID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		c.Error(err)
+		return
+	}
+
+	if task.Status == types.StatusRunning {
+		task.Status = types.StatusFailed
+		task.FinalAnswer = "Failed: task canceled via API"
+		if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
+			c.Error(saveErr)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"message": "task cancelled (marked failed in database)",
+			"task_id": taskID,
+		})
+		return
+	}
+
+	c.JSON(http.StatusBadRequest, gin.H{"error": "task is not running", "status": task.Status})
+}
+
+// CancelTaskByID fires the context cancellation for a locally-running task.
+// Returns true if the task was found and cancelled; false if it is not running
+// in this process (caller may then try a remote signal via the ApprovalBus).
+func (h *Handler) CancelTaskByID(taskID string) bool {
 	h.activeTasksMu.Lock()
 	run, exists := h.activeTasks[taskID]
 	if exists {
@@ -538,43 +666,9 @@ func (h *Handler) cancelTask(c *gin.Context) {
 	h.activeTasksMu.Unlock()
 
 	if !exists {
-		// If not in activeTasks, check if the task exists in the db and is running.
-		// If so, mark it failed to cancel it.
-		ctx, dbCancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
-		defer dbCancel()
-		task, err := h.store.GetTask(ctx, taskID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
-				return
-			}
-			c.Error(err)
-			return
-		}
-
-		if task.Status == types.StatusRunning {
-			task.Status = types.StatusFailed
-			task.FinalAnswer = "Failed: task canceled via API"
-			if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
-				c.Error(saveErr)
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{
-				"message": "task cancelled (marked failed in database)",
-				"task_id": taskID,
-			})
-			return
-		}
-
-		c.JSON(http.StatusBadRequest, gin.H{"error": "task is not running", "status": task.Status})
-		return
+		return false
 	}
-
-	// Trigger the context cancellation
 	run.cancel()
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "task cancellation signal sent",
-		"task_id": taskID,
-	})
+	return true
 }
+

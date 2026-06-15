@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"github.com/wuxujun/ai-agent/internal/api"
@@ -176,6 +177,63 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(otelgin.Middleware("ai-agent"))
 	apiHandler := api.RegisterRoutes(r, st, eng, mc)
+
+	// ── P0: Distributed Approval Bus (Redis Pub/Sub) ─────────────────────────
+	// Wire the ApprovalBus when a Redis DSN is available. The bus allows
+	// approve/reject/cancel API calls that land on a peer instance (one that
+	// does NOT own the suspended goroutine) to be broadcast via Redis so the
+	// executing instance can pick them up.
+	busDSN := cfg.Store.DSN
+	if cfg.Store.Type != "redis" {
+		// Check for a dedicated bus DSN env var so non-Redis store users can
+		// still enable distributed signalling.
+		busDSN = os.Getenv("AI_AGENT_REDIS_BUS_URL")
+	}
+	if busDSN != "" {
+		busOpts, parseErr := redis.ParseURL(busDSN)
+		if parseErr != nil {
+			slog.Warn("approval bus: failed to parse Redis URL, bus disabled", "error", parseErr)
+		} else {
+			busClient := redis.NewClient(busOpts)
+			approvalBus := orchestrator.NewApprovalBus(busClient)
+			approvalBus.Start(context.Background())
+			eng.ApprovalBus = approvalBus
+			apiHandler.SetApprovalBus(approvalBus)
+			slog.Info("approval bus started", "redis_url", busDSN)
+
+			// Listen for remote cancel signals and fire local context cancels.
+			go func() {
+				cancelSigs := approvalBus.SubscribeCancelSignals(context.Background())
+				for taskID := range cancelSigs {
+					slog.Info("approval bus: received remote cancel signal", "task_id", taskID)
+					// Attempt local cancel; no-op if the task isn't running here.
+					apiHandler.CancelTaskByID(taskID)
+				}
+			}()
+		}
+	}
+
+	// ── P1: Startup scan for paused tasks ────────────────────────────────────
+	// Log any tasks left in StatusPaused from a previous graceful shutdown so
+	// operators know which tasks are awaiting a manual or automatic /run-all.
+	go func() {
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer scanCancel()
+		pausedTasks, err := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusPaused, Limit: 500})
+		if err != nil {
+			slog.Warn("startup scan: failed to list paused tasks", "error", err)
+			return
+		}
+		if len(pausedTasks) > 0 {
+			slog.Warn("startup: found paused tasks from previous shutdown",
+				"count", len(pausedTasks),
+				"hint", "POST /api/tasks/:id/run-all to resume",
+			)
+			for _, t := range pausedTasks {
+				slog.Info("paused task", "task_id", t.ID, "goal", t.Goal, "steps", t.StepCount)
+			}
+		}
+	}()
 
 	eng.EventCallback = func(taskID string, status types.TaskStatus) {
 		api.GetBus().Publish(taskID, api.StepEvent{

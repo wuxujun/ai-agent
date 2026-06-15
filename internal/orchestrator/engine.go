@@ -35,6 +35,14 @@ type Engine struct {
 	// Store handles database persistence and long-term memory.
 	Store store.Store
 
+	// ApprovalBus enables cross-instance approval and cancel signalling via
+	// Redis Pub/Sub. When nil the engine operates with in-process channels only
+	// (single-instance mode). When set, remote approve/reject signals published
+	// by any peer instance are forwarded into the local approval channel by the
+	// bus's background loop, so SuspendForApproval's select sees them without
+	// any extra logic.
+	ApprovalBus *ApprovalBus
+
 	// einoRunner is compiled once and cached for the lifetime of the Engine.
 	// A sync.RWMutex guards lazy initialisation; unlike sync.Once, a failed
 	// compilation attempt can be retried on the next call.

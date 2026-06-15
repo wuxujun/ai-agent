@@ -45,6 +45,7 @@ const (
 	StatusCreated          TaskStatus = "created"
 	StatusRunning          TaskStatus = "running"
 	StatusAwaitingApproval TaskStatus = "awaiting_approval"
+	StatusPaused           TaskStatus = "paused" // interrupted by graceful shutdown; resumable
 	StatusCompleted        TaskStatus = "completed"
 	StatusFailed           TaskStatus = "failed"
 )
