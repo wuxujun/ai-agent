@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -19,8 +20,31 @@ import (
 
 // RedisStore implements Store using a Redis database.
 type RedisStore struct {
-	client *redis.Client
+	client      *redis.Client
+	migrationMu sync.Mutex
 }
+
+const (
+	legacyTasksIndex    = "tasks:index"
+	tasksIndexV2        = "tasks:index:v2"
+	tasksIndexV2Marker  = "tasks:index:v2:migrated"
+	taskStatusIndexBase = "tasks:status:"
+)
+
+var saveTaskScript = redis.NewScript(`
+	local existing = redis.call('GET', KEYS[1])
+	if existing then
+		local ok, oldTask = pcall(cjson.decode, existing)
+		if ok and oldTask["status"] then
+			redis.call('ZREM', ARGV[5] .. oldTask["status"], ARGV[2])
+		end
+	end
+	redis.call('SET', KEYS[1], ARGV[1])
+	redis.call('ZADD', KEYS[2], 0, ARGV[2])
+	redis.call('ZADD', KEYS[3], ARGV[4], ARGV[2])
+	redis.call('ZADD', ARGV[5] .. ARGV[3], 0, ARGV[2])
+	return 1
+`)
 
 // NewRedisStore creates a new RedisStore using standard URL/connection options.
 func NewRedisStore(addr string, password string, db int) *RedisStore {
@@ -74,22 +98,20 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("failed to serialize task: %w", err)
 	}
 
-	err = r.client.Set(ctx, r.taskKey(task.ID), data, 0).Err()
+	err = saveTaskScript.Run(
+		ctx,
+		r.client,
+		[]string{r.taskKey(task.ID), tasksIndexV2, legacyTasksIndex},
+		data,
+		task.ID,
+		string(task.Status),
+		time.Now().UnixNano(),
+		taskStatusIndexBase,
+	).Err()
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "redis set failed")
+		span.SetStatus(codes.Error, "redis task save script failed")
 		return fmt.Errorf("failed to save task to redis: %w", err)
-	}
-
-	// Add to tasks:index ZSET
-	err = r.client.ZAdd(ctx, "tasks:index", redis.Z{
-		Score:  float64(time.Now().UnixNano()),
-		Member: task.ID,
-	}).Err()
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "redis zadd failed")
-		return fmt.Errorf("failed to index task in redis: %w", err)
 	}
 
 	if task.Status == types.StatusCompleted {
@@ -148,14 +170,24 @@ func (r *RedisStore) GetTask(ctx context.Context, id string) (*types.Task, error
 	return &task, nil
 }
 
-// ListTasks returns tasks stored in Redis using ZSET index.
-// Status filtering and pagination are applied in-process after fetching.
+// ListTasks returns tasks using lexicographically ordered ZSET indexes.
 func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task, error) {
 	ctx, span := tracer.Start(ctx, "store.list_tasks")
 	defer span.End()
 
-	// 1. Get task IDs from index ZSET. Limit to 1000 items to avoid infinite fetch.
-	ids, err := r.client.ZRange(ctx, "tasks:index", 0, 999).Result()
+	if err := r.ensureTaskIndexes(ctx); err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+
+	limit := resolveLimit(f.Limit, 50, 500)
+	index := tasksIndexV2
+	if f.Status != "" {
+		index = taskStatusIndexBase + string(f.Status)
+	}
+	start := int64(f.Offset)
+	stop := start + int64(limit) - 1
+	ids, err := r.client.ZRange(ctx, index, start, stop).Result()
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -166,7 +198,6 @@ func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task
 		return []*types.Task{}, nil
 	}
 
-	// 2. Fetch payloads in bulk using MGET
 	keys := make([]string, len(ids))
 	for i, id := range ids {
 		keys[i] = r.taskKey(id)
@@ -178,7 +209,6 @@ func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task
 		return nil, err
 	}
 
-	// 3. Deserialize and filter by status
 	var tasks []*types.Task
 	for _, valVal := range vals {
 		if valVal == nil {
@@ -192,30 +222,63 @@ func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task
 		if err := json.Unmarshal([]byte(valStr), &t); err != nil {
 			continue
 		}
-		if f.Status != "" && t.Status != f.Status {
-			continue
-		}
 		tasks = append(tasks, &t)
 	}
 
-	// 4. Sort by ID ASC to match SQL consistency
-	sort.Slice(tasks, func(i, j int) bool {
-		return tasks[i].ID < tasks[j].ID
-	})
-
-	// 5. Apply pagination
-	limit := resolveLimit(f.Limit, 50, 500)
-	offset := f.Offset
-	if offset >= len(tasks) {
-		span.SetAttributes(attribute.Int("agent.store.task_count", 0))
-		return []*types.Task{}, nil
-	}
-	tasks = tasks[offset:]
-	if len(tasks) > limit {
-		tasks = tasks[:limit]
-	}
 	span.SetAttributes(attribute.Int("agent.store.task_count", len(tasks)))
 	return tasks, nil
+}
+
+func (r *RedisStore) ensureTaskIndexes(ctx context.Context) error {
+	migrated, err := r.client.Exists(ctx, tasksIndexV2Marker).Result()
+	if err != nil || migrated > 0 {
+		return err
+	}
+
+	r.migrationMu.Lock()
+	defer r.migrationMu.Unlock()
+	migrated, err = r.client.Exists(ctx, tasksIndexV2Marker).Result()
+	if err != nil || migrated > 0 {
+		return err
+	}
+
+	ids, err := r.client.ZRange(ctx, legacyTasksIndex, 0, -1).Result()
+	if err != nil {
+		return err
+	}
+	const batchSize = 500
+	for start := 0; start < len(ids); start += batchSize {
+		end := start + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		keys := make([]string, len(batch))
+		for i, id := range batch {
+			keys[i] = r.taskKey(id)
+		}
+		values, err := r.client.MGet(ctx, keys...).Result()
+		if err != nil {
+			return err
+		}
+		pipe := r.client.TxPipeline()
+		for i, raw := range values {
+			text, ok := raw.(string)
+			if !ok {
+				continue
+			}
+			var task types.Task
+			if err := json.Unmarshal([]byte(text), &task); err != nil {
+				continue
+			}
+			pipe.ZAdd(ctx, tasksIndexV2, redis.Z{Score: 0, Member: batch[i]})
+			pipe.ZAdd(ctx, taskStatusIndexBase+string(task.Status), redis.Z{Score: 0, Member: batch[i]})
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return err
+		}
+	}
+	return r.client.Set(ctx, tasksIndexV2Marker, "1", 0).Err()
 }
 
 // ExistsTask returns true if a task with the given id already exists.
@@ -341,28 +404,52 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 var transitionScript = redis.NewScript(`
 	local taskKey = KEYS[1]
 	local toStatus = ARGV[1]
-	
+	local statusPrefix = ARGV[2]
+
 	local val = redis.call('GET', taskKey)
 	if not val then
 		return -1
 	end
-	
+
 	local task = cjson.decode(val)
 	local matched = false
-	for i = 2, #ARGV do
+	for i = 3, #ARGV do
 		if task["status"] == ARGV[i] then
 			matched = true
 			break
 		end
 	end
-	
+
 	if not matched then
 		return 0
 	end
-	
+
+	local oldStatus = task["status"]
 	task["status"] = toStatus
 	redis.call('SET', taskKey, cjson.encode(task))
+	redis.call('ZREM', statusPrefix .. oldStatus, task["id"])
+	redis.call('ZADD', statusPrefix .. toStatus, 0, task["id"])
 	return 1
+`)
+
+var acquireLeaseScript = redis.NewScript(`
+	local key = KEYS[1]
+	local owner = ARGV[1]
+	local ttl = tonumber(ARGV[2])
+	local current = redis.call('GET', key)
+	if not current or current == owner then
+		redis.call('SET', key, owner, 'PX', ttl)
+		return 1
+	end
+	return 0
+`)
+
+var releaseLeaseScript = redis.NewScript(`
+	local key = KEYS[1]
+	if redis.call('GET', key) == ARGV[1] then
+		return redis.call('DEL', key)
+	end
+	return 0
 `)
 
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
@@ -371,8 +458,9 @@ func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, fro
 	ctx, span := tracer.Start(ctx, "store.redis.try_transition_task_status")
 	defer span.End()
 
-	args := make([]any, 0, len(from)+1)
+	args := make([]any, 0, len(from)+2)
 	args = append(args, string(to))
+	args = append(args, taskStatusIndexBase)
 	for _, f := range from {
 		args = append(args, string(f))
 	}
@@ -390,3 +478,23 @@ func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, fro
 	return res == 1, nil
 }
 
+func (r *RedisStore) AcquireTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	if owner == "" || ttl <= 0 {
+		return false, nil
+	}
+	res, err := acquireLeaseScript.Run(
+		ctx,
+		r.client,
+		[]string{"task:lease:" + id},
+		owner,
+		ttl.Milliseconds(),
+	).Int64()
+	if err != nil {
+		return false, err
+	}
+	return res == 1, nil
+}
+
+func (r *RedisStore) ReleaseTaskLease(ctx context.Context, id, owner string) error {
+	return releaseLeaseScript.Run(ctx, r.client, []string{"task:lease:" + id}, owner).Err()
+}

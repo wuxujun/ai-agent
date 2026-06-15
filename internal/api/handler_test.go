@@ -248,12 +248,12 @@ func TestRunAllAlreadyRunningInDBDoesNotLeakReservation(t *testing.T) {
 	}
 	r := setupTestRouter(st, engine)
 
-	// Simulate a stale in-DB Running row (e.g. left over from a peer process
-	// or a crash). Status is not in {Created, AwaitingApproval}, so the
+	// Simulate an unsupported persisted state. The status is not in the allowed
+	// transition set, so the
 	// TryTransitionTaskStatus inside runAll will return false.
 	task := &types.Task{
 		ID:         "task-stale-running",
-		Status:     types.StatusRunning,
+		Status:     types.TaskStatus("invalid"),
 		MaxSteps:   5,
 		ToolBudget: 10,
 	}
@@ -287,6 +287,71 @@ func TestRunAllAlreadyRunningInDBDoesNotLeakReservation(t *testing.T) {
 	r.ServeHTTP(wCancel, reqCancel)
 	if wCancel.Code != http.StatusOK {
 		t.Errorf("cleanup cancel returned %d", wCancel.Code)
+	}
+}
+
+func TestRunLeaseBlocksPeerRunAndRunAll(t *testing.T) {
+	st := store.NewMemoryStore()
+	blockCh := make(chan struct{})
+	startedCh := make(chan struct{}, 1)
+	mp := &mockPlanner{blockCh: blockCh, startedCh: startedCh}
+	engine := &orchestrator.Engine{
+		Mode:     orchestrator.ModeLegacy,
+		Planner:  mp,
+		Executor: &mockExecutor{},
+		Store:    st,
+	}
+	// Separate routers create separate Handler.activeTasks maps, simulating two
+	// service instances that coordinate only through the shared Store lease.
+	r1 := setupTestRouter(st, engine)
+	r2 := setupTestRouter(st, engine)
+
+	task := &types.Task{
+		ID:         "task-peer-lease",
+		Status:     types.StatusCreated,
+		MaxSteps:   5,
+		ToolBudget: 10,
+	}
+	if err := st.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatalf("SaveFullTask: %v", err)
+	}
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-peer-lease/run", nil)
+		r1.ServeHTTP(w, req)
+		firstDone <- w
+	}()
+
+	select {
+	case <-startedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first /run to acquire lease")
+	}
+
+	wRun := httptest.NewRecorder()
+	reqRun, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-peer-lease/run", nil)
+	r2.ServeHTTP(wRun, reqRun)
+	if wRun.Code != http.StatusConflict {
+		t.Fatalf("peer /run status = %d, want 409: %s", wRun.Code, wRun.Body.String())
+	}
+
+	wRunAll := httptest.NewRecorder()
+	reqRunAll, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-peer-lease/run-all", nil)
+	r2.ServeHTTP(wRunAll, reqRunAll)
+	if wRunAll.Code != http.StatusConflict {
+		t.Fatalf("peer /run-all status = %d, want 409: %s", wRunAll.Code, wRunAll.Body.String())
+	}
+
+	close(blockCh)
+	select {
+	case w := <-firstDone:
+		if w.Code != http.StatusOK {
+			t.Fatalf("first /run status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first /run did not finish after planner was released")
 	}
 }
 
@@ -564,4 +629,3 @@ func TestAuthMiddleware(t *testing.T) {
 		t.Errorf("expected 200 with correct Authorization Bearer, got %d: %s", w4.Code, w4.Body.String())
 	}
 }
-

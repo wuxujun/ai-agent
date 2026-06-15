@@ -18,6 +18,12 @@ type MemoryStore struct {
 	mu       sync.RWMutex
 	tasks    map[string]*types.Task
 	memories map[string]*types.Memory
+	leases   map[string]memoryLease
+}
+
+type memoryLease struct {
+	owner     string
+	expiresAt time.Time
 }
 
 // NewMemoryStore initializes a new MemoryStore.
@@ -25,9 +31,9 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		tasks:    make(map[string]*types.Task),
 		memories: make(map[string]*types.Memory),
+		leases:   make(map[string]memoryLease),
 	}
 }
-
 
 // SaveFullTask saves or updates a task and its traces in memory.
 func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error {
@@ -267,3 +273,32 @@ func (m *MemoryStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 	return true, nil
 }
 
+func (m *MemoryStore) AcquireTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if owner == "" || ttl <= 0 {
+		return false, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	if lease, ok := m.leases[id]; ok && lease.owner != owner && lease.expiresAt.After(now) {
+		return false, nil
+	}
+	m.leases[id] = memoryLease{owner: owner, expiresAt: now.Add(ttl)}
+	return true, nil
+}
+
+func (m *MemoryStore) ReleaseTaskLease(ctx context.Context, id, owner string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lease, ok := m.leases[id]; ok && lease.owner == owner {
+		delete(m.leases, id)
+	}
+	return nil
+}

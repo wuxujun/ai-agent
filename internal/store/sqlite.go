@@ -62,9 +62,13 @@ CREATE TABLE IF NOT EXISTS traces (
 	goal TEXT NOT NULL,
 	action TEXT NOT NULL,
 	query TEXT NOT NULL,
-	observation TEXT NOT NULL,
-	evidence_json TEXT NOT NULL,
-	FOREIGN KEY(task_id) REFERENCES tasks(id)
+		observation TEXT NOT NULL,
+		evidence_json TEXT NOT NULL,
+		error_text TEXT NOT NULL DEFAULT '',
+		prompt_tokens INTEGER NOT NULL DEFAULT 0,
+		completion_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0,
+		FOREIGN KEY(task_id) REFERENCES tasks(id)
 );
 
 CREATE TABLE IF NOT EXISTS memories (
@@ -76,6 +80,12 @@ CREATE TABLE IF NOT EXISTS memories (
 	timestamp DATETIME NOT NULL,
 	embedding_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS task_leases (
+	task_id TEXT PRIMARY KEY,
+	owner TEXT NOT NULL,
+	expires_at INTEGER NOT NULL
+);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
@@ -83,6 +93,10 @@ CREATE TABLE IF NOT EXISTS memories (
 	// Migrate: add agent_role column to traces if it doesn't exist yet.
 	// SQLite returns an error if the column already exists; we ignore it.
 	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN agent_role TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN error_text TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0`)
 	// Migrate: token_budget and memories_json on tasks. These were added to
 	// close two silent breaks: TokenBudget was never persisted (so the planner
 	// token budget gate was always a dead branch) and task.Memories survived
@@ -194,9 +208,11 @@ func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces [
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO traces
-				(task_id, step, goal, action, query, observation, evidence_json, agent_role)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					(task_id, step, goal, action, query, observation, evidence_json, agent_role,
+					 error_text, prompt_tokens, completion_tokens, total_tokens)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
+			tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
 		); err != nil {
 			return err
 		}
@@ -289,9 +305,11 @@ final_answer=excluded.final_answer
 			}
 			if _, err := tx.ExecContext(ctx,
 				`INSERT OR IGNORE INTO traces
-					(task_id, step, goal, action, query, observation, evidence_json, agent_role)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						(task_id, step, goal, action, query, observation, evidence_json, agent_role,
+						 error_text, prompt_tokens, completion_tokens, total_tokens)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				task.ID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
+				tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
 			); err != nil {
 				span.RecordError(err)
 				return err
@@ -380,7 +398,8 @@ FROM tasks WHERE id = ?
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT step, goal, action, query, observation, evidence_json, agent_role
+	SELECT step, goal, action, query, observation, evidence_json, agent_role,
+	       error_text, prompt_tokens, completion_tokens, total_tokens
 FROM traces
 WHERE task_id = ?
 ORDER BY step ASC, id ASC
@@ -394,7 +413,10 @@ ORDER BY step ASC, id ASC
 		var tr types.StepTrace
 		var evidenceJSON string
 		var agentRole string
-		if err := rows.Scan(&tr.Step, &tr.Goal, &tr.Action, &tr.Query, &tr.Observation, &evidenceJSON, &agentRole); err != nil {
+		if err := rows.Scan(
+			&tr.Step, &tr.Goal, &tr.Action, &tr.Query, &tr.Observation, &evidenceJSON, &agentRole,
+			&tr.Error, &tr.TokenUsage.PromptTokens, &tr.TokenUsage.CompletionTokens, &tr.TokenUsage.TotalTokens,
+		); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(evidenceJSON), &tr.Evidence); err != nil {
@@ -619,3 +641,28 @@ func (s *SQLiteStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 	return true, nil
 }
 
+func (s *SQLiteStore) AcquireTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	if owner == "" || ttl <= 0 {
+		return false, nil
+	}
+	now := time.Now().UnixNano()
+	expiresAt := time.Now().Add(ttl).UnixNano()
+	res, err := s.db.ExecContext(ctx, `
+INSERT INTO task_leases (task_id, owner, expires_at)
+VALUES (?, ?, ?)
+ON CONFLICT(task_id) DO UPDATE SET
+	owner=excluded.owner,
+	expires_at=excluded.expires_at
+WHERE task_leases.expires_at <= ? OR task_leases.owner = excluded.owner
+`, id, owner, expiresAt, now)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	return rows > 0, err
+}
+
+func (s *SQLiteStore) ReleaseTaskLease(ctx context.Context, id, owner string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM task_leases WHERE task_id = ? AND owner = ?`, id, owner)
+	return err
+}

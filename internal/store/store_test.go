@@ -3,11 +3,13 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -102,6 +104,12 @@ func TestStores(t *testing.T) {
 						Action:      "find_files",
 						Query:       "*.go",
 						Observation: "found main.go",
+						Error:       "sample trace error",
+						TokenUsage: types.TokenUsage{
+							PromptTokens:     11,
+							CompletionTokens: 7,
+							TotalTokens:      18,
+						},
 						Evidence: []types.Evidence{
 							{
 								Path:  "main.go",
@@ -210,6 +218,12 @@ func TestStores(t *testing.T) {
 			if tr1.Observation != tr2.Observation {
 				t.Errorf("expected trace Observation %q, got %q", tr1.Observation, tr2.Observation)
 			}
+			if tr1.Error != tr2.Error {
+				t.Errorf("expected trace Error %q, got %q", tr1.Error, tr2.Error)
+			}
+			if tr1.TokenUsage != tr2.TokenUsage {
+				t.Errorf("expected trace TokenUsage %+v, got %+v", tr1.TokenUsage, tr2.TokenUsage)
+			}
 
 			if len(tr1.Evidence) != len(tr2.Evidence) {
 				t.Fatalf("expected evidence len %d, got %d", len(tr1.Evidence), len(tr2.Evidence))
@@ -313,7 +327,119 @@ func TestStores(t *testing.T) {
 			if err != sql.ErrNoRows {
 				t.Errorf("expected sql.ErrNoRows for non-existent task, got %v", err)
 			}
+
+			// ── Scenario E: owner-scoped execution lease ────────
+			leaseID := "lease-" + name
+			acquired, err := s.AcquireTaskLease(ctx, leaseID, "owner-a", time.Minute)
+			if err != nil || !acquired {
+				t.Fatalf("AcquireTaskLease owner-a = %v, %v; want true, nil", acquired, err)
+			}
+			acquired, err = s.AcquireTaskLease(ctx, leaseID, "owner-b", time.Minute)
+			if err != nil || acquired {
+				t.Fatalf("AcquireTaskLease competing owner = %v, %v; want false, nil", acquired, err)
+			}
+			if err := s.ReleaseTaskLease(ctx, leaseID, "owner-b"); err != nil {
+				t.Fatalf("ReleaseTaskLease wrong owner: %v", err)
+			}
+			acquired, err = s.AcquireTaskLease(ctx, leaseID, "owner-b", time.Minute)
+			if err != nil || acquired {
+				t.Fatalf("wrong-owner release removed lease: acquired=%v err=%v", acquired, err)
+			}
+			if err := s.ReleaseTaskLease(ctx, leaseID, "owner-a"); err != nil {
+				t.Fatalf("ReleaseTaskLease owner-a: %v", err)
+			}
+			acquired, err = s.AcquireTaskLease(ctx, leaseID, "owner-b", time.Minute)
+			if err != nil || !acquired {
+				t.Fatalf("AcquireTaskLease after release = %v, %v; want true, nil", acquired, err)
+			}
+			_ = s.ReleaseTaskLease(ctx, leaseID, "owner-b")
+
+			expiringLeaseID := leaseID + "-expiring"
+			acquired, err = s.AcquireTaskLease(ctx, expiringLeaseID, "owner-a", 10*time.Millisecond)
+			if err != nil || !acquired {
+				t.Fatalf("AcquireTaskLease expiring owner = %v, %v", acquired, err)
+			}
+			time.Sleep(25 * time.Millisecond)
+			acquired, err = s.AcquireTaskLease(ctx, expiringLeaseID, "owner-b", time.Minute)
+			if err != nil || !acquired {
+				t.Fatalf("AcquireTaskLease after expiry = %v, %v; want true, nil", acquired, err)
+			}
+			_ = s.ReleaseTaskLease(ctx, expiringLeaseID, "owner-b")
 		})
+	}
+}
+
+func TestRedisListTasksBeyondThousand(t *testing.T) {
+	redisURL := os.Getenv("TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Skip("TEST_REDIS_URL not set")
+	}
+	st, err := store.NewRedisStoreFromURL(redisURL)
+	if err != nil {
+		t.Fatalf("NewRedisStoreFromURL: %v", err)
+	}
+	defer st.Close()
+
+	opts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		t.Fatalf("redis.ParseURL: %v", err)
+	}
+	admin := redis.NewClient(opts)
+	defer admin.Close()
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("pagination-%d", time.Now().UnixNano())
+	status := types.TaskStatus(prefix)
+	ids := make([]string, 1005)
+	keys := make([]string, len(ids))
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%s-%04d", prefix, i)
+		keys[i] = "task:" + ids[i]
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		pipe := admin.TxPipeline()
+		pipe.Del(cleanupCtx, keys...)
+		members := make([]any, len(ids))
+		for i, id := range ids {
+			members[i] = id
+		}
+		pipe.ZRem(cleanupCtx, "tasks:index", members...)
+		pipe.ZRem(cleanupCtx, "tasks:index:v2", members...)
+		pipe.Del(cleanupCtx, "tasks:status:"+string(status))
+		_, _ = pipe.Exec(cleanupCtx)
+	})
+
+	for i := range ids {
+		task := &types.Task{
+			ID:         ids[i],
+			Status:     status,
+			MaxSteps:   1,
+			ToolBudget: 1,
+		}
+		if err := st.SaveFullTask(ctx, task); err != nil {
+			t.Fatalf("SaveFullTask %d: %v", i, err)
+		}
+	}
+
+	var got []string
+	for _, offset := range []int{0, 500, 1000} {
+		page, err := st.ListTasks(ctx, store.ListFilter{Status: status, Limit: 500, Offset: offset})
+		if err != nil {
+			t.Fatalf("ListTasks offset %d: %v", offset, err)
+		}
+		for _, task := range page {
+			got = append(got, task.ID)
+		}
+	}
+	if len(got) != len(ids) {
+		t.Fatalf("listed %d tasks, want %d", len(got), len(ids))
+	}
+	for i := range ids {
+		if got[i] != ids[i] {
+			t.Fatalf("task %d = %q, want %q", i, got[i], ids[i])
+		}
 	}
 }
 

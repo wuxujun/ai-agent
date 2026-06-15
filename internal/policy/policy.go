@@ -27,6 +27,13 @@ var allowedCommands = map[string]bool{
 }
 
 var lookupIP = net.LookupIP
+var dialResolvedIP = func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+	}
+	return dialer.DialContext(ctx, network, address)
+}
 
 // blockedSystemPaths lists path prefixes that are unconditionally forbidden as
 // workspace roots, even if they happen to exist and pass other checks. These
@@ -281,31 +288,37 @@ func evalExistingPath(path string) (string, error) {
 // SafeHTTPClient returns an http.Client designed to protect against SSRF and DNS Rebinding.
 // It intercepts and validates IP addresses during connection Dialing and redirection.
 func SafeHTTPClient(timeout time.Duration) *http.Client {
-	dialer := &net.Dialer{
-		Timeout:   timeout,
-		KeepAlive: 30 * time.Second,
-	}
-
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, _, err := net.SplitHostPort(addr)
+			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, fmt.Errorf("SSRF guard: invalid address: %w", err)
 			}
 
-			ips, err := net.LookupIP(host)
+			var ips []net.IP
+			if ip := net.ParseIP(host); ip != nil {
+				ips = []net.IP{ip}
+			} else {
+				ips, err = lookupIP(host)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("SSRF guard: DNS lookup failed: %w", err)
 			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("SSRF guard: DNS lookup returned no addresses")
+			}
 
-			// Validate all resolved IPs immediately prior to dialing
 			for _, ip := range ips {
 				if isBlockedIP(ip) {
 					return nil, fmt.Errorf("SSRF guard: connection to private/restricted IP blocked: %s", ip)
 				}
 			}
 
-			return dialer.DialContext(ctx, network, addr)
+			// Dial the exact address that was just validated. Dialing addr again
+			// would resolve the hostname a second time and reopen a DNS-rebinding
+			// window between validation and connection establishment.
+			target := net.JoinHostPort(ips[0].String(), port)
+			return dialResolvedIP(ctx, network, target, timeout)
 		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
@@ -330,4 +343,3 @@ func SafeHTTPClient(timeout time.Duration) *http.Client {
 		},
 	}
 }
-

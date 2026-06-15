@@ -60,7 +60,11 @@ func (s *ctxAwareStore) QueryMemories(ctx context.Context, query string, embeddi
 func (s *ctxAwareStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
 	return true, nil
 }
-func (s *ctxAwareStore) Close() error { return nil }
+func (s *ctxAwareStore) AcquireTaskLease(context.Context, string, string, time.Duration) (bool, error) {
+	return true, nil
+}
+func (s *ctxAwareStore) ReleaseTaskLease(context.Context, string, string) error { return nil }
+func (s *ctxAwareStore) Close() error                                           { return nil }
 
 // TestSuspendForApprovalAwaitingSaveUsesDetachedCtx is the regression test for
 // the silent break where SuspendForApproval used the caller's ctx for the

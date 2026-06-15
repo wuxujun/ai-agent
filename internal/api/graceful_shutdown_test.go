@@ -65,7 +65,11 @@ func (s *inMemShutdownStore) TryTransitionTaskStatus(_ context.Context, id strin
 	}
 	return false, nil
 }
-func (s *inMemShutdownStore) Close() error { return nil }
+func (s *inMemShutdownStore) AcquireTaskLease(_ context.Context, _, _ string, _ time.Duration) (bool, error) {
+	return true, nil
+}
+func (s *inMemShutdownStore) ReleaseTaskLease(_ context.Context, _, _ string) error { return nil }
+func (s *inMemShutdownStore) Close() error                                          { return nil }
 
 // TestShutdownRollback_RunningTaskPaused verifies that Shutdown transitions
 // a task that was running (but interrupted by shutdown) to StatusPaused.

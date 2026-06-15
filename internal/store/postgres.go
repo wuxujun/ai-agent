@@ -62,9 +62,13 @@ CREATE TABLE IF NOT EXISTS traces (
 	action TEXT NOT NULL,
 	query TEXT NOT NULL,
 	observation TEXT NOT NULL,
-	evidence_json TEXT NOT NULL,
-	agent_role TEXT NOT NULL DEFAULT '',
-	FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+		evidence_json TEXT NOT NULL,
+		agent_role TEXT NOT NULL DEFAULT '',
+		error_text TEXT NOT NULL DEFAULT '',
+		prompt_tokens INT NOT NULL DEFAULT 0,
+		completion_tokens INT NOT NULL DEFAULT 0,
+		total_tokens INT NOT NULL DEFAULT 0,
+		FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS memories (
@@ -76,6 +80,12 @@ CREATE TABLE IF NOT EXISTS memories (
 	timestamp TIMESTAMP NOT NULL,
 	embedding_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS task_leases (
+	task_id VARCHAR(255) PRIMARY KEY,
+	owner TEXT NOT NULL,
+	expires_at BIGINT NOT NULL
+);
 `
 	_, err := p.db.Exec(schema)
 	if err != nil {
@@ -85,6 +95,10 @@ CREATE TABLE IF NOT EXISTS memories (
 	// Postgres supports IF NOT EXISTS on ADD COLUMN since 9.6.
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget INT NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS memories_json TEXT NOT NULL DEFAULT '[]'`)
+	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS error_text TEXT NOT NULL DEFAULT ''`)
+	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS prompt_tokens INT NOT NULL DEFAULT 0`)
+	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS completion_tokens INT NOT NULL DEFAULT 0`)
+	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS total_tokens INT NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
 	return nil
 }
@@ -188,10 +202,12 @@ func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO traces
-				(task_id, step, goal, action, query, observation, evidence_json, agent_role)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (task_id, step) DO NOTHING`,
+					(task_id, step, goal, action, query, observation, evidence_json, agent_role,
+					 error_text, prompt_tokens, completion_tokens, total_tokens)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+				ON CONFLICT (task_id, step) DO NOTHING`,
 			taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
+			tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
 		); err != nil {
 			return err
 		}
@@ -284,10 +300,12 @@ final_answer=EXCLUDED.final_answer`,
 			}
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO traces
-					(task_id, step, goal, action, query, observation, evidence_json, agent_role)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-				ON CONFLICT (task_id, step) DO NOTHING`,
+						(task_id, step, goal, action, query, observation, evidence_json, agent_role,
+						 error_text, prompt_tokens, completion_tokens, total_tokens)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+					ON CONFLICT (task_id, step) DO NOTHING`,
 				task.ID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
+				tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
 			); err != nil {
 				span.RecordError(err)
 				return err
@@ -377,7 +395,8 @@ FROM tasks WHERE id = $1
 	}
 
 	rows, err := p.db.QueryContext(ctx, `
-SELECT step, goal, action, query, observation, evidence_json, agent_role
+	SELECT step, goal, action, query, observation, evidence_json, agent_role,
+	       error_text, prompt_tokens, completion_tokens, total_tokens
 FROM traces
 WHERE task_id = $1
 ORDER BY step ASC, id ASC
@@ -390,7 +409,10 @@ ORDER BY step ASC, id ASC
 	for rows.Next() {
 		var tr types.StepTrace
 		var evidenceJSON, agentRole string
-		if err := rows.Scan(&tr.Step, &tr.Goal, &tr.Action, &tr.Query, &tr.Observation, &evidenceJSON, &agentRole); err != nil {
+		if err := rows.Scan(
+			&tr.Step, &tr.Goal, &tr.Action, &tr.Query, &tr.Observation, &evidenceJSON, &agentRole,
+			&tr.Error, &tr.TokenUsage.PromptTokens, &tr.TokenUsage.CompletionTokens, &tr.TokenUsage.TotalTokens,
+		); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(evidenceJSON), &tr.Evidence); err != nil {
@@ -596,3 +618,28 @@ func (p *PostgresStore) TryTransitionTaskStatus(ctx context.Context, id string, 
 	return true, nil
 }
 
+func (p *PostgresStore) AcquireTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	if owner == "" || ttl <= 0 {
+		return false, nil
+	}
+	now := time.Now().UnixNano()
+	expiresAt := time.Now().Add(ttl).UnixNano()
+	res, err := p.db.ExecContext(ctx, `
+INSERT INTO task_leases (task_id, owner, expires_at)
+VALUES ($1, $2, $3)
+ON CONFLICT(task_id) DO UPDATE SET
+	owner=EXCLUDED.owner,
+	expires_at=EXCLUDED.expires_at
+WHERE task_leases.expires_at <= $4 OR task_leases.owner = EXCLUDED.owner
+`, id, owner, expiresAt, now)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	return rows > 0, err
+}
+
+func (p *PostgresStore) ReleaseTaskLease(ctx context.Context, id, owner string) error {
+	_, err := p.db.ExecContext(ctx, `DELETE FROM task_leases WHERE task_id = $1 AND owner = $2`, id, owner)
+	return err
+}

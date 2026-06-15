@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
@@ -46,6 +47,7 @@ type Handler struct {
 // against; the cancel function is the bgCtx cancel that cancelTask should fire.
 type activeRun struct {
 	cancel context.CancelFunc
+	owner  string
 }
 
 type CreateTaskRequest struct {
@@ -257,6 +259,39 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		return
 	}
 
+	owner := uuid.NewString()
+	run := &activeRun{cancel: cancel, owner: owner}
+	h.activeTasksMu.Lock()
+	if _, exists := h.activeTasks[task.ID]; exists {
+		h.activeTasksMu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": "task is already running", "task_id": task.ID})
+		return
+	}
+	h.activeTasks[task.ID] = run
+	h.activeTasksMu.Unlock()
+	defer func() {
+		h.activeTasksMu.Lock()
+		if cur, ok := h.activeTasks[task.ID]; ok && cur == run {
+			delete(h.activeTasks, task.ID)
+		}
+		h.activeTasksMu.Unlock()
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer releaseCancel()
+		if err := h.store.ReleaseTaskLease(releaseCtx, task.ID, owner); err != nil {
+			log.Warn("failed to release task lease", "task_id", task.ID, "error", err)
+		}
+	}()
+
+	acquired, err := h.store.AcquireTaskLease(ctx, task.ID, owner, 90*time.Second)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	if !acquired {
+		c.JSON(http.StatusConflict, gin.H{"error": "task is already running on another instance", "task_id": task.ID})
+		return
+	}
+
 	execErr := h.engine.Next(ctx, task)
 	if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
 		c.Error(saveErr)
@@ -300,7 +335,8 @@ func (h *Handler) runAll(c *gin.Context) {
 		timeout = 10 * time.Minute
 	}
 	bgCtx, bgCancel := context.WithTimeout(context.Background(), timeout)
-	run := &activeRun{cancel: bgCancel}
+	owner := uuid.NewString()
+	run := &activeRun{cancel: bgCancel, owner: owner}
 
 	h.activeTasksMu.Lock()
 	if _, exists := h.activeTasks[task.ID]; exists {
@@ -315,12 +351,31 @@ func (h *Handler) runAll(c *gin.Context) {
 	h.activeTasks[task.ID] = run
 	h.activeTasksMu.Unlock()
 
+	acquired, err := h.store.AcquireTaskLease(loadCtx, task.ID, owner, timeout+30*time.Second)
+	if err != nil || !acquired {
+		h.activeTasksMu.Lock()
+		if cur, ok := h.activeTasks[task.ID]; ok && cur == run {
+			delete(h.activeTasks, task.ID)
+		}
+		h.activeTasksMu.Unlock()
+		bgCancel()
+		if err != nil {
+			c.Error(err)
+			return
+		}
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "task is already running on another instance",
+			"task_id": task.ID,
+		})
+		return
+	}
+
 	// Perform atomic DB state transition to guard against multi-instance races.
 	// The activeTasks reservation already serializes in-process callers; this
 	// check protects against a peer process holding its own reservation.
 	// StatusPaused is accepted here to support resuming tasks that were
 	// interrupted by a previous graceful shutdown (P1 rollback).
-	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusCreated, types.StatusAwaitingApproval, types.StatusPaused}, types.StatusRunning)
+	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusCreated, types.StatusRunning, types.StatusAwaitingApproval, types.StatusPaused}, types.StatusRunning)
 	if err != nil || !success {
 		// Reservation cleanup with compare-and-delete so we never erase a slot
 		// some other goroutine just installed (cannot happen today because the
@@ -331,6 +386,11 @@ func (h *Handler) runAll(c *gin.Context) {
 		}
 		h.activeTasksMu.Unlock()
 		bgCancel()
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if releaseErr := h.store.ReleaseTaskLease(releaseCtx, task.ID, owner); releaseErr != nil {
+			log.Warn("failed to release task lease after transition rejection", "task_id", task.ID, "error", releaseErr)
+		}
+		releaseCancel()
 
 		if err != nil {
 			c.Error(err)
@@ -362,6 +422,11 @@ func (h *Handler) runAll(c *gin.Context) {
 				delete(h.activeTasks, task.ID)
 			}
 			h.activeTasksMu.Unlock()
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if err := h.store.ReleaseTaskLease(releaseCtx, task.ID, owner); err != nil {
+				log.Warn("failed to release task lease", "task_id", task.ID, "error", err)
+			}
+			releaseCancel()
 			bgCancel()
 		}()
 
@@ -515,10 +580,10 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 			ids = append(ids, p.ID)
 		}
 		c.JSON(http.StatusConflict, gin.H{
-			"error":          "multiple pending approvals; specify approval_id",
-			"pending_count":  len(pending),
-			"approval_ids":   ids,
-			"pending":        pending,
+			"error":         "multiple pending approvals; specify approval_id",
+			"pending_count": len(pending),
+			"approval_ids":  ids,
+			"pending":       pending,
 		})
 		return
 	}
@@ -672,4 +737,3 @@ func (h *Handler) CancelTaskByID(taskID string) bool {
 	run.cancel()
 	return true
 }
-
