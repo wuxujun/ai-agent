@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -114,5 +115,50 @@ func TestApprovalBusFallbackResolve(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("channel did not receive result in time")
+	}
+}
+
+// TestApprovalBusNoFallbackOnNonEmptyApprovalID verifies that a stale approval message carrying
+// a non-empty approval_id that fails to resolve (because it is already resolved) does NOT fall back
+// to resolving a newer, different pending approval under the same task_id.
+func TestApprovalBusNoFallbackOnNonEmptyApprovalID(t *testing.T) {
+	const taskID = "task-stale-test"
+
+	// 1. Register and resolve the first approval
+	req1 := &types.ApprovalRequest{TaskID: taskID, Action: "write_file"}
+	approvalID1, ch1 := RegisterApproval(taskID, req1)
+	ResolveApprovalByID(approvalID1, types.ApprovalResult{Approved: true})
+	<-ch1 // drain the channel
+
+	// 2. Register a new pending approval for the same task
+	req2 := &types.ApprovalRequest{TaskID: taskID, Action: "execute_code"}
+	approvalID2, ch2 := RegisterApproval(taskID, req2)
+	defer RemoveApproval(approvalID2)
+
+	// 3. Dispatch a stale pub/sub message referencing approvalID1 and taskID
+	b := &ApprovalBus{}
+	bm := busMessage{
+		Type:       "approve",
+		ApprovalID: approvalID1,
+		TaskID:     taskID,
+		Result:     &types.ApprovalResult{Approved: true, Message: "stale auto-approve"},
+	}
+	payload, err := json.Marshal(bm)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// This should NOT resolve the newer pending approvalID2
+	b.dispatchApproval(&redis.Message{
+		Channel: approvalChannel,
+		Payload: string(payload),
+	})
+
+	// 4. Assert that ch2 did not receive the approval
+	select {
+	case res := <-ch2:
+		t.Fatalf("security violation: newer approval was silently resolved by stale ID: %+v", res)
+	case <-time.After(50 * time.Millisecond):
+		// Expected: no fallback resolved the new approval request.
 	}
 }

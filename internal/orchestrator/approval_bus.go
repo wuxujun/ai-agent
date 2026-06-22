@@ -134,12 +134,11 @@ func (b *ApprovalBus) dispatchApproval(msg *redis.Message) {
 	if bm.Type != "approve" || bm.Result == nil {
 		return
 	}
-	// Try by specific approval ID first; fall back to task's unique pending.
+	// Try by specific approval ID first; fall back to task's unique pending if approval ID is empty.
 	var resolved bool
 	if bm.ApprovalID != "" {
 		resolved = ResolveApprovalByID(bm.ApprovalID, *bm.Result)
-	}
-	if !resolved {
+	} else {
 		resolved = ResolveApproval(bm.TaskID, *bm.Result)
 	}
 	if resolved {

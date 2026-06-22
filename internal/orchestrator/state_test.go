@@ -45,8 +45,6 @@ func TestStateTransitions(t *testing.T) {
 	}
 }
 
-
-
 type errorPlanner struct{}
 
 func (e *errorPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*planner.PlanDecision, error) {

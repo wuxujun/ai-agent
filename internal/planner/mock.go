@@ -35,7 +35,7 @@ func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fu
 				FinalAnswer:    "empty goal provided",
 				Actions: []ActionCall{
 					{
-						Action: "none",
+						Action:     "none",
 						Parameters: map[string]any{},
 					},
 				},
@@ -68,10 +68,16 @@ func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fu
 			},
 		}
 	} else {
+		query := task.Goal
+		if len(task.Trace) > 2 {
+			query = task.Trace[2].Query
+		} else if len(task.Trace) > 0 {
+			query = task.Trace[len(task.Trace)-1].Query
+		}
 		decision = &PlanDecision{
 			ThoughtSummary: "Answer found in file",
 			Stop:           true,
-			FinalAnswer:    "The answer is inside " + task.Trace[2].Query,
+			FinalAnswer:    "The answer is inside " + query,
 			Actions: []ActionCall{
 				{
 					Action:     "none",
