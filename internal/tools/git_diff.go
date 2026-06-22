@@ -36,7 +36,10 @@ func (t *GitDiffTool) Validate(params map[string]any) error {
 		// Whole-workspace diff is the documented default.
 		return nil
 	}
-	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
+	// Reject a leading '-' so the value can never be parsed as a git option
+	// (e.g. "--output=/tmp/evil", "--no-index"). Combined with the "--"
+	// separator in Execute, this closes the argument-injection vector.
+	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.HasPrefix(path, "-") {
 		return fmt.Errorf("invalid git_diff path")
 	}
 	return nil
@@ -47,10 +50,19 @@ func (t *GitDiffTool) Execute(ctx context.Context, workspace string, params map[
 		return nil, fmt.Errorf("git_diff policy violation: %w", err)
 	}
 
+	// Re-validate at the point of use so the path-hardening invariant holds
+	// even if a caller reaches Execute without going through Validate.
+	if err := t.Validate(params); err != nil {
+		return nil, fmt.Errorf("git_diff policy violation: %w", err)
+	}
+
 	args := []string{"diff"}
 	path, _ := params["path"].(string)
+	path = strings.TrimSpace(path)
 	if path != "" {
-		args = append(args, path)
+		// Separate options from paths with "--" so the value can never be
+		// interpreted as a git flag, even if validation is ever bypassed.
+		args = append(args, "--", path)
 	}
 
 	out, err := RunCommand(ctx, workspace, "git", args...)

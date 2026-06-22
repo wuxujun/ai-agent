@@ -233,26 +233,11 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		return nil
 	}
 
-	rejected := false
-	for i := range decision.Actions {
-		ac := &decision.Actions[i]
-		tool, ok := tools.Get(ac.Action)
-		if ok && tool.RiskLevel() == types.RiskLevelHigh {
-			approved, newParams, err := e.SuspendForApproval(ctx, task, ac.Action, ac.Parameters)
-			if err != nil {
-				engineLog.Error("action approval error", "action", ac.Action, "error", err)
-				span.RecordError(err)
-				span.SetStatus(codes.Error, "approval failed")
-				return err
-			}
-			if !approved {
-				rejected = true
-				break
-			}
-			if newParams != nil {
-				ac.Parameters = newParams
-			}
-		}
+	rejected, err := e.enforceApprovals(ctx, task, decision)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "approval failed")
+		return err
 	}
 
 	if rejected {
@@ -309,6 +294,39 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	)
 
 	return nil
+}
+
+// enforceApprovals gates every RiskLevelHigh action in the decision behind the
+// human approval flow before any tool runs. It returns rejected=true if the user
+// rejected an action (the rejection trace is appended by SuspendForApproval, so
+// the caller should skip execution and let the planner adapt next cycle); err is
+// non-nil only on approval-flow failure (e.g. context cancellation).
+//
+// This is the single source of truth for high-risk gating across orchestrator
+// modes. It MUST be called before Executor.Execute in every mode that runs an
+// LLM-chosen PlanDecision — previously the gate lived only in runLegacyNext, so
+// the default eino mode (and step/adk) executed write_file/execute_code with no
+// approval at all (see BUG_REPORT.md #1).
+func (e *Engine) enforceApprovals(ctx context.Context, task *types.Task, decision *planner.PlanDecision) (rejected bool, err error) {
+	for i := range decision.Actions {
+		ac := &decision.Actions[i]
+		tool, ok := tools.Get(ac.Action)
+		if !ok || tool.RiskLevel() != types.RiskLevelHigh {
+			continue
+		}
+		approved, newParams, apErr := e.SuspendForApproval(ctx, task, ac.Action, ac.Parameters)
+		if apErr != nil {
+			engineLog.Error("action approval error", "task_id", task.ID, "action", ac.Action, "error", apErr)
+			return false, apErr
+		}
+		if !approved {
+			return true, nil
+		}
+		if newParams != nil {
+			ac.Parameters = newParams
+		}
+	}
+	return false, nil
 }
 
 func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error) {

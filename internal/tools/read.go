@@ -1,9 +1,9 @@
 package tools
 
 import (
-	"github.com/wuxujun/ai-agent/internal/types"
 	"context"
 	"fmt"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +20,6 @@ func (t *ReadFileTool) Name() string {
 func (t *ReadFileTool) RiskLevel() types.RiskLevel {
 	return types.RiskLevelLow
 }
-
 
 func (t *ReadFileTool) Description() string {
 	return "Read the contents of a file in the workspace"

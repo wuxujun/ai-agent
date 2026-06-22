@@ -65,8 +65,8 @@ func TestListIsSorted(t *testing.T) {
 
 type stubTool struct{ name string }
 
-func (s *stubTool) Name() string             { return s.name }
-func (s *stubTool) Description() string       { return "stub" }
+func (s *stubTool) Name() string               { return s.name }
+func (s *stubTool) Description() string        { return "stub" }
 func (s *stubTool) Parameters() map[string]any { return map[string]any{} }
 func (s *stubTool) RiskLevel() types.RiskLevel { return types.RiskLevelLow }
 func (s *stubTool) Execute(ctx context.Context, ws string, p map[string]interface{}) (*ToolResult, error) {

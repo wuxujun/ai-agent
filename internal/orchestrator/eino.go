@@ -225,6 +225,19 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 		actionNames = append(actionNames, ac.Action)
 	}
 
+	// Gate high-risk actions behind human approval before any tool runs. This
+	// must mirror runLegacyNext — without it the default eino mode executed
+	// write_file/execute_code with no approval gate at all (BUG_REPORT.md #1).
+	rejected, apErr := e.enforceApprovals(ctx, task, decision)
+	if apErr != nil {
+		return state, apErr
+	}
+	if rejected {
+		// Action rejected by user. SuspendForApproval already appended the
+		// rejection trace; skip execution so the planner can adapt next cycle.
+		return state, nil
+	}
+
 	olog.Info("executing actions", "task_id", task.ID, "actions", actionNames)
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)

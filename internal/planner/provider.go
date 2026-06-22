@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -257,6 +258,27 @@ type ollamaProvider struct{}
 func (p *ollamaProvider) Name() ProviderType { return ProviderOllama }
 
 func (p *ollamaProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
+	// Perform a quick health check to verify if the Ollama local service is running.
+	// This check is limited to local loopback URLs to avoid failing unit tests that mock remote endpoints.
+	isLocal := strings.Contains(req.BaseURL, "localhost") || strings.Contains(req.BaseURL, "127.0.0.1")
+	if isLocal {
+		healthCheckURL := strings.Replace(req.BaseURL, "/api/chat", "", 1)
+		if healthCheckURL == req.BaseURL {
+			if idx := strings.Index(req.BaseURL, "/api"); idx != -1 {
+				healthCheckURL = req.BaseURL[:idx]
+			}
+		}
+		healthClient := &http.Client{Timeout: 2 * time.Second}
+		healthReq, err := http.NewRequestWithContext(ctx, "GET", healthCheckURL, nil)
+		if err == nil {
+			if resp, err := healthClient.Do(healthReq); err != nil {
+				return "", types.TokenUsage{}, fmt.Errorf("Ollama local service is not running or unreachable at %s. Please start Ollama first (error: %w)", healthCheckURL, err)
+			} else {
+				resp.Body.Close()
+			}
+		}
+	}
+
 	reqBody := map[string]any{
 		"model": req.Model,
 		"messages": []map[string]any{

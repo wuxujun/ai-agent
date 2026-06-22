@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -119,6 +120,93 @@ func TestLegacyNextExecutesPlannerDecision(t *testing.T) {
 	}
 	if len(task.Trace) != 1 {
 		t.Fatalf("trace len = %d, want 1", len(task.Trace))
+	}
+}
+
+// TestEinoNextGatesHighRiskActionBeforeExecution is the regression test for
+// BUG_REPORT.md #1: the default eino mode executed RiskLevelHigh tools
+// (write_file/execute_code) with no approval gate, because the gate lived only
+// in runLegacyNext. The shared enforceApprovals helper now runs in eino's
+// executeDecision too. Here we assert the executor only runs AFTER the user
+// approves the high-risk action.
+func TestEinoNextGatesHighRiskActionBeforeExecution(t *testing.T) {
+	resetApprovalState(t)
+
+	p := &stubPlanner{
+		decision: &planner.PlanDecision{
+			ThoughtSummary: "write the result",
+			Actions: []planner.ActionCall{
+				{Action: "write_file", Parameters: map[string]any{"path": "out.txt", "content": "hi"}},
+			},
+		},
+	}
+	x := &stubExecutor{trace: &types.StepTrace{Step: 1, Action: "write_file"}}
+	engine := &Engine{Planner: p, Executor: x} // default mode == eino
+	task := &types.Task{ID: "task-eino-gate", Goal: "write", Status: "created", Workspace: t.TempDir(), MaxSteps: 3, ToolBudget: 2}
+
+	// Approve the moment the pending approval appears.
+	resolved := make(chan struct{})
+	go func() {
+		defer close(resolved)
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if ResolveApproval(task.ID, types.ApprovalResult{Approved: true}) {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+	<-resolved
+
+	if x.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1 (high-risk action should run after approval)", x.calls)
+	}
+	if task.Status != types.StatusRunning {
+		t.Fatalf("task status = %q, want running", task.Status)
+	}
+}
+
+// TestEinoNextSkipsExecutionWhenHighRiskRejected verifies the eino mode does NOT
+// execute a high-risk action the user rejected — the core safety guarantee of
+// BUG_REPORT.md #1.
+func TestEinoNextSkipsExecutionWhenHighRiskRejected(t *testing.T) {
+	resetApprovalState(t)
+
+	p := &stubPlanner{
+		decision: &planner.PlanDecision{
+			ThoughtSummary: "write the result",
+			Actions: []planner.ActionCall{
+				{Action: "write_file", Parameters: map[string]any{"path": "out.txt", "content": "hi"}},
+			},
+		},
+	}
+	x := &stubExecutor{trace: &types.StepTrace{Step: 1, Action: "write_file"}}
+	engine := &Engine{Planner: p, Executor: x} // default mode == eino
+	task := &types.Task{ID: "task-eino-reject", Goal: "write", Status: "created", Workspace: t.TempDir(), MaxSteps: 3, ToolBudget: 2}
+
+	resolved := make(chan struct{})
+	go func() {
+		defer close(resolved)
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if ResolveApproval(task.ID, types.ApprovalResult{Approved: false, Message: "no"}) {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+	<-resolved
+
+	if x.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 (rejected high-risk action must not run)", x.calls)
 	}
 }
 
