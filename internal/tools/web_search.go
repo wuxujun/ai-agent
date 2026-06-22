@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -53,9 +54,11 @@ func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params ma
 
 	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
+	if err := policy.ValidateURL(searchURL); err != nil {
+		return nil, fmt.Errorf("web_search policy violation: %w", err)
 	}
+
+	client := policy.SafeHTTPClient(15 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
