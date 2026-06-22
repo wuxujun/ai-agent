@@ -182,3 +182,41 @@ func TestCancelTaskByID_Miss(t *testing.T) {
 		t.Error("CancelTaskByID should return false for unknown task")
 	}
 }
+
+// TestShutdownRollback_RunningTaskSkippedOnTimeout verifies that if shutdown times out,
+// a still-running task (still present in activeTasks) is skipped to avoid a race.
+func TestShutdownRollback_RunningTaskSkippedOnTimeout(t *testing.T) {
+	st := newInMemShutdownStore()
+
+	// Pre-populate a running task.
+	task := &types.Task{ID: "t3", Status: types.StatusRunning, Goal: "run forever"}
+	_ = st.SaveFullTask(context.Background(), task)
+
+	h := &Handler{
+		store:       st,
+		activeTasks: make(map[string]*activeRun),
+	}
+
+	// Register a fake activeRun for the task.
+	_, cancel := context.WithCancel(context.Background())
+	h.activeTasks[task.ID] = &activeRun{cancel: cancel}
+
+	// Simulate an already timed-out/canceled context.
+	ctx, shutdownCancel := context.WithCancel(context.Background())
+	shutdownCancel() // Cancel it immediately to force timeout path
+
+	// Shutdown should return context error, but not roll back the running task.
+	err := h.Shutdown(ctx)
+	if err == nil {
+		t.Fatal("Shutdown should return error on timeout context")
+	}
+
+	got, err := st.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	// The task status must still be Running, not Paused.
+	if got.Status != types.StatusRunning {
+		t.Errorf("expected still-running task status to be %q, got %q", types.StatusRunning, got.Status)
+	}
+}

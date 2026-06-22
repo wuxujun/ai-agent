@@ -154,6 +154,14 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 	rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer rollbackCancel()
 	for _, e := range entries {
+		h.activeTasksMu.Lock()
+		_, running := h.activeTasks[e.taskID]
+		h.activeTasksMu.Unlock()
+		if running && ctx.Err() != nil {
+			log.Warn("skipping shutdown rollback for still-running task to avoid last-writer-wins race", "task_id", e.taskID)
+			continue
+		}
+
 		task, err := h.store.GetTask(rollbackCtx, e.taskID)
 		if err != nil {
 			log.Error("shutdown rollback: failed to fetch task", "task_id", e.taskID, "error", err)
@@ -171,11 +179,13 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 			// context cancellation (short/empty FinalAnswer) get paused.
 			continue
 		}
-		task.Status = types.StatusPaused
-		if saveErr := h.store.SaveFullTask(rollbackCtx, task); saveErr != nil {
-			log.Error("shutdown rollback: failed to pause task", "task_id", e.taskID, "error", saveErr)
-		} else {
+		success, transitionErr := h.store.TryTransitionTaskStatus(rollbackCtx, e.taskID, []types.TaskStatus{types.StatusRunning, types.StatusFailed}, types.StatusPaused)
+		if transitionErr != nil {
+			log.Error("shutdown rollback: failed to pause task", "task_id", e.taskID, "error", transitionErr)
+		} else if success {
 			log.Info("shutdown rollback: task paused for resumption", "task_id", e.taskID)
+		} else {
+			log.Info("shutdown rollback: task status changed concurrently, skipping pause", "task_id", e.taskID)
 		}
 	}
 
