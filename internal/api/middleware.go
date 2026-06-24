@@ -41,7 +41,12 @@ func AuthMiddleware() gin.HandlerFunc {
 		cfg := config.Get()
 		expectedKey := cfg.API.APIKey
 		if expectedKey == "" {
-			c.Next()
+			if gin.Mode() == gin.TestMode {
+				c.Next()
+				return
+			}
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "API key is unset; authentication disabled. Failing closed."})
+			c.Abort()
 			return
 		}
 

@@ -629,3 +629,28 @@ func TestAuthMiddleware(t *testing.T) {
 		t.Errorf("expected 200 with correct Authorization Bearer, got %d: %s", w4.Code, w4.Body.String())
 	}
 }
+
+func TestAuthMiddleware_FailClosed(t *testing.T) {
+	// Directly clear the global API key.
+	originalKey := config.Get().API.APIKey
+	config.Get().API.APIKey = ""
+	defer func() {
+		config.Get().API.APIKey = originalKey
+	}()
+
+	st := store.NewMemoryStore()
+	r := setupTestRouter(st, nil)
+
+	// Temporarily switch mode to DebugMode so the test-bypass is not triggered.
+	originalMode := gin.Mode()
+	gin.SetMode(gin.DebugMode)
+	defer gin.SetMode(originalMode)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/tasks", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 Service Unavailable when API key is empty/unset, got %d", w.Code)
+	}
+}
