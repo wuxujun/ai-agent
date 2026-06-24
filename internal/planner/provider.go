@@ -124,6 +124,18 @@ func (p *openAIResponsesProvider) Plan(ctx context.Context, req PlanRequest, onC
 	return runHTTPPlan(httpReq, req.Client, parseOpenAIResponses, onChunk)
 }
 
+// firstFloat returns the first key in keys whose value in m is a JSON number.
+// Used to read usage fields that differ across OpenAI API shapes (Responses:
+// input_tokens/output_tokens; Chat Completions: prompt_tokens/completion_tokens).
+func firstFloat(m map[string]any, keys ...string) float64 {
+	for _, k := range keys {
+		if v, ok := m[k].(float64); ok {
+			return v
+		}
+	}
+	return 0
+}
+
 func parseOpenAIResponses(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error) {
 	var m map[string]any
 	var usage types.TokenUsage
@@ -139,14 +151,15 @@ func parseOpenAIResponses(resp *http.Response, onChunk func(string)) (string, ty
 	}
 
 	if u, ok := m["usage"].(map[string]any); ok {
-		if p, ok := u["prompt_tokens"].(float64); ok {
-			usage.PromptTokens = int(p)
-		}
-		if c, ok := u["completion_tokens"].(float64); ok {
-			usage.CompletionTokens = int(c)
-		}
-		if t, ok := u["total_tokens"].(float64); ok {
-			usage.TotalTokens = int(t)
+		// The OpenAI Responses API reports usage as input_tokens/output_tokens.
+		// Fall back to the older Chat-Completions field names
+		// (prompt_tokens/completion_tokens) so this parser stays correct if the
+		// payload ever comes from a chat-style endpoint.
+		usage.PromptTokens = int(firstFloat(u, "input_tokens", "prompt_tokens"))
+		usage.CompletionTokens = int(firstFloat(u, "output_tokens", "completion_tokens"))
+		usage.TotalTokens = int(firstFloat(u, "total_tokens"))
+		if usage.TotalTokens == 0 {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
 	}
 
