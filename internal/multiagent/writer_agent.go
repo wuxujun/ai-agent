@@ -116,6 +116,3 @@ func (w *WriterAgent) buildPrompt(goal string, evidence []StepEvidence, memories
 	}
 	return sb.String()
 }
-
-
-

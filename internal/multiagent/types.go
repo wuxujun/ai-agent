@@ -39,9 +39,9 @@ type ResearchStep struct {
 
 // ResearchPlan is the structured output of the PlannerAgent.
 type ResearchPlan struct {
-	ThoughtSummary string             `json:"thought_summary"`
-	Steps          []ResearchStep     `json:"steps"`
-	TokenUsage     types.TokenUsage   `json:"token_usage,omitempty"`
+	ThoughtSummary string           `json:"thought_summary"`
+	Steps          []ResearchStep   `json:"steps"`
+	TokenUsage     types.TokenUsage `json:"token_usage,omitempty"`
 }
 
 // StepEvidence records the result of executing one ResearchStep.
@@ -60,9 +60,9 @@ type StepEvidence struct {
 
 // WriterOutput is the final synthesised answer produced by the WriterAgent.
 type WriterOutput struct {
-	FinalAnswer     string           `json:"final_answer"`
-	EvidenceSummary string           `json:"evidence_summary"`
+	FinalAnswer     string `json:"final_answer"`
+	EvidenceSummary string `json:"evidence_summary"`
 	// Confidence is one of: "high" | "medium" | "low"
-	Confidence      string           `json:"confidence"`
-	TokenUsage      types.TokenUsage `json:"token_usage,omitempty"`
+	Confidence string           `json:"confidence"`
+	TokenUsage types.TokenUsage `json:"token_usage,omitempty"`
 }

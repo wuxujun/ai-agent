@@ -220,4 +220,3 @@ func formatMemories(memories []types.Memory) string {
 	}
 	return "\n\nRelated Historical Memories (RAG - Cross-task Knowledge Sharing):\n" + strings.Join(ms, "\n\n")
 }
-

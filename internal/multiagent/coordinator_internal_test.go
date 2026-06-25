@@ -13,10 +13,10 @@ import (
 // registry risk check in isReadOnlyAction wins over the hardcoded name list.
 type highRiskStubTool struct{ name string }
 
-func (t *highRiskStubTool) Name() string                  { return t.name }
-func (t *highRiskStubTool) Description() string            { return "high-risk stub" }
-func (t *highRiskStubTool) Parameters() map[string]any     { return map[string]any{} }
-func (t *highRiskStubTool) RiskLevel() types.RiskLevel     { return types.RiskLevelHigh }
+func (t *highRiskStubTool) Name() string               { return t.name }
+func (t *highRiskStubTool) Description() string        { return "high-risk stub" }
+func (t *highRiskStubTool) Parameters() map[string]any { return map[string]any{} }
+func (t *highRiskStubTool) RiskLevel() types.RiskLevel { return types.RiskLevelHigh }
 func (t *highRiskStubTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*tools.ToolResult, error) {
 	return &tools.ToolResult{}, nil
 }

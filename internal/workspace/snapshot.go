@@ -51,4 +51,3 @@ type Tool interface {
 type ToolResult struct {
 	Data map[string]any `json:"data"`
 }
-

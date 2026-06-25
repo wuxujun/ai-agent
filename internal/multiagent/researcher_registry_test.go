@@ -24,9 +24,11 @@ type recordingTool struct {
 	gotParams map[string]interface{}
 }
 
-func (r *recordingTool) Name() string             { return "recording_tool" }
-func (r *recordingTool) Description() string       { return "test stub" }
-func (r *recordingTool) Parameters() map[string]any { return map[string]any{"url": map[string]any{"type": "string"}} }
+func (r *recordingTool) Name() string        { return "recording_tool" }
+func (r *recordingTool) Description() string { return "test stub" }
+func (r *recordingTool) Parameters() map[string]any {
+	return map[string]any{"url": map[string]any{"type": "string"}}
+}
 func (r *recordingTool) RiskLevel() types.RiskLevel { return types.RiskLevelLow }
 func (r *recordingTool) Execute(ctx context.Context, ws string, p map[string]interface{}) (*tools.ToolResult, error) {
 	r.gotParams = p

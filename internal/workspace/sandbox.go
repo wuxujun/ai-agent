@@ -10,10 +10,10 @@ type ToolRegistry interface {
 }
 
 type Orchestrator struct {
-	planner    Planner
-	responder  Responder
-	tools      ToolRegistry
-	maxSteps   int
+	planner   Planner
+	responder Responder
+	tools     ToolRegistry
+	maxSteps  int
 }
 
 func NewOrchestrator(planner Planner, responder Responder, tools ToolRegistry) *Orchestrator {
@@ -78,4 +78,3 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest) (*RunResult, err
 		State:  state,
 	}, nil
 }
-

@@ -1,0 +1,110 @@
+# ai-agent configuration file
+# This file is automatically watched and loaded at startup.
+# Environment variables prefixed with "AI_AGENT_" can override these values.
+# e.g., AI_AGENT_API_ADDR overrides api.addr.
+
+# API server configuration
+api:
+  # The host:port address for the HTTP server to listen on.
+  # Env override: AI_AGENT_API_ADDR
+  addr: "127.0.0.1:8088"
+  
+  # Optional security key for API authorization.
+  # Env override: AI_AGENT_API_KEY
+  api_key: "XKT#2026"
+
+# Storage configuration
+store:
+  # The storage backend. Supported: "sqlite", "postgres", "redis", "memory"
+  # Env override: AI_AGENT_STORE_TYPE
+  type: "sqlite"
+  
+  # Data source connection string.
+  # sqlite: path to sqlite db (e.g. "data/agent.db")
+  # postgres: postgres dsn (e.g. "postgresql://user:pass@host:port/dbname")
+  # redis: redis url (e.g. "redis://host:port/db")
+  # Env override: AI_AGENT_STORE_DSN
+  dsn: "data/agent.db"
+  
+  # Max recent memory rows loaded from disk before in-process cosine/keyword ranking.
+  # 0 falls back to default (200).
+  # Env override: AI_AGENT_STORE_MEMORY_CANDIDATE_LIMIT
+  memory_candidate_limit: 200
+
+# Orchestrator orchestration execution configuration
+orchestrator:
+  # Execution mode. Supported: "eino", "legacy", "step", "adk", "multiagent"
+  # Env override: AI_AGENT_ORCHESTRATOR_MODE
+  mode: "eino"
+  
+  # Max concurrent task routines allowed.
+  # Env override: AI_AGENT_ORCHESTRATOR_MAX_CONCURRENT_TASKS
+  max_concurrent_tasks: 10
+  
+  # Wall-clock budget limit for a run-all task loop in seconds.
+  # 0 falls back to default (600s).
+  # Env override: AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
+  run_all_timeout_seconds: 600
+
+# LLM provider configuration
+llm:
+  # The target LLM provider. Supported: "openai-responses", "openai", "gemini", "ollama"
+  # Env override: AI_AGENT_LLM_PROVIDER
+  provider: "openai-responses"
+  
+  # Fallback LLM API key.
+  # Env override: AI_AGENT_LLM_API_KEY
+  api_key: ""
+  
+  # Dedicated LLM API keys. (Preferred over llm.api_key)
+  # Env overrides (no AI_AGENT_ prefix): OPENAI_API_KEY, GEMINI_API_KEY, GOOGLE_API_KEY
+  openai_api_key: ""
+  gemini_api_key: ""
+  google_api_key: ""
+  
+  # LLM model name. If empty, uses provider default.
+  # e.g., "gpt-4o-mini", "gemini-2.5-flash"
+  # Env override: AI_AGENT_LLM_MODEL
+  model: ""
+  
+  # Custom API base URL if using local proxies or self-hosted API endpoints.
+  # Env override: AI_AGENT_LLM_BASE_URL
+  base_url: ""
+  
+  # Request timeout in seconds.
+  # Env override: AI_AGENT_LLM_TIMEOUT_SECONDS
+  timeout_seconds: 30
+
+# Embedding configuration
+embedding:
+  # Embedding model name. If empty, uses provider default.
+  # Env override: AI_AGENT_EMBEDDING_MODEL
+  model: ""
+
+# Retrieval-Augmented Generation (RAG) configuration
+rag:
+  # Optional URL of the external search/RAG API endpoint.
+  # Env override: AI_AGENT_RAG_SEARCH_URL
+  search_url: ""
+  
+  # HTTP method used for RAG searches (e.g. "POST", "GET").
+  # Env override: AI_AGENT_RAG_SEARCH_METHOD
+  search_method: ""
+
+# Logging configuration
+log:
+  # Log verbosity. Supported: "debug", "info", "warn", "error"
+  # Env override: AI_AGENT_LOG_LEVEL
+  level: "info"
+
+# Tool execution configuration
+tool:
+  # Timeout limit for custom tool executions in seconds.
+  # Env override: AI_AGENT_TOOL_TIMEOUT_SECONDS
+  timeout_seconds: 120
+
+# Skill discovery configuration
+skill:
+  # Root directory scanned for skills (containing <name>/SKILL.md).
+  # Env override: AI_AGENT_SKILL_ROOT
+  root: "skills"

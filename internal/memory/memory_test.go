@@ -154,10 +154,10 @@ func TestCosineSimilarityEdgeCases(t *testing.T) {
 func TestDeduplicateMemories(t *testing.T) {
 	mems := []types.Memory{
 		{ID: "mem-1", TaskID: "task-1", Goal: "Find files", FinalAnswer: "Found A"},
-		{ID: "mem-1", TaskID: "task-1", Goal: "Find files", FinalAnswer: "Found A"}, // Duplicate ID
-		{ID: "mem-2", TaskID: "task-1", Goal: "Find files", FinalAnswer: "Found A"}, // Duplicate TaskID
-		{ID: "mem-3", TaskID: "task-2", Goal: "find files", FinalAnswer: "Found B"}, // Duplicate Goal (case-insensitive)
-		{ID: "mem-4", TaskID: "task-3", Goal: "Lookup users", FinalAnswer: "found a"}, // Duplicate FinalAnswer (case-insensitive)
+		{ID: "mem-1", TaskID: "task-1", Goal: "Find files", FinalAnswer: "Found A"},        // Duplicate ID
+		{ID: "mem-2", TaskID: "task-1", Goal: "Find files", FinalAnswer: "Found A"},        // Duplicate TaskID
+		{ID: "mem-3", TaskID: "task-2", Goal: "find files", FinalAnswer: "Found B"},        // Duplicate Goal (case-insensitive)
+		{ID: "mem-4", TaskID: "task-3", Goal: "Lookup users", FinalAnswer: "found a"},      // Duplicate FinalAnswer (case-insensitive)
 		{ID: "mem-5", TaskID: "task-4", Goal: "Unique Goal", FinalAnswer: "Unique Answer"}, // Unique
 	}
 
@@ -174,7 +174,7 @@ func TestDeduplicateMemories(t *testing.T) {
 func TestSemanticDeduplicateMemories(t *testing.T) {
 	emb1 := []float32{1.0, 0.0, 0.0}
 	emb2 := []float32{0.99, 0.1, 0.0} // High similarity (approx 0.995)
-	emb3 := []float32{0.0, 1.0, 0.0} // Low similarity (0.0)
+	emb3 := []float32{0.0, 1.0, 0.0}  // Low similarity (0.0)
 
 	mems := []types.Memory{
 		{ID: "mem-1", TaskID: "task-1", Goal: "Goal 1", FinalAnswer: "Answer 1", Embedding: emb1},
