@@ -58,8 +58,9 @@ type Config struct {
 	} `mapstructure:"embedding"`
 
 	RAG struct {
-		SearchURL    string `mapstructure:"search_url"`
-		SearchMethod string `mapstructure:"search_method"`
+		SearchURL     string `mapstructure:"search_url"`
+		SearchMethod  string `mapstructure:"search_method"`
+		Authorization string `mapstructure:"authorization"`
 	} `mapstructure:"rag"`
 
 	Log struct {
@@ -111,6 +112,7 @@ func setupViper() {
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("tool.timeout_seconds", 120)
 	viper.SetDefault("skill.root", "skills")
+	viper.SetDefault("rag.authorization", "")
 
 	// Explicit bindings for standard env variables
 	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
@@ -302,6 +304,7 @@ func diffConfigs(old, new *Config) []string {
 	// RAG
 	addIf("rag.search_url", old.RAG.SearchURL, new.RAG.SearchURL)
 	addIf("rag.search_method", old.RAG.SearchMethod, new.RAG.SearchMethod)
+	addIf("rag.authorization", old.RAG.Authorization, new.RAG.Authorization)
 
 	// Tool / Log / Skill
 	addIfInt("tool.timeout_seconds", old.Tool.TimeoutSeconds, new.Tool.TimeoutSeconds)
@@ -317,7 +320,9 @@ func looksLikeSecret(field string) bool {
 		strings.Contains(lower, "secret") ||
 		strings.Contains(lower, "password") ||
 		strings.Contains(lower, "dsn") ||
-		strings.Contains(lower, "token")
+		strings.Contains(lower, "token") ||
+		strings.Contains(lower, "auth") ||
+		strings.Contains(lower, "authorization")
 }
 
 func redact(v string) string {

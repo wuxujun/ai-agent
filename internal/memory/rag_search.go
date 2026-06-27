@@ -64,6 +64,10 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 		}
 	}
 
+	if cfg.RAG.Authorization != "" {
+		req.Header.Set("Authorization", cfg.RAG.Authorization)
+	}
+
 	resp, err := ragHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request to third-party RAG failed: %w", err)

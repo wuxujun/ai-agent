@@ -91,6 +91,8 @@ rag:
   # Env override: AI_AGENT_RAG_SEARCH_METHOD
   search_method: ""
 
+  authorization: "XKT#2026"
+
 # Logging configuration
 log:
   # Log verbosity. Supported: "debug", "info", "warn", "error"

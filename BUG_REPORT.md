@@ -1,0 +1,92 @@
+# Bug Hunt Report — ai-agent
+
+**Method:** Dynamic workflow — 3 scoped zones → 6 finder rounds (loop-until-dry) → 3-skeptic adversarial verification → synthesis.
+**Coverage:** 18,680 LOC / 105 files / 16 packages · 159 agents · **642k / 2M tokens** spent.
+**Result:** 46 candidates → **18 confirmed** (survived majority-refute review). Rankings reflect verifier-assigned severity.
+**Date:** 2026/06/22
+
+> ⚠️ One finder round (`security:r6`) and two verifier votes were dropped by API safeguards — bugs #6 and #13 were confirmed by 2/2 rather than 3/3. All others are 3/3.
+
+---
+
+## 🔴 Critical
+
+**1. Default `eino` mode executes high-risk tools with NO approval gate** — `internal/orchestrator/eino.go:216-230`
+The `RiskLevelHigh` approval loop (`SuspendForApproval`) exists **only** in `runLegacyNext`. The default mode is `eino`, whose `executeDecision` calls `Executor.Execute` directly with no risk check — and `step`/`adk` share the gap. In the documented default config, `execute_code` (runs bash/python/go) and `write_file` run with **zero human approval**; the entire approve/reject gate is dead code outside legacy mode.
+→ *Hoist the approval loop into a shared pre-execute hook used by all modes.*
+
+---
+
+## 🟠 High
+
+**2. Shutdown rollback races the live run-all goroutine** — `internal/api/handler.go:143-180`
+On shutdown timeout, the rollback loop does `GetTask → Status=Paused → SaveFullTask` while the unfinished background goroutine is still writing the same row. Last-writer-wins: a task ends up `Failed` (defeating resume) or `Paused` over a real completed result.
+→ *Use atomic `TryTransitionTaskStatus`, or only roll back goroutines that have exited.*
+
+**3. `dispatchApproval` resolves the WRONG approval on a stale ID** — `internal/orchestrator/approval_bus.go:139-144`
+When `ResolveApprovalByID` fails (duplicate/redelivered Pub/Sub message, already-resolved), the code falls through to `ResolveApproval(taskID)`, which resolves the task's *current* pending approval regardless of ID match. A stale "approve" for action A can silently **auto-approve a different high-risk action B** the user never saw.
+→ *Only fall back when `ApprovalID == ""`.*
+
+**4. `MockPlanner` panics (index-out-of-range) on `Trace[2]` at step 2** — `internal/planner/mock.go:70-82`
+The final `else` unconditionally reads `task.Trace[2]`. Reached when `StepCount==2` but the guarded happy-path condition is false (2-entry or evidence-less trace). Since `MockPlanner` is wired as `FallbackPlanner.Secondary`, any real LLM failure at step 2 **crashes the planning goroutine** instead of degrading.
+→ *Bounds-check `len(task.Trace) > 2`.*
+
+**5. `git_diff` path allows argument injection → arbitrary file write** — `internal/tools/git_diff.go:39-56`
+`Validate()` rejects `/` and `..` but not leading `-`. The path is appended as a bare positional arg with no `--` separator, so `--output=/tmp/evil` is parsed as a git flag, writing the diff outside the sandbox. `git_diff` is `RiskLevelLow` (no approval), so an LLM-controlled param escapes the policy sandbox.
+→ *Insert literal `--` before the path and/or reject `-` prefix.*
+
+---
+
+## 🟡 Medium
+
+**6. `web_search` uses a plain `http.Client` — SSRF via redirects** — `internal/tools/web_search.go:56-70` *(2/2)*
+Doesn't use `policy.SafeHTTPClient`; follows up to 10 redirects with no IP validation. A 3xx `Location` to `169.254.169.254` or loopback is fetched and returned to the planner.
+→ *Use `policy.SafeHTTPClient(...)` like the other fetch tools.*
+
+**7. Auth disabled (fail-open) when API key unset** — `internal/api/middleware.go:42-46`
+Empty key → `c.Next()`, opening the entire `/api` surface (task creation, run-all, approve, config reload) to anonymous callers. A forgotten env var or hot-reload clearing the key silently disables auth.
+→ *Fail closed: refuse to start or 503.*
+
+**8. Non-constant-time API key comparison (timing side-channel)** — `internal/api/middleware.go:59`
+`clientKey != expectedKey` short-circuits on first mismatch, leaking the key byte-by-byte to a latency-measuring attacker. Sole auth gate for the whole API.
+→ *Use `crypto/subtle.ConstantTimeCompare`.*
+
+**9. Token usage always 0 for default provider** — `internal/planner/provider.go:141-151`
+`parseOpenAIResponses` reads Chat-Completions fields (`prompt_tokens`/`completion_tokens`), but the Responses API returns `input_tokens`/`output_tokens`. Budget/metrics accounting is broken for the default provider.
+→ *Read `input_tokens`/`output_tokens` with legacy fallback.*
+
+**10. `IncCompleted()` inflated by adaptive-depth loop** — `internal/multiagent/coordinator.go:564-569`
+`runWritePhase` increments the completed counter every iteration; the adaptive loop runs up to 3×, so one task counts as 2–3 completions.
+→ *Increment once after the loop terminates.*
+
+**11. `apply_patch` TOCTOU symlink window** — `internal/tools/apply_patch.go:62-75,155-175`
+Validates path once via `ValidateReadPath`, then `os.ReadFile`/`os.WriteFile` the string later. A symlink swap in the window writes outside the sandbox. Independent of the known `write.go` TOCTOU.
+→ *Open with `O_NOFOLLOW` or re-validate the resolved path before write.*
+
+---
+
+## ⚪ Low
+
+| # | Bug | Location | Fix |
+|---|-----|----------|-----|
+| 12 | `MemoryStore.SaveFullTask` spawns duplicate async embedding goroutines (guard read under lock, write later in goroutine) | `internal/store/memory.go:41-80` | Reserve the index slot synchronously |
+| 13 | Gemini stream reads only `Parts[0].Text`, dropping extra parts → corrupted JSON *(2/2)* | `internal/planner/gemini_provider.go:54-61` | Iterate all `Parts` |
+| 14 | Mixed embedding dims (local 128 vs remote 768/1536) → `CosineSimilarity` silently returns 0, degrading RAG | `internal/memory/embed.go:24-37` | Tag dim/model; warn on mismatch |
+| 15 | `SuspendForApproval` can drop a delivered approval when ctx fires simultaneously (select race) *(2/3)* | `internal/orchestrator/engine.go:340-390` | Non-blocking drain of `ch` after `ctx.Done()` |
+| 16 | `getOllamaEmbedding` returns success on empty embedding (unlike OpenAI/Gemini) → nil vector, no fallback | `internal/memory/embed.go:212-219` | Error on `len==0` |
+| 17 | `taskSem` capacity cached at startup, ignores `max_concurrent_tasks` hot-reload | `internal/api/handler.go:66-76` | Resizable limiter or document restart-required |
+| 18 | `RedisStore.ensureTaskIndexes` migration guarded by process-local mutex → every instance runs full backfill | `internal/store/redis.go:232-282` | Redis `SET NX` distributed lock |
+
+---
+
+## Patterns worth noting
+
+- **The approval/risk gate is the single biggest theme** (#1, #3, #7, #8, #15) — the high-risk gating story is incomplete across orchestrator modes and the auth layer that fronts it.
+- **Sandbox escapes via argv/symlink** (#5, #11) and **SSRF** (#6) — tool input validation isn't uniform; `git_diff`/`web_search` bypass the policy patterns the other tools follow.
+- **Embedding/RAG silent degradation** (#14, #16) — failures return zero-similarity or nil vectors with no signal.
+
+---
+
+### Recommended starting point
+
+Highest-impact, smallest-diff fixes: **#1** (default-mode approval bypass) and **#5** (git_diff argument injection).

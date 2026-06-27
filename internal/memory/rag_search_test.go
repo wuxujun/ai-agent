@@ -171,3 +171,50 @@ func TestSearchThirdPartyRAG_HttpErrors(t *testing.T) {
 		t.Logf("Expected search error: %v", err)
 	}
 }
+
+func TestSearchThirdPartyRAG_Authorization(t *testing.T) {
+	ctx := context.Background()
+
+	withRAGHTTPClient(t, func(r *http.Request) (int, string) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-token-123" {
+			t.Errorf("expected Authorization header 'Bearer test-token-123', got %q", auth)
+		}
+
+		response := []map[string]any{
+			{
+				"id":           "mem-ext-auth",
+				"goal":         "test auth",
+				"key_findings": "auth verified",
+				"final_answer": "success",
+			},
+		}
+		b, _ := json.Marshal(response)
+		return http.StatusOK, string(b)
+	})
+
+	cfg := config.Get()
+	originalURL := cfg.RAG.SearchURL
+	originalMethod := cfg.RAG.SearchMethod
+	originalAuth := cfg.RAG.Authorization
+
+	cfg.RAG.SearchURL = "https://rag.test/search"
+	cfg.RAG.SearchMethod = "GET"
+	cfg.RAG.Authorization = "Bearer test-token-123"
+
+	defer func() {
+		cfg.RAG.SearchURL = originalURL
+		cfg.RAG.SearchMethod = originalMethod
+		cfg.RAG.Authorization = originalAuth
+	}()
+
+	mems, err := SearchThirdPartyRAG(ctx, "test-query")
+	if err != nil {
+		t.Fatalf("SearchThirdPartyRAG failed: %v", err)
+	}
+
+	if len(mems) != 1 || mems[0].ID != "mem-ext-auth" {
+		t.Errorf("unexpected memories: %+v", mems)
+	}
+}
+
