@@ -239,6 +239,39 @@ func TestCreateTaskPersistsTokenBudget(t *testing.T) {
 	}
 }
 
+func TestCreateTask_AutoGenerateID(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(st, nil)
+
+	body := `{"goal":"x","workspace":"./testdata","max_steps":3,"tool_budget":3}`
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var created types.Task
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if created.ID == "" {
+		t.Errorf("expected generated ID in response, got empty")
+	}
+
+	got, err := st.GetTask(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("persisted ID = %q, want %q", got.ID, created.ID)
+	}
+}
+
+
 // TestRunAllAlreadyRunningInDBDoesNotLeakReservation covers the cleanup path
 // that #7 hardened: when the DB TryTransitionTaskStatus rejects (because the
 // task is already Running in the persisted store — possibly from a peer

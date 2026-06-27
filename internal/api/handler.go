@@ -217,17 +217,22 @@ func (h *Handler) createTask(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 	defer cancel()
 
-	// P8: Prevent silent overwrite of an existing task.
-	if exists, err := h.store.ExistsTask(ctx, req.ID); err != nil {
-		c.Error(err)
-		return
-	} else if exists {
-		c.JSON(http.StatusConflict, gin.H{"error": "task already exists", "task_id": req.ID})
-		return
+	taskID := req.ID
+	if taskID == "" {
+		taskID = uuid.NewString()
+	} else {
+		// P8: Prevent silent overwrite of an existing task.
+		if exists, err := h.store.ExistsTask(ctx, taskID); err != nil {
+			c.Error(err)
+			return
+		} else if exists {
+			c.JSON(http.StatusConflict, gin.H{"error": "task already exists", "task_id": taskID})
+			return
+		}
 	}
 
 	task := &types.Task{
-		ID:          req.ID,
+		ID:          taskID,
 		Goal:        req.Goal,
 		Workspace:   req.Workspace,
 		MaxSteps:    req.MaxSteps,
