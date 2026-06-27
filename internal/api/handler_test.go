@@ -22,9 +22,13 @@ import (
 type mockPlanner struct {
 	blockCh   chan struct{}
 	startedCh chan struct{}
+	tokens    []string
 }
 
 func (mp *mockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*planner.PlanDecision, error) {
+	for _, tok := range mp.tokens {
+		onChunk(tok)
+	}
 	if mp.blockCh != nil {
 		if mp.startedCh != nil {
 			select {
@@ -52,6 +56,11 @@ func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, decision *
 
 func setupTestRouter(st store.Store, eng *orchestrator.Engine) *gin.Engine {
 	gin.SetMode(gin.TestMode)
+	// Clear the default API key loaded from config.yaml during tests to bypass auth,
+	// except when explicitly set to the test auth key.
+	if config.Get().API.APIKey != "my-test-secret-api-key" {
+		config.Get().API.APIKey = ""
+	}
 	r := gin.New()
 	api.RegisterRoutes(r, st, eng, nil)
 	return r
@@ -652,5 +661,97 @@ func TestAuthMiddleware_FailClosed(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 Service Unavailable when API key is empty/unset, got %d", w.Code)
+	}
+}
+
+func TestRunTaskStep_Streaming(t *testing.T) {
+	st := store.NewMemoryStore()
+	mp := &mockPlanner{
+		tokens: []string{"token1", "token2"},
+	}
+	engine := &orchestrator.Engine{
+		Mode:     orchestrator.ModeLegacy,
+		Planner:  mp,
+		Executor: &mockExecutor{},
+		Store:    st,
+	}
+	engine.TokenCallback = func(taskID string, chunk string) {
+		api.GetBus().Publish(taskID, api.StepEvent{
+			TaskID: taskID,
+			Status: types.StatusRunning,
+			Token:  chunk,
+		})
+	}
+	r := setupTestRouter(st, engine)
+
+	task := &types.Task{
+		ID:         "task-stream-run",
+		Status:     types.StatusCreated,
+		MaxSteps:   5,
+		ToolBudget: 10,
+	}
+	_ = st.SaveFullTask(context.Background(), task)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-stream-run/run?stream=true", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if contentType := w.Header().Get("Content-Type"); contentType != "text/event-stream" {
+		t.Errorf("expected Content-Type text/event-stream, got %q", contentType)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "token1") || !strings.Contains(body, "token2") {
+		t.Errorf("expected body to contain streamed tokens, got %q", body)
+	}
+}
+
+func TestRunAll_Streaming(t *testing.T) {
+	st := store.NewMemoryStore()
+	mp := &mockPlanner{
+		tokens: []string{"token-all"},
+	}
+	engine := &orchestrator.Engine{
+		Mode:     orchestrator.ModeLegacy,
+		Planner:  mp,
+		Executor: &mockExecutor{},
+		Store:    st,
+	}
+	engine.TokenCallback = func(taskID string, chunk string) {
+		api.GetBus().Publish(taskID, api.StepEvent{
+			TaskID: taskID,
+			Status: types.StatusRunning,
+			Token:  chunk,
+		})
+	}
+	r := setupTestRouter(st, engine)
+
+	task := &types.Task{
+		ID:         "task-stream-runall",
+		Status:     types.StatusCreated,
+		MaxSteps:   5,
+		ToolBudget: 10,
+	}
+	_ = st.SaveFullTask(context.Background(), task)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks/task-stream-runall/run-all?stream=true", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if contentType := w.Header().Get("Content-Type"); contentType != "text/event-stream" {
+		t.Errorf("expected Content-Type text/event-stream, got %q", contentType)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "token-all") {
+		t.Errorf("expected body to contain streamed events, got %q", body)
 	}
 }

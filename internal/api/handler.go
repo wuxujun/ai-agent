@@ -302,17 +302,66 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		return
 	}
 
-	execErr := h.engine.Next(ctx, task)
-	if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
-		c.Error(saveErr)
-		return
-	}
-	if execErr != nil {
-		c.Error(execErr)
-		return
-	}
+	stream := c.Query("stream") == "true"
+	if stream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("X-Accel-Buffering", "no")
+		c.Header("Connection", "keep-alive")
 
-	c.JSON(http.StatusOK, task)
+		ch, _ := GetBus().Subscribe(task.ID)
+		defer GetBus().Unsubscribe(task.ID, ch)
+
+		errChan := make(chan error, 1)
+		go func() {
+			execErr := h.engine.Next(ctx, task)
+			if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
+				errChan <- saveErr
+				return
+			}
+			errChan <- execErr
+		}()
+
+		clientGone := c.Request.Context().Done()
+		for {
+			select {
+			case <-clientGone:
+				return
+			case <-errChan:
+				// Drain any remaining events
+				for {
+					select {
+					case event, ok := <-ch:
+						if !ok {
+							return
+						}
+						writeSSEEvent(c, event)
+						c.Writer.Flush()
+					default:
+						return
+					}
+				}
+			case event, ok := <-ch:
+				if !ok {
+					return
+				}
+				writeSSEEvent(c, event)
+				c.Writer.Flush()
+			}
+		}
+	} else {
+		execErr := h.engine.Next(ctx, task)
+		if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
+			c.Error(saveErr)
+			return
+		}
+		if execErr != nil {
+			c.Error(execErr)
+			return
+		}
+
+		c.JSON(http.StatusOK, task)
+	}
 }
 
 func (h *Handler) runAll(c *gin.Context) {
@@ -421,6 +470,20 @@ func (h *Handler) runAll(c *gin.Context) {
 	respID := task.ID
 	respStatus := task.Status
 
+	stream := c.Query("stream") == "true"
+	var ch chan StepEvent
+	if stream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("X-Accel-Buffering", "no")
+		c.Header("Connection", "keep-alive")
+
+		ch, _ = GetBus().Subscribe(task.ID)
+		defer GetBus().Unsubscribe(task.ID, ch)
+	}
+
+	errChan := make(chan error, 1)
+
 	// Run asynchronously so the HTTP handler returns immediately (202 Accepted).
 	// The caller should poll GET /api/tasks/:id to observe completion.
 	h.wg.Add(1)
@@ -451,6 +514,7 @@ func (h *Handler) runAll(c *gin.Context) {
 			if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
 				log.Error("failed to save canceled queued task", "task_id", task.ID, "error", saveErr)
 			}
+			errChan <- bgCtx.Err()
 			return
 		}
 
@@ -471,7 +535,43 @@ func (h *Handler) runAll(c *gin.Context) {
 			Final:  task.FinalAnswer,
 		}
 		GetBus().Publish(task.ID, finalEvent)
+		errChan <- execErr
 	}()
+
+	if stream {
+		clientGone := c.Request.Context().Done()
+		for {
+			select {
+			case <-clientGone:
+				log.Info("stream run-all: client disconnected, cancelling task", "task_id", task.ID)
+				bgCancel()
+				return
+			case <-errChan:
+				// Drain any remaining events
+				for {
+					select {
+					case event, ok := <-ch:
+						if !ok {
+							return
+						}
+						writeSSEEvent(c, event)
+						c.Writer.Flush()
+					default:
+						return
+					}
+				}
+			case event, ok := <-ch:
+				if !ok {
+					return
+				}
+				writeSSEEvent(c, event)
+				c.Writer.Flush()
+				if event.Status == types.StatusCompleted || event.Status == types.StatusFailed {
+					return
+				}
+			}
+		}
+	}
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"message": "task is running in background",

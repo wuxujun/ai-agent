@@ -88,7 +88,11 @@ var (
 // setupViper registers file paths, env-var bindings, and default values on the
 // package-level viper instance. Idempotent and safe to call multiple times.
 func setupViper() {
-	viper.SetConfigName("config")
+	if os.Getenv("TEST_NO_CONFIG") == "true" {
+		viper.SetConfigName("non_existent_config_for_testing")
+	} else {
+		viper.SetConfigName("config")
+	}
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
 	viper.AddConfigPath("../../")

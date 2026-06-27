@@ -16,6 +16,7 @@ func resetConfig() {
 }
 
 func TestDefaultConfig(t *testing.T) {
+	t.Setenv("TEST_NO_CONFIG", "true")
 	resetConfig()
 	defer resetConfig()
 
@@ -43,6 +44,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestConfigEnvOverrides(t *testing.T) {
+	t.Setenv("TEST_NO_CONFIG", "true")
 	resetConfig()
 	defer resetConfig()
 

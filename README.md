@@ -110,12 +110,14 @@ export AI_AGENT_ORCHESTRATOR=adk     # 使用 Google ADK for Go 编排
 
 ### 2. 单步执行任务
 * **请求方式**：`POST /api/tasks/:id/run`
-* **说明**：执行一次 `Plan-Execute` 闭环，并返回该步执行后的任务最新状态和 Trace 详情。
+* **Query 参数**：`stream=true`（可选，设置为 `true` 时以 Server-Sent Events 格式流式输出执行过程中的 Token 及 StepTrace）
+* **说明**：执行一次 `Plan-Execute` 闭环，默认返回该步执行后的任务最新状态和 Trace 详情。
 
-### 3. 运行全部任务（异步）
+### 3. 运行全部任务（异步/流式）
 * **请求方式**：`POST /api/tasks/:id/run-all`
-* **返回**：`202 Accepted`，任务在后台 goroutine 中异步执行。
-* **说明**：服务端立即返回，随后在后台自动循环执行，直至任务到达终态 `completed` 或 `failed`（达到最大步数、工具预算耗尽，或 Planner 判定已达成目标）。**权威状态以轮询 `GET /api/tasks/:id` 或订阅 SSE 流为准。**
+* **Query 参数**：`stream=true`（可选，设置为 `true` 时以 Server-Sent Events 格式同步流式输出执行过程，直至任务到达终态）
+* **返回**：默认返回 `202 Accepted`（任务在后台异步执行）；若指定 `stream=true`，则返回 `200 OK` 并以 `text/event-stream` 格式同步推送事件流。
+* **说明**：服务端循环执行，直至任务到达终态 `completed` 或 `failed`（达到最大步数、工具预算耗尽，或 Planner 判定已达成目标）。**权威状态以轮询 `GET /api/tasks/:id` 为准。**
 * **并发保护**：同一任务重复触发返回 `409 Conflict`；通过 DB 原子状态转换防止多实例并发执行。
 
 ### 4. 获取任务详情
