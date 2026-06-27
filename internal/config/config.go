@@ -61,6 +61,7 @@ type Config struct {
 		SearchURL     string `mapstructure:"search_url"`
 		SearchMethod  string `mapstructure:"search_method"`
 		Authorization string `mapstructure:"authorization"`
+		ToolName      string `mapstructure:"tool_name"`
 	} `mapstructure:"rag"`
 
 	Log struct {
@@ -117,6 +118,7 @@ func setupViper() {
 	viper.SetDefault("tool.timeout_seconds", 120)
 	viper.SetDefault("skill.root", "skills")
 	viper.SetDefault("rag.authorization", "")
+	viper.SetDefault("rag.tool_name", "search")
 
 	// Explicit bindings for standard env variables
 	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
@@ -124,6 +126,7 @@ func setupViper() {
 	_ = viper.BindEnv("llm.openai_api_key", "OPENAI_API_KEY")
 	_ = viper.BindEnv("llm.gemini_api_key", "GEMINI_API_KEY")
 	_ = viper.BindEnv("llm.google_api_key", "GOOGLE_API_KEY")
+	_ = viper.BindEnv("rag.tool_name", "AI_AGENT_RAG_TOOL_NAME")
 }
 
 // unmarshalConfig reads the current viper state into a fresh Config struct.
@@ -309,6 +312,7 @@ func diffConfigs(old, new *Config) []string {
 	addIf("rag.search_url", old.RAG.SearchURL, new.RAG.SearchURL)
 	addIf("rag.search_method", old.RAG.SearchMethod, new.RAG.SearchMethod)
 	addIf("rag.authorization", old.RAG.Authorization, new.RAG.Authorization)
+	addIf("rag.tool_name", old.RAG.ToolName, new.RAG.ToolName)
 
 	// Tool / Log / Skill
 	addIfInt("tool.timeout_seconds", old.Tool.TimeoutSeconds, new.Tool.TimeoutSeconds)

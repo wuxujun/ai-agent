@@ -89,7 +89,11 @@ rag:
   
   # HTTP method used for RAG searches (e.g. "POST", "GET").
   # Env override: AI_AGENT_RAG_SEARCH_METHOD
-  search_method: ""
+  search_method: "MCP"
+
+  # The name of the search tool exposed by the MCP server.
+  # Env override: AI_AGENT_RAG_TOOL_NAME
+  tool_name: "rag_search"
 
   authorization: "XKT#2026"
 

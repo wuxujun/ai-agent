@@ -33,6 +33,15 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 		return nil, err
 	}
 
+	// Optimize SQLite settings to prevent "database is locked (SQLITE_BUSY)" errors
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
+	// Set pragmas for extra robustness
+	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
+	_, _ = db.Exec("PRAGMA busy_timeout=5000;")
+
 	s := &SQLiteStore{db: db}
 	if err := s.init(); err != nil {
 		return nil, err
