@@ -355,43 +355,40 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		e.ApprovalCallback(task.ID, approval)
 	}
 
+	var res types.ApprovalResult
 	select {
-	case res := <-ch:
-		if !res.Approved {
-			msg := res.Message
-			if msg == "" {
-				msg = "No reason provided"
-			}
-			role := types.AgentRoleSingle
-			if e.Mode == ModeMultiAgent {
-				role = types.AgentRoleResearcher
-			}
-			task.Trace = append(task.Trace, types.StepTrace{
-				Step:        task.StepCount + 1,
-				Goal:        task.Goal,
-				Action:      action,
-				Observation: fmt.Sprintf("Action rejected by user. Reason: %s", msg),
-				Error:       fmt.Sprintf("Action %s rejected by user: %s", action, msg),
-				Evidence: []types.Evidence{{
-					Path:  "user_feedback",
-					Lines: []string{msg},
-					Query: "disapproval",
-				}},
-				AgentRole: role,
-			})
-			task.StepCount += 1
-
-			task.Status = types.StatusRunning
-			if e.Store != nil {
-				saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				_ = e.Store.SaveFullTask(saveCtx, task)
-				cancel()
-			}
-			if e.EventCallback != nil {
-				e.EventCallback(task.ID, types.StatusRunning)
-			}
-			return false, nil, nil
+	case res = <-ch:
+	case <-ctx.Done():
+		select {
+		case res = <-ch:
+		default:
+			return false, nil, ctx.Err()
 		}
+	}
+
+	if !res.Approved {
+		msg := res.Message
+		if msg == "" {
+			msg = "No reason provided"
+		}
+		role := types.AgentRoleSingle
+		if e.Mode == ModeMultiAgent {
+			role = types.AgentRoleResearcher
+		}
+		task.Trace = append(task.Trace, types.StepTrace{
+			Step:        task.StepCount + 1,
+			Goal:        task.Goal,
+			Action:      action,
+			Observation: fmt.Sprintf("Action rejected by user. Reason: %s", msg),
+			Error:       fmt.Sprintf("Action %s rejected by user: %s", action, msg),
+			Evidence: []types.Evidence{{
+				Path:  "user_feedback",
+				Lines: []string{msg},
+				Query: "disapproval",
+			}},
+			AgentRole: role,
+		})
+		task.StepCount += 1
 
 		task.Status = types.StatusRunning
 		if e.Store != nil {
@@ -402,10 +399,19 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		if e.EventCallback != nil {
 			e.EventCallback(task.ID, types.StatusRunning)
 		}
-		return true, res.Parameters, nil
-	case <-ctx.Done():
-		return false, nil, ctx.Err()
+		return false, nil, nil
 	}
+
+	task.Status = types.StatusRunning
+	if e.Store != nil {
+		saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = e.Store.SaveFullTask(saveCtx, task)
+		cancel()
+	}
+	if e.EventCallback != nil {
+		e.EventCallback(task.ID, types.StatusRunning)
+	}
+	return true, res.Parameters, nil
 }
 
 func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {

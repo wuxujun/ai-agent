@@ -26,7 +26,7 @@ type Handler struct {
 	engine  *orchestrator.Engine
 	metrics *metrics.Collector
 	wg      sync.WaitGroup // tracks background run-all goroutines for graceful shutdown
-	taskSem chan struct{}  // bounded worker pool for concurrency control
+	taskSem *resizableSemaphore // bounded worker pool for concurrency control
 
 	// activeTasks maps task IDs to the run-all reservation that owns the slot.
 	// Storing a pointer (not the raw CancelFunc) gives us identity equality so
@@ -73,7 +73,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		store:       st,
 		engine:      eng,
 		metrics:     mc,
-		taskSem:     make(chan struct{}, maxTasks),
+		taskSem:     newResizableSemaphore(),
 		activeTasks: make(map[string]*activeRun),
 	}
 
@@ -255,14 +255,16 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
-	// Acquire concurrency slot
-	select {
-	case h.taskSem <- struct{}{}:
-		defer func() { <-h.taskSem }()
-	case <-ctx.Done():
+	// Acquire concurrency slot dynamically
+	limit := config.Get().Orchestrator.MaxConcurrentTasks
+	if limit <= 0 {
+		limit = 10
+	}
+	if !h.taskSem.Acquire(ctx, limit) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "too many concurrent tasks, please try again later"})
 		return
 	}
+	defer h.taskSem.Release(limit)
 
 	task, err := h.store.GetTask(ctx, c.Param("id"))
 	if err != nil {
@@ -509,10 +511,11 @@ func (h *Handler) runAll(c *gin.Context) {
 		}()
 
 		// Wait for a concurrency slot, but honor cancellation while queued.
-		select {
-		case h.taskSem <- struct{}{}:
-			defer func() { <-h.taskSem }()
-		case <-bgCtx.Done():
+		limit := config.Get().Orchestrator.MaxConcurrentTasks
+		if limit <= 0 {
+			limit = 10
+		}
+		if !h.taskSem.Acquire(bgCtx, limit) {
 			_ = orchestrator.SetTaskFailed(task, "task canceled: "+bgCtx.Err().Error())
 			saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer saveCancel()
@@ -522,6 +525,7 @@ func (h *Handler) runAll(c *gin.Context) {
 			errChan <- bgCtx.Err()
 			return
 		}
+		defer h.taskSem.Release(limit)
 
 		log.Info("starting async run-all for task", "task_id", task.ID)
 		execErr := h.engine.RunAll(bgCtx, task)
@@ -851,4 +855,59 @@ func (h *Handler) CancelTaskByID(taskID string) bool {
 	}
 	run.cancel()
 	return true
+}
+
+type resizableSemaphore struct {
+	mu      sync.Mutex
+	current int
+	waiters []chan struct{}
+}
+
+func newResizableSemaphore() *resizableSemaphore {
+	return &resizableSemaphore{}
+}
+
+func (s *resizableSemaphore) Acquire(ctx context.Context, limit int) bool {
+	s.mu.Lock()
+	s.wakeWaiters(limit)
+	if s.current < limit {
+		s.current++
+		s.mu.Unlock()
+		return true
+	}
+
+	ch := make(chan struct{})
+	s.waiters = append(s.waiters, ch)
+	s.mu.Unlock()
+
+	select {
+	case <-ch:
+		return true
+	case <-ctx.Done():
+		s.mu.Lock()
+		for i, w := range s.waiters {
+			if w == ch {
+				s.waiters = append(s.waiters[:i], s.waiters[i+1:]...)
+				break
+			}
+		}
+		s.mu.Unlock()
+		return false
+	}
+}
+
+func (s *resizableSemaphore) Release(limit int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.current--
+	s.wakeWaiters(limit)
+}
+
+func (s *resizableSemaphore) wakeWaiters(limit int) {
+	for len(s.waiters) > 0 && s.current < limit {
+		ch := s.waiters[0]
+		s.waiters = s.waiters[1:]
+		s.current++
+		close(ch)
+	}
 }

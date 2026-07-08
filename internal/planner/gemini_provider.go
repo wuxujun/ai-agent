@@ -52,11 +52,13 @@ func (p *geminiProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 			return "", usage, err
 		}
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil && len(resp.Candidates[0].Content.Parts) > 0 {
-			chunk := resp.Candidates[0].Content.Parts[0].Text
-			if chunk != "" {
-				textBuf.WriteString(chunk)
-				if onChunk != nil {
-					onChunk(chunk)
+			for _, part := range resp.Candidates[0].Content.Parts {
+				chunk := part.Text
+				if chunk != "" {
+					textBuf.WriteString(chunk)
+					if onChunk != nil {
+						onChunk(chunk)
+					}
 				}
 			}
 		}

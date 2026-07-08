@@ -216,6 +216,10 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		return nil, err
 	}
 
+	if len(m.Embedding) == 0 {
+		return nil, fmt.Errorf("empty embedding returned from Ollama")
+	}
+
 	return m.Embedding, nil
 }
 

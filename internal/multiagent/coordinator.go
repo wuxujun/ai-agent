@@ -161,6 +161,13 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		break
 	}
 
+	if task.Status != types.StatusFailed {
+		task.Status = types.StatusCompleted
+		if c.Metrics != nil {
+			c.Metrics.IncCompleted()
+		}
+	}
+
 	log.Info("Workflow complete", "task_id", task.ID, "status", task.Status)
 	span.SetAttributes(
 		attribute.String("agent.task.final_status", string(task.Status)),
@@ -561,12 +568,7 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 		TokenUsage:  output.TokenUsage,
 	})
 	task.StepCount++
-	task.Status = types.StatusCompleted
 	task.FinalAnswer = output.FinalAnswer
-
-	if c.Metrics != nil {
-		c.Metrics.IncCompleted()
-	}
 
 	log.Info("Phase 3 done — answer written", "confidence", output.Confidence, "elapsed", elapsed)
 	return output.Confidence, nil
