@@ -114,3 +114,14 @@ skill:
   # Root directory scanned for skills (containing <name>/SKILL.md).
   # Env override: AI_AGENT_SKILL_ROOT
   root: "skills"
+
+# Web search configuration
+search:
+  # The default web search API URL (e.g. Firecrawl, DuckDuckGo)
+  # Default is Firecrawl search endpoint: https://api.firecrawl.dev/v1/search
+  # Env override: AI_AGENT_SEARCH_URL
+  url: "https://api.firecrawl.dev/v1/search"
+
+  # API key or authorization token for the search provider
+  # Env override: FIRECRAWL_API_KEY or AI_AGENT_SEARCH_API_KEY
+  api_key: ""

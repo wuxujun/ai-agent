@@ -64,6 +64,11 @@ type Config struct {
 		ToolName      string `mapstructure:"tool_name"`
 	} `mapstructure:"rag"`
 
+	Search struct {
+		URL    string `mapstructure:"url"`
+		APIKey string `mapstructure:"api_key"`
+	} `mapstructure:"search"`
+
 	Log struct {
 		Level string `mapstructure:"level"`
 	} `mapstructure:"log"`
@@ -119,6 +124,8 @@ func setupViper() {
 	viper.SetDefault("skill.root", "skills")
 	viper.SetDefault("rag.authorization", "")
 	viper.SetDefault("rag.tool_name", "search")
+	viper.SetDefault("search.url", "https://api.firecrawl.dev/v1/search")
+	viper.SetDefault("search.api_key", "")
 
 	// Explicit bindings for standard env variables
 	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
@@ -127,6 +134,8 @@ func setupViper() {
 	_ = viper.BindEnv("llm.gemini_api_key", "GEMINI_API_KEY")
 	_ = viper.BindEnv("llm.google_api_key", "GOOGLE_API_KEY")
 	_ = viper.BindEnv("rag.tool_name", "AI_AGENT_RAG_TOOL_NAME")
+	_ = viper.BindEnv("search.url", "AI_AGENT_SEARCH_URL")
+	_ = viper.BindEnv("search.api_key", "FIRECRAWL_API_KEY")
 }
 
 // unmarshalConfig reads the current viper state into a fresh Config struct.
@@ -144,6 +153,11 @@ func unmarshalConfig() (*Config, error) {
 	if c.API.Addr == "" {
 		if envAddr := os.Getenv("AI_AGENT_API_ADDR"); envAddr != "" {
 			c.API.Addr = envAddr
+		}
+	}
+	if c.Search.APIKey == "" {
+		if envKey := os.Getenv("AI_AGENT_SEARCH_API_KEY"); envKey != "" {
+			c.Search.APIKey = envKey
 		}
 	}
 	return &c, nil
@@ -313,6 +327,10 @@ func diffConfigs(old, new *Config) []string {
 	addIf("rag.search_method", old.RAG.SearchMethod, new.RAG.SearchMethod)
 	addIf("rag.authorization", old.RAG.Authorization, new.RAG.Authorization)
 	addIf("rag.tool_name", old.RAG.ToolName, new.RAG.ToolName)
+
+	// Search
+	addIf("search.url", old.Search.URL, new.Search.URL)
+	addIf("search.api_key", old.Search.APIKey, new.Search.APIKey)
 
 	// Tool / Log / Skill
 	addIfInt("tool.timeout_seconds", old.Tool.TimeoutSeconds, new.Tool.TimeoutSeconds)
