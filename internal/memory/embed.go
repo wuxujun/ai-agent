@@ -90,6 +90,8 @@ func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		model = "text-embedding-004"
 	}
 
+	logEmbeddingRequest("gemini", model, cfg.BaseURL, text)
+
 	resp, err := client.Models.EmbedContent(ctx, model, genai.Text(text), nil)
 	if err != nil {
 		return nil, err
@@ -128,6 +130,8 @@ func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	if err != nil {
 		return nil, err
 	}
+
+	logEmbeddingRequest("openai", model, url, text)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
 	if err != nil {
@@ -190,6 +194,8 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		return nil, err
 	}
 
+	logEmbeddingRequest("ollama", model, url, text)
+
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
 	if err != nil {
 		return nil, err
@@ -221,6 +227,25 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	}
 
 	return m.Embedding, nil
+}
+
+func logEmbeddingRequest(provider, model, url, input string) {
+	if url == "" {
+		log.Info("sending embedding request",
+			"provider", provider,
+			"model", model,
+			"input_len", len(input),
+			"input", input,
+		)
+		return
+	}
+	log.Info("sending embedding request",
+		"provider", provider,
+		"model", model,
+		"url", url,
+		"input_len", len(input),
+		"input", input,
+	)
 }
 
 func localEmbedding(text string) []float32 {
