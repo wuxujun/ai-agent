@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -19,7 +22,10 @@ import (
 
 // PostgresStore implements Store using a PostgreSQL database.
 type PostgresStore struct {
-	db *sql.DB
+	db             *sql.DB
+	pgvectorMu     sync.Mutex
+	pgvectorReady  bool
+	pgvectorIdxDim int
 }
 
 // NewPostgresStore creates and initializes a PostgresStore.
@@ -33,6 +39,12 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	if err := p.init(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if usePostgresPGVector() {
+		if err := p.ensurePGVector(context.Background()); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return p, nil
 }
@@ -491,6 +503,31 @@ func (p *PostgresStore) SaveMemory(ctx context.Context, mem *types.Memory) error
 		return err
 	}
 
+	if usePostgresPGVector() {
+		if err := p.ensurePGVector(ctx); err != nil {
+			return err
+		}
+		vecValue := any(nil)
+		if len(mem.Embedding) > 0 {
+			vecValue = pgVectorLiteral(mem.Embedding)
+		}
+		_, err = p.db.ExecContext(ctx, `
+INSERT INTO memories (id, task_id, goal, final_answer, key_findings, timestamp, embedding_json, embedding_vector)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector)
+ON CONFLICT(id) DO UPDATE SET
+task_id=EXCLUDED.task_id,
+goal=EXCLUDED.goal,
+final_answer=EXCLUDED.final_answer,
+key_findings=EXCLUDED.key_findings,
+timestamp=EXCLUDED.timestamp,
+embedding_json=EXCLUDED.embedding_json,
+embedding_vector=EXCLUDED.embedding_vector
+`,
+			mem.ID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON), vecValue,
+		)
+		return err
+	}
+
 	_, err = p.db.ExecContext(ctx, `
 INSERT INTO memories (id, task_id, goal, final_answer, key_findings, timestamp, embedding_json)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -507,11 +544,187 @@ embedding_json=EXCLUDED.embedding_json
 	return err
 }
 
+func (p *PostgresStore) ensurePGVector(ctx context.Context) error {
+	dim := configuredPGVectorDimension()
+
+	p.pgvectorMu.Lock()
+	defer p.pgvectorMu.Unlock()
+
+	if p.pgvectorReady && p.pgvectorIdxDim == dim {
+		return nil
+	}
+
+	if _, err := p.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
+		return fmt.Errorf("enable pgvector extension: %w", err)
+	}
+	if _, err := p.db.ExecContext(ctx, `ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_vector vector`); err != nil {
+		return fmt.Errorf("add pgvector memory column: %w", err)
+	}
+	if err := p.backfillPGVectorEmbeddings(ctx); err != nil {
+		return err
+	}
+	if dim > 0 && p.pgvectorIdxDim != dim {
+		indexSQL := fmt.Sprintf(`
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_vector_hnsw_%d
+ON memories USING hnsw ((embedding_vector::vector(%d)) vector_cosine_ops)
+WHERE embedding_vector IS NOT NULL AND vector_dims(embedding_vector) = %d
+`, dim, dim, dim)
+		if _, err := p.db.ExecContext(ctx, indexSQL); err != nil {
+			log.Warn("failed to create pgvector HNSW index; exact pgvector scan remains enabled",
+				"dimension", dim,
+				"error", err,
+			)
+		}
+	}
+
+	p.pgvectorReady = true
+	p.pgvectorIdxDim = dim
+	return nil
+}
+
+func (p *PostgresStore) backfillPGVectorEmbeddings(ctx context.Context) error {
+	rows, err := p.db.QueryContext(ctx, `
+SELECT id, embedding_json
+FROM memories
+WHERE embedding_vector IS NULL
+`)
+	if err != nil {
+		return fmt.Errorf("query pgvector backfill candidates: %w", err)
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		id        string
+		embedding []float32
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var id, embJSON string
+		if err := rows.Scan(&id, &embJSON); err != nil {
+			return fmt.Errorf("scan pgvector backfill candidate: %w", err)
+		}
+		var embedding []float32
+		if err := json.Unmarshal([]byte(embJSON), &embedding); err != nil {
+			log.Warn("skipping malformed memory embedding during pgvector backfill", "id", id, "error", err)
+			continue
+		}
+		if len(embedding) == 0 {
+			continue
+		}
+		candidates = append(candidates, candidate{id: id, embedding: embedding})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate pgvector backfill candidates: %w", err)
+	}
+
+	for _, c := range candidates {
+		if _, err := p.db.ExecContext(ctx, `
+UPDATE memories
+SET embedding_vector = $1::vector
+WHERE id = $2
+`, pgVectorLiteral(c.embedding), c.id); err != nil {
+			log.Warn("failed to backfill pgvector memory embedding", "id", c.id, "error", err)
+		}
+	}
+	if len(candidates) > 0 {
+		log.Info("pgvector memory backfill complete", "count", len(candidates))
+	}
+	return nil
+}
+
+func (p *PostgresStore) queryMemoriesPGVector(ctx context.Context, embedding []float32, limit int) ([]*types.Memory, error) {
+	if limit <= 0 {
+		return []*types.Memory{}, nil
+	}
+	if err := p.ensurePGVector(ctx); err != nil {
+		return nil, err
+	}
+
+	dim := len(embedding)
+	vectorValue := pgVectorLiteral(embedding)
+	indexDim := configuredPGVectorDimension()
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if indexDim > 0 && dim == indexDim {
+		query := fmt.Sprintf(`
+SELECT id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
+FROM memories
+WHERE embedding_vector IS NOT NULL AND vector_dims(embedding_vector) = %d
+ORDER BY (embedding_vector::vector(%d)) <=> $1::vector(%d)
+LIMIT $2
+`, indexDim, indexDim, indexDim)
+		rows, err = p.db.QueryContext(ctx, query, vectorValue, limit)
+	} else {
+		rows, err = p.db.QueryContext(ctx, `
+SELECT id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
+FROM memories
+WHERE embedding_vector IS NOT NULL AND vector_dims(embedding_vector) = $2
+ORDER BY embedding_vector <=> $1::vector
+LIMIT $3
+`, vectorValue, dim, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []*types.Memory
+	for rows.Next() {
+		var mem types.Memory
+		var embJSON string
+		if err := rows.Scan(&mem.ID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(embJSON), &mem.Embedding); err != nil {
+			continue
+		}
+		res = append(res, &mem)
+	}
+	return res, rows.Err()
+}
+
+func usePostgresPGVector() bool {
+	cfg := config.Get()
+	return cfg != nil && strings.EqualFold(cfg.Store.VectorSearch, "pgvector")
+}
+
+func configuredPGVectorDimension() int {
+	if cfg := config.Get(); cfg != nil && cfg.Store.PGVectorDimensions > 0 {
+		return cfg.Store.PGVectorDimensions
+	}
+	return 0
+}
+
+func pgVectorLiteral(embedding []float32) string {
+	var b strings.Builder
+	b.Grow(len(embedding) * 10)
+	b.WriteByte('[')
+	for i, v := range embedding {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(float64(v), 'g', -1, 32))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match in Postgres.
-// Like the SQLite backend, only the most recent store.memory_candidate_limit
-// rows (default 200) are loaded for in-process ranking; logs a warning when the
-// cap is hit so operators can raise the limit if older memories matter.
+// When store.vector_search is "pgvector" and an embedding is available, ranking
+// is pushed down to PostgreSQL via pgvector cosine distance. Otherwise it falls
+// back to the in-process candidate scan used by the SQLite backend.
 func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	if usePostgresPGVector() && len(embedding) > 0 {
+		mems, err := p.queryMemoriesPGVector(ctx, embedding, limit)
+		if err == nil {
+			return mems, nil
+		}
+		log.Warn("pgvector memory query failed; falling back to in-process ranking", "error", err)
+	}
+
 	candidateLimit := resolveMemoryCandidateLimit()
 	rows, err := p.db.QueryContext(ctx, `
 SELECT id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
@@ -563,10 +776,7 @@ LIMIT $1
 	}
 
 	if len(ranked) >= candidateLimit {
-		log.Warn("memory candidate scan hit store.memory_candidate_limit; older rows excluded from ranking",
-			"candidate_limit", candidateLimit,
-			"backend", "postgres",
-		)
+		warnMemoryCandidateLimitReached("postgres", candidateLimit)
 	}
 
 	sort.Slice(ranked, func(i, j int) bool {

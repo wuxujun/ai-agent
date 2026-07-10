@@ -25,6 +25,17 @@ store:
   # redis: redis url (e.g. "redis://host:port/db")
   # Env override: AI_AGENT_STORE_DSN
   dsn: "data/agent.db"
+
+  # Vector search mode. Supported: "in_process", "pgvector".
+  # "pgvector" only applies when store.type is "postgres"; other backends ignore it.
+  # Env override: AI_AGENT_STORE_VECTOR_SEARCH
+  vector_search: "in_process"
+
+  # Optional pgvector HNSW index dimension, e.g. 128 for local fallback embeddings,
+  # 1536 for OpenAI text-embedding-3-small, 768 for Gemini text-embedding-004.
+  # 0 keeps pgvector in exact-scan mode without creating an ANN index.
+  # Env override: AI_AGENT_STORE_PGVECTOR_DIMENSIONS
+  pgvector_dimensions: 0
   
   # Max recent memory rows loaded from disk before in-process cosine/keyword ranking.
   # 0 falls back to default (200).

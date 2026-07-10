@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
@@ -529,6 +530,35 @@ func (h *Handler) runAll(c *gin.Context) {
 
 		log.Info("starting async run-all for task", "task_id", task.ID)
 		execErr := h.engine.RunAll(bgCtx, task)
+
+		log.Info("async run-all completed", "task_id", task.ID, "status", task.Status)
+		log.Info("--- TASK DECOMPOSITION & PLANNING RESULTS ---", "task_id", task.ID, "goal", task.Goal)
+		if task.Hypothesis != "" {
+			log.Info("Thought Strategy / Hypothesis:", "hypothesis", task.Hypothesis)
+		}
+		if len(task.Unresolved) > 0 {
+			log.Info("Unresolved subtasks remaining:", "unresolved", task.Unresolved)
+		}
+		log.Info("--- STEP BY STEP EXECUTION TRACE ---", "step_count", len(task.Trace))
+		for _, tr := range task.Trace {
+			roleStr := ""
+			if tr.AgentRole != "" {
+				roleStr = fmt.Sprintf(" [%s]", tr.AgentRole)
+			}
+			log.Info(fmt.Sprintf("Step %d%s - Action: %s | Query: %s", tr.Step, roleStr, tr.Action, tr.Query))
+			if tr.Observation != "" {
+				obs := tr.Observation
+				if len(obs) > 300 {
+					obs = obs[:300] + "... (truncated)"
+				}
+				log.Info("  Observation:", "content", obs)
+			}
+			if tr.Error != "" {
+				log.Info("  Error:", "error", tr.Error)
+			}
+		}
+		log.Info("----------------------------------------------")
+
 		saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer saveCancel()
 		if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {

@@ -22,6 +22,16 @@ type Config struct {
 	Store struct {
 		Type string `mapstructure:"type"`
 		DSN  string `mapstructure:"dsn"`
+		// VectorSearch controls how Store.QueryMemories ranks embeddings.
+		// "in_process" keeps the existing JSON load + Go cosine ranking path.
+		// "pgvector" enables PostgreSQL pgvector ranking when store.type is
+		// postgres. Other backends ignore this setting.
+		VectorSearch string `mapstructure:"vector_search"`
+		// PGVectorDimensions optionally enables a pgvector HNSW expression
+		// index for embeddings with this exact dimension. 0 keeps pgvector in
+		// exact-scan mode, which is still useful for avoiding JSON
+		// deserialization in Go but does not provide ANN indexing.
+		PGVectorDimensions int `mapstructure:"pgvector_dimensions"`
 		// MemoryCandidateLimit caps how many recent memory rows each Store
 		// backend loads from disk before in-process cosine/keyword ranking.
 		// Without a cap, large memory tables would scan the full table on
@@ -113,6 +123,8 @@ func setupViper() {
 	viper.SetDefault("api.api_key", "")
 	viper.SetDefault("store.type", "sqlite")
 	viper.SetDefault("store.dsn", "data/agent.db")
+	viper.SetDefault("store.vector_search", "in_process")
+	viper.SetDefault("store.pgvector_dimensions", 0)
 	viper.SetDefault("store.memory_candidate_limit", 200)
 	viper.SetDefault("orchestrator.mode", "eino")
 	viper.SetDefault("orchestrator.max_concurrent_tasks", 10)
@@ -315,6 +327,8 @@ func diffConfigs(old, new *Config) []string {
 	// Store (DSN may contain a password)
 	addIf("store.type", old.Store.Type, new.Store.Type)
 	addIf("store.dsn", old.Store.DSN, new.Store.DSN)
+	addIf("store.vector_search", old.Store.VectorSearch, new.Store.VectorSearch)
+	addIfInt("store.pgvector_dimensions", old.Store.PGVectorDimensions, new.Store.PGVectorDimensions)
 	addIfInt("store.memory_candidate_limit", old.Store.MemoryCandidateLimit, new.Store.MemoryCandidateLimit)
 
 	// Orchestrator

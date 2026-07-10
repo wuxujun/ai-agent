@@ -595,10 +595,7 @@ LIMIT ?
 	}
 
 	if len(ranked) >= candidateLimit {
-		log.Warn("memory candidate scan hit store.memory_candidate_limit; older rows excluded from ranking",
-			"candidate_limit", candidateLimit,
-			"backend", "sqlite",
-		)
+		warnMemoryCandidateLimitReached("sqlite", candidateLimit)
 	}
 
 	sort.Slice(ranked, func(i, j int) bool {

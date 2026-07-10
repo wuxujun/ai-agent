@@ -1,6 +1,9 @@
 package store
 
 import (
+	"fmt"
+	"sync"
+
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -9,6 +12,8 @@ import (
 // store.memory_candidate_limit is 0 or negative in config. Mirrors the original
 // hardcoded SQLite limit so existing deployments are unchanged.
 const defaultMemoryCandidateLimit = 200
+
+var memoryCandidateLimitWarnings sync.Map
 
 // resolveMemoryCandidateLimit returns the effective candidate cap for
 // QueryMemories backends. Reads the live config at call time (do not cache)
@@ -19,6 +24,17 @@ func resolveMemoryCandidateLimit() int {
 		return cfg.Store.MemoryCandidateLimit
 	}
 	return defaultMemoryCandidateLimit
+}
+
+func warnMemoryCandidateLimitReached(backend string, candidateLimit int) {
+	key := fmt.Sprintf("%s:%d", backend, candidateLimit)
+	if _, loaded := memoryCandidateLimitWarnings.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	log.Warn("memory candidate scan hit store.memory_candidate_limit; older rows excluded from ranking",
+		"candidate_limit", candidateLimit,
+		"backend", backend,
+	)
 }
 
 // memoriesForPersistence returns a copy of mems with Embedding cleared on each

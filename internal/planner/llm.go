@@ -133,7 +133,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		UserPrompt:   BuildUserPrompt(task),
 	}
 
-	log.Info("sending request to provider", "provider", provider, "base_url", baseURL)
+	log.Info("sending request to provider", "provider", provider, "base_url", baseURL, "model", model)
 	textValue, usage, err := prov.Plan(ctx, req, onChunk)
 	if err != nil {
 		span.RecordError(err)

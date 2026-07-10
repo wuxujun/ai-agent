@@ -35,6 +35,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Store.Type != "sqlite" {
 		t.Errorf("expected store.type default to be sqlite, got %q", cfg.Store.Type)
 	}
+	if cfg.Store.VectorSearch != "in_process" {
+		t.Errorf("expected store.vector_search default to be in_process, got %q", cfg.Store.VectorSearch)
+	}
+	if cfg.Store.PGVectorDimensions != 0 {
+		t.Errorf("expected store.pgvector_dimensions default to be 0, got %d", cfg.Store.PGVectorDimensions)
+	}
 	if cfg.Orchestrator.Mode != "eino" {
 		t.Errorf("expected orchestrator.mode default to be eino, got %q", cfg.Orchestrator.Mode)
 	}
@@ -52,11 +58,15 @@ func TestConfigEnvOverrides(t *testing.T) {
 	os.Setenv("AI_AGENT_API_ADDR", "0.0.0.0:9090")
 	os.Setenv("AI_AGENT_STORE_TYPE", "postgres")
 	os.Setenv("AI_AGENT_STORE_DSN", "postgresql://localhost:5432/test")
+	os.Setenv("AI_AGENT_STORE_VECTOR_SEARCH", "pgvector")
+	os.Setenv("AI_AGENT_STORE_PGVECTOR_DIMENSIONS", "128")
 	os.Setenv("OPENAI_API_KEY", "test-openai-key")
 	defer func() {
 		os.Unsetenv("AI_AGENT_API_ADDR")
 		os.Unsetenv("AI_AGENT_STORE_TYPE")
 		os.Unsetenv("AI_AGENT_STORE_DSN")
+		os.Unsetenv("AI_AGENT_STORE_VECTOR_SEARCH")
+		os.Unsetenv("AI_AGENT_STORE_PGVECTOR_DIMENSIONS")
 		os.Unsetenv("OPENAI_API_KEY")
 	}()
 
@@ -74,6 +84,12 @@ func TestConfigEnvOverrides(t *testing.T) {
 	}
 	if cfg.Store.DSN != "postgresql://localhost:5432/test" {
 		t.Errorf("expected store.dsn override, got %q", cfg.Store.DSN)
+	}
+	if cfg.Store.VectorSearch != "pgvector" {
+		t.Errorf("expected store.vector_search override to be pgvector, got %q", cfg.Store.VectorSearch)
+	}
+	if cfg.Store.PGVectorDimensions != 128 {
+		t.Errorf("expected store.pgvector_dimensions override to be 128, got %d", cfg.Store.PGVectorDimensions)
 	}
 	if cfg.LLM.OpenAIAPIKey != "test-openai-key" {
 		t.Errorf("expected llm.openai_api_key override to be test-openai-key, got %q", cfg.LLM.OpenAIAPIKey)
