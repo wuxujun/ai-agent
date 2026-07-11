@@ -131,7 +131,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 		)
 		finalAnswer := task.FinalAnswer
 		if finalAnswer == "" {
-			finalAnswer = "stopped by budget or max steps"
+			finalAnswer = finalAnswerForLimit(task, limitReasonStepOrToolBudget)
 		}
 		_ = SetTaskCompleted(task, finalAnswer)
 		if e.Metrics != nil {
@@ -178,7 +178,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
 		ans := task.FinalAnswer
 		if ans == "" {
-			ans = "stopped by budget or max steps"
+			ans = finalAnswerForLimit(task, limitReasonStepOrToolBudget)
 		}
 		_ = SetTaskCompleted(task, ans)
 		if e.Metrics != nil {

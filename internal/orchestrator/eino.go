@@ -147,7 +147,7 @@ func (e *Engine) checkBudget(ctx context.Context, state *einoStepState) (*einoSt
 			olog.Info("task reached token budget", "task_id", task.ID, "tokens", totalTokens, "token_budget", task.TokenBudget)
 			finalAnswer := task.FinalAnswer
 			if finalAnswer == "" {
-				finalAnswer = "stopped by token budget"
+				finalAnswer = finalAnswerForLimit(task, limitReasonTokenBudget)
 			}
 			_ = SetTaskCompleted(task, finalAnswer)
 			if e.Metrics != nil {
@@ -164,7 +164,7 @@ func (e *Engine) checkBudget(ctx context.Context, state *einoStepState) (*einoSt
 	olog.Info("task reached step or budget limit", "task_id", task.ID, "step", task.StepCount, "max_steps", task.MaxSteps, "budget", task.ToolBudget)
 	finalAnswer := task.FinalAnswer
 	if finalAnswer == "" {
-		finalAnswer = "stopped by budget or max steps"
+		finalAnswer = finalAnswerForLimit(task, limitReasonStepOrToolBudget)
 	}
 	_ = SetTaskCompleted(task, finalAnswer)
 	if e.Metrics != nil {

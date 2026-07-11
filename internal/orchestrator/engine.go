@@ -169,7 +169,11 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		engineLog.Info("task reached limit", "task_id", task.ID, "step", task.StepCount, "max_steps", task.MaxSteps, "budget", task.ToolBudget, "tokens", totalTokens, "token_budget", task.TokenBudget)
 		finalAnswer := task.FinalAnswer
 		if finalAnswer == "" {
-			finalAnswer = "stopped by budget or max steps"
+			reason := limitReasonStepOrToolBudget
+			if task.TokenBudget > 0 && totalTokens >= task.TokenBudget {
+				reason = limitReasonTokenBudget
+			}
+			finalAnswer = finalAnswerForLimit(task, reason)
 		}
 		_ = SetTaskCompleted(task, finalAnswer)
 		if e.Metrics != nil {

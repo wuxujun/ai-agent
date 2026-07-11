@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -345,8 +346,8 @@ func TestEinoNextStopsWhenBudgetExhausted(t *testing.T) {
 	if task.Status != types.StatusCompleted {
 		t.Fatalf("task status = %q, want completed", task.Status)
 	}
-	if task.FinalAnswer != "stopped by budget or max steps" {
-		t.Fatalf("final answer = %q, want budget stop message", task.FinalAnswer)
+	if !strings.Contains(task.FinalAnswer, "step or tool budget limit") {
+		t.Fatalf("final answer = %q, want budget stop explanation", task.FinalAnswer)
 	}
 }
 
@@ -383,8 +384,8 @@ func TestEinoNextStopsWhenTokenBudgetExhausted(t *testing.T) {
 	if task.Status != types.StatusCompleted {
 		t.Fatalf("task status = %q, want completed", task.Status)
 	}
-	if task.FinalAnswer != "stopped by token budget" {
-		t.Fatalf("final answer = %q, want token budget stop message", task.FinalAnswer)
+	if !strings.Contains(task.FinalAnswer, "token budget") {
+		t.Fatalf("final answer = %q, want token budget stop explanation", task.FinalAnswer)
 	}
 }
 

@@ -29,7 +29,7 @@ func (e *Engine) runStepNext(ctx context.Context, task *types.Task) error {
 		)
 		finalAnswer := task.FinalAnswer
 		if finalAnswer == "" {
-			finalAnswer = "stopped by budget or max steps"
+			finalAnswer = finalAnswerForLimit(task, limitReasonStepOrToolBudget)
 		}
 		_ = SetTaskCompleted(task, finalAnswer)
 		return nil
