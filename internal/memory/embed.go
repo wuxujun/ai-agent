@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -19,6 +20,10 @@ import (
 )
 
 var log = logger.Component("memory")
+
+const defaultGeminiEmbeddingModel = "gemini-embedding-001"
+
+var geminiEmbeddingUnsupportedLocation atomic.Bool
 
 // CosineSimilarity calculates the cosine similarity between two float vectors.
 func CosineSimilarity(v1, v2 []float32) float32 {
@@ -52,6 +57,10 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	if cfg.APIKey == "" && cfg.Provider != planner.ProviderOllama {
 		return localEmbedding(text), nil
 	}
+	if cfg.Provider == planner.ProviderGemini && geminiEmbeddingUnsupportedLocation.Load() {
+		log.Debug("Gemini embedding disabled for this process after unsupported location error; using local embedding")
+		return localEmbedding(text), nil
+	}
 
 	// Set a reasonable timeout for embedding generation
 	embCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -72,6 +81,14 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	}
 
 	if err != nil {
+		if cfg.Provider == planner.ProviderGemini && isUnsupportedLocationError(err) {
+			if geminiEmbeddingUnsupportedLocation.CompareAndSwap(false, true) {
+				log.Warn("Gemini embedding API is unavailable from current location; disabling remote Gemini embeddings for this process",
+					"error", err,
+				)
+			}
+			return localEmbedding(text), nil
+		}
 		log.Warn("Remote embedding failed (falling back to local)", "error", err)
 		return localEmbedding(text), nil
 	}
@@ -87,7 +104,13 @@ func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 
 	model := config.Get().Embedding.Model
 	if model == "" {
-		model = "text-embedding-004"
+		model = defaultGeminiEmbeddingModel
+	} else if strings.EqualFold(model, "text-embedding-004") {
+		log.Warn("configured Gemini embedding model is not supported by Gemini API embedContent; using current text embedding model",
+			"configured_model", model,
+			"fallback_model", defaultGeminiEmbeddingModel,
+		)
+		model = defaultGeminiEmbeddingModel
 	}
 
 	logEmbeddingRequest("gemini", model, cfg.BaseURL, text)
@@ -227,6 +250,15 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	}
 
 	return m.Embedding, nil
+}
+
+func isUnsupportedLocationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "user location is not supported") ||
+		(strings.Contains(errText, "failed_precondition") && strings.Contains(errText, "location"))
 }
 
 func logEmbeddingRequest(provider, model, url, input string) {

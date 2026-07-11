@@ -42,6 +42,16 @@ func (p *geminiProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 		ResponseSchema:   PlannerDecisionGenAISchema(),
 	}
 
+	log.Info("Gemini planner request",
+		"model", req.Model,
+		"base_url", req.BaseURL,
+		"response_mime_type", cfg.ResponseMIMEType,
+		"system_prompt_len", len(req.SystemPrompt),
+		"system_prompt", req.SystemPrompt,
+		"user_prompt_len", len(req.UserPrompt),
+		"user_prompt", req.UserPrompt,
+	)
+
 	iter := client.Models.GenerateContentStream(ctx, req.Model, contents, cfg)
 
 	var textBuf strings.Builder
@@ -69,5 +79,15 @@ func (p *geminiProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 		}
 	}
 
-	return textBuf.String(), usage, nil
+	responseText := textBuf.String()
+	log.Info("Gemini planner response",
+		"model", req.Model,
+		"response_len", len(responseText),
+		"response", responseText,
+		"prompt_tokens", usage.PromptTokens,
+		"completion_tokens", usage.CompletionTokens,
+		"total_tokens", usage.TotalTokens,
+	)
+
+	return responseText, usage, nil
 }

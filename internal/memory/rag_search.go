@@ -65,6 +65,7 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, forceJSONRPC bool) ([]types.Memory, error) {
 	var req *http.Request
 	var err error
+	var requestBody []byte
 
 	upperMethod := strings.ToUpper(method)
 	isJSONRPC := forceJSONRPC || upperMethod == "MCP" || upperMethod == "JSON-RPC" || (upperMethod == "POST" && strings.Contains(ragURL, "/tools/call"))
@@ -88,6 +89,7 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 		if marErr != nil {
 			return nil, fmt.Errorf("failed to marshal JSON-RPC request: %w", marErr)
 		}
+		requestBody = jsonBytes
 		req, err = http.NewRequestWithContext(ctx, "POST", ragURL, bytes.NewBuffer(jsonBytes))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create JSON-RPC POST request: %w", err)
@@ -99,6 +101,7 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 		if marErr != nil {
 			return nil, fmt.Errorf("failed to marshal query to JSON: %w", marErr)
 		}
+		requestBody = jsonBytes
 		req, err = http.NewRequestWithContext(ctx, "POST", ragURL, bytes.NewBuffer(jsonBytes))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create POST request: %w", err)
@@ -121,6 +124,8 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 		}
 	}
 
+	logRAGRequest("third_party_rag", req.Method, req.URL.String(), requestBody)
+
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
 	if auth != "" {
@@ -139,6 +144,7 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		logRAGResponse("third_party_rag", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
 		return nil, fmt.Errorf("third-party RAG returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -146,6 +152,8 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
+
+	logRAGResponse("third_party_rag", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
 
 	return parseRAGResponse(bodyBytes)
 }
@@ -310,11 +318,15 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 		req.Header.Set("Authorization", authVal)
 	}
 
+	logRAGRequest("mcp_sse_handshake", req.Method, req.URL.String(), nil)
+
 	resp, err := ragHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	logRAGResponse("mcp_sse_handshake", req.Method, req.URL.String(), resp.StatusCode, nil)
 
 	// Capture initial session headers from GET response (e.g. Mcp-Session-Id, Cookie etc. are handled by CookieJar)
 	initialHeaders := make(map[string]string)
@@ -351,6 +363,7 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 					dataVal := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 					if lastEvent == "endpoint" {
 						endpointURL = dataVal
+						log.Info("MCP SSE event received", "event", lastEvent, "data", dataVal)
 						errChan <- nil
 						return
 					}
@@ -516,6 +529,8 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 		req.Header.Set(k, v)
 	}
 
+	logRAGRequest("mcp_jsonrpc", req.Method, req.URL.String(), jsonBytes)
+
 	resp, err := ragHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -524,6 +539,7 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		logRAGResponse("mcp_jsonrpc", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
 		return nil, fmt.Errorf("POST returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -531,6 +547,7 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 	if err != nil {
 		return nil, err
 	}
+	rawBodyBytes := bodyBytes
 
 	// Parse SSE-wrapped JSON-RPC responses (e.g. data: {"jsonrpc": "2.0", ...})
 	bodyStr := string(bodyBytes)
@@ -549,12 +566,65 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 		}
 	}
 
+	logRAGResponse("mcp_jsonrpc", req.Method, req.URL.String(), resp.StatusCode, rawBodyBytes)
+	if !bytes.Equal(rawBodyBytes, bodyBytes) {
+		logRAGResponse("mcp_jsonrpc_parsed_sse_data", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
+	}
+
 	if respTarget != nil {
 		if err := json.Unmarshal(bodyBytes, respTarget); err != nil {
 			return nil, err
 		}
 	}
 	return resp.Header, nil
+}
+
+func logRAGRequest(kind, method, targetURL string, body []byte) {
+	if len(body) == 0 {
+		log.Info("RAG request",
+			"kind", kind,
+			"method", method,
+			"url", targetURL,
+			"body_len", 0,
+		)
+		return
+	}
+	log.Info("RAG request",
+		"kind", kind,
+		"method", method,
+		"url", targetURL,
+		"body_len", len(body),
+		"body", string(body),
+	)
+}
+
+func logRAGResponse(kind, method, targetURL string, statusCode int, body []byte) {
+	const maxResponsePreview = 300
+	if len(body) == 0 {
+		log.Info("RAG response",
+			"kind", kind,
+			"method", method,
+			"url", targetURL,
+			"status", statusCode,
+			"body_len", 0,
+		)
+		return
+	}
+	bodyText := string(body)
+	truncated := false
+	if len(bodyText) > maxResponsePreview {
+		bodyText = bodyText[:maxResponsePreview]
+		truncated = true
+	}
+	log.Info("RAG response",
+		"kind", kind,
+		"method", method,
+		"url", targetURL,
+		"status", statusCode,
+		"body_len", len(body),
+		"body_preview", bodyText,
+		"body_truncated", truncated,
+	)
 }
 
 func buildSearchArguments(query string) map[string]any {
