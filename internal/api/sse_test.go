@@ -117,3 +117,25 @@ func TestPublishStillDeliversToLiveSubscribers(t *testing.T) {
 		t.Fatal("live subscriber did not receive the published terminal event")
 	}
 }
+
+func TestTerminalStepEventIncludesAggregatedTokenUsage(t *testing.T) {
+	task := &types.Task{
+		ID:          "task-token-event",
+		Status:      types.StatusCompleted,
+		FinalAnswer: "done",
+		Trace: []types.StepTrace{
+			{TokenUsage: types.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
+			{TokenUsage: types.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
+		},
+	}
+
+	event := terminalStepEvent(task.ID, task)
+	if event.TokenUsage == nil {
+		t.Fatal("terminal event TokenUsage is nil")
+	}
+	if event.TokenUsage.PromptTokens != 17 ||
+		event.TokenUsage.CompletionTokens != 8 ||
+		event.TokenUsage.TotalTokens != 25 {
+		t.Fatalf("token usage = %+v, want prompt=17 completion=8 total=25", event.TokenUsage)
+	}
+}

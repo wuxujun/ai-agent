@@ -26,7 +26,7 @@ type Handler struct {
 	store   store.Store
 	engine  *orchestrator.Engine
 	metrics *metrics.Collector
-	wg      sync.WaitGroup // tracks background run-all goroutines for graceful shutdown
+	wg      sync.WaitGroup      // tracks background run-all goroutines for graceful shutdown
 	taskSem *resizableSemaphore // bounded worker pool for concurrency control
 
 	// activeTasks maps task IDs to the run-all reservation that owns the slot.
@@ -327,6 +327,9 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 				errChan <- saveErr
 				return
 			}
+			if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
+				GetBus().Publish(task.ID, terminalStepEvent(task.ID, task))
+			}
 			errChan <- execErr
 		}()
 
@@ -568,12 +571,7 @@ func (h *Handler) runAll(c *gin.Context) {
 			log.Error("run-all failed for task", "task_id", task.ID, "error", execErr)
 		}
 		// Publish terminal event to SSE subscribers
-		finalEvent := StepEvent{
-			TaskID: task.ID,
-			Status: task.Status,
-			Final:  task.FinalAnswer,
-		}
-		GetBus().Publish(task.ID, finalEvent)
+		GetBus().Publish(task.ID, terminalStepEvent(task.ID, task))
 		errChan <- execErr
 	}()
 

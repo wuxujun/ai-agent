@@ -267,7 +267,7 @@ func logEmbeddingRequest(provider, model, url, input string) {
 			"provider", provider,
 			"model", model,
 			"input_len", len(input),
-			"input", input,
+			// "input", input,
 		)
 		return
 	}
@@ -276,7 +276,7 @@ func logEmbeddingRequest(provider, model, url, input string) {
 		"model", model,
 		"url", url,
 		"input_len", len(input),
-		"input", input,
+		// "input", input,
 	)
 }
 

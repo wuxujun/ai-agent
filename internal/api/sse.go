@@ -15,12 +15,13 @@ import (
 
 // StepEvent is a Server-Sent Event payload pushed to the client after each step.
 type StepEvent struct {
-	TaskID   string                 `json:"task_id"`
-	Status   types.TaskStatus       `json:"status"`
-	Step     *types.StepTrace       `json:"step,omitempty"`
-	Final    string                 `json:"final_answer,omitempty"`
-	Token    string                 `json:"token,omitempty"` // For streaming tokens
-	Approval *types.ApprovalRequest `json:"approval,omitempty"`
+	TaskID     string                 `json:"task_id"`
+	Status     types.TaskStatus       `json:"status"`
+	Step       *types.StepTrace       `json:"step,omitempty"`
+	Final      string                 `json:"final_answer,omitempty"`
+	Token      string                 `json:"token,omitempty"` // For streaming tokens
+	TokenUsage *types.TokenUsage      `json:"token_usage,omitempty"`
+	Approval   *types.ApprovalRequest `json:"approval,omitempty"`
 }
 
 // stickyTerminalTTL bounds how long the EventBus replays a task's terminal
@@ -136,12 +137,7 @@ func (h *Handler) streamTask(c *gin.Context) {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("X-Accel-Buffering", "no")
-		event := StepEvent{
-			TaskID: taskID,
-			Status: task.Status,
-			Final:  task.FinalAnswer,
-		}
-		writeSSEEvent(c, event)
+		writeSSEEvent(c, terminalStepEvent(taskID, task))
 		return
 	}
 
@@ -203,11 +199,7 @@ func (h *Handler) streamTask(c *gin.Context) {
 				continue
 			}
 			if latest.Status == types.StatusCompleted || latest.Status == types.StatusFailed {
-				writeSSEEvent(c, StepEvent{
-					TaskID: taskID,
-					Status: latest.Status,
-					Final:  latest.FinalAnswer,
-				})
+				writeSSEEvent(c, terminalStepEvent(taskID, latest))
 				c.Writer.Flush()
 				return
 			}
@@ -217,6 +209,29 @@ func (h *Handler) streamTask(c *gin.Context) {
 			c.Writer.Flush()
 		}
 	}
+}
+
+func terminalStepEvent(taskID string, task *types.Task) StepEvent {
+	usage := aggregateTokenUsage(task)
+	return StepEvent{
+		TaskID:     taskID,
+		Status:     task.Status,
+		Final:      task.FinalAnswer,
+		TokenUsage: &usage,
+	}
+}
+
+func aggregateTokenUsage(task *types.Task) types.TokenUsage {
+	var usage types.TokenUsage
+	if task == nil {
+		return usage
+	}
+	for _, tr := range task.Trace {
+		usage.PromptTokens += tr.TokenUsage.PromptTokens
+		usage.CompletionTokens += tr.TokenUsage.CompletionTokens
+		usage.TotalTokens += tr.TokenUsage.TotalTokens
+	}
+	return usage
 }
 
 func writeSSEEvent(c *gin.Context, event StepEvent) {

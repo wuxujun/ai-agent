@@ -99,3 +99,16 @@ func truncateSummary(s string, max int) string {
 	}
 	return s[:max] + "..."
 }
+
+func aggregateTaskTokenUsage(task *types.Task) types.TokenUsage {
+	var usage types.TokenUsage
+	if task == nil {
+		return usage
+	}
+	for _, tr := range task.Trace {
+		usage.PromptTokens += tr.TokenUsage.PromptTokens
+		usage.CompletionTokens += tr.TokenUsage.CompletionTokens
+		usage.TotalTokens += tr.TokenUsage.TotalTokens
+	}
+	return usage
+}

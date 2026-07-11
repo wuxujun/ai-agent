@@ -46,7 +46,14 @@ func SetTaskCompleted(task *types.Task, finalAnswer string) error {
 	if err := TransitionTask(task, types.StatusCompleted); err != nil {
 		return err
 	}
-	log.Info("task marked as completed", "task_id", task.ID, "final_answer", finalAnswer)
+	usage := aggregateTaskTokenUsage(task)
+	log.Info("task marked as completed",
+		"task_id", task.ID,
+		"final_answer", finalAnswer,
+		"prompt_tokens", usage.PromptTokens,
+		"completion_tokens", usage.CompletionTokens,
+		"total_tokens", usage.TotalTokens,
+	)
 	task.FinalAnswer = finalAnswer
 	return nil
 }
