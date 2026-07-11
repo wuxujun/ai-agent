@@ -544,7 +544,17 @@ embedding_json=excluded.embedding_json
 // older memories are silently excluded from ranking — we log a warning so
 // operators can raise the limit if recall on older memories matters.
 func (s *SQLiteStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	ctx, span := tracer.Start(ctx, "store.sqlite.query_memories")
+	defer span.End()
+
 	candidateLimit := resolveMemoryCandidateLimit()
+	span.SetAttributes(
+		attribute.Bool("agent.query.has_embedding", len(embedding) > 0),
+		attribute.Int("agent.query.embedding_dim", len(embedding)),
+		attribute.Int("agent.query.limit", limit),
+		attribute.Int("agent.store.memory_candidate_limit", candidateLimit),
+	)
+
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
 FROM memories
@@ -552,6 +562,8 @@ ORDER BY timestamp DESC
 LIMIT ?
 `, candidateLimit)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query memories failed")
 		return nil, err
 	}
 	defer rows.Close()
@@ -566,6 +578,8 @@ LIMIT ?
 		var mem types.Memory
 		var embJSON string
 		if err := rows.Scan(&mem.ID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "scan memory failed")
 			return nil, err
 		}
 
@@ -610,7 +624,16 @@ LIMIT ?
 	for i := 0; i < limit; i++ {
 		res = append(res, ranked[i].mem)
 	}
-	return res, rows.Err()
+	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "iterate memories failed")
+		return nil, err
+	}
+	span.SetAttributes(
+		attribute.Int("agent.store.memory_candidate_count", len(ranked)),
+		attribute.Int("agent.store.memory_count", len(res)),
+	)
+	return res, nil
 }
 
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.

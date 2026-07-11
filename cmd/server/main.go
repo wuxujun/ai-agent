@@ -38,20 +38,35 @@ func main() {
 		_ = godotenv.Load("../../.env")
 	}
 
-	shutdown, err := telemetry.InitOTel("ai-agent", "dev", "127.0.0.1:4318")
-	if err != nil {
-		log.Fatalf("failed to initialize telemetry: %v", err)
+	cfg := config.Get()
+
+	// Sync log level from config into the structured logger.
+	logger.Reinit(cfg.Log.Level)
+
+	shutdown := telemetry.NoopShutdown
+	if cfg.Telemetry.Enabled {
+		endpoint := cfg.Telemetry.Endpoint
+		if cfg.Telemetry.Exporter == "stdout" {
+			endpoint = "stdout"
+		}
+		var err error
+		shutdown, err = telemetry.InitOTel("ai-agent", cfg.Telemetry.Environment, endpoint)
+		if err != nil {
+			log.Fatalf("failed to initialize telemetry: %v", err)
+		}
+		slog.Info("telemetry initialized",
+			"endpoint", endpoint,
+			"environment", cfg.Telemetry.Environment,
+			"exporter", cfg.Telemetry.Exporter,
+		)
+	} else {
+		slog.Info("telemetry disabled by config")
 	}
 	defer func() {
 		if err := shutdown(context.Background()); err != nil {
 			slog.Error("telemetry shutdown failed", "error", err)
 		}
 	}()
-
-	cfg := config.Get()
-
-	// Sync log level from config into the structured logger.
-	logger.Reinit(cfg.Log.Level)
 
 	// Start filesystem watcher so the config is hot-reloaded automatically
 	// whenever config.yaml is saved on disk (no signal required).

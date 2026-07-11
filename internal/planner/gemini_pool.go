@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"google.golang.org/genai"
 )
 
@@ -53,6 +54,8 @@ func GetGeminiClient(apiKey, baseURL string) (*genai.Client, error) {
 	}
 	if geminiHTTPClient != nil {
 		opts.HTTPClient = geminiHTTPClient
+	} else {
+		opts.HTTPClient = telemetry.InstrumentHTTPClient(nil)
 	}
 	client, err := genai.NewClient(context.Background(), opts)
 	if err != nil {

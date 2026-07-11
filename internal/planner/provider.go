@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -281,7 +282,7 @@ func (p *ollamaProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 				healthCheckURL = req.BaseURL[:idx]
 			}
 		}
-		healthClient := &http.Client{Timeout: 2 * time.Second}
+		healthClient := telemetry.NewHTTPClient(2 * time.Second)
 		healthReq, err := http.NewRequestWithContext(ctx, "GET", healthCheckURL, nil)
 		if err == nil {
 			if resp, err := healthClient.Do(healthReq); err != nil {

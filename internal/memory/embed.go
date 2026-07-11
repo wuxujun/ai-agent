@@ -16,6 +16,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"google.golang.org/genai"
 )
 
@@ -164,7 +165,7 @@ func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := telemetry.NewHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -225,7 +226,7 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := telemetry.NewHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

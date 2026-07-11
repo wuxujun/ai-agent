@@ -83,6 +83,13 @@ type Config struct {
 		Level string `mapstructure:"level"`
 	} `mapstructure:"log"`
 
+	Telemetry struct {
+		Enabled     bool   `mapstructure:"enabled"`
+		Endpoint    string `mapstructure:"endpoint"`
+		Environment string `mapstructure:"environment"`
+		Exporter    string `mapstructure:"exporter"`
+	} `mapstructure:"telemetry"`
+
 	Tool struct {
 		TimeoutSeconds int `mapstructure:"timeout_seconds"`
 	} `mapstructure:"tool"`
@@ -132,6 +139,10 @@ func setupViper() {
 	viper.SetDefault("llm.provider", "openai-responses")
 	viper.SetDefault("llm.timeout_seconds", 30)
 	viper.SetDefault("log.level", "info")
+	viper.SetDefault("telemetry.enabled", true)
+	viper.SetDefault("telemetry.endpoint", "127.0.0.1:4318")
+	viper.SetDefault("telemetry.environment", "dev")
+	viper.SetDefault("telemetry.exporter", "otlp")
 	viper.SetDefault("tool.timeout_seconds", 120)
 	viper.SetDefault("skill.root", "skills")
 	viper.SetDefault("rag.authorization", "")
@@ -346,10 +357,16 @@ func diffConfigs(old, new *Config) []string {
 	addIf("search.url", old.Search.URL, new.Search.URL)
 	addIf("search.api_key", old.Search.APIKey, new.Search.APIKey)
 
-	// Tool / Log / Skill
+	// Tool / Log / Skill / Telemetry
 	addIfInt("tool.timeout_seconds", old.Tool.TimeoutSeconds, new.Tool.TimeoutSeconds)
 	addIf("log.level", old.Log.Level, new.Log.Level)
 	addIf("skill.root", old.Skill.Root, new.Skill.Root)
+	if old.Telemetry.Enabled != new.Telemetry.Enabled {
+		changes = append(changes, fmt.Sprintf("telemetry.enabled: %t → %t", old.Telemetry.Enabled, new.Telemetry.Enabled))
+	}
+	addIf("telemetry.endpoint", old.Telemetry.Endpoint, new.Telemetry.Endpoint)
+	addIf("telemetry.environment", old.Telemetry.Environment, new.Telemetry.Environment)
+	addIf("telemetry.exporter", old.Telemetry.Exporter, new.Telemetry.Exporter)
 
 	return changes
 }

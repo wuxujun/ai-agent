@@ -12,6 +12,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
+	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
@@ -65,9 +66,7 @@ func NewLLMPlannerWithProvider(provider ProviderType, apiKey, model, baseURL str
 		APIKey:   apiKey,
 		Model:    model,
 		BaseURL:  baseURL,
-		Client: &http.Client{
-			Timeout: timeout,
-		},
+		Client:   telemetry.NewHTTPClient(timeout),
 	}
 }
 

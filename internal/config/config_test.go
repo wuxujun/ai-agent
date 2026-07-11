@@ -47,6 +47,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.LLM.Provider != "openai-responses" {
 		t.Errorf("expected llm.provider default to be openai-responses, got %q", cfg.LLM.Provider)
 	}
+	if !cfg.Telemetry.Enabled {
+		t.Errorf("expected telemetry.enabled default to be true")
+	}
+	if cfg.Telemetry.Endpoint != "127.0.0.1:4318" {
+		t.Errorf("expected telemetry.endpoint default to be 127.0.0.1:4318, got %q", cfg.Telemetry.Endpoint)
+	}
+	if cfg.Telemetry.Environment != "dev" {
+		t.Errorf("expected telemetry.environment default to be dev, got %q", cfg.Telemetry.Environment)
+	}
+	if cfg.Telemetry.Exporter != "otlp" {
+		t.Errorf("expected telemetry.exporter default to be otlp, got %q", cfg.Telemetry.Exporter)
+	}
 }
 
 func TestConfigEnvOverrides(t *testing.T) {
@@ -60,6 +72,10 @@ func TestConfigEnvOverrides(t *testing.T) {
 	os.Setenv("AI_AGENT_STORE_DSN", "postgresql://localhost:5432/test")
 	os.Setenv("AI_AGENT_STORE_VECTOR_SEARCH", "pgvector")
 	os.Setenv("AI_AGENT_STORE_PGVECTOR_DIMENSIONS", "128")
+	os.Setenv("AI_AGENT_TELEMETRY_ENABLED", "false")
+	os.Setenv("AI_AGENT_TELEMETRY_ENDPOINT", "http://otel.test:4318")
+	os.Setenv("AI_AGENT_TELEMETRY_ENVIRONMENT", "test")
+	os.Setenv("AI_AGENT_TELEMETRY_EXPORTER", "stdout")
 	os.Setenv("OPENAI_API_KEY", "test-openai-key")
 	defer func() {
 		os.Unsetenv("AI_AGENT_API_ADDR")
@@ -67,6 +83,10 @@ func TestConfigEnvOverrides(t *testing.T) {
 		os.Unsetenv("AI_AGENT_STORE_DSN")
 		os.Unsetenv("AI_AGENT_STORE_VECTOR_SEARCH")
 		os.Unsetenv("AI_AGENT_STORE_PGVECTOR_DIMENSIONS")
+		os.Unsetenv("AI_AGENT_TELEMETRY_ENABLED")
+		os.Unsetenv("AI_AGENT_TELEMETRY_ENDPOINT")
+		os.Unsetenv("AI_AGENT_TELEMETRY_ENVIRONMENT")
+		os.Unsetenv("AI_AGENT_TELEMETRY_EXPORTER")
 		os.Unsetenv("OPENAI_API_KEY")
 	}()
 
@@ -93,6 +113,18 @@ func TestConfigEnvOverrides(t *testing.T) {
 	}
 	if cfg.LLM.OpenAIAPIKey != "test-openai-key" {
 		t.Errorf("expected llm.openai_api_key override to be test-openai-key, got %q", cfg.LLM.OpenAIAPIKey)
+	}
+	if cfg.Telemetry.Enabled {
+		t.Errorf("expected telemetry.enabled override to be false")
+	}
+	if cfg.Telemetry.Endpoint != "http://otel.test:4318" {
+		t.Errorf("expected telemetry.endpoint override, got %q", cfg.Telemetry.Endpoint)
+	}
+	if cfg.Telemetry.Environment != "test" {
+		t.Errorf("expected telemetry.environment override to be test, got %q", cfg.Telemetry.Environment)
+	}
+	if cfg.Telemetry.Exporter != "stdout" {
+		t.Errorf("expected telemetry.exporter override to be stdout, got %q", cfg.Telemetry.Exporter)
 	}
 }
 

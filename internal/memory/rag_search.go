@@ -14,16 +14,17 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/telemetry"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 var ragHTTPClient = func() *http.Client {
 	jar, _ := cookiejar.New(nil)
-	return &http.Client{
+	return telemetry.InstrumentHTTPClient(&http.Client{
 		Timeout: 10 * time.Second,
 		Jar:     jar,
-	}
+	})
 }()
 
 // SearchThirdPartyRAG queries an external/third-party RAG URL to retrieve relevant historical memories/knowledge.

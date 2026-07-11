@@ -12,6 +12,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"google.golang.org/genai"
 )
@@ -95,7 +96,7 @@ func callGeminiJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt
 // ── HTTP path (OpenAI / Ollama) ──────────────────────────────────────────────
 
 func callHTTPJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
-	client := &http.Client{Timeout: cfg.Timeout}
+	client := telemetry.NewHTTPClient(cfg.Timeout)
 
 	var (
 		reqBody     map[string]any

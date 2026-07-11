@@ -114,6 +114,24 @@ log:
   # Env override: AI_AGENT_LOG_LEVEL
   level: "info"
 
+# OpenTelemetry configuration
+telemetry:
+  # Enable OTLP traces and metrics export. If false, instrumentation stays no-op.
+  # Env override: AI_AGENT_TELEMETRY_ENABLED
+  enabled: true
+
+  # OTLP HTTP endpoint. Supports "host:port" or a full URL such as "http://127.0.0.1:4318".
+  # Env override: AI_AGENT_TELEMETRY_ENDPOINT
+  endpoint: "127.0.0.1:4318"
+
+  # Deployment environment resource attribute.
+  # Env override: AI_AGENT_TELEMETRY_ENVIRONMENT
+  environment: "dev"
+
+  # Exporter mode. Supported: "otlp", "stdout".
+  # Env override: AI_AGENT_TELEMETRY_EXPORTER
+  exporter: "otlp"
+
 # Tool execution configuration
 tool:
   # Timeout limit for custom tool executions in seconds.

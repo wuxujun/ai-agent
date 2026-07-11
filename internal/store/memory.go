@@ -11,6 +11,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // MemoryStore implements Store in-memory for testing or ephemeral executions.
@@ -171,6 +172,14 @@ func (m *MemoryStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 // QueryMemories searches for memories. If embedding is provided, it uses Cosine Similarity.
 // Otherwise, it does keyword-based relevance matching.
 func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	_, span := tracer.Start(ctx, "store.memory.query_memories")
+	defer span.End()
+	span.SetAttributes(
+		attribute.Bool("agent.query.has_embedding", len(embedding) > 0),
+		attribute.Int("agent.query.embedding_dim", len(embedding)),
+		attribute.Int("agent.query.limit", limit),
+	)
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -211,6 +220,10 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 		}
 		res = append(res, &cloned)
 	}
+	span.SetAttributes(
+		attribute.Int("agent.store.memory_candidate_count", len(list)),
+		attribute.Int("agent.store.memory_count", len(res)),
+	)
 	return res, nil
 }
 

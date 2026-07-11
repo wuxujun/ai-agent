@@ -717,15 +717,35 @@ func pgVectorLiteral(embedding []float32) string {
 // is pushed down to PostgreSQL via pgvector cosine distance. Otherwise it falls
 // back to the in-process candidate scan used by the SQLite backend.
 func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	ctx, span := tracer.Start(ctx, "store.postgres.query_memories")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.Bool("agent.query.has_embedding", len(embedding) > 0),
+		attribute.Int("agent.query.embedding_dim", len(embedding)),
+		attribute.Int("agent.query.limit", limit),
+		attribute.String("agent.store.vector_search", config.Get().Store.VectorSearch),
+	)
+
 	if usePostgresPGVector() && len(embedding) > 0 {
 		mems, err := p.queryMemoriesPGVector(ctx, embedding, limit)
 		if err == nil {
+			span.SetAttributes(
+				attribute.Bool("agent.store.pgvector_used", true),
+				attribute.Int("agent.store.memory_count", len(mems)),
+			)
 			return mems, nil
 		}
+		span.RecordError(err)
+		span.SetAttributes(attribute.Bool("agent.store.pgvector_fallback", true))
 		log.Warn("pgvector memory query failed; falling back to in-process ranking", "error", err)
 	}
 
 	candidateLimit := resolveMemoryCandidateLimit()
+	span.SetAttributes(
+		attribute.Bool("agent.store.pgvector_used", false),
+		attribute.Int("agent.store.memory_candidate_limit", candidateLimit),
+	)
 	rows, err := p.db.QueryContext(ctx, `
 SELECT id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
 FROM memories
@@ -733,6 +753,8 @@ ORDER BY timestamp DESC
 LIMIT $1
 `, candidateLimit)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query memories failed")
 		return nil, err
 	}
 	defer rows.Close()
@@ -747,6 +769,8 @@ LIMIT $1
 		var mem types.Memory
 		var embJSON string
 		if err := rows.Scan(&mem.ID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "scan memory failed")
 			return nil, err
 		}
 
@@ -791,7 +815,16 @@ LIMIT $1
 	for i := 0; i < limit; i++ {
 		res = append(res, ranked[i].mem)
 	}
-	return res, rows.Err()
+	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "iterate memories failed")
+		return nil, err
+	}
+	span.SetAttributes(
+		attribute.Int("agent.store.memory_candidate_count", len(ranked)),
+		attribute.Int("agent.store.memory_count", len(res)),
+	)
+	return res, nil
 }
 
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.

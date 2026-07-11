@@ -323,15 +323,30 @@ func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 // Loads up to store.memory_candidate_limit candidates from memories:index ZSET
 // so the in-process ranking loop does not blow up memory on a large memory key space.
 func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	ctx, span := tracer.Start(ctx, "store.redis.query_memories")
+	defer span.End()
+
 	candidateLimit := resolveMemoryCandidateLimit()
+	span.SetAttributes(
+		attribute.Bool("agent.query.has_embedding", len(embedding) > 0),
+		attribute.Int("agent.query.embedding_dim", len(embedding)),
+		attribute.Int("agent.query.limit", limit),
+		attribute.Int("agent.store.memory_candidate_limit", candidateLimit),
+	)
 
 	// 1. Get recent memory IDs from ZSET index (newest first)
 	ids, err := r.client.ZRevRange(ctx, "memories:index", 0, int64(candidateLimit-1)).Result()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query memory index failed")
 		return nil, err
 	}
 
 	if len(ids) == 0 {
+		span.SetAttributes(
+			attribute.Int("agent.store.memory_candidate_count", 0),
+			attribute.Int("agent.store.memory_count", 0),
+		)
 		return []*types.Memory{}, nil
 	}
 
@@ -343,6 +358,8 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 
 	vals, err := r.client.MGet(ctx, keys...).Result()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "load memories failed")
 		return nil, err
 	}
 
@@ -398,6 +415,10 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 	for i := 0; i < limit; i++ {
 		res = append(res, ranked[i].mem)
 	}
+	span.SetAttributes(
+		attribute.Int("agent.store.memory_candidate_count", len(ranked)),
+		attribute.Int("agent.store.memory_count", len(res)),
+	)
 	return res, nil
 }
 
