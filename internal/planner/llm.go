@@ -140,15 +140,22 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	var compressionUsage types.TokenUsage
 	threshold := config.Get().LLM.ContextCompressionTraceThreshold
 	_, compressionEnabled := config.Get().LLM.Scenes[config.LLMSceneContextCompressor]
-	if p.Compressor != nil && compressionEnabled && threshold > 0 && len(task.Trace) >= threshold {
+	previousSummary, traceStart := traceSinceSummary(task)
+	newTraces := task.Trace[traceStart:]
+	if p.Compressor != nil && compressionEnabled && threshold > 0 && len(newTraces) >= threshold {
 		if summary, usage, compressErr := p.Compressor.Compress(ctx, task); compressErr != nil {
 			log.Warn("context compression failed; using original trace", "task_id", task.ID, "error", compressErr)
 		} else {
 			compressionUsage = usage
+			task.Trace = append(task.Trace, types.StepTrace{Step: task.StepCount, Action: "context_summary", Observation: summary})
 			copyTask := *task
 			copyTask.Trace = []types.StepTrace{{Step: task.StepCount, Action: "context_summary", Observation: summary}}
 			promptTask = &copyTask
 		}
+	} else if previousSummary != "" {
+		copyTask := *task
+		copyTask.Trace = []types.StepTrace{{Step: task.StepCount, Action: "context_summary", Observation: combinedTraceContext(previousSummary, newTraces)}}
+		promptTask = &copyTask
 	}
 
 	prov, err := lookupProvider(provider)

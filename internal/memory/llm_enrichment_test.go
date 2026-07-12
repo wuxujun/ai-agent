@@ -9,4 +9,7 @@ func TestTruncateLLMText(t *testing.T) {
 	if got := truncateLLMText("123456", 4); got != "1234" {
 		t.Fatalf("truncated value = %q", got)
 	}
+	if got := truncateLLMText("中文测试", 3); got != "中文测" {
+		t.Fatalf("unicode truncated value = %q", got)
+	}
 }

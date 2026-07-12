@@ -167,9 +167,12 @@ func TestLLMPlannerProviders(t *testing.T) {
 	})
 }
 
-type stubCompressor struct{}
+type stubCompressor struct{ calls *int }
 
-func (stubCompressor) Compress(context.Context, *types.Task) (string, types.TokenUsage, error) {
+func (s stubCompressor) Compress(context.Context, *types.Task) (string, types.TokenUsage, error) {
+	if s.calls != nil {
+		*s.calls++
+	}
 	return "compressed evidence", types.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}, nil
 }
 
@@ -180,7 +183,8 @@ func TestLLMPlannerIncludesCompressionUsage(t *testing.T) {
 	task := &types.Task{ID: "compress", Goal: "goal", MaxSteps: 10, ToolBudget: 10, Trace: make([]types.StepTrace, 8)}
 	body := `{"output":[{"content":[{"text":"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"answer\",\"actions\":[{\"action\":\"none\",\"parameters\":{}}]}"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}`
 	p := NewLLMPlannerWithProvider(ProviderOpenAIResponses, "key", "model", "https://llm.test/responses")
-	p.Compressor = stubCompressor{}
+	calls := 0
+	p.Compressor = stubCompressor{calls: &calls}
 	p.Client = fakeHTTPClient(http.StatusOK, "application/json", body)
 	decision, err := p.PlanNext(context.Background(), task, nil)
 	if err != nil {
@@ -188,6 +192,12 @@ func TestLLMPlannerIncludesCompressionUsage(t *testing.T) {
 	}
 	if decision.TokenUsage.TotalTokens != 17 {
 		t.Fatalf("total usage = %+v, want 17", decision.TokenUsage)
+	}
+	if _, err := p.PlanNext(context.Background(), task, nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("compressor calls = %d, want 1 after cached summary", calls)
 	}
 }
 

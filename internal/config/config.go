@@ -276,6 +276,9 @@ func LoadConfig() *Config {
 		logger.Error("config unmarshal failed", "error", err)
 		panic(fmt.Sprintf("fatal config error: %v", err))
 	}
+	if err := c.Validate(); err != nil {
+		panic(fmt.Sprintf("fatal config validation error: %v", err))
+	}
 
 	globalConfig = c
 	return globalConfig
@@ -308,6 +311,9 @@ func Reload() (*Config, []string, error) {
 	newCfg, err := unmarshalConfig()
 	if err != nil {
 		return nil, nil, fmt.Errorf("config reload: %w", err)
+	}
+	if err := newCfg.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("config reload: validation failed: %w", err)
 	}
 
 	// Build a human-readable, redacted diff before swapping.
@@ -575,4 +581,51 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 		timeout = 30
 	}
 	return ResolvedLLMConfig{Provider: provider, APIKey: apiKey, Model: model, BaseURL: baseURL, TimeoutSeconds: timeout}
+}
+
+// Validate rejects configuration that would otherwise fail only on the first
+// LLM request. API keys are intentionally not required here because Ollama and
+// LiteLLM may run without authentication.
+func (c *Config) Validate() error {
+	if c.LLM.ContextCompressionTraceThreshold < 0 {
+		return fmt.Errorf("llm.context_compression_trace_threshold must be >= 0")
+	}
+	validProvider := func(provider string) bool {
+		switch provider {
+		case "openai-responses", "openai", "gemini", "ollama", "litellm":
+			return true
+		default:
+			return false
+		}
+	}
+	check := func(scene string) error {
+		resolved := c.ResolveLLMScene(scene)
+		if !validProvider(resolved.Provider) {
+			return fmt.Errorf("llm scene %q has unsupported provider %q", scene, resolved.Provider)
+		}
+		if strings.TrimSpace(resolved.Model) == "" {
+			return fmt.Errorf("llm scene %q has empty model", scene)
+		}
+		if resolved.Provider == "litellm" && strings.TrimSpace(resolved.BaseURL) == "" {
+			return fmt.Errorf("llm scene %q uses litellm but has empty base_url", scene)
+		}
+		if resolved.TimeoutSeconds <= 0 {
+			return fmt.Errorf("llm scene %q timeout_seconds must be > 0", scene)
+		}
+		return nil
+	}
+	if err := check(LLMSceneTaskPlanner); err != nil {
+		return err
+	}
+	for scene := range c.LLM.Scenes {
+		if err := check(scene); err != nil {
+			return err
+		}
+	}
+	if _, ok := c.LLM.Scenes[LLMSceneADK]; ok {
+		if provider := c.ResolveLLMScene(LLMSceneADK).Provider; provider != "gemini" {
+			return fmt.Errorf("llm scene %q only supports gemini provider, got %q", LLMSceneADK, provider)
+		}
+	}
+	return nil
 }

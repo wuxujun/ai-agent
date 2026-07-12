@@ -11,11 +11,22 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"google.golang.org/genai"
 )
+
+type structuredCallerAdapter struct{}
+
+func (structuredCallerAdapter) CallJSON(ctx context.Context, cfg llmcore.Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
+	return callLLMJSON(ctx, LLMConfig{Provider: planner.ProviderType(cfg.Provider), APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: cfg.BaseURL, Timeout: cfg.Timeout}, systemPrompt, userPrompt, schema, dest)
+}
+
+func init() {
+	llmcore.RegisterStructuredCaller(structuredCallerAdapter{})
+}
 
 // LLMConfig holds the configuration required to call an LLM provider.
 // It is intentionally compatible with the existing planner.LLMPlanner config.
@@ -55,12 +66,6 @@ func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt st
 		return callGeminiJSON(ctx, cfg, systemPrompt, userPrompt, dest)
 	}
 	return callHTTPJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
-}
-
-// CallLLMJSON exposes the shared structured-output transport to internal
-// subsystems that implement optional LLM scenes.
-func CallLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
-	return callLLMJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
 }
 
 // ── Gemini path ──────────────────────────────────────────────────────────────

@@ -112,7 +112,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 
 	if task.StepCount == 0 && len(task.Memories) == 0 {
 		var retrievedMems []types.Memory
-		retrievalQuery := memory.RewriteRAGQuery(ctx, task.Goal)
+		retrievalQuery, ragUsage := memory.RewriteRAGQuery(ctx, task.Goal)
 
 		// 1. Try querying third-party RAG search URL if configured (query up to 5 candidates)
 		if config.Get().RAG.SearchURL != "" {
@@ -140,12 +140,22 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		// 3. Deduplicate and limit to top 3 unique memories
 		if len(retrievedMems) > 0 {
 			deduped := memory.DeduplicateMemories(retrievedMems)
-			deduped = memory.RerankMemories(ctx, retrievalQuery, deduped)
+			var rerankUsage types.TokenUsage
+			deduped, rerankUsage = memory.RerankMemories(ctx, retrievalQuery, deduped)
+			ragUsage.PromptTokens += rerankUsage.PromptTokens
+			ragUsage.CompletionTokens += rerankUsage.CompletionTokens
+			ragUsage.TotalTokens += rerankUsage.TotalTokens
 			if len(deduped) > 3 {
 				deduped = deduped[:3]
 			}
 			task.Memories = deduped
 			engineLog.Info("final RAG memories after deduplication", "task_id", task.ID, "count", len(task.Memories))
+		}
+		if ragUsage.TotalTokens > 0 {
+			task.Trace = append(task.Trace, types.StepTrace{Step: task.StepCount, Action: "rag_prepare", Observation: "LLM-assisted query preparation and memory ranking", TokenUsage: ragUsage})
+			if e.Metrics != nil {
+				e.Metrics.ObserveTokens(ragUsage.PromptTokens, ragUsage.CompletionTokens, ragUsage.TotalTokens, "rag")
+			}
 		}
 	}
 

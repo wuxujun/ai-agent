@@ -808,6 +808,16 @@ func (h *Handler) reloadConfig(c *gin.Context) {
 		"active_provider": cfg.ResolveLLMProvider(),
 		"active_model":    cfg.ResolveLLMModel(cfg.ResolveLLMProvider()),
 	}
+	activeScenes := make(map[string]gin.H, len(cfg.LLM.Scenes)+1)
+	sceneNames := map[string]struct{}{config.LLMSceneTaskPlanner: {}}
+	for scene := range cfg.LLM.Scenes {
+		sceneNames[scene] = struct{}{}
+	}
+	for scene := range sceneNames {
+		resolved := cfg.ResolveLLMScene(scene)
+		activeScenes[scene] = gin.H{"provider": resolved.Provider, "model": resolved.Model, "base_url": resolved.BaseURL, "timeout_seconds": resolved.TimeoutSeconds}
+	}
+	resp["active_scenes"] = activeScenes
 	c.JSON(http.StatusOK, resp)
 }
 

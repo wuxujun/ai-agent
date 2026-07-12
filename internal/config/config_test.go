@@ -231,6 +231,23 @@ func TestResolveLLMScene(t *testing.T) {
 	}
 }
 
+func TestValidateLLMScenes(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai-responses"
+	cfg.LLM.TimeoutSeconds = 30
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config invalid: %v", err)
+	}
+	cfg.LLM.Scenes = map[string]LLMEndpointConfig{"writer": {Provider: "litellm", Model: "writer"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected empty LiteLLM base URL validation error")
+	}
+	cfg.LLM.Scenes["writer"] = LLMEndpointConfig{Provider: "litellm", Model: "writer", BaseURL: "http://litellm/v1/chat/completions"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid LiteLLM scene rejected: %v", err)
+	}
+}
+
 func TestConfigFileLoading(t *testing.T) {
 	resetConfig()
 	defer resetConfig()
