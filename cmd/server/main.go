@@ -151,6 +151,27 @@ func main() {
 		}
 	}
 
+	// ── Ollama Health Probe on Startup ───────────────────────────────────────
+	// If the planner or embedding scene is configured to use Ollama, perform
+	// a quick startup self-check to ensure the local Ollama service is running and
+	// the requested models are already pulled.
+	if llmProvider == planner.ProviderOllama {
+		slog.Info("Probing Ollama planner model on startup...", "model", model)
+		if err := planner.ProbeOllama(context.Background(), baseURL, model); err != nil {
+			log.Fatalf("Ollama planner check failed: %v", err)
+		}
+		slog.Info("Ollama planner model self-check passed", "model", model)
+	}
+
+	embedLLM := cfg.ResolveLLMScene(config.LLMSceneEmbedding)
+	if planner.ProviderType(embedLLM.Provider) == planner.ProviderOllama {
+		slog.Info("Probing Ollama embedding model on startup...", "model", embedLLM.Model)
+		if err := planner.ProbeOllama(context.Background(), embedLLM.BaseURL, embedLLM.Model); err != nil {
+			log.Fatalf("Ollama embedding check failed: %v", err)
+		}
+		slog.Info("Ollama embedding model self-check passed", "model", embedLLM.Model)
+	}
+
 	slog.Info("LLM provider configured",
 		"configured_provider", cfg.LLM.Provider,
 		"provider", llmProvider,

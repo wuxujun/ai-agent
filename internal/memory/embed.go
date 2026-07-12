@@ -214,6 +214,14 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		url = strings.TrimSuffix(url, "/") + "/embeddings"
 	}
 
+	// Perform a quick health check to verify if the Ollama local service is running and embedding model is pulled.
+	isLocal := strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1")
+	if isLocal {
+		if err := planner.ProbeOllama(ctx, url, model); err != nil {
+			return nil, err
+		}
+	}
+
 	reqBody := map[string]any{
 		"model":  model,
 		"prompt": text,
