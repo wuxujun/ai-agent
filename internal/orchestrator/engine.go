@@ -10,6 +10,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/config"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/metrics"
@@ -74,6 +75,9 @@ func (e *Engine) finalizeAnswer(ctx context.Context, task *types.Task, fallback 
 	if _, enabled := config.Get().LLM.Scenes[config.LLMSceneTaskFinalizer]; !enabled {
 		return fallback, types.TokenUsage{}
 	}
+	if !llmcore.AllowedForTask(config.LLMSceneTaskFinalizer, task) {
+		return fallback, types.TokenUsage{}
+	}
 	answer, usage, err := e.Finalizer.Finalize(ctx, task)
 	if err != nil {
 		engineLog.Warn("task finalizer failed; using planner answer", "task_id", task.ID, "error", err)
@@ -112,7 +116,11 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 
 	if task.StepCount == 0 && len(task.Memories) == 0 {
 		var retrievedMems []types.Memory
-		retrievalQuery, ragUsage := memory.RewriteRAGQuery(ctx, task.Goal)
+		retrievalQuery := task.Goal
+		var ragUsage types.TokenUsage
+		if llmcore.AllowedForTask(config.LLMSceneRAGQueryRewriter, task) {
+			retrievalQuery, ragUsage = memory.RewriteRAGQuery(ctx, task.Goal)
+		}
 
 		// 1. Try querying third-party RAG search URL if configured (query up to 5 candidates)
 		if config.Get().RAG.SearchURL != "" {
@@ -141,7 +149,9 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		if len(retrievedMems) > 0 {
 			deduped := memory.DeduplicateMemories(retrievedMems)
 			var rerankUsage types.TokenUsage
-			deduped, rerankUsage = memory.RerankMemories(ctx, retrievalQuery, deduped)
+			if llmcore.AllowedForTask(config.LLMSceneRAGReranker, task) {
+				deduped, rerankUsage = memory.RerankMemories(ctx, retrievalQuery, deduped)
+			}
 			ragUsage.PromptTokens += rerankUsage.PromptTokens
 			ragUsage.CompletionTokens += rerankUsage.CompletionTokens
 			ragUsage.TotalTokens += rerankUsage.TotalTokens

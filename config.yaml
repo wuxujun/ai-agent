@@ -99,6 +99,11 @@ llm:
   # scenes:
   #   task_planner:
   #     model: "agent-planner"
+  #     fallback_scene: "task_planner_fallback"
+  #     max_retries: 1
+  #     min_remaining_tokens: 2000
+  #   task_planner_fallback:
+  #     model: "agent-planner-backup"
   #   task_finalizer:
   #     model: "agent-writer"
   #   context_compressor:

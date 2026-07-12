@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -142,7 +143,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	_, compressionEnabled := config.Get().LLM.Scenes[config.LLMSceneContextCompressor]
 	previousSummary, traceStart := traceSinceSummary(task)
 	newTraces := task.Trace[traceStart:]
-	if p.Compressor != nil && compressionEnabled && threshold > 0 && len(newTraces) >= threshold {
+	if p.Compressor != nil && compressionEnabled && llmcore.AllowedForTask(config.LLMSceneContextCompressor, task) && threshold > 0 && len(newTraces) >= threshold {
 		if summary, usage, compressErr := p.Compressor.Compress(ctx, task); compressErr != nil {
 			log.Warn("context compression failed; using original trace", "task_id", task.ID, "error", compressErr)
 		} else {

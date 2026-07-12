@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -559,7 +560,7 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 		c.Metrics.ObserveTokens(output.TokenUsage.PromptTokens, output.TokenUsage.CompletionTokens, output.TokenUsage.TotalTokens, "writer")
 	}
 	_, verificationEnabled := config.Get().LLM.Scenes[config.LLMSceneAnswerVerifier]
-	if c.Verifier != nil && verificationEnabled {
+	if c.Verifier != nil && verificationEnabled && llmcore.AllowedForTask(config.LLMSceneAnswerVerifier, task) {
 		verification, verifyErr := c.Verifier.Verify(ctx, task.Goal, output.FinalAnswer, evidence)
 		if verifyErr != nil {
 			log.Warn("answer verifier failed; preserving writer result", "task_id", task.ID, "error", verifyErr)

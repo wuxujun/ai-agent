@@ -108,19 +108,25 @@ type Config struct {
 // LLMEndpointConfig is a provider/model profile used by a specific LLM scene.
 // Empty fields inherit from llm.gateway and then from the legacy llm settings.
 type LLMEndpointConfig struct {
-	Provider       string `mapstructure:"provider"`
-	APIKey         string `mapstructure:"api_key"`
-	Model          string `mapstructure:"model"`
-	BaseURL        string `mapstructure:"base_url"`
-	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+	Provider           string `mapstructure:"provider"`
+	APIKey             string `mapstructure:"api_key"`
+	Model              string `mapstructure:"model"`
+	BaseURL            string `mapstructure:"base_url"`
+	TimeoutSeconds     int    `mapstructure:"timeout_seconds"`
+	FallbackScene      string `mapstructure:"fallback_scene"`
+	MaxRetries         int    `mapstructure:"max_retries"`
+	MinRemainingTokens int    `mapstructure:"min_remaining_tokens"`
 }
 
 type ResolvedLLMConfig struct {
-	Provider       string
-	APIKey         string
-	Model          string
-	BaseURL        string
-	TimeoutSeconds int
+	Provider           string
+	APIKey             string
+	Model              string
+	BaseURL            string
+	TimeoutSeconds     int
+	FallbackScene      string
+	MaxRetries         int
+	MinRemainingTokens int
 }
 
 // ResolveLLMProviderConfig returns provider-specific defaults without carrying
@@ -544,6 +550,9 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 	model := c.ResolveLLMModel(provider)
 	baseURL := c.ResolveLLMBaseURL(provider)
 	timeout := c.LLM.TimeoutSeconds
+	fallbackScene := ""
+	maxRetries := 0
+	minRemainingTokens := 0
 
 	apply := func(v LLMEndpointConfig) {
 		providerChanged := v.Provider != "" && v.Provider != provider
@@ -568,6 +577,15 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 		if v.TimeoutSeconds > 0 {
 			timeout = v.TimeoutSeconds
 		}
+		if v.FallbackScene != "" {
+			fallbackScene = v.FallbackScene
+		}
+		if v.MaxRetries > 0 {
+			maxRetries = v.MaxRetries
+		}
+		if v.MinRemainingTokens > 0 {
+			minRemainingTokens = v.MinRemainingTokens
+		}
 	}
 
 	apply(c.LLM.Gateway)
@@ -580,7 +598,7 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 	if timeout <= 0 {
 		timeout = 30
 	}
-	return ResolvedLLMConfig{Provider: provider, APIKey: apiKey, Model: model, BaseURL: baseURL, TimeoutSeconds: timeout}
+	return ResolvedLLMConfig{Provider: provider, APIKey: apiKey, Model: model, BaseURL: baseURL, TimeoutSeconds: timeout, FallbackScene: fallbackScene, MaxRetries: maxRetries, MinRemainingTokens: minRemainingTokens}
 }
 
 // Validate rejects configuration that would otherwise fail only on the first
@@ -618,8 +636,30 @@ func (c *Config) Validate() error {
 		return err
 	}
 	for scene := range c.LLM.Scenes {
+		raw := c.LLM.Scenes[scene]
+		if raw.MaxRetries < 0 || raw.MinRemainingTokens < 0 {
+			return fmt.Errorf("llm scene %q retry and token policy values must be >= 0", scene)
+		}
 		if err := check(scene); err != nil {
 			return err
+		}
+	}
+	for scene := range c.LLM.Scenes {
+		seen := map[string]bool{scene: true}
+		current := scene
+		for {
+			fallback := c.ResolveLLMScene(current).FallbackScene
+			if fallback == "" {
+				break
+			}
+			if _, ok := c.LLM.Scenes[fallback]; !ok {
+				return fmt.Errorf("llm scene %q references unknown fallback_scene %q", current, fallback)
+			}
+			if seen[fallback] {
+				return fmt.Errorf("llm fallback cycle detected at scene %q", fallback)
+			}
+			seen[fallback] = true
+			current = fallback
 		}
 	}
 	if _, ok := c.LLM.Scenes[LLMSceneADK]; ok {

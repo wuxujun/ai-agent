@@ -246,6 +246,17 @@ func TestValidateLLMScenes(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid LiteLLM scene rejected: %v", err)
 	}
+	cfg.LLM.Scenes["writer"] = LLMEndpointConfig{Model: "writer", FallbackScene: "missing"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unknown fallback scene validation error")
+	}
+	cfg.LLM.Scenes = map[string]LLMEndpointConfig{
+		"a": {Model: "a", FallbackScene: "b"},
+		"b": {Model: "b", FallbackScene: "a"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected fallback cycle validation error")
+	}
 }
 
 func TestConfigFileLoading(t *testing.T) {
