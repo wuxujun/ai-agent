@@ -1,13 +1,13 @@
 services:
   litellm:
-    image: ${LITELLM_IMAGE:-docker.litellm.ai/berriai/litellm:main-stable}
+    image: ${LITELLM_IMAGE:-docker.litellm.ai/berriai/litellm@sha256:9ef6f45bc0104940571765e610c52a1d761b5ec85efcd193795281086ee61277}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
       - "4000:4000"
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-ai-agent}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     healthcheck:

@@ -4,6 +4,7 @@ The Compose service exposes LiteLLM at `http://127.0.0.1:4000` and reads
 provider credentials only from environment variables.
 
 ```bash
+export LITELLM_MASTER_KEY="$(openssl rand -hex 24)"
 docker compose -f deploy/litellm/compose.yaml up -d
 docker compose -f deploy/litellm/compose.yaml ps
 curl http://127.0.0.1:4000/health/liveliness
@@ -15,7 +16,7 @@ Run the project client against the gateway:
 AI_AGENT_LLM_PROVIDER=litellm \
 AI_AGENT_LLM_MODEL=agent-planner \
 AI_AGENT_LLM_BASE_URL=http://127.0.0.1:4000/v1/chat/completions \
-AI_AGENT_LLM_API_KEY=sk-local-ai-agent \
+AI_AGENT_LLM_API_KEY="$LITELLM_MASTER_KEY" \
 go run ./cmd/llm-eval -input Sample/llm-eval.jsonl
 ```
 
@@ -30,7 +31,8 @@ application-level fallback:
 ```bash
 go build -o /tmp/ai-agent-llm-eval ./cmd/llm-eval
 cd deploy/e2e
-/tmp/ai-agent-llm-eval -input ../../Sample/llm-eval.jsonl
+AI_AGENT_LLM_API_KEY="$LITELLM_MASTER_KEY" \
+  /tmp/ai-agent-llm-eval -input ../../Sample/llm-eval.jsonl
 ```
 
 Google may reject Gemini API calls in unsupported locations. That is an
