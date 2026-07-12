@@ -106,7 +106,7 @@ func NewCollector() *Collector {
 }
 
 func (c *Collector) ObserveLLMCall(event llmcore.CallEvent) {
-	attrs := api.WithAttributes(attribute.String("llm.scene", event.Scene), attribute.String("llm.provider", event.Provider), attribute.String("llm.model", event.Model))
+	attrs := api.WithAttributes(attribute.String("llm.scene", event.Scene), attribute.String("llm.provider", event.Provider), attribute.String("llm.model", event.Model), attribute.Int("llm.attempts", event.Attempts), attribute.Bool("llm.fallback_used", event.FallbackUsed))
 	ctx := context.Background()
 	c.llmSceneCalls.Add(ctx, 1, attrs)
 	c.llmSceneLatency.Record(ctx, float64(event.Duration.Milliseconds()), attrs)

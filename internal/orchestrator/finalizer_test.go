@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -26,10 +25,7 @@ func TestFinalizeAnswer(t *testing.T) {
 	if got, _ := (&Engine{Finalizer: stubFinalizer{answer: "synthesized"}}).finalizeAnswer(context.Background(), task, "fallback"); got != "fallback" {
 		t.Fatalf("disabled finalizer result = %q", got)
 	}
-	original := config.Get().LLM.Scenes
-	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneTaskFinalizer: {}}
-	t.Cleanup(func() { config.Get().LLM.Scenes = original })
-	engine := &Engine{Finalizer: usageFinalizer{answer: "synthesized", usage: types.TokenUsage{TotalTokens: 12}}}
+	engine := &Engine{Finalizer: usageFinalizer{answer: "synthesized", usage: types.TokenUsage{TotalTokens: 12}}, LLMSceneEnabled: func(string) bool { return true }}
 	if got, usage := engine.finalizeAnswer(context.Background(), task, "fallback"); got != "synthesized" || usage.TotalTokens != 12 {
 		t.Fatalf("enabled finalizer = %q, usage=%+v", got, usage)
 	}

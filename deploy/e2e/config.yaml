@@ -1,0 +1,16 @@
+store:
+  type: memory
+
+llm:
+  provider: litellm
+  api_key: sk-local-ai-agent
+  model: agent-planner
+  base_url: http://127.0.0.1:4000/v1/chat/completions
+  timeout_seconds: 30
+  scenes:
+    task_finalizer:
+      model: intentionally-missing-model
+      fallback_scene: task_finalizer_fallback
+    task_finalizer_fallback:
+      model: agent-planner
+      max_retries: 1

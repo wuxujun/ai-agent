@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -71,9 +73,9 @@ func runHTTPPlan(req *http.Request, client *http.Client, parser func(*http.Respo
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		var bodyErr bytes.Buffer
-		_, _ = bodyErr.ReadFrom(resp.Body)
-		return "", types.TokenUsage{}, fmt.Errorf("planner API returned status %d: %s", resp.StatusCode, bodyErr.String())
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		body := string(bodyBytes)
+		return "", types.TokenUsage{}, &llmcore.HTTPStatusError{StatusCode: resp.StatusCode, Body: body}
 	}
 	return parser(resp, onChunk)
 }

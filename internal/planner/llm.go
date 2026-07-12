@@ -183,37 +183,79 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	}
 	var textValue string
 	var usage types.TokenUsage
+	primaryStarted := time.Now()
+	primaryAttempts := 0
+	var primaryUsage types.TokenUsage
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		primaryAttempts++
 		var attemptUsage types.TokenUsage
 		textValue, attemptUsage, err = prov.Plan(ctx, req, onChunk)
 		usage.PromptTokens += attemptUsage.PromptTokens
 		usage.CompletionTokens += attemptUsage.CompletionTokens
 		usage.TotalTokens += attemptUsage.TotalTokens
+		primaryUsage.PromptTokens += attemptUsage.PromptTokens
+		primaryUsage.CompletionTokens += attemptUsage.CompletionTokens
+		primaryUsage.TotalTokens += attemptUsage.TotalTokens
 		if err == nil {
 			break
 		}
+		if attempt == maxRetries || !llmcore.IsRetryable(err) {
+			break
+		}
+		if waitErr := llmcore.WaitRetry(ctx, attempt); waitErr != nil {
+			err = waitErr
+			break
+		}
 	}
-	if err != nil && fallbackScene != "" {
-		fallback := config.Get().ResolveLLMScene(fallbackScene)
+	llmcore.Observe(llmcore.CallEvent{Scene: p.Scene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != ""})
+	activeFallback := fallbackScene
+	for err != nil && activeFallback != "" {
+		span.SetAttributes(attribute.Bool("llm.fallback.triggered", true), attribute.String("llm.fallback.scene", activeFallback))
+		fallback := config.Get().ResolveLLMScene(activeFallback)
 		fallbackProvider, lookupErr := lookupProvider(ProviderType(fallback.Provider))
 		if lookupErr == nil {
 			fallbackReq := req
 			fallbackReq.Model, fallbackReq.APIKey, fallbackReq.BaseURL = fallback.Model, fallback.APIKey, fallback.BaseURL
 			fallbackReq.Client = telemetry.NewHTTPClient(time.Duration(fallback.TimeoutSeconds) * time.Second)
-			var fallbackUsage types.TokenUsage
-			textValue, fallbackUsage, err = fallbackProvider.Plan(ctx, fallbackReq, onChunk)
-			usage.PromptTokens += fallbackUsage.PromptTokens
-			usage.CompletionTokens += fallbackUsage.CompletionTokens
-			usage.TotalTokens += fallbackUsage.TotalTokens
+			fallbackStarted := time.Now()
+			fallbackAttempts := 0
+			var sceneUsage types.TokenUsage
+			for attempt := 0; attempt <= fallback.MaxRetries; attempt++ {
+				fallbackAttempts++
+				var fallbackUsage types.TokenUsage
+				textValue, fallbackUsage, err = fallbackProvider.Plan(ctx, fallbackReq, onChunk)
+				usage.PromptTokens += fallbackUsage.PromptTokens
+				usage.CompletionTokens += fallbackUsage.CompletionTokens
+				usage.TotalTokens += fallbackUsage.TotalTokens
+				sceneUsage.PromptTokens += fallbackUsage.PromptTokens
+				sceneUsage.CompletionTokens += fallbackUsage.CompletionTokens
+				sceneUsage.TotalTokens += fallbackUsage.TotalTokens
+				if err == nil {
+					break
+				}
+				if attempt == fallback.MaxRetries || !llmcore.IsRetryable(err) {
+					break
+				}
+				if waitErr := llmcore.WaitRetry(ctx, attempt); waitErr != nil {
+					err = waitErr
+					break
+				}
+			}
+			llmcore.Observe(llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Usage: sceneUsage, Duration: time.Since(fallbackStarted), Err: err, Attempts: fallbackAttempts, FallbackUsed: err != nil && fallback.FallbackScene != ""})
 		} else {
 			err = lookupErr
+			llmcore.Observe(llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Err: err, Attempts: 1, FallbackUsed: fallback.FallbackScene != ""})
 		}
+		activeFallback = fallback.FallbackScene
 	}
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner provider failed")
 		log.Error("provider Plan failed", "task_id", task.ID, "provider", provider, "error", err)
 		return nil, err
+	}
+	if fallbackScene != "" {
+		span.SetStatus(codes.Ok, "planner call succeeded")
 	}
 
 	var decision PlanDecision

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -61,7 +62,15 @@ func AuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		if clientKey != expectedKey {
+		// Use constant-time comparison to prevent timing attacks.
+		// subtle.ConstantTimeCompare requires equal-length slices; the length
+		// check is also done in constant time via subtle.ConstantTimeEq so that
+		// response latency does not leak key length information.
+		expectedBytes := []byte(expectedKey)
+		clientBytes := []byte(clientKey)
+		keysMatch := subtle.ConstantTimeEq(int32(len(clientBytes)), int32(len(expectedBytes))) == 1 &&
+			subtle.ConstantTimeCompare(clientBytes, expectedBytes) == 1
+		if !keysMatch {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized: invalid or missing API key"})
 			c.Abort()
 			return

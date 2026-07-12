@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+// mwLog is the structured logger for toolMiddleware. Using logger.Component
+// ensures retry warnings are subject to the same log-level filtering and
+// OTel correlation as every other package in the project.
+var mwLog = logger.Component("tools.middleware")
 
 // toolMiddleware wraps a Tool to provide standard execution features:
 // - Uniform timeout injection (from toolTimeout config)
@@ -57,7 +62,12 @@ func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params m
 		}
 
 		if attempt < retryPolicy.MaxRetries {
-			log.Printf("[Tool %s] Execute failed (attempt %d): %v, retrying...", m.Name(), attempt+1, err)
+			mwLog.Warn("tool execute failed, retrying",
+				"tool", m.Name(),
+				"attempt", attempt+1,
+				"max_retries", retryPolicy.MaxRetries,
+				"error", err,
+			)
 			select {
 			case <-time.After(retryPolicy.Backoff * time.Duration(attempt+1)):
 			case <-ctx.Done():
@@ -75,14 +85,8 @@ func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params m
 		result.Observation = result.Observation[:4000] + "\n...[truncated by middleware]"
 	}
 
-	// 2. Standardize Evidence (if missing or poorly formatted)
-	// We want to make sure multi-agent has uniform Evidence structure.
-	if len(result.Evidence) == 0 {
-		if m.Name() == "find_files" {
-			// find.go doesn't produce evidence natively yet. But let's handle it here or modify find.go
-			// Actually we will modify find.go to produce it properly.
-		}
-	}
+	// 2. Evidence standardization is handled per-tool in their Execute implementations.
+	// No middleware-level override needed at this time.
 
 	return result, nil
 }

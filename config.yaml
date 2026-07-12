@@ -10,8 +10,9 @@ api:
   addr: "127.0.0.1:8088"
   
   # Optional security key for API authorization.
+  # MUST be set via environment variable — do NOT store secrets in this file.
   # Env override: AI_AGENT_API_KEY
-  api_key: "XKT#2026"
+  api_key: ""
 
 # Storage configuration
 store:
@@ -151,7 +152,10 @@ rag:
   # Env override: AI_AGENT_RAG_TOOL_NAME
   tool_name: "rag_search"
 
-  authorization: "XKT#2026"
+  # Authorization token/header for the RAG search endpoint.
+  # MUST be set via environment variable — do NOT store secrets in this file.
+  # Env override: AI_AGENT_RAG_AUTHORIZATION
+  authorization: ""
 
 # Logging configuration
 log:

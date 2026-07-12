@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -52,12 +53,21 @@ func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPr
 		return types.TokenUsage{}, err
 	}
 	defer resp.Body.Close()
-	var raw bytes.Buffer
-	_, _ = raw.ReadFrom(resp.Body)
-	if resp.StatusCode >= 300 {
-		return types.TokenUsage{}, fmt.Errorf("LLM API status %d: %s", resp.StatusCode, raw.String())
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
+	if readErr != nil {
+		return types.TokenUsage{}, readErr
 	}
-	text, usage, err := extractStructuredResponse(responseKind, raw.Bytes())
+	if len(raw) > 4<<20 {
+		return types.TokenUsage{}, fmt.Errorf("LLM response exceeds 4 MiB limit")
+	}
+	if resp.StatusCode >= 300 {
+		body := raw
+		if len(body) > 64<<10 {
+			body = body[:64<<10]
+		}
+		return types.TokenUsage{}, &HTTPStatusError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	text, usage, err := extractStructuredResponse(responseKind, raw)
 	if err != nil {
 		return usage, err
 	}

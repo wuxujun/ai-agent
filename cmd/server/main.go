@@ -152,6 +152,7 @@ func main() {
 	}
 
 	slog.Info("LLM provider configured",
+		"configured_provider", cfg.LLM.Provider,
 		"provider", llmProvider,
 		"scene", startupScene,
 		"base_url", baseURL,

@@ -11,6 +11,10 @@ import (
 
 type fallbackCaller struct{ calls []string }
 
+type captureObserver struct{ events []CallEvent }
+
+func (c *captureObserver) ObserveLLMCall(event CallEvent) { c.events = append(c.events, event) }
+
 func (f *fallbackCaller) CallJSON(_ context.Context, cfg Config, _, _ string, _ map[string]any, dest any) (types.TokenUsage, error) {
 	f.calls = append(f.calls, cfg.Scene)
 	if cfg.Scene == "primary" {
@@ -39,12 +43,16 @@ func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 	t.Cleanup(func() { config.Get().LLM.Scenes = originalScenes })
 	callerMu.Lock()
 	originalCaller := caller
+	originalObserver := observer
 	fake := &fallbackCaller{}
+	capture := &captureObserver{}
 	caller = fake
+	observer = capture
 	callerMu.Unlock()
 	t.Cleanup(func() {
 		callerMu.Lock()
 		caller = originalCaller
+		observer = originalObserver
 		callerMu.Unlock()
 	})
 	var output struct {
@@ -56,6 +64,9 @@ func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 	}
 	if output.Answer != "fallback" || usage.TotalTokens != 8 {
 		t.Fatalf("output=%+v usage=%+v", output, usage)
+	}
+	if len(capture.events) != 2 || capture.events[0].Scene != "primary" || !capture.events[0].FallbackUsed || capture.events[1].Scene != "fallback" || capture.events[1].Err != nil {
+		t.Fatalf("observer events = %+v", capture.events)
 	}
 }
 

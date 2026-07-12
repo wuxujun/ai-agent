@@ -26,12 +26,13 @@ import (
 )
 
 type Engine struct {
-	Planner   planner.Planner
-	Finalizer planner.TaskFinalizer
-	Executor  executor.Executor
-	Metrics   *metrics.Collector
-	Mode      Mode
-	AdkModel  model.LLM
+	Planner         planner.Planner
+	Finalizer       planner.TaskFinalizer
+	Executor        executor.Executor
+	Metrics         *metrics.Collector
+	Mode            Mode
+	AdkModel        model.LLM
+	LLMSceneEnabled func(string) bool
 	// Coordinator is required when Mode == ModeMultiAgent.
 	Coordinator *multiagent.Coordinator
 	// Store handles database persistence and long-term memory.
@@ -68,11 +69,19 @@ type Engine struct {
 	adkErr    error
 }
 
+func (e *Engine) llmSceneEnabled(scene string) bool {
+	if e.LLMSceneEnabled != nil {
+		return e.LLMSceneEnabled(scene)
+	}
+	_, enabled := config.Get().LLM.Scenes[scene]
+	return enabled
+}
+
 func (e *Engine) finalizeAnswer(ctx context.Context, task *types.Task, fallback string) (string, types.TokenUsage) {
 	if e.Finalizer == nil {
 		return fallback, types.TokenUsage{}
 	}
-	if _, enabled := config.Get().LLM.Scenes[config.LLMSceneTaskFinalizer]; !enabled {
+	if !e.llmSceneEnabled(config.LLMSceneTaskFinalizer) {
 		return fallback, types.TokenUsage{}
 	}
 	if !llmcore.AllowedForTask(config.LLMSceneTaskFinalizer, task) {

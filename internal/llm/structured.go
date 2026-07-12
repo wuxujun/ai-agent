@@ -34,7 +34,8 @@ type CallEvent struct {
 	Usage                  types.TokenUsage
 	Duration               time.Duration
 	Err                    error
-	FallbackConfigured     bool
+	Attempts               int
+	FallbackUsed           bool
 }
 
 type Observer interface{ ObserveLLMCall(CallEvent) }
@@ -73,18 +74,20 @@ func ConfigForScene(scene string) Config {
 }
 
 func CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
-	start := time.Now()
-	usage, err := callJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest, map[string]bool{})
+	return callJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest, map[string]bool{})
+}
+
+func Observe(event CallEvent) {
 	callerMu.RLock()
 	activeObserver := observer
 	callerMu.RUnlock()
 	if activeObserver != nil {
-		activeObserver.ObserveLLMCall(CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(start), Err: err, FallbackConfigured: cfg.FallbackScene != ""})
+		activeObserver.ObserveLLMCall(event)
 	}
-	return usage, err
 }
 
 func callJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any, visited map[string]bool) (types.TokenUsage, error) {
+	started := time.Now()
 	ctx, span := otel.Tracer("ai-agent/llm").Start(ctx, "llm.structured_call")
 	defer span.End()
 	span.SetAttributes(attribute.String("llm.scene", cfg.Scene), attribute.String("llm.provider", cfg.Provider), attribute.String("llm.model", cfg.Model))
@@ -95,11 +98,14 @@ func callJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, 
 		err := fmt.Errorf("structured LLM caller is not registered")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
+		Observe(CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Duration: time.Since(started), Err: err})
 		return types.TokenUsage{}, err
 	}
 	var usage types.TokenUsage
 	var err error
+	attempts := 0
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
+		attempts++
 		var attemptUsage types.TokenUsage
 		attemptUsage, err = active.CallJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
 		usage.PromptTokens += attemptUsage.PromptTokens
@@ -109,8 +115,16 @@ func callJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, 
 			break
 		}
 		span.SetAttributes(attribute.Int("llm.retry.attempt", attempt))
+		if attempt == cfg.MaxRetries || !IsRetryable(err) {
+			break
+		}
+		if waitErr := WaitRetry(ctx, attempt); waitErr != nil {
+			err = waitErr
+			break
+		}
 	}
 	span.SetAttributes(attribute.Int("llm.usage.prompt_tokens", usage.PromptTokens), attribute.Int("llm.usage.completion_tokens", usage.CompletionTokens), attribute.Int("llm.usage.total_tokens", usage.TotalTokens))
+	Observe(CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(started), Err: err, Attempts: attempts, FallbackUsed: err != nil && cfg.FallbackScene != ""})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -123,6 +137,7 @@ func callJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, 
 			usage.CompletionTokens += fallbackUsage.CompletionTokens
 			usage.TotalTokens += fallbackUsage.TotalTokens
 			if fallbackErr == nil {
+				span.SetStatus(codes.Ok, "fallback succeeded")
 				return usage, nil
 			}
 			return usage, fmt.Errorf("scene %s failed: %v; fallback scene %s failed: %w", cfg.Scene, err, cfg.FallbackScene, fallbackErr)

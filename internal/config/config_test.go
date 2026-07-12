@@ -259,6 +259,26 @@ func TestValidateLLMScenes(t *testing.T) {
 	}
 }
 
+func TestConfigFileProviderWinsOverCredentialAutoDetection(t *testing.T) {
+	resetConfig()
+	defer resetConfig()
+	t.Setenv("OPENAI_API_KEY", "openai-test-key")
+	t.Setenv("GEMINI_API_KEY", "gemini-test-key")
+	viper.Reset()
+	setupViper()
+	viper.SetConfigFile("../../deploy/e2e/config.yaml")
+	if err := viper.ReadInConfig(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := unmarshalConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Provider != "litellm" {
+		t.Fatalf("configured provider = %q, want litellm", cfg.LLM.Provider)
+	}
+}
+
 func TestConfigFileLoading(t *testing.T) {
 	resetConfig()
 	defer resetConfig()

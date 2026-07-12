@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ var healthCache struct {
 	at      time.Time
 	result  map[string]SceneHealth
 	healthy bool
+	key     string
 }
 
 type SceneHealth struct {
@@ -29,8 +31,10 @@ type SceneHealth struct {
 }
 
 func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
+	cfg := config.Get()
+	cacheKey := healthConfigKey(cfg)
 	healthCache.Lock()
-	if time.Since(healthCache.at) < healthCacheTTL && healthCache.result != nil {
+	if time.Since(healthCache.at) < healthCacheTTL && healthCache.result != nil && healthCache.key == cacheKey {
 		result := cloneSceneHealth(healthCache.result)
 		healthy := healthCache.healthy
 		healthCache.Unlock()
@@ -38,9 +42,9 @@ func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
 	}
 	healthCache.Unlock()
 
-	cfg := config.Get()
 	result := make(map[string]SceneHealth, len(cfg.LLM.Scenes)+1)
 	allHealthy := true
+	probed := make(map[string]SceneHealth)
 	scenes := map[string]struct{}{config.LLMSceneTaskPlanner: {}}
 	for scene := range cfg.LLM.Scenes {
 		scenes[scene] = struct{}{}
@@ -50,6 +54,14 @@ func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
 		health := SceneHealth{Provider: resolved.Provider, Healthy: true}
 		if resolved.Provider == "litellm" {
 			healthURL, err := liteLLMHealthURL(resolved.BaseURL)
+			if cached, ok := probed[healthURL]; ok && err == nil {
+				health = cached
+				result[scene] = health
+				if !health.Healthy {
+					allHealthy = false
+				}
+				continue
+			}
 			if err == nil {
 				req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 				if reqErr == nil {
@@ -74,6 +86,7 @@ func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
 				health.Error = err.Error()
 				allHealthy = false
 			}
+			probed[healthURL] = health
 		}
 		result[scene] = health
 	}
@@ -81,8 +94,26 @@ func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
 	healthCache.at = time.Now()
 	healthCache.result = cloneSceneHealth(result)
 	healthCache.healthy = allHealthy
+	healthCache.key = cacheKey
 	healthCache.Unlock()
 	return result, allHealthy
+}
+
+func healthConfigKey(cfg *config.Config) string {
+	names := make([]string, 0, len(cfg.LLM.Scenes)+1)
+	names = append(names, config.LLMSceneTaskPlanner)
+	for scene := range cfg.LLM.Scenes {
+		if scene != config.LLMSceneTaskPlanner {
+			names = append(names, scene)
+		}
+	}
+	sort.Strings(names)
+	var key strings.Builder
+	for _, scene := range names {
+		resolved := cfg.ResolveLLMScene(scene)
+		fmt.Fprintf(&key, "%s|%s|%s;", scene, resolved.Provider, resolved.BaseURL)
+	}
+	return key.String()
 }
 
 func cloneSceneHealth(source map[string]SceneHealth) map[string]SceneHealth {
@@ -102,7 +133,7 @@ func liteLLMHealthURL(baseURL string) (string, error) {
 	if index := strings.Index(path, "/v1/"); index >= 0 {
 		path = path[:index]
 	}
-	parsed.Path = strings.TrimSuffix(path, "/") + "/health"
+	parsed.Path = strings.TrimSuffix(path, "/") + "/health/liveliness"
 	parsed.RawQuery = ""
 	return parsed.String(), nil
 }

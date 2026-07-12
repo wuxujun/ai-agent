@@ -217,6 +217,7 @@ func setupViper() {
 	_ = viper.BindEnv("llm.gemini_api_key", "GEMINI_API_KEY")
 	_ = viper.BindEnv("llm.google_api_key", "GOOGLE_API_KEY")
 	_ = viper.BindEnv("rag.tool_name", "AI_AGENT_RAG_TOOL_NAME")
+	_ = viper.BindEnv("rag.authorization", "AI_AGENT_RAG_AUTHORIZATION")
 	_ = viper.BindEnv("search.url", "AI_AGENT_SEARCH_URL")
 	_ = viper.BindEnv("search.api_key", "FIRECRAWL_API_KEY")
 }
@@ -241,6 +242,11 @@ func unmarshalConfig() (*Config, error) {
 	if c.Search.APIKey == "" {
 		if envKey := os.Getenv("AI_AGENT_SEARCH_API_KEY"); envKey != "" {
 			c.Search.APIKey = envKey
+		}
+	}
+	if c.RAG.Authorization == "" {
+		if envAuth := os.Getenv("AI_AGENT_RAG_AUTHORIZATION"); envAuth != "" {
+			c.RAG.Authorization = envAuth
 		}
 	}
 	return &c, nil
