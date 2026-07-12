@@ -80,5 +80,15 @@ func WriteFile(workspace string, relativePath string, content string) error {
 		return err
 	}
 
-	return os.WriteFile(full, []byte(content), 0644)
+	// Open with O_NOFOLLOW to prevent following symlinks.
+	f, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|policy.O_NOFOLLOW, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file safely: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write([]byte(content)); err != nil {
+		return fmt.Errorf("failed to write content safely: %w", err)
+	}
+	return nil
 }

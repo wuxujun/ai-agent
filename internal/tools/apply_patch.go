@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +73,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, workspace string, params m
 	// 1. Try parsing as SEARCH/REPLACE blocks
 	blocks, parseErr := parseSearchReplacePatch(patch)
 	if parseErr == nil && len(blocks) > 0 {
-		if err := applySearchReplaceBlocks(fullPath, blocks); err != nil {
+		if err := applySearchReplaceBlocks(workspace, fullPath, blocks); err != nil {
 			return nil, fmt.Errorf("failed to apply SEARCH/REPLACE blocks: %w", err)
 		}
 		return &ToolResult{
@@ -152,10 +153,21 @@ func parseSearchReplacePatch(patch string) ([]patchBlock, error) {
 	return blocks, nil
 }
 
-func applySearchReplaceBlocks(filePath string, blocks []patchBlock) error {
-	b, err := os.ReadFile(filePath)
+func applySearchReplaceBlocks(workspace, filePath string, blocks []patchBlock) error {
+	if err := policy.ValidateReadPath(workspace, filePath); err != nil {
+		return err
+	}
+
+	// Open for reading with O_NOFOLLOW to prevent following symlinks.
+	fRead, err := os.OpenFile(filePath, os.O_RDONLY|policy.O_NOFOLLOW, 0)
 	if err != nil {
-		return fmt.Errorf("failed to read target file: %w", err)
+		return fmt.Errorf("failed to open file safely for reading: %w", err)
+	}
+	defer fRead.Close()
+
+	b, err := io.ReadAll(fRead)
+	if err != nil {
+		return fmt.Errorf("failed to read target file safely: %w", err)
 	}
 	content := string(b)
 
@@ -172,7 +184,21 @@ func applySearchReplaceBlocks(filePath string, blocks []patchBlock) error {
 		content = strings.Replace(content, block.search, block.replace, 1)
 	}
 
-	return os.WriteFile(filePath, []byte(content), 0644)
+	if err := policy.ValidateWritePath(workspace, filePath); err != nil {
+		return err
+	}
+
+	// Open for writing with O_NOFOLLOW to prevent following symlinks.
+	fWrite, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC|policy.O_NOFOLLOW, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file safely for writing: %w", err)
+	}
+	defer fWrite.Close()
+
+	if _, err := fWrite.Write([]byte(content)); err != nil {
+		return fmt.Errorf("failed to write content safely: %w", err)
+	}
+	return nil
 }
 
 func applyUnifiedDiff(ctx context.Context, workspace, relativePath, patchContent string) (string, error) {

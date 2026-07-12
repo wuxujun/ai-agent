@@ -2,6 +2,7 @@ package tools
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -35,22 +36,17 @@ Some text after patch.`
 }
 
 func TestApplySearchReplaceBlocks(t *testing.T) {
-	tempFile, err := os.CreateTemp("", "test_patch_*.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tempFile.Name())
+	workspace := t.TempDir()
+	filePath := filepath.Join(workspace, "test_patch.txt")
 
 	originalContent := `line A
 line B
 line C
 line D`
 
-	if _, err := tempFile.WriteString(originalContent); err != nil {
-		tempFile.Close()
+	if err := os.WriteFile(filePath, []byte(originalContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tempFile.Close()
 
 	blocks := []patchBlock{
 		{
@@ -59,11 +55,11 @@ line D`
 		},
 	}
 
-	if err := applySearchReplaceBlocks(tempFile.Name(), blocks); err != nil {
+	if err := applySearchReplaceBlocks(workspace, filePath, blocks); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 
-	res, err := os.ReadFile(tempFile.Name())
+	res, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,22 +75,17 @@ line D`
 }
 
 func TestApplySearchReplaceBlocks_NonUnique(t *testing.T) {
-	tempFile, err := os.CreateTemp("", "test_patch_*.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tempFile.Name())
+	workspace := t.TempDir()
+	filePath := filepath.Join(workspace, "test_patch.txt")
 
 	originalContent := `line A
 line B
 line A
 line D`
 
-	if _, err := tempFile.WriteString(originalContent); err != nil {
-		tempFile.Close()
+	if err := os.WriteFile(filePath, []byte(originalContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tempFile.Close()
 
 	blocks := []patchBlock{
 		{
@@ -103,7 +94,7 @@ line D`
 		},
 	}
 
-	err = applySearchReplaceBlocks(tempFile.Name(), blocks)
+	err := applySearchReplaceBlocks(workspace, filePath, blocks)
 	if err == nil {
 		t.Fatal("expected error due to multiple occurrences, got none")
 	}
