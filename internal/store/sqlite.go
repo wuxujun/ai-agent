@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -568,6 +569,12 @@ LIMIT ?
 	}
 	defer rows.Close()
 
+	decayRate := 0.0
+	if cfg := config.Get(); cfg != nil {
+		decayRate = cfg.Store.MemoryDecayRate
+	}
+	now := time.Now()
+
 	type rankResult struct {
 		mem   *types.Memory
 		score float32
@@ -605,6 +612,7 @@ LIMIT ?
 				score = matches / float32(len(qWords))
 			}
 		}
+		score = memory.ApplyTimeDecay(score, mem.Timestamp, now, decayRate)
 		ranked = append(ranked, rankResult{mem: &mem, score: score})
 	}
 

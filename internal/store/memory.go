@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -199,6 +200,12 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	decayRate := 0.0
+	if cfg := config.Get(); cfg != nil {
+		decayRate = cfg.Store.MemoryDecayRate
+	}
+	now := time.Now()
+
 	type result struct {
 		mem   *types.Memory
 		score float32
@@ -214,6 +221,7 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 			// Keyword match score as fallback
 			score = keywordOverlap(query, mem.Goal+" "+mem.KeyFindings+" "+mem.FinalAnswer)
 		}
+		score = memory.ApplyTimeDecay(score, mem.Timestamp, now, decayRate)
 		list = append(list, result{mem: mem, score: score})
 	}
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
@@ -319,3 +320,20 @@ func localEmbedding(text string) []float32 {
 	}
 	return vec
 }
+
+// ApplyTimeDecay calculates the time-decayed score of a memory based on its timestamp,
+// reference time, and configured decay rate.
+// The formula used is: decayed_score = score * e^(-decayRate * hours)
+// A decayRate of 0.0 disables time decay, returning the original score.
+func ApplyTimeDecay(score float32, timestamp time.Time, referenceTime time.Time, decayRate float64) float32 {
+	if decayRate <= 0 {
+		return score
+	}
+	hours := referenceTime.Sub(timestamp).Hours()
+	if hours < 0 {
+		hours = 0
+	}
+	decayFactor := float32(math.Exp(-decayRate * hours))
+	return score * decayFactor
+}
+

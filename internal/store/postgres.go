@@ -727,9 +727,43 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 		attribute.String("agent.store.vector_search", config.Get().Store.VectorSearch),
 	)
 
+	decayRate := 0.0
+	if cfg := config.Get(); cfg != nil {
+		decayRate = cfg.Store.MemoryDecayRate
+	}
+
 	if usePostgresPGVector() && len(embedding) > 0 {
-		mems, err := p.queryMemoriesPGVector(ctx, embedding, limit)
+		fetchLimit := limit
+		if decayRate > 0 {
+			fetchLimit = resolveMemoryCandidateLimit()
+		}
+		mems, err := p.queryMemoriesPGVector(ctx, embedding, fetchLimit)
 		if err == nil {
+			if decayRate > 0 {
+				now := time.Now()
+				type rankResult struct {
+					mem   *types.Memory
+					score float32
+				}
+				var ranked []rankResult
+				for _, mem := range mems {
+					score := memory.CosineSimilarity(embedding, mem.Embedding)
+					score = memory.ApplyTimeDecay(score, mem.Timestamp, now, decayRate)
+					ranked = append(ranked, rankResult{mem: mem, score: score})
+				}
+				sort.Slice(ranked, func(i, j int) bool {
+					return ranked[i].score > ranked[j].score
+				})
+				if limit > len(ranked) {
+					limit = len(ranked)
+				}
+				res := make([]*types.Memory, 0, limit)
+				for i := 0; i < limit; i++ {
+					res = append(res, ranked[i].mem)
+				}
+				return res, nil
+			}
+
 			span.SetAttributes(
 				attribute.Bool("agent.store.pgvector_used", true),
 				attribute.Int("agent.store.memory_count", len(mems)),
@@ -759,6 +793,7 @@ LIMIT $1
 	}
 	defer rows.Close()
 
+	now := time.Now()
 	type rankResult struct {
 		mem   *types.Memory
 		score float32
@@ -796,6 +831,7 @@ LIMIT $1
 				score = matches / float32(len(qWords))
 			}
 		}
+		score = memory.ApplyTimeDecay(score, mem.Timestamp, now, decayRate)
 		ranked = append(ranked, rankResult{mem: &mem, score: score})
 	}
 

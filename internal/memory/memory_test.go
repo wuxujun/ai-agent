@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -191,3 +192,45 @@ func TestSemanticDeduplicateMemories(t *testing.T) {
 		t.Errorf("unexpected deduped result: %+v", deduped)
 	}
 }
+
+func TestApplyTimeDecay(t *testing.T) {
+	now := time.Now()
+	timestamp1 := now.Add(-10 * time.Hour) // 10 hours ago
+	timestamp2 := now.Add(-50 * time.Hour) // 50 hours ago
+
+	// 1. Decay rate is 0.0 -> no decay should occur
+	score0 := memory.ApplyTimeDecay(1.0, timestamp1, now, 0.0)
+	if score0 != 1.0 {
+		t.Errorf("expected score 1.0, got %f with decay rate 0.0", score0)
+	}
+
+	// 2. Decay rate is positive (e.g. 0.01 per hour)
+	score1 := memory.ApplyTimeDecay(1.0, timestamp1, now, 0.01)
+	score2 := memory.ApplyTimeDecay(1.0, timestamp2, now, 0.01)
+
+	// Since timestamp2 is older, its score should be decayed more.
+	if score2 >= score1 {
+		t.Errorf("expected older memory to have lower decayed score: score2=%f, score1=%f", score2, score1)
+	}
+
+	// Verify exact values (exp(-0.01 * 10) = ~0.9048)
+	expected1 := float32(math.Exp(-0.01 * 10))
+	if math.Abs(float64(score1-expected1)) > 1e-5 {
+		t.Errorf("expected score1 around %f, got %f", expected1, score1)
+	}
+
+	// 3. Score is decayed to zero if time is extremely large
+	timestamp3 := now.Add(-100000 * time.Hour)
+	score3 := memory.ApplyTimeDecay(1.0, timestamp3, now, 0.1)
+	if score3 > 1e-5 {
+		t.Errorf("expected score3 to be close to 0, got %f", score3)
+	}
+
+	// 4. Future timestamp (negative hours elapsed) should not decay (treated as 0 elapsed)
+	futureTimestamp := now.Add(2 * time.Hour)
+	scoreFuture := memory.ApplyTimeDecay(1.0, futureTimestamp, now, 0.01)
+	if scoreFuture != 1.0 {
+		t.Errorf("expected future memory to have score 1.0 (no decay), got %f", scoreFuture)
+	}
+}
+

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -392,6 +393,12 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 		return nil, err
 	}
 
+	decayRate := 0.0
+	if cfg := config.Get(); cfg != nil {
+		decayRate = cfg.Store.MemoryDecayRate
+	}
+	now := time.Now()
+
 	type rankResult struct {
 		mem   *types.Memory
 		score float32
@@ -429,6 +436,7 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 				score = matches / float32(len(qWords))
 			}
 		}
+		score = memory.ApplyTimeDecay(score, mem.Timestamp, now, decayRate)
 		ranked = append(ranked, rankResult{mem: &mem, score: score})
 	}
 

@@ -41,6 +41,10 @@ type Config struct {
 		// matters more than scan latency. 0 falls back to the package default
 		// (200).
 		MemoryCandidateLimit int `mapstructure:"memory_candidate_limit"`
+		// MemoryDecayRate is the rate at which memories decay over time.
+		// A decay rate of 0.0 disables time decay. A positive rate (e.g. 0.01 per hour)
+		// will reduce the score of older memories exponentially.
+		MemoryDecayRate float64 `mapstructure:"memory_decay_rate"`
 	} `mapstructure:"store"`
 
 	Orchestrator struct {
@@ -192,6 +196,7 @@ func setupViper() {
 	viper.SetDefault("store.vector_search", "in_process")
 	viper.SetDefault("store.pgvector_dimensions", 0)
 	viper.SetDefault("store.memory_candidate_limit", 200)
+	viper.SetDefault("store.memory_decay_rate", 0.0)
 	viper.SetDefault("orchestrator.mode", "eino")
 	viper.SetDefault("orchestrator.max_concurrent_tasks", 10)
 	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
@@ -422,6 +427,9 @@ func diffConfigs(old, new *Config) []string {
 	addIf("store.vector_search", old.Store.VectorSearch, new.Store.VectorSearch)
 	addIfInt("store.pgvector_dimensions", old.Store.PGVectorDimensions, new.Store.PGVectorDimensions)
 	addIfInt("store.memory_candidate_limit", old.Store.MemoryCandidateLimit, new.Store.MemoryCandidateLimit)
+	if old.Store.MemoryDecayRate != new.Store.MemoryDecayRate {
+		changes = append(changes, fmt.Sprintf("store.memory_decay_rate: %g → %g", old.Store.MemoryDecayRate, new.Store.MemoryDecayRate))
+	}
 
 	// Orchestrator
 	addIf("orchestrator.mode", old.Orchestrator.Mode, new.Orchestrator.Mode)
