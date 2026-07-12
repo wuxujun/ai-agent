@@ -54,16 +54,17 @@ type Config struct {
 	} `mapstructure:"orchestrator"`
 
 	LLM struct {
-		Provider       string                       `mapstructure:"provider"`
-		APIKey         string                       `mapstructure:"api_key"`
-		OpenAIAPIKey   string                       `mapstructure:"openai_api_key"`
-		GeminiAPIKey   string                       `mapstructure:"gemini_api_key"`
-		GoogleAPIKey   string                       `mapstructure:"google_api_key"`
-		Model          string                       `mapstructure:"model"`
-		BaseURL        string                       `mapstructure:"base_url"`
-		TimeoutSeconds int                          `mapstructure:"timeout_seconds"`
-		Gateway        LLMEndpointConfig            `mapstructure:"gateway"`
-		Scenes         map[string]LLMEndpointConfig `mapstructure:"scenes"`
+		Provider                         string                       `mapstructure:"provider"`
+		APIKey                           string                       `mapstructure:"api_key"`
+		OpenAIAPIKey                     string                       `mapstructure:"openai_api_key"`
+		GeminiAPIKey                     string                       `mapstructure:"gemini_api_key"`
+		GoogleAPIKey                     string                       `mapstructure:"google_api_key"`
+		Model                            string                       `mapstructure:"model"`
+		BaseURL                          string                       `mapstructure:"base_url"`
+		TimeoutSeconds                   int                          `mapstructure:"timeout_seconds"`
+		ContextCompressionTraceThreshold int                          `mapstructure:"context_compression_trace_threshold"`
+		Gateway                          LLMEndpointConfig            `mapstructure:"gateway"`
+		Scenes                           map[string]LLMEndpointConfig `mapstructure:"scenes"`
 	} `mapstructure:"llm"`
 
 	Embedding struct {
@@ -139,11 +140,18 @@ func (c *Config) ResolveLLMProviderConfig(provider string) ResolvedLLMConfig {
 }
 
 const (
-	LLMSceneTaskPlanner       = "task_planner"
-	LLMSceneMultiAgentPlanner = "multiagent_planner"
-	LLMSceneMultiAgentWriter  = "multiagent_writer"
-	LLMSceneEmbedding         = "embedding"
-	LLMSceneADK               = "adk"
+	LLMSceneTaskPlanner         = "task_planner"
+	LLMSceneTaskFinalizer       = "task_finalizer"
+	LLMSceneContextCompressor   = "context_compressor"
+	LLMSceneAnswerVerifier      = "answer_verifier"
+	LLMSceneMemorySummarizer    = "memory_summarizer"
+	LLMSceneRAGQueryRewriter    = "rag_query_rewriter"
+	LLMSceneRAGReranker         = "rag_reranker"
+	LLMSceneMultiAgentPlanner   = "multiagent_planner"
+	LLMSceneMultiAgentReplanner = "multiagent_replanner"
+	LLMSceneMultiAgentWriter    = "multiagent_writer"
+	LLMSceneEmbedding           = "embedding"
+	LLMSceneADK                 = "adk"
 )
 
 // mu guards globalConfig for concurrent reads/writes.
@@ -183,6 +191,7 @@ func setupViper() {
 	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
 	viper.SetDefault("llm.provider", "openai-responses")
 	viper.SetDefault("llm.timeout_seconds", 30)
+	viper.SetDefault("llm.context_compression_trace_threshold", 8)
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("telemetry.enabled", true)
 	viper.SetDefault("telemetry.endpoint", "127.0.0.1:4318")
@@ -379,6 +388,7 @@ func diffConfigs(old, new *Config) []string {
 	addIf("llm.model", old.LLM.Model, new.LLM.Model)
 	addIf("llm.base_url", old.LLM.BaseURL, new.LLM.BaseURL)
 	addIfInt("llm.timeout_seconds", old.LLM.TimeoutSeconds, new.LLM.TimeoutSeconds)
+	addIfInt("llm.context_compression_trace_threshold", old.LLM.ContextCompressionTraceThreshold, new.LLM.ContextCompressionTraceThreshold)
 	addIf("llm.gateway.provider", old.LLM.Gateway.Provider, new.LLM.Gateway.Provider)
 	addIf("llm.gateway.api_key", old.LLM.Gateway.APIKey, new.LLM.Gateway.APIKey)
 	addIf("llm.gateway.model", old.LLM.Gateway.Model, new.LLM.Gateway.Model)

@@ -163,7 +163,7 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 	var plan ResearchPlan
 	cfg := p.Config
 	if cfg.Provider == "" {
-		cfg = LLMConfigForScene(config.LLMSceneMultiAgentPlanner)
+		cfg = LLMConfigForScene(config.LLMSceneMultiAgentReplanner)
 	}
 
 	systemPrompt := replannerSystemPrompt
@@ -174,7 +174,7 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 		log.Info("Using custom system prompt for ReplannerAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Planner.Name)
 	}
 	if activeTeam.Planner.Provider != "" || activeTeam.Planner.Model != "" || activeTeam.Planner.LLMScene != "" {
-		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentPlanner)
+		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentReplanner)
 	}
 
 	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, p.jsonSchema(), &plan)

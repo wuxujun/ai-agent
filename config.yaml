@@ -85,6 +85,7 @@ llm:
   # Request timeout in seconds.
   # Env override: AI_AGENT_LLM_TIMEOUT_SECONDS
   timeout_seconds: 30
+  context_compression_trace_threshold: 8
 
   # Optional shared gateway defaults. LiteLLM exposes an OpenAI-compatible
   # /v1/chat/completions endpoint and model aliases configured in LiteLLM.
@@ -98,8 +99,23 @@ llm:
   # scenes:
   #   task_planner:
   #     model: "agent-planner"
+  #   task_finalizer:
+  #     model: "agent-writer"
+  #   context_compressor:
+  #     model: "agent-fast"
+  #   answer_verifier:
+  #     model: "agent-verifier"
+  #   memory_summarizer:
+  #     model: "agent-fast"
+  #   rag_query_rewriter:
+  #     model: "agent-fast"
+  #   rag_reranker:
+  #     model: "agent-reranker"
   #   multiagent_planner:
   #     model: "agent-planner"
+  #   multiagent_replanner:
+  #     model: "agent-planner-strong"
+  #     timeout_seconds: 60
   #   multiagent_writer:
   #     model: "agent-writer"
   #     timeout_seconds: 60

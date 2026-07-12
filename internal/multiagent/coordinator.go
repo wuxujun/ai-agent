@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -40,6 +41,7 @@ type Coordinator struct {
 	Planner            Planner
 	Researcher         Researcher
 	Writer             Writer
+	Verifier           AnswerVerifier
 	Metrics            *metrics.Collector
 	SuspendForApproval func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
 	EventCallback      func(taskID string, status types.TaskStatus)
@@ -188,7 +190,6 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	if c.Metrics != nil {
 		c.Metrics.ObservePlanner(elapsed, err)
 	}
-
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent: %w", err)
 	}
@@ -556,6 +557,24 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 
 	if c.Metrics != nil {
 		c.Metrics.ObserveTokens(output.TokenUsage.PromptTokens, output.TokenUsage.CompletionTokens, output.TokenUsage.TotalTokens, "writer")
+	}
+	_, verificationEnabled := config.Get().LLM.Scenes[config.LLMSceneAnswerVerifier]
+	if c.Verifier != nil && verificationEnabled {
+		verification, verifyErr := c.Verifier.Verify(ctx, task.Goal, output.FinalAnswer, evidence)
+		if verifyErr != nil {
+			log.Warn("answer verifier failed; preserving writer result", "task_id", task.ID, "error", verifyErr)
+		} else {
+			if c.Metrics != nil {
+				c.Metrics.ObserveTokens(verification.TokenUsage.PromptTokens, verification.TokenUsage.CompletionTokens, verification.TokenUsage.TotalTokens, "verifier")
+			}
+			if !verification.Supported {
+				output.Confidence = "low"
+				output.EvidenceSummary = fmt.Sprintf("%s | Verification issues: %v", output.EvidenceSummary, verification.Issues)
+			}
+			output.TokenUsage.PromptTokens += verification.TokenUsage.PromptTokens
+			output.TokenUsage.CompletionTokens += verification.TokenUsage.CompletionTokens
+			output.TokenUsage.TotalTokens += verification.TokenUsage.TotalTokens
+		}
 	}
 
 	task.Trace = append(task.Trace, types.StepTrace{

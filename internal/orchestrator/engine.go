@@ -25,11 +25,12 @@ import (
 )
 
 type Engine struct {
-	Planner  planner.Planner
-	Executor executor.Executor
-	Metrics  *metrics.Collector
-	Mode     Mode
-	AdkModel model.LLM
+	Planner   planner.Planner
+	Finalizer planner.TaskFinalizer
+	Executor  executor.Executor
+	Metrics   *metrics.Collector
+	Mode      Mode
+	AdkModel  model.LLM
 	// Coordinator is required when Mode == ModeMultiAgent.
 	Coordinator *multiagent.Coordinator
 	// Store handles database persistence and long-term memory.
@@ -66,6 +67,24 @@ type Engine struct {
 	adkErr    error
 }
 
+func (e *Engine) finalizeAnswer(ctx context.Context, task *types.Task, fallback string) (string, types.TokenUsage) {
+	if e.Finalizer == nil {
+		return fallback, types.TokenUsage{}
+	}
+	if _, enabled := config.Get().LLM.Scenes[config.LLMSceneTaskFinalizer]; !enabled {
+		return fallback, types.TokenUsage{}
+	}
+	answer, usage, err := e.Finalizer.Finalize(ctx, task)
+	if err != nil {
+		engineLog.Warn("task finalizer failed; using planner answer", "task_id", task.ID, "error", err)
+		return fallback, types.TokenUsage{}
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "finalizer")
+	}
+	return answer, usage
+}
+
 var tracer = otel.Tracer("ai-agent/orchestrator")
 
 // engineLog is the package-level logger for engine.go; the package-level "log"
@@ -93,10 +112,11 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 
 	if task.StepCount == 0 && len(task.Memories) == 0 {
 		var retrievedMems []types.Memory
+		retrievalQuery := memory.RewriteRAGQuery(ctx, task.Goal)
 
 		// 1. Try querying third-party RAG search URL if configured (query up to 5 candidates)
 		if config.Get().RAG.SearchURL != "" {
-			if extMems, extErr := memory.SearchThirdPartyRAG(ctx, task.Goal); extErr == nil && len(extMems) > 0 {
+			if extMems, extErr := memory.SearchThirdPartyRAG(ctx, retrievalQuery); extErr == nil && len(extMems) > 0 {
 				retrievedMems = append(retrievedMems, extMems...)
 				engineLog.Info("retrieved memories from third-party RAG URL", "task_id", task.ID, "count", len(extMems))
 			} else if extErr != nil {
@@ -107,8 +127,8 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		// 2. Query local Store for up to 5 candidates
 		if e.Store != nil {
 			engineLog.Info("querying local long-term memory", "task_id", task.ID, "goal", task.Goal)
-			if emb, embErr := memory.GetEmbedding(ctx, task.Goal); embErr == nil {
-				if mems, queryErr := e.Store.QueryMemories(ctx, task.Goal, emb, 5); queryErr == nil && len(mems) > 0 {
+			if emb, embErr := memory.GetEmbedding(ctx, retrievalQuery); embErr == nil {
+				if mems, queryErr := e.Store.QueryMemories(ctx, retrievalQuery, emb, 5); queryErr == nil && len(mems) > 0 {
 					for _, m := range mems {
 						retrievedMems = append(retrievedMems, *m)
 					}
@@ -120,6 +140,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		// 3. Deduplicate and limit to top 3 unique memories
 		if len(retrievedMems) > 0 {
 			deduped := memory.DeduplicateMemories(retrievedMems)
+			deduped = memory.RerankMemories(ctx, retrievalQuery, deduped)
 			if len(deduped) > 3 {
 				deduped = deduped[:3]
 			}
@@ -222,6 +243,11 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	)
 
 	if decision.Stop {
+		var finalizerUsage types.TokenUsage
+		decision.FinalAnswer, finalizerUsage = e.finalizeAnswer(ctx, task, decision.FinalAnswer)
+		decision.TokenUsage.PromptTokens += finalizerUsage.PromptTokens
+		decision.TokenUsage.CompletionTokens += finalizerUsage.CompletionTokens
+		decision.TokenUsage.TotalTokens += finalizerUsage.TotalTokens
 		engineLog.Info("planner decided to stop", "task_id", task.ID, "final_answer", decision.FinalAnswer)
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount + 1,

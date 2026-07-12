@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -164,6 +165,30 @@ func TestLLMPlannerProviders(t *testing.T) {
 			t.Errorf("expected action %q, got %+v", expectedDecision.Actions[0].Action, decision.Actions)
 		}
 	})
+}
+
+type stubCompressor struct{}
+
+func (stubCompressor) Compress(context.Context, *types.Task) (string, types.TokenUsage, error) {
+	return "compressed evidence", types.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}, nil
+}
+
+func TestLLMPlannerIncludesCompressionUsage(t *testing.T) {
+	original := config.Get().LLM.Scenes
+	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneContextCompressor: {}}
+	t.Cleanup(func() { config.Get().LLM.Scenes = original })
+	task := &types.Task{ID: "compress", Goal: "goal", MaxSteps: 10, ToolBudget: 10, Trace: make([]types.StepTrace, 8)}
+	body := `{"output":[{"content":[{"text":"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"answer\",\"actions\":[{\"action\":\"none\",\"parameters\":{}}]}"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}`
+	p := NewLLMPlannerWithProvider(ProviderOpenAIResponses, "key", "model", "https://llm.test/responses")
+	p.Compressor = stubCompressor{}
+	p.Client = fakeHTTPClient(http.StatusOK, "application/json", body)
+	decision, err := p.PlanNext(context.Background(), task, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.TokenUsage.TotalTokens != 17 {
+		t.Fatalf("total usage = %+v, want 17", decision.TokenUsage)
+	}
 }
 
 func TestUnmarshalDecisionFallback(t *testing.T) {

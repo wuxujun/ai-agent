@@ -42,8 +42,9 @@ const (
 // time, so a hot-config-reload (e.g. API-key rotation) is picked up
 // automatically without restarting the server.
 type LLMPlanner struct {
-	Scene    string
-	Provider ProviderType
+	Scene      string
+	Compressor ContextCompressor
+	Provider   ProviderType
 	// APIKey overrides config.Get().ResolveLLMAPIKey when non-empty.
 	APIKey string
 	// Model overrides config.Get().ResolveLLMModel when non-empty.
@@ -135,6 +136,20 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	)
 
 	log.Info("starting planning", "task_id", task.ID, "step_count", task.StepCount, "provider", provider, "model", model)
+	promptTask := task
+	var compressionUsage types.TokenUsage
+	threshold := config.Get().LLM.ContextCompressionTraceThreshold
+	_, compressionEnabled := config.Get().LLM.Scenes[config.LLMSceneContextCompressor]
+	if p.Compressor != nil && compressionEnabled && threshold > 0 && len(task.Trace) >= threshold {
+		if summary, usage, compressErr := p.Compressor.Compress(ctx, task); compressErr != nil {
+			log.Warn("context compression failed; using original trace", "task_id", task.ID, "error", compressErr)
+		} else {
+			compressionUsage = usage
+			copyTask := *task
+			copyTask.Trace = []types.StepTrace{{Step: task.StepCount, Action: "context_summary", Observation: summary}}
+			promptTask = &copyTask
+		}
+	}
 
 	prov, err := lookupProvider(provider)
 	if err != nil {
@@ -149,7 +164,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		APIKey:       apiKey,
 		BaseURL:      baseURL,
 		SystemPrompt: BuildSystemPrompt(),
-		UserPrompt:   BuildUserPrompt(task),
+		UserPrompt:   BuildUserPrompt(promptTask),
 	}
 
 	log.Info("sending request to provider", "provider", provider, "base_url", baseURL, "model", model)
@@ -188,6 +203,9 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	log.Info("decision ready", "task_id", task.ID, "thought", decision.ThoughtSummary, "actions", actionNames, "stop", decision.Stop, "final_answer", decision.FinalAnswer, "num_actions", len(decision.Actions))
 
 	decision.TokenUsage = usage
+	decision.TokenUsage.PromptTokens += compressionUsage.PromptTokens
+	decision.TokenUsage.CompletionTokens += compressionUsage.CompletionTokens
+	decision.TokenUsage.TotalTokens += compressionUsage.TotalTokens
 	return &decision, nil
 }
 

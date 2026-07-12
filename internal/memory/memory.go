@@ -36,6 +36,7 @@ func SummarizeTask(task *types.Task) string {
 // It generates a vector embedding of the goal and populates the timestamp.
 func CreateMemoryFromTask(ctx context.Context, task *types.Task) (*types.Memory, error) {
 	findings := SummarizeTask(task)
+	findings = summarizeMemoryWithLLM(ctx, task, findings)
 
 	// Combine goal and findings to create a rich text for embedding.
 	// This helps with retrieving relevant memories based on both task goals and observations.

@@ -160,6 +160,7 @@ func main() {
 	mc := metrics.NewCollector()
 
 	plannerClient := planner.NewLLMPlannerForScene(config.LLMSceneTaskPlanner)
+	plannerClient.Compressor = planner.NewLLMContextCompressor(config.LLMSceneContextCompressor)
 
 	fallbackPlanner := &planner.MockPlanner{}
 
@@ -176,12 +177,14 @@ func main() {
 		Mode:     mode,
 		Store:    st,
 	}
+	eng.Finalizer = planner.NewLLMTaskFinalizer(config.LLMSceneTaskFinalizer)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner
 	// (OPENAI_API_KEY / GEMINI_API_KEY / AI_AGENT_LLM_MODEL etc.).
 	if mode == orchestrator.ModeMultiAgent {
 		eng.Coordinator = multiagent.NewCoordinator(mc)
+		eng.Coordinator.Verifier = &multiagent.VerifierAgent{}
 		eng.Coordinator.SuspendForApproval = eng.SuspendForApproval
 		slog.Info("multi-agent mode enabled",
 			"coordinator_provider", os.Getenv("AI_AGENT_LLM_PROVIDER"),

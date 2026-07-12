@@ -57,6 +57,12 @@ func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt st
 	return callHTTPJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
 }
 
+// CallLLMJSON exposes the shared structured-output transport to internal
+// subsystems that implement optional LLM scenes.
+func CallLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
+	return callLLMJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
+}
+
 // ── Gemini path ──────────────────────────────────────────────────────────────
 
 func callGeminiJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, dest any) (types.TokenUsage, error) {
