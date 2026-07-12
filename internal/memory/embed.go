@@ -27,7 +27,13 @@ var geminiEmbeddingUnsupportedLocation atomic.Bool
 
 // CosineSimilarity calculates the cosine similarity between two float vectors.
 func CosineSimilarity(v1, v2 []float32) float32 {
-	if len(v1) != len(v2) || len(v1) == 0 {
+	if len(v1) != len(v2) {
+		if len(v1) > 0 && len(v2) > 0 {
+			log.Warn("CosineSimilarity: mismatched embedding dimensions; RAG matching may be degraded", "dim1", len(v1), "dim2", len(v2))
+		}
+		return 0
+	}
+	if len(v1) == 0 {
 		return 0
 	}
 	var dotProduct, norm1, norm2 float32

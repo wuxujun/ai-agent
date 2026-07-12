@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,8 +19,7 @@ import (
 
 // RedisStore implements Store using a Redis database.
 type RedisStore struct {
-	client      *redis.Client
-	migrationMu sync.Mutex
+	client *redis.Client
 }
 
 const (
@@ -235,8 +233,39 @@ func (r *RedisStore) ensureTaskIndexes(ctx context.Context) error {
 		return err
 	}
 
-	r.migrationMu.Lock()
-	defer r.migrationMu.Unlock()
+	// Use Redis SETNX to acquire a distributed migration lock.
+	// We set a 5-minute timeout on the lock to prevent deadlocks in case of crashes.
+	lockKey := "tasks:index:v2:migration_lock"
+	acquired, err := r.client.SetNX(ctx, lockKey, "1", 5*time.Minute).Result()
+	if err != nil {
+		return err
+	}
+
+	if !acquired {
+		// Another instance holds the lock. Poll until the migration marker is set.
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		timeout := time.After(30 * time.Second)
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timeout:
+				return fmt.Errorf("timeout waiting for Redis task index migration to be completed by peer")
+			case <-ticker.C:
+				migrated, err = r.client.Exists(ctx, tasksIndexV2Marker).Result()
+				if err != nil {
+					return err
+				}
+				if migrated > 0 {
+					return nil
+				}
+			}
+		}
+	}
+	defer r.client.Del(ctx, lockKey)
+
+	// Double-check the marker now that we hold the lock.
 	migrated, err = r.client.Exists(ctx, tasksIndexV2Marker).Result()
 	if err != nil || migrated > 0 {
 		return err

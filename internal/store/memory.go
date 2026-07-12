@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -20,6 +19,7 @@ type MemoryStore struct {
 	tasks    map[string]*types.Task
 	memories map[string]*types.Memory
 	leases   map[string]memoryLease
+	indexing map[string]bool // Tracks tasks currently undergoing async indexing
 }
 
 type memoryLease struct {
@@ -33,13 +33,18 @@ func NewMemoryStore() *MemoryStore {
 		tasks:    make(map[string]*types.Task),
 		memories: make(map[string]*types.Memory),
 		leases:   make(map[string]memoryLease),
+		indexing: make(map[string]bool),
 	}
 }
 
 // SaveFullTask saves or updates a task and its traces in memory.
 func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 	m.mu.Lock()
+	if m.indexing == nil {
+		m.indexing = make(map[string]bool)
+	}
 	_, alreadyIndexed := m.memories["mem-"+task.ID]
+	alreadyIndexing := m.indexing[task.ID]
 
 	// Clone to avoid concurrent mutation issues
 	cloned := *task
@@ -53,13 +58,24 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 	}
 
 	m.tasks[task.ID] = &cloned
+
+	shouldIndex := task.Status == types.StatusCompleted && !alreadyIndexed && !alreadyIndexing
+	if shouldIndex {
+		m.indexing[task.ID] = true
+	}
 	m.mu.Unlock()
 
-	if task.Status == types.StatusCompleted && !alreadyIndexed {
+	if shouldIndex {
 		// Asynchronously index completed task as a long-term memory for cross-task RAG.
 		// Since generating embeddings can take time (e.g. hitting remote APIs),
 		// we run this outside of the write lock to prevent blocking memory storage.
 		go func() {
+			defer func() {
+				m.mu.Lock()
+				delete(m.indexing, cloned.ID)
+				m.mu.Unlock()
+			}()
+
 			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
@@ -193,7 +209,7 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 		var score float32
 		if len(embedding) > 0 && len(mem.Embedding) > 0 {
 			// Cosine Similarity
-			score = cosineSimilarity(embedding, mem.Embedding)
+			score = memory.CosineSimilarity(embedding, mem.Embedding)
 		} else {
 			// Keyword match score as fallback
 			score = keywordOverlap(query, mem.Goal+" "+mem.KeyFindings+" "+mem.FinalAnswer)
@@ -227,21 +243,7 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 	return res, nil
 }
 
-func cosineSimilarity(v1, v2 []float32) float32 {
-	if len(v1) != len(v2) || len(v1) == 0 {
-		return 0
-	}
-	var dotProduct, norm1, norm2 float64
-	for i := range v1 {
-		dotProduct += float64(v1[i] * v2[i])
-		norm1 += float64(v1[i] * v1[i])
-		norm2 += float64(v2[i] * v2[i])
-	}
-	if norm1 == 0 || norm2 == 0 {
-		return 0
-	}
-	return float32(dotProduct / (math.Sqrt(norm1) * math.Sqrt(norm2)))
-}
+
 
 func keywordOverlap(query, text string) float32 {
 	qWords := strings.Fields(strings.ToLower(query))
