@@ -8,17 +8,25 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+// newTestStore returns a fresh ApprovalStore for isolated unit tests. Using a
+// per-test instance instead of the package-level defaultApprovals means tests
+// cannot pollute each other even when run in parallel.
+func newTestStore(t *testing.T) *ApprovalStore {
+	t.Helper()
+	return NewApprovalStore()
+}
+
 // TestRegisterApprovalProducesUniqueEntries is the regression test for the bug
 // where the approval map was keyed by task ID, so two overlapping approval
 // requests for the same task silently leaked the older goroutine's channel
 // (Register clobbered the previous entry, the first waiter blocked forever).
 // Each Register call must yield a distinct ID and an independent channel.
 func TestRegisterApprovalProducesUniqueEntries(t *testing.T) {
-	resetApprovalState(t)
+	s := newTestStore(t)
 	taskID := "task-overlap"
 
-	id1, ch1 := RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "first"})
-	id2, ch2 := RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "second"})
+	id1, ch1 := s.Register(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "first"})
+	id2, ch2 := s.Register(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "second"})
 
 	if id1 == "" || id2 == "" {
 		t.Fatalf("expected non-empty IDs, got %q and %q", id1, id2)
@@ -30,13 +38,13 @@ func TestRegisterApprovalProducesUniqueEntries(t *testing.T) {
 		t.Fatalf("channels must be distinct instances")
 	}
 
-	if got := PendingApprovalCount(taskID); got != 2 {
-		t.Fatalf("PendingApprovalCount = %d, want 2", got)
+	if got := s.PendingCount(taskID); got != 2 {
+		t.Fatalf("PendingCount = %d, want 2", got)
 	}
 
-	pending := ListPendingApprovals(taskID)
+	pending := s.List(taskID)
 	if len(pending) != 2 {
-		t.Fatalf("ListPendingApprovals returned %d, want 2", len(pending))
+		t.Fatalf("List returned %d, want 2", len(pending))
 	}
 	// Order is registration order so callers can disambiguate.
 	if pending[0].Action != "first" || pending[1].Action != "second" {
@@ -47,43 +55,43 @@ func TestRegisterApprovalProducesUniqueEntries(t *testing.T) {
 		t.Errorf("pending IDs = [%q, %q], want [%q, %q]", pending[0].ID, pending[1].ID, id1, id2)
 	}
 
-	// Cleanup so we don't leak channels into other tests.
-	RemoveApproval(id1)
-	RemoveApproval(id2)
+	// Cleanup so channels are not leaked (Remove closes the channel).
+	s.Remove(id1)
+	s.Remove(id2)
 }
 
 // TestResolveApprovalRefusesAmbiguity guards the API contract: when more than
 // one approval is pending for a task, the implicit single-target Resolve must
 // refuse so the HTTP layer can return 409 with the list of pending IDs.
 func TestResolveApprovalRefusesAmbiguity(t *testing.T) {
-	resetApprovalState(t)
+	s := newTestStore(t)
 	taskID := "task-ambiguous"
 
-	id1, ch1 := RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "a"})
-	id2, ch2 := RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "b"})
+	id1, ch1 := s.Register(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "a"})
+	id2, ch2 := s.Register(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "b"})
 
-	if ResolveApproval(taskID, types.ApprovalResult{Approved: true}) {
-		t.Fatal("ResolveApproval must return false when >1 are pending")
+	if s.Resolve(taskID, types.ApprovalResult{Approved: true}) {
+		t.Fatal("Resolve must return false when >1 are pending")
 	}
 
-	// ResolveApprovalByID disambiguates explicitly.
-	if !ResolveApprovalByID(id1, types.ApprovalResult{Approved: true}) {
-		t.Fatalf("ResolveApprovalByID(%q) returned false", id1)
+	// ResolveByID disambiguates explicitly.
+	if !s.ResolveByID(id1, types.ApprovalResult{Approved: true}) {
+		t.Fatalf("ResolveByID(%q) returned false", id1)
 	}
 	if got := <-ch1; got.Approved != true {
 		t.Errorf("ch1 received %v, want true", got.Approved)
 	}
 
 	// After resolving one, exactly one remains — implicit Resolve now succeeds.
-	if !ResolveApproval(taskID, types.ApprovalResult{Approved: false}) {
-		t.Fatal("ResolveApproval must succeed when exactly one is pending")
+	if !s.Resolve(taskID, types.ApprovalResult{Approved: false}) {
+		t.Fatal("Resolve must succeed when exactly one is pending")
 	}
 	if got := <-ch2; got.Approved != false {
 		t.Errorf("ch2 received %v, want false", got.Approved)
 	}
 
-	if got := PendingApprovalCount(taskID); got != 0 {
-		t.Errorf("after both resolved, PendingApprovalCount = %d, want 0", got)
+	if got := s.PendingCount(taskID); got != 0 {
+		t.Errorf("after both resolved, PendingCount = %d, want 0", got)
 	}
 
 	_ = id2
@@ -94,10 +102,10 @@ func TestResolveApprovalRefusesAmbiguity(t *testing.T) {
 // path), the waiting goroutine observes a zero-value receive (rejection)
 // rather than blocking forever.
 func TestRemoveApprovalClosesChannel(t *testing.T) {
-	resetApprovalState(t)
+	s := newTestStore(t)
 	taskID := "task-remove"
 
-	id, ch := RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "x"})
+	id, ch := s.Register(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "x"})
 
 	done := make(chan bool, 1)
 	go func() {
@@ -106,7 +114,7 @@ func TestRemoveApprovalClosesChannel(t *testing.T) {
 		done <- res.Approved
 	}()
 
-	RemoveApproval(id)
+	s.Remove(id)
 
 	select {
 	case got := <-done:
@@ -114,18 +122,18 @@ func TestRemoveApprovalClosesChannel(t *testing.T) {
 			t.Errorf("closed channel should yield false, got %v", got)
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("waiter did not unblock after RemoveApproval")
+		t.Fatal("waiter did not unblock after Remove")
 	}
 
-	if got := PendingApprovalCount(taskID); got != 0 {
-		t.Errorf("PendingApprovalCount = %d after remove, want 0", got)
+	if got := s.PendingCount(taskID); got != 0 {
+		t.Errorf("PendingCount = %d after remove, want 0", got)
 	}
 }
 
-// TestConcurrentRegisterApproval is a smoke test for races on the approval map.
+// TestConcurrentRegisterApproval is a smoke test for races on the ApprovalStore.
 // Run with -race to surface lock violations in Register / Resolve / Remove.
 func TestConcurrentRegisterApproval(t *testing.T) {
-	resetApprovalState(t)
+	s := newTestStore(t)
 	taskID := "task-concurrent"
 
 	const N = 50
@@ -138,15 +146,15 @@ func TestConcurrentRegisterApproval(t *testing.T) {
 		i := i
 		go func() {
 			defer wg.Done()
-			id, ch := RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "a"})
+			id, ch := s.Register(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "a"})
 			ids[i] = id
 			chans[i] = ch
 		}()
 	}
 	wg.Wait()
 
-	if got := PendingApprovalCount(taskID); got != N {
-		t.Fatalf("PendingApprovalCount = %d, want %d", got, N)
+	if got := s.PendingCount(taskID); got != N {
+		t.Fatalf("PendingCount = %d, want %d", got, N)
 	}
 
 	seen := make(map[string]struct{}, N)
@@ -161,26 +169,38 @@ func TestConcurrentRegisterApproval(t *testing.T) {
 	}
 
 	for _, id := range ids {
-		RemoveApproval(id)
+		s.Remove(id)
 	}
 }
 
-// resetApprovalState wipes the package-level approval map between tests so a
-// failure in one test cannot leak pending entries into another. Acquiring the
-// same mutex the package uses keeps the reset itself race-free.
+// TestApprovalStoreIsolation verifies that two independent ApprovalStore
+// instances do not share state — the core P1-1 requirement.
+func TestApprovalStoreIsolation(t *testing.T) {
+	s1 := NewApprovalStore()
+	s2 := NewApprovalStore()
+
+	taskID := "shared-task"
+	id1, ch1 := s1.Register(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "a"})
+	defer s1.Remove(id1)
+	_ = ch1
+
+	// s2 must be unaffected by registrations in s1.
+	if got := s2.PendingCount(taskID); got != 0 {
+		t.Errorf("s2.PendingCount after s1.Register = %d, want 0; stores share state", got)
+	}
+	if list := s2.List(taskID); len(list) != 0 {
+		t.Errorf("s2.List after s1.Register returned %d entries, want 0", len(list))
+	}
+	if s2.Resolve(taskID, types.ApprovalResult{Approved: true}) {
+		t.Error("s2.Resolve resolved an entry that belongs to s1; stores share state")
+	}
+}
+
+// resetApprovalState wipes the package-level defaultApprovals between tests
+// that still use the package-level helper functions (e.g. approval_bus_test.go
+// which exercises dispatchApproval directly). Tests that can use newTestStore
+// should prefer that approach for proper isolation.
 func resetApprovalState(t *testing.T) {
 	t.Helper()
-	approvalMu.Lock()
-	for id, entry := range approvals {
-		// Drain so any leaked waiter unblocks before we drop the channel.
-		select {
-		case <-entry.ch:
-		default:
-		}
-		delete(approvals, id)
-	}
-	for k := range taskIndex {
-		delete(taskIndex, k)
-	}
-	approvalMu.Unlock()
+	defaultApprovals.reset()
 }

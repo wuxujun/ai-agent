@@ -38,6 +38,15 @@ type Engine struct {
 	// Store handles database persistence and long-term memory.
 	Store store.Store
 
+	// Approvals is the in-memory approval state store for this engine instance.
+	// When nil, the engine falls back to defaultApprovals (the process-wide
+	// singleton). Tests that require isolation should set this to a fresh
+	// NewApprovalStore() before use.
+	//
+	// P1-1: replacing the implicit global-state coupling with an explicit field
+	// so SuspendForApproval no longer depends on package-level variables.
+	Approvals *ApprovalStore
+
 	// ApprovalBus enables cross-instance approval and cancel signalling via
 	// Redis Pub/Sub. When nil the engine operates with in-process channels only
 	// (single-instance mode). When set, remote approve/reject signals published
@@ -388,10 +397,21 @@ func (e *Engine) enforceApprovals(ctx context.Context, task *types.Task, decisio
 	return false, nil
 }
 
+// approvalStore returns the ApprovalStore this engine should use. When the
+// Approvals field is set (e.g. in tests) that instance is used; otherwise the
+// process-wide defaultApprovals singleton is returned.
+func (e *Engine) approvalStore() *ApprovalStore {
+	if e.Approvals != nil {
+		return e.Approvals
+	}
+	return defaultApprovals
+}
+
 func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error) {
 	approval := e.BuildApprovalRequest(task, action, params)
-	approvalID, ch := RegisterApproval(task.ID, approval)
-	defer RemoveApproval(approvalID)
+	store := e.approvalStore()
+	approvalID, ch := store.Register(task.ID, approval)
+	defer store.Remove(approvalID)
 
 	task.Status = types.StatusAwaitingApproval
 	if e.Store != nil {

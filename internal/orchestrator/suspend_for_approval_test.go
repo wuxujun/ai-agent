@@ -66,6 +66,15 @@ func (s *ctxAwareStore) AcquireTaskLease(context.Context, string, string, time.D
 func (s *ctxAwareStore) ReleaseTaskLease(context.Context, string, string) error { return nil }
 func (s *ctxAwareStore) Close() error                                           { return nil }
 
+// newSuspendEngine returns an Engine with an isolated ApprovalStore and a
+// ctxAwareStore so SuspendForApproval tests do not touch the global singleton.
+func newSuspendEngine(st *ctxAwareStore) *Engine {
+	return &Engine{
+		Store:     st,
+		Approvals: NewApprovalStore(), // P1-1: per-test isolation
+	}
+}
+
 // TestSuspendForApprovalAwaitingSaveUsesDetachedCtx is the regression test for
 // the silent break where SuspendForApproval used the caller's ctx for the
 // awaiting_approval persistence write. The caller ctx in production carries
@@ -78,10 +87,8 @@ func (s *ctxAwareStore) Close() error                                           
 //  2. The save's ctx carries a deadline — proving it is the detached
 //     context.WithTimeout, not the caller's Background-derived ctx.
 func TestSuspendForApprovalAwaitingSaveUsesDetachedCtx(t *testing.T) {
-	resetApprovalState(t)
-
 	st := &ctxAwareStore{}
-	engine := &Engine{Store: st}
+	engine := newSuspendEngine(st)
 	task := &types.Task{ID: "task-suspend-ctx", Workspace: t.TempDir()}
 
 	// Caller ctx is plain Background (no deadline) and pre-cancelled. Any
@@ -129,10 +136,8 @@ func TestSuspendForApprovalAwaitingSaveUsesDetachedCtx(t *testing.T) {
 // would have observed ctx.Err() and silently lost the Running save (the call
 // site uses `_ =`).
 func TestSuspendForApprovalPostApprovalSaveUsesDetachedCtx(t *testing.T) {
-	resetApprovalState(t)
-
 	st := &ctxAwareStore{}
-	engine := &Engine{Store: st}
+	engine := newSuspendEngine(st)
 	task := &types.Task{ID: "task-postapproval-ctx", Workspace: t.TempDir()}
 
 	// Pre-resolve trick: register a pending approval, then call
@@ -146,7 +151,7 @@ func TestSuspendForApprovalPostApprovalSaveUsesDetachedCtx(t *testing.T) {
 		defer close(resolved)
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			if ResolveApproval(task.ID, types.ApprovalResult{Approved: true}) {
+			if engine.Approvals.Resolve(task.ID, types.ApprovalResult{Approved: true}) {
 				return
 			}
 			time.Sleep(2 * time.Millisecond)
@@ -184,10 +189,8 @@ func TestSuspendForApprovalPostApprovalSaveUsesDetachedCtx(t *testing.T) {
 }
 
 func TestSuspendForApprovalRejectionTracesFeedback(t *testing.T) {
-	resetApprovalState(t)
-
 	st := &ctxAwareStore{}
-	engine := &Engine{Store: st}
+	engine := newSuspendEngine(st)
 	task := &types.Task{ID: "task-rejection-feedback", Workspace: t.TempDir(), Goal: "test goal"}
 
 	// Resolver goroutine that rejects the request with a feedback message.
@@ -196,7 +199,7 @@ func TestSuspendForApprovalRejectionTracesFeedback(t *testing.T) {
 		defer close(resolved)
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			if ResolveApproval(task.ID, types.ApprovalResult{
+			if engine.Approvals.Resolve(task.ID, types.ApprovalResult{
 				Approved: false,
 				Message:  "please use a different path",
 			}) {
@@ -236,10 +239,8 @@ func TestSuspendForApprovalRejectionTracesFeedback(t *testing.T) {
 }
 
 func TestSuspendForApprovalParametersModified(t *testing.T) {
-	resetApprovalState(t)
-
 	st := &ctxAwareStore{}
-	engine := &Engine{Store: st}
+	engine := newSuspendEngine(st)
 	task := &types.Task{ID: "task-parameters-modified", Workspace: t.TempDir(), Goal: "test goal"}
 
 	// Resolver goroutine that approves with modified parameters.
@@ -248,7 +249,7 @@ func TestSuspendForApprovalParametersModified(t *testing.T) {
 		defer close(resolved)
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			if ResolveApproval(task.ID, types.ApprovalResult{
+			if engine.Approvals.Resolve(task.ID, types.ApprovalResult{
 				Approved:   true,
 				Parameters: map[string]any{"path": "modified.txt", "content": "hi"},
 			}) {
