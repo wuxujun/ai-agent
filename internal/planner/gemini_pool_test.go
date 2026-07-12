@@ -23,6 +23,16 @@ func TestGeminiProviderIsRegistered(t *testing.T) {
 	}
 }
 
+func TestLiteLLMProviderIsRegistered(t *testing.T) {
+	p, err := lookupProvider(ProviderLiteLLM)
+	if err != nil {
+		t.Fatalf("expected litellm provider in registry: %v", err)
+	}
+	if p.Name() != ProviderLiteLLM {
+		t.Fatalf("provider name = %q, want %q", p.Name(), ProviderLiteLLM)
+	}
+}
+
 // resetGeminiPool snapshots the LRU + index state, clears them for the test,
 // and restores them on cleanup. Required because the pool is package-global
 // and other tests (TestLLMPlannerProviders/gemini) may have already populated

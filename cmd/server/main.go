@@ -128,12 +128,18 @@ func main() {
 
 	mode := orchestrator.Mode(cfg.Orchestrator.Mode)
 
-	llmProvider := planner.ProviderType(cfg.ResolveLLMProvider())
-	apiKey := cfg.ResolveLLMAPIKey(string(llmProvider))
-	model := cfg.ResolveLLMModel(string(llmProvider))
-	baseURL := cfg.ResolveLLMBaseURL(string(llmProvider))
+	startupScene := config.LLMSceneTaskPlanner
+	if mode == orchestrator.ModeMultiAgent {
+		startupScene = config.LLMSceneMultiAgentPlanner
+	}
+	resolvedLLM := cfg.ResolveLLMScene(startupScene)
+	llmProvider := planner.ProviderType(resolvedLLM.Provider)
+	apiKey := resolvedLLM.APIKey
+	model := resolvedLLM.Model
+	baseURL := resolvedLLM.BaseURL
 
-	if apiKey == "" {
+	requiresAPIKey := llmProvider != planner.ProviderOllama && llmProvider != planner.ProviderLiteLLM
+	if apiKey == "" && requiresAPIKey {
 		if mode == orchestrator.ModeEino || mode == orchestrator.ModeLegacy || mode == orchestrator.ModeMultiAgent {
 			log.Fatalf("%s provider requires an API Key", llmProvider)
 		} else {
@@ -146,18 +152,14 @@ func main() {
 
 	slog.Info("LLM provider configured",
 		"provider", llmProvider,
+		"scene", startupScene,
 		"base_url", baseURL,
 		"model", model,
 	)
 
 	mc := metrics.NewCollector()
 
-	plannerClient := planner.NewLLMPlannerWithProvider(
-		"",
-		"",
-		"",
-		"",
-	)
+	plannerClient := planner.NewLLMPlannerForScene(config.LLMSceneTaskPlanner)
 
 	fallbackPlanner := &planner.MockPlanner{}
 

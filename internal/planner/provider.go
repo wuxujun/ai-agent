@@ -54,6 +54,7 @@ func init() {
 	RegisterProvider(&openAIChatProvider{})
 	RegisterProvider(&ollamaProvider{})
 	RegisterProvider(&geminiProvider{})
+	RegisterProvider(&liteLLMProvider{})
 }
 
 // runHTTPPlan is the shared scaffolding for HTTP-shaped providers: build the
@@ -174,6 +175,11 @@ func parseOpenAIResponses(resp *http.Response, onChunk func(string)) (string, ty
 // ── OpenAI Chat Completions API ───────────────────────────────────────────────
 
 type openAIChatProvider struct{}
+
+// liteLLMProvider uses LiteLLM's OpenAI-compatible chat-completions endpoint.
+type liteLLMProvider struct{ openAIChatProvider }
+
+func (p *liteLLMProvider) Name() ProviderType { return ProviderLiteLLM }
 
 func (p *openAIChatProvider) Name() ProviderType { return ProviderOpenAI }
 

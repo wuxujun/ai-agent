@@ -206,6 +206,31 @@ func TestResolveLLMHelpers(t *testing.T) {
 	}
 }
 
+func TestResolveLLMScene(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai-responses"
+	cfg.LLM.OpenAIAPIKey = "openai-key"
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.LLM.Gateway = LLMEndpointConfig{
+		Provider: "litellm",
+		APIKey:   "gateway-key",
+		BaseURL:  "http://litellm:4000/v1/chat/completions",
+	}
+	cfg.LLM.Scenes = map[string]LLMEndpointConfig{
+		LLMSceneMultiAgentWriter: {Model: "agent-writer", TimeoutSeconds: 60},
+		LLMSceneEmbedding:        {Model: "agent-embedding", BaseURL: "http://litellm:4000/v1/embeddings"},
+	}
+
+	writer := cfg.ResolveLLMScene(LLMSceneMultiAgentWriter)
+	if writer.Provider != "litellm" || writer.Model != "agent-writer" || writer.APIKey != "gateway-key" || writer.TimeoutSeconds != 60 {
+		t.Fatalf("unexpected writer scene: %+v", writer)
+	}
+	embedding := cfg.ResolveLLMScene(LLMSceneEmbedding)
+	if embedding.Model != "agent-embedding" || embedding.BaseURL != "http://litellm:4000/v1/embeddings" {
+		t.Fatalf("unexpected embedding scene: %+v", embedding)
+	}
+}
+
 func TestConfigFileLoading(t *testing.T) {
 	resetConfig()
 	defer resetConfig()

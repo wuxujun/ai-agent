@@ -30,22 +30,19 @@ type LLMConfig struct {
 // DefaultLLMConfig builds an LLMConfig from the same environment variables
 // used by the main planner, so no additional configuration is needed.
 func DefaultLLMConfig() LLMConfig {
+	return LLMConfigForScene("")
+}
+
+func LLMConfigForScene(scene string) LLMConfig {
 	cfg := config.Get()
-	provider := planner.ProviderType(cfg.ResolveLLMProvider())
-	apiKey := cfg.ResolveLLMAPIKey(string(provider))
-	model := cfg.ResolveLLMModel(string(provider))
-	baseURL := cfg.ResolveLLMBaseURL(string(provider))
-	timeout := time.Duration(cfg.LLM.TimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	resolved := cfg.ResolveLLMScene(scene)
 
 	return LLMConfig{
-		Provider: provider,
-		APIKey:   apiKey,
-		Model:    model,
-		BaseURL:  baseURL,
-		Timeout:  timeout,
+		Provider: planner.ProviderType(resolved.Provider),
+		APIKey:   resolved.APIKey,
+		Model:    resolved.Model,
+		BaseURL:  resolved.BaseURL,
+		Timeout:  time.Duration(resolved.TimeoutSeconds) * time.Second,
 	}
 }
 
@@ -122,7 +119,7 @@ func callHTTPJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt s
 		}
 		extractText = extractResponsesText
 
-	case planner.ProviderOpenAI:
+	case planner.ProviderOpenAI, planner.ProviderLiteLLM:
 		reqBody = map[string]any{
 			"model": cfg.Model,
 			"messages": []map[string]any{

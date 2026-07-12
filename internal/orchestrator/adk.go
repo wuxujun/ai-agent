@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/codes"
@@ -215,16 +217,27 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 	if e.AdkModel != nil {
 		llmModel = e.AdkModel
 	} else {
-		// Set API Key
 		apiKey := os.Getenv("GEMINI_API_KEY")
 		if apiKey == "" {
 			apiKey = os.Getenv("GOOGLE_API_KEY")
+		}
+		modelName := os.Getenv("GEMINI_MODEL")
+		if scene, ok := config.Get().LLM.Scenes[config.LLMSceneADK]; ok {
+			resolved := config.Get().ResolveLLMScene(config.LLMSceneADK)
+			if resolved.Provider != "" && resolved.Provider != string(planner.ProviderGemini) {
+				return nil, fmt.Errorf("ADK scene only supports gemini provider, got %q", resolved.Provider)
+			}
+			if scene.APIKey != "" {
+				apiKey = resolved.APIKey
+			}
+			if scene.Model != "" {
+				modelName = resolved.Model
+			}
 		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("GEMINI_API_KEY or GOOGLE_API_KEY is required for ADK mode")
 		}
 
-		modelName := os.Getenv("GEMINI_MODEL")
 		if modelName == "" {
 			modelName = "gemini-2.5-flash"
 		}

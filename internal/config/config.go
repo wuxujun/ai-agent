@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -53,14 +54,16 @@ type Config struct {
 	} `mapstructure:"orchestrator"`
 
 	LLM struct {
-		Provider       string `mapstructure:"provider"`
-		APIKey         string `mapstructure:"api_key"`
-		OpenAIAPIKey   string `mapstructure:"openai_api_key"`
-		GeminiAPIKey   string `mapstructure:"gemini_api_key"`
-		GoogleAPIKey   string `mapstructure:"google_api_key"`
-		Model          string `mapstructure:"model"`
-		BaseURL        string `mapstructure:"base_url"`
-		TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+		Provider       string                       `mapstructure:"provider"`
+		APIKey         string                       `mapstructure:"api_key"`
+		OpenAIAPIKey   string                       `mapstructure:"openai_api_key"`
+		GeminiAPIKey   string                       `mapstructure:"gemini_api_key"`
+		GoogleAPIKey   string                       `mapstructure:"google_api_key"`
+		Model          string                       `mapstructure:"model"`
+		BaseURL        string                       `mapstructure:"base_url"`
+		TimeoutSeconds int                          `mapstructure:"timeout_seconds"`
+		Gateway        LLMEndpointConfig            `mapstructure:"gateway"`
+		Scenes         map[string]LLMEndpointConfig `mapstructure:"scenes"`
 	} `mapstructure:"llm"`
 
 	Embedding struct {
@@ -100,6 +103,48 @@ type Config struct {
 		Root string `mapstructure:"root"`
 	} `mapstructure:"skill"`
 }
+
+// LLMEndpointConfig is a provider/model profile used by a specific LLM scene.
+// Empty fields inherit from llm.gateway and then from the legacy llm settings.
+type LLMEndpointConfig struct {
+	Provider       string `mapstructure:"provider"`
+	APIKey         string `mapstructure:"api_key"`
+	Model          string `mapstructure:"model"`
+	BaseURL        string `mapstructure:"base_url"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+}
+
+type ResolvedLLMConfig struct {
+	Provider       string
+	APIKey         string
+	Model          string
+	BaseURL        string
+	TimeoutSeconds int
+}
+
+// ResolveLLMProviderConfig returns provider-specific defaults without carrying
+// a model or URL explicitly selected for another provider.
+func (c *Config) ResolveLLMProviderConfig(provider string) ResolvedLLMConfig {
+	timeout := c.LLM.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 30
+	}
+	return ResolvedLLMConfig{
+		Provider:       provider,
+		APIKey:         c.ResolveLLMAPIKey(provider),
+		Model:          defaultLLMModel(provider),
+		BaseURL:        defaultLLMBaseURL(provider),
+		TimeoutSeconds: timeout,
+	}
+}
+
+const (
+	LLMSceneTaskPlanner       = "task_planner"
+	LLMSceneMultiAgentPlanner = "multiagent_planner"
+	LLMSceneMultiAgentWriter  = "multiagent_writer"
+	LLMSceneEmbedding         = "embedding"
+	LLMSceneADK               = "adk"
+)
 
 // mu guards globalConfig for concurrent reads/writes.
 // Hot path: RLock for Get(); Cold path: Lock for Reload().
@@ -334,6 +379,14 @@ func diffConfigs(old, new *Config) []string {
 	addIf("llm.model", old.LLM.Model, new.LLM.Model)
 	addIf("llm.base_url", old.LLM.BaseURL, new.LLM.BaseURL)
 	addIfInt("llm.timeout_seconds", old.LLM.TimeoutSeconds, new.LLM.TimeoutSeconds)
+	addIf("llm.gateway.provider", old.LLM.Gateway.Provider, new.LLM.Gateway.Provider)
+	addIf("llm.gateway.api_key", old.LLM.Gateway.APIKey, new.LLM.Gateway.APIKey)
+	addIf("llm.gateway.model", old.LLM.Gateway.Model, new.LLM.Gateway.Model)
+	addIf("llm.gateway.base_url", old.LLM.Gateway.BaseURL, new.LLM.Gateway.BaseURL)
+	addIfInt("llm.gateway.timeout_seconds", old.LLM.Gateway.TimeoutSeconds, new.LLM.Gateway.TimeoutSeconds)
+	if !reflect.DeepEqual(old.LLM.Scenes, new.LLM.Scenes) {
+		changes = append(changes, "llm.scenes: changed")
+	}
 
 	// Store (DSN may contain a password)
 	addIf("store.type", old.Store.Type, new.Store.Type)
@@ -429,6 +482,10 @@ func (c *Config) ResolveLLMModel(provider string) string {
 	if c.LLM.Model != "" {
 		return c.LLM.Model
 	}
+	return defaultLLMModel(provider)
+}
+
+func defaultLLMModel(provider string) string {
 	switch provider {
 	case "openai-responses":
 		return "gpt-4.1-mini"
@@ -447,6 +504,10 @@ func (c *Config) ResolveLLMBaseURL(provider string) string {
 	if c.LLM.BaseURL != "" {
 		return c.LLM.BaseURL
 	}
+	return defaultLLMBaseURL(provider)
+}
+
+func defaultLLMBaseURL(provider string) string {
 	switch provider {
 	case "openai-responses":
 		return "https://api.openai.com/v1/responses"
@@ -457,4 +518,51 @@ func (c *Config) ResolveLLMBaseURL(provider string) string {
 	default:
 		return ""
 	}
+}
+
+// ResolveLLMScene resolves a call-site profile while preserving compatibility
+// with the legacy flat llm configuration.
+func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
+	provider := c.ResolveLLMProvider()
+	apiKey := c.ResolveLLMAPIKey(provider)
+	model := c.ResolveLLMModel(provider)
+	baseURL := c.ResolveLLMBaseURL(provider)
+	timeout := c.LLM.TimeoutSeconds
+
+	apply := func(v LLMEndpointConfig) {
+		providerChanged := v.Provider != "" && v.Provider != provider
+		if v.Provider != "" {
+			provider = v.Provider
+		}
+		if v.APIKey != "" {
+			apiKey = v.APIKey
+		} else if providerChanged {
+			apiKey = c.ResolveLLMAPIKey(provider)
+		}
+		if v.Model != "" {
+			model = v.Model
+		} else if providerChanged {
+			model = defaultLLMModel(provider)
+		}
+		if v.BaseURL != "" {
+			baseURL = v.BaseURL
+		} else if providerChanged {
+			baseURL = defaultLLMBaseURL(provider)
+		}
+		if v.TimeoutSeconds > 0 {
+			timeout = v.TimeoutSeconds
+		}
+	}
+
+	apply(c.LLM.Gateway)
+	if v, ok := c.LLM.Scenes[scene]; ok {
+		apply(v)
+	}
+	if scene == LLMSceneEmbedding && c.Embedding.Model != "" {
+		model = c.Embedding.Model
+	}
+	if timeout <= 0 {
+		timeout = 30
+	}
+	return ResolvedLLMConfig{Provider: provider, APIKey: apiKey, Model: model, BaseURL: baseURL, TimeoutSeconds: timeout}
 }

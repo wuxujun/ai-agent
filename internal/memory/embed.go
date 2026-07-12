@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
@@ -52,7 +51,7 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 		return localEmbedding(text), nil
 	}
 
-	cfg := multiagent.DefaultLLMConfig()
+	cfg := multiagent.LLMConfigForScene(config.LLMSceneEmbedding)
 
 	// If no API key is set, go straight to local fallback to avoid timeouts
 	if cfg.APIKey == "" && cfg.Provider != planner.ProviderOllama {
@@ -64,7 +63,7 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	}
 
 	// Set a reasonable timeout for embedding generation
-	embCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	embCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
 	var vec []float32
@@ -73,7 +72,7 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	switch cfg.Provider {
 	case planner.ProviderGemini:
 		vec, err = getGeminiEmbedding(embCtx, text, cfg)
-	case planner.ProviderOpenAI, planner.ProviderOpenAIResponses:
+	case planner.ProviderOpenAI, planner.ProviderOpenAIResponses, planner.ProviderLiteLLM:
 		vec, err = getOpenAIEmbedding(embCtx, text, cfg)
 	case planner.ProviderOllama:
 		vec, err = getOllamaEmbedding(embCtx, text, cfg)
@@ -103,7 +102,7 @@ func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		return nil, err
 	}
 
-	model := config.Get().Embedding.Model
+	model := cfg.Model
 	if model == "" {
 		model = defaultGeminiEmbeddingModel
 	} else if strings.EqualFold(model, "text-embedding-004") {
@@ -129,7 +128,7 @@ func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 }
 
 func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConfig) ([]float32, error) {
-	model := config.Get().Embedding.Model
+	model := cfg.Model
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
@@ -165,7 +164,7 @@ func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := telemetry.NewHTTPClient(5 * time.Second)
+	client := telemetry.NewHTTPClient(cfg.Timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -226,7 +225,7 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := telemetry.NewHTTPClient(5 * time.Second)
+	client := telemetry.NewHTTPClient(cfg.Timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

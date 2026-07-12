@@ -31,6 +31,7 @@ const (
 	ProviderOpenAI          ProviderType = "openai"
 	ProviderGemini          ProviderType = "gemini"
 	ProviderOllama          ProviderType = "ollama"
+	ProviderLiteLLM         ProviderType = "litellm"
 )
 
 // LLMPlanner calls an LLM to produce a PlanDecision for each agent step.
@@ -41,6 +42,7 @@ const (
 // time, so a hot-config-reload (e.g. API-key rotation) is picked up
 // automatically without restarting the server.
 type LLMPlanner struct {
+	Scene    string
 	Provider ProviderType
 	// APIKey overrides config.Get().ResolveLLMAPIKey when non-empty.
 	APIKey string
@@ -70,12 +72,26 @@ func NewLLMPlannerWithProvider(provider ProviderType, apiKey, model, baseURL str
 	}
 }
 
+func NewLLMPlannerForScene(scene string) *LLMPlanner {
+	p := NewLLMPlannerWithProvider("", "", "", "")
+	p.Scene = scene
+	return p
+}
+
 // resolveCredentials returns the effective (provider, apiKey, model, baseURL)
 // for this call by merging the struct's static overrides with the current live
 // config. This is called at the top of PlanNext so that any config hot-reload
 // (e.g. API key rotation) is reflected immediately on the next LLM request.
-func (p *LLMPlanner) resolveCredentials() (provider ProviderType, apiKey, model, baseURL string) {
+func (p *LLMPlanner) resolveCredentials() (provider ProviderType, apiKey, model, baseURL string, timeout time.Duration) {
 	cfg := config.Get() // always read the latest snapshot
+	timeout = time.Duration(cfg.LLM.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if p.Scene != "" && p.Provider == "" && p.APIKey == "" && p.Model == "" && p.BaseURL == "" {
+		resolved := cfg.ResolveLLMScene(p.Scene)
+		return ProviderType(resolved.Provider), resolved.APIKey, resolved.Model, resolved.BaseURL, time.Duration(resolved.TimeoutSeconds) * time.Second
+	}
 
 	provider = p.Provider
 	if provider == "" {
@@ -105,7 +121,11 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 
 	// Resolve credentials at call time so hot-reloaded config (e.g. rotated API
 	// keys) is picked up without restarting the server.
-	provider, apiKey, model, baseURL := p.resolveCredentials()
+	provider, apiKey, model, baseURL, timeout := p.resolveCredentials()
+	client := p.Client
+	if p.Scene != "" {
+		client = telemetry.NewHTTPClient(timeout)
+	}
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
@@ -124,7 +144,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	}
 
 	req := PlanRequest{
-		Client:       p.Client,
+		Client:       client,
 		Model:        model,
 		APIKey:       apiKey,
 		BaseURL:      baseURL,

@@ -13,6 +13,7 @@ type AgentConfig struct {
 	SystemPrompt string `yaml:"system_prompt" json:"system_prompt"`
 	Provider     string `yaml:"provider" json:"provider"`
 	Model        string `yaml:"model" json:"model"`
+	LLMScene     string `yaml:"llm_scene" json:"llm_scene"`
 }
 
 type TeamConfig struct {
@@ -73,19 +74,27 @@ func (c *TeamsConfig) GetActiveTeam() TeamConfig {
 
 // GetLLMConfig returns an LLMConfig derived from AgentConfig, falling back
 // to the default LLMConfig if fields are omitted.
-func GetLLMConfig(agentCfg AgentConfig) LLMConfig {
-	cfg := DefaultLLMConfig()
+func GetLLMConfig(agentCfg AgentConfig, defaultScene ...string) LLMConfig {
+	scene := ""
+	if len(defaultScene) > 0 {
+		scene = defaultScene[0]
+	}
+	if agentCfg.LLMScene != "" {
+		scene = agentCfg.LLMScene
+	}
+	cfg := LLMConfigForScene(scene)
 	if agentCfg.Provider != "" {
+		globalCfg := config.Get()
+		resolved := globalCfg.ResolveLLMProviderConfig(agentCfg.Provider)
 		cfg.Provider = planner.ProviderType(agentCfg.Provider)
+		cfg.APIKey = resolved.APIKey
+		cfg.BaseURL = resolved.BaseURL
+		if agentCfg.Model == "" {
+			cfg.Model = resolved.Model
+		}
 	}
 	if agentCfg.Model != "" {
 		cfg.Model = agentCfg.Model
-	}
-	// Re-resolve API Key and Base URL if provider changed from default
-	if agentCfg.Provider != "" && agentCfg.Provider != string(DefaultLLMConfig().Provider) {
-		globalCfg := config.Get()
-		cfg.APIKey = globalCfg.ResolveLLMAPIKey(agentCfg.Provider)
-		cfg.BaseURL = globalCfg.ResolveLLMBaseURL(agentCfg.Provider)
 	}
 	return cfg
 }

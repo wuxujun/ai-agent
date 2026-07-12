@@ -32,6 +32,7 @@ teams:
       # You can optionally specify custom LLM provider and model for this agent:
       # provider: "gemini"
       # model: "gemini-2.5-flash"
+      # llm_scene: "multiagent_planner"
 
     researcher:
       name: "Software Developer Researcher"

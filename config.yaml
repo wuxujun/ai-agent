@@ -59,7 +59,7 @@ orchestrator:
 
 # LLM provider configuration
 llm:
-  # The target LLM provider. Supported: "openai-responses", "openai", "gemini", "ollama"
+  # The target LLM provider. Supported: "openai-responses", "openai", "gemini", "ollama", "litellm"
   # Env override: AI_AGENT_LLM_PROVIDER
   provider: "openai-responses"
   
@@ -85,6 +85,30 @@ llm:
   # Request timeout in seconds.
   # Env override: AI_AGENT_LLM_TIMEOUT_SECONDS
   timeout_seconds: 30
+
+  # Optional shared gateway defaults. LiteLLM exposes an OpenAI-compatible
+  # /v1/chat/completions endpoint and model aliases configured in LiteLLM.
+  # gateway:
+  #   provider: "litellm"
+  #   api_key: ""
+  #   base_url: "http://127.0.0.1:4000/v1/chat/completions"
+  #   timeout_seconds: 30
+
+  # Per-call-site profiles. Empty fields inherit gateway, then legacy settings.
+  # scenes:
+  #   task_planner:
+  #     model: "agent-planner"
+  #   multiagent_planner:
+  #     model: "agent-planner"
+  #   multiagent_writer:
+  #     model: "agent-writer"
+  #     timeout_seconds: 60
+  #   embedding:
+  #     model: "agent-embedding"
+  #     base_url: "http://127.0.0.1:4000/v1/embeddings"
+  #   adk:
+  #     provider: "gemini"
+  #     model: "gemini-2.5-flash"
 
 # Embedding configuration
 embedding:
