@@ -6,11 +6,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 )
+
+const healthCacheTTL = 10 * time.Second
+
+var healthCache struct {
+	sync.Mutex
+	at      time.Time
+	result  map[string]SceneHealth
+	healthy bool
+}
 
 type SceneHealth struct {
 	Provider string `json:"provider"`
@@ -19,6 +29,15 @@ type SceneHealth struct {
 }
 
 func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
+	healthCache.Lock()
+	if time.Since(healthCache.at) < healthCacheTTL && healthCache.result != nil {
+		result := cloneSceneHealth(healthCache.result)
+		healthy := healthCache.healthy
+		healthCache.Unlock()
+		return result, healthy
+	}
+	healthCache.Unlock()
+
 	cfg := config.Get()
 	result := make(map[string]SceneHealth, len(cfg.LLM.Scenes)+1)
 	allHealthy := true
@@ -58,7 +77,20 @@ func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
 		}
 		result[scene] = health
 	}
+	healthCache.Lock()
+	healthCache.at = time.Now()
+	healthCache.result = cloneSceneHealth(result)
+	healthCache.healthy = allHealthy
+	healthCache.Unlock()
 	return result, allHealthy
+}
+
+func cloneSceneHealth(source map[string]SceneHealth) map[string]SceneHealth {
+	result := make(map[string]SceneHealth, len(source))
+	for scene, health := range source {
+		result[scene] = health
+	}
+	return result
 }
 
 func liteLLMHealthURL(baseURL string) (string, error) {

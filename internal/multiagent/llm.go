@@ -18,24 +18,17 @@ import (
 	"google.golang.org/genai"
 )
 
-type structuredCallerAdapter struct{}
-
-func (structuredCallerAdapter) CallJSON(ctx context.Context, cfg llmcore.Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
-	return callLLMJSON(ctx, LLMConfig{Provider: planner.ProviderType(cfg.Provider), APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: cfg.BaseURL, Timeout: cfg.Timeout}, systemPrompt, userPrompt, schema, dest)
-}
-
-func init() {
-	llmcore.RegisterStructuredCaller(structuredCallerAdapter{})
-}
-
 // LLMConfig holds the configuration required to call an LLM provider.
 // It is intentionally compatible with the existing planner.LLMPlanner config.
 type LLMConfig struct {
-	Provider planner.ProviderType
-	APIKey   string
-	Model    string
-	BaseURL  string
-	Timeout  time.Duration
+	Scene         string
+	Provider      planner.ProviderType
+	APIKey        string
+	Model         string
+	BaseURL       string
+	Timeout       time.Duration
+	FallbackScene string
+	MaxRetries    int
 }
 
 // DefaultLLMConfig builds an LLMConfig from the same environment variables
@@ -49,11 +42,14 @@ func LLMConfigForScene(scene string) LLMConfig {
 	resolved := cfg.ResolveLLMScene(scene)
 
 	return LLMConfig{
-		Provider: planner.ProviderType(resolved.Provider),
-		APIKey:   resolved.APIKey,
-		Model:    resolved.Model,
-		BaseURL:  resolved.BaseURL,
-		Timeout:  time.Duration(resolved.TimeoutSeconds) * time.Second,
+		Scene:         scene,
+		Provider:      planner.ProviderType(resolved.Provider),
+		APIKey:        resolved.APIKey,
+		Model:         resolved.Model,
+		BaseURL:       resolved.BaseURL,
+		Timeout:       time.Duration(resolved.TimeoutSeconds) * time.Second,
+		FallbackScene: resolved.FallbackScene,
+		MaxRetries:    resolved.MaxRetries,
 	}
 }
 
@@ -62,10 +58,7 @@ func LLMConfigForScene(scene string) LLMConfig {
 // providers that support structured output (OpenAI json_schema, Ollama format).
 // It returns TokenUsage and error.
 func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
-	if cfg.Provider == planner.ProviderGemini {
-		return callGeminiJSON(ctx, cfg, systemPrompt, userPrompt, dest)
-	}
-	return callHTTPJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
+	return llmcore.CallJSON(ctx, llmcore.Config{Scene: cfg.Scene, Provider: string(cfg.Provider), APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: cfg.BaseURL, Timeout: cfg.Timeout, FallbackScene: cfg.FallbackScene, MaxRetries: cfg.MaxRetries}, systemPrompt, userPrompt, schema, dest)
 }
 
 // ── Gemini path ──────────────────────────────────────────────────────────────

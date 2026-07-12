@@ -29,14 +29,31 @@ type StructuredCaller interface {
 	CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error)
 }
 
+type CallEvent struct {
+	Scene, Provider, Model string
+	Usage                  types.TokenUsage
+	Duration               time.Duration
+	Err                    error
+	FallbackConfigured     bool
+}
+
+type Observer interface{ ObserveLLMCall(CallEvent) }
+
 var (
 	callerMu sync.RWMutex
-	caller   StructuredCaller
+	caller   StructuredCaller = nativeStructuredCaller{}
+	observer Observer
 )
 
 func RegisterStructuredCaller(value StructuredCaller) {
 	callerMu.Lock()
 	caller = value
+	callerMu.Unlock()
+}
+
+func RegisterObserver(value Observer) {
+	callerMu.Lock()
+	observer = value
 	callerMu.Unlock()
 }
 
@@ -56,7 +73,15 @@ func ConfigForScene(scene string) Config {
 }
 
 func CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
-	return callJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest, map[string]bool{})
+	start := time.Now()
+	usage, err := callJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest, map[string]bool{})
+	callerMu.RLock()
+	activeObserver := observer
+	callerMu.RUnlock()
+	if activeObserver != nil {
+		activeObserver.ObserveLLMCall(CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(start), Err: err, FallbackConfigured: cfg.FallbackScene != ""})
+	}
+	return usage, err
 }
 
 func callJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any, visited map[string]bool) (types.TokenUsage, error) {

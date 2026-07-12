@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	api "go.opentelemetry.io/otel/metric"
@@ -51,6 +52,9 @@ type Collector struct {
 	promptTokens     api.Int64Counter
 	completionTokens api.Int64Counter
 	totalTokens      api.Int64Counter
+	llmSceneCalls    api.Int64Counter
+	llmSceneErrors   api.Int64Counter
+	llmSceneLatency  api.Float64Histogram
 }
 
 func NewCollector() *Collector {
@@ -75,6 +79,9 @@ func NewCollector() *Collector {
 	promptTokens, _ := meter.Int64Counter("agent.tokens.prompt")
 	completionTokens, _ := meter.Int64Counter("agent.tokens.completion")
 	totalTokens, _ := meter.Int64Counter("agent.tokens.total")
+	llmSceneCalls, _ := meter.Int64Counter("agent.llm.scene.calls")
+	llmSceneErrors, _ := meter.Int64Counter("agent.llm.scene.errors")
+	llmSceneLatency, _ := meter.Float64Histogram("agent.llm.scene.latency_ms")
 
 	return &Collector{
 		plannerCalls:      plannerCalls,
@@ -92,6 +99,19 @@ func NewCollector() *Collector {
 		promptTokens:      promptTokens,
 		completionTokens:  completionTokens,
 		totalTokens:       totalTokens,
+		llmSceneCalls:     llmSceneCalls,
+		llmSceneErrors:    llmSceneErrors,
+		llmSceneLatency:   llmSceneLatency,
+	}
+}
+
+func (c *Collector) ObserveLLMCall(event llmcore.CallEvent) {
+	attrs := api.WithAttributes(attribute.String("llm.scene", event.Scene), attribute.String("llm.provider", event.Provider), attribute.String("llm.model", event.Model))
+	ctx := context.Background()
+	c.llmSceneCalls.Add(ctx, 1, attrs)
+	c.llmSceneLatency.Record(ctx, float64(event.Duration.Milliseconds()), attrs)
+	if event.Err != nil {
+		c.llmSceneErrors.Add(ctx, 1, attrs)
 	}
 }
 

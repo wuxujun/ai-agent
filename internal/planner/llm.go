@@ -176,7 +176,39 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	}
 
 	log.Info("sending request to provider", "provider", provider, "base_url", baseURL, "model", model)
-	textValue, usage, err := prov.Plan(ctx, req, onChunk)
+	maxRetries, fallbackScene := 0, ""
+	if p.Scene != "" {
+		policy := config.Get().ResolveLLMScene(p.Scene)
+		maxRetries, fallbackScene = policy.MaxRetries, policy.FallbackScene
+	}
+	var textValue string
+	var usage types.TokenUsage
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		var attemptUsage types.TokenUsage
+		textValue, attemptUsage, err = prov.Plan(ctx, req, onChunk)
+		usage.PromptTokens += attemptUsage.PromptTokens
+		usage.CompletionTokens += attemptUsage.CompletionTokens
+		usage.TotalTokens += attemptUsage.TotalTokens
+		if err == nil {
+			break
+		}
+	}
+	if err != nil && fallbackScene != "" {
+		fallback := config.Get().ResolveLLMScene(fallbackScene)
+		fallbackProvider, lookupErr := lookupProvider(ProviderType(fallback.Provider))
+		if lookupErr == nil {
+			fallbackReq := req
+			fallbackReq.Model, fallbackReq.APIKey, fallbackReq.BaseURL = fallback.Model, fallback.APIKey, fallback.BaseURL
+			fallbackReq.Client = telemetry.NewHTTPClient(time.Duration(fallback.TimeoutSeconds) * time.Second)
+			var fallbackUsage types.TokenUsage
+			textValue, fallbackUsage, err = fallbackProvider.Plan(ctx, fallbackReq, onChunk)
+			usage.PromptTokens += fallbackUsage.PromptTokens
+			usage.CompletionTokens += fallbackUsage.CompletionTokens
+			usage.TotalTokens += fallbackUsage.TotalTokens
+		} else {
+			err = lookupErr
+		}
+	}
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner provider failed")

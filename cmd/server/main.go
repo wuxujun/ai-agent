@@ -17,6 +17,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/api"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/executor"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
@@ -158,6 +159,7 @@ func main() {
 	)
 
 	mc := metrics.NewCollector()
+	llmcore.RegisterObserver(mc)
 
 	plannerClient := planner.NewLLMPlannerForScene(config.LLMSceneTaskPlanner)
 	plannerClient.Compressor = planner.NewLLMContextCompressor(config.LLMSceneContextCompressor)
