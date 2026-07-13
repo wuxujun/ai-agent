@@ -3,9 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
 )
 
 func resetConfig() {
@@ -212,20 +214,23 @@ func TestResolveLLMScene(t *testing.T) {
 	cfg.LLM.OpenAIAPIKey = "openai-key"
 	cfg.LLM.TimeoutSeconds = 30
 	cfg.LLM.Gateway = LLMEndpointConfig{
-		Provider:           "litellm",
-		APIKey:             "gateway-key",
-		BaseURL:            "http://litellm:4000/v1/chat/completions",
-		FallbackScene:      testPtr("gateway-fallback"),
-		MaxRetries:         testPtr(3),
-		MinRemainingTokens: testPtr(2000),
+		Provider:                "litellm",
+		APIKey:                  "gateway-key",
+		BaseURL:                 "http://litellm:4000/v1/chat/completions",
+		FallbackScene:           testPtr("gateway-fallback"),
+		MaxRetries:              testPtr(3),
+		MinRemainingTokens:      testPtr(2000),
+		InputCostPerMillionUSD:  testPtr(2.0),
+		OutputCostPerMillionUSD: testPtr(8.0),
 	}
 	cfg.LLM.Scenes = map[string]LLMEndpointConfig{
 		LLMSceneMultiAgentWriter: {
-			Model:              "agent-writer",
-			TimeoutSeconds:     60,
-			FallbackScene:      testPtr(""),
-			MaxRetries:         testPtr(0),
-			MinRemainingTokens: testPtr(0),
+			Model:                   "agent-writer",
+			TimeoutSeconds:          60,
+			FallbackScene:           testPtr(""),
+			MaxRetries:              testPtr(0),
+			MinRemainingTokens:      testPtr(0),
+			OutputCostPerMillionUSD: testPtr(0.0),
 		},
 		LLMSceneEmbedding: {Model: "agent-embedding", BaseURL: "http://litellm:4000/v1/embeddings"},
 	}
@@ -236,6 +241,9 @@ func TestResolveLLMScene(t *testing.T) {
 	}
 	if writer.FallbackScene != "" || writer.MaxRetries != 0 || writer.MinRemainingTokens != 0 {
 		t.Fatalf("scene did not clear gateway policy: %+v", writer)
+	}
+	if writer.InputCostPerMillionUSD != 2 || writer.OutputCostPerMillionUSD != 0 {
+		t.Fatalf("scene did not inherit or clear cost policy: %+v", writer)
 	}
 	embedding := cfg.ResolveLLMScene(LLMSceneEmbedding)
 	if embedding.Model != "agent-embedding" || embedding.BaseURL != "http://litellm:4000/v1/embeddings" {
@@ -272,13 +280,18 @@ func TestOverrideForTestingUsesIsolatedSnapshot(t *testing.T) {
 
 func TestCloneConfigCopiesEndpointPolicyPointers(t *testing.T) {
 	retries := 2
+	inputCost := 2.0
 	source := &Config{}
-	source.LLM.Scenes = map[string]LLMEndpointConfig{"scene": {MaxRetries: &retries}}
+	source.LLM.Scenes = map[string]LLMEndpointConfig{"scene": {MaxRetries: &retries, InputCostPerMillionUSD: &inputCost}}
 	cloned := cloneConfig(source)
 	endpoint := cloned.LLM.Scenes["scene"]
 	*endpoint.MaxRetries = 5
+	*endpoint.InputCostPerMillionUSD = 7
 	if *source.LLM.Scenes["scene"].MaxRetries != 2 {
 		t.Fatal("clone shares endpoint policy pointer with source")
+	}
+	if *source.LLM.Scenes["scene"].InputCostPerMillionUSD != 2 {
+		t.Fatal("clone shares endpoint cost pointer with source")
 	}
 }
 
@@ -313,6 +326,40 @@ func TestValidateLLMScenes(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected negative gateway retry validation error")
 	}
+	cfg.LLM.Gateway.MaxRetries = nil
+	cfg.LLM.Gateway.InputCostPerMillionUSD = testPtr(-1.0)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative gateway cost validation error")
+	}
+}
+
+func TestValidateUsesProviderCapabilities(t *testing.T) {
+	const providerName = "test-embedding-only-provider"
+	if _, exists := llmprovider.Lookup(providerName); !exists {
+		if err := llmprovider.Register(llmprovider.Specification{
+			Name:            providerName,
+			DefaultModel:    "embedding-model",
+			DefaultBaseURL:  "https://provider.test/v1/embeddings",
+			Protocol:        llmprovider.ProtocolOpenAIChat,
+			Capabilities:    llmprovider.CapabilityEmbedding,
+			RequiresBaseURL: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &Config{}
+	cfg.LLM.Provider = llmprovider.OpenAI
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.LLM.Scenes = map[string]LLMEndpointConfig{
+		LLMSceneEmbedding: {Provider: providerName},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("embedding-capable provider rejected: %v", err)
+	}
+	cfg.LLM.Scenes[LLMSceneTaskFinalizer] = LLMEndpointConfig{Provider: providerName}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "does not support structured output") {
+		t.Fatalf("structured scene validation error = %v", err)
+	}
 }
 
 func TestValidateRejectsNegativeLLMResilienceValues(t *testing.T) {
@@ -327,6 +374,28 @@ func TestValidateRejectsNegativeLLMResilienceValues(t *testing.T) {
 	cfg.LLM.RetryBudgetPerMinute = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected negative retry budget validation error")
+	}
+}
+
+func TestValidateLLMReadinessSettings(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.TimeoutSeconds = 30
+	for _, mode := range []string{"", LLMReadinessConfigOnly, LLMReadinessGateway, LLMReadinessInference, " INFERENCE "} {
+		cfg.LLM.ReadinessMode = mode
+		cfg.LLM.ReadinessCacheTTLSeconds = 10
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("mode %q rejected: %v", mode, err)
+		}
+	}
+	cfg.LLM.ReadinessMode = "deep"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unsupported readiness mode validation error")
+	}
+	cfg.LLM.ReadinessMode = LLMReadinessGateway
+	cfg.LLM.ReadinessCacheTTLSeconds = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative readiness cache TTL validation error")
 	}
 }
 

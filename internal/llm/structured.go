@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -26,6 +27,8 @@ type Config struct {
 	CircuitBreakerFailureThreshold int
 	CircuitBreakerCooldown         time.Duration
 	RetryBudgetPerMinute           int
+	InputCostPerMillionUSD         float64
+	OutputCostPerMillionUSD        float64
 }
 
 type StructuredCaller interface {
@@ -39,9 +42,34 @@ type CallEvent struct {
 	Err                    error
 	Attempts               int
 	FallbackUsed           bool
+	EstimatedCostUSD       float64
 }
 
 type Observer interface{ ObserveLLMCall(CallEvent) }
+
+type ContextObserver interface {
+	ObserveLLMCallContext(context.Context, CallEvent)
+}
+
+type ReliabilityEventKind string
+
+const (
+	ReliabilityCircuitOpened        ReliabilityEventKind = "circuit_opened"
+	ReliabilityCircuitRejected      ReliabilityEventKind = "circuit_rejected"
+	ReliabilityRetryBudgetExhausted ReliabilityEventKind = "retry_budget_exhausted"
+	ReliabilityFallbackSucceeded    ReliabilityEventKind = "fallback_succeeded"
+	ReliabilityFallbackFailed       ReliabilityEventKind = "fallback_failed"
+)
+
+type ReliabilityEvent struct {
+	Kind                   ReliabilityEventKind
+	Scene, Provider, Model string
+	FallbackScene          string
+}
+
+type ReliabilityObserver interface {
+	ObserveLLMReliability(context.Context, ReliabilityEvent)
+}
 
 type runtimeContextKey struct{}
 
@@ -166,6 +194,8 @@ func ConfigForScene(scene string) Config {
 		CircuitBreakerFailureThreshold: current.LLM.CircuitBreakerFailureThreshold,
 		CircuitBreakerCooldown:         time.Duration(current.LLM.CircuitBreakerCooldownSeconds) * time.Second,
 		RetryBudgetPerMinute:           current.LLM.RetryBudgetPerMinute,
+		InputCostPerMillionUSD:         resolved.InputCostPerMillionUSD,
+		OutputCostPerMillionUSD:        resolved.OutputCostPerMillionUSD,
 	}
 }
 
@@ -178,16 +208,42 @@ func Observe(event CallEvent) {
 }
 
 func ObserveContext(ctx context.Context, event CallEvent) {
-	RuntimeFromContext(ctx).Observe(event)
+	RuntimeFromContext(ctx).ObserveContext(ctx, event)
 }
 
 func (r *Runtime) Observe(event CallEvent) {
+	r.ObserveContext(context.Background(), event)
+}
+
+func (r *Runtime) ObserveContext(ctx context.Context, event CallEvent) {
 	r.mu.RLock()
 	activeObserver := r.observer
 	r.mu.RUnlock()
-	if activeObserver != nil {
-		activeObserver.ObserveLLMCall(event)
+	if activeObserver == nil {
+		return
 	}
+	if contextual, ok := activeObserver.(ContextObserver); ok {
+		contextual.ObserveLLMCallContext(ctx, event)
+		return
+	}
+	activeObserver.ObserveLLMCall(event)
+}
+
+func ObserveReliabilityContext(ctx context.Context, event ReliabilityEvent) {
+	RuntimeFromContext(ctx).ObserveReliability(ctx, event)
+}
+
+func (r *Runtime) ObserveReliability(ctx context.Context, event ReliabilityEvent) {
+	r.mu.RLock()
+	activeObserver := r.observer
+	r.mu.RUnlock()
+	if observer, ok := activeObserver.(ReliabilityObserver); ok {
+		observer.ObserveLLMReliability(ctx, event)
+	}
+}
+
+func EstimateCostUSD(cfg Config, usage types.TokenUsage) float64 {
+	return float64(usage.PromptTokens)*cfg.InputCostPerMillionUSD/1_000_000 + float64(usage.CompletionTokens)*cfg.OutputCostPerMillionUSD/1_000_000
 }
 
 func (r *Runtime) CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
@@ -206,7 +262,7 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 		err := fmt.Errorf("structured LLM caller is not registered")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		r.Observe(CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Duration: time.Since(started), Err: err})
+		r.ObserveContext(ctx, CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Duration: time.Since(started), Err: err})
 		return types.TokenUsage{}, err
 	}
 	var usage types.TokenUsage
@@ -215,11 +271,17 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
 		attempts++
 		if err = r.beforeAttempt(cfg); err != nil {
+			var circuitErr *CircuitOpenError
+			if errors.As(err, &circuitErr) {
+				r.ObserveReliability(ctx, reliabilityEvent(ReliabilityCircuitRejected, cfg, ""))
+			}
 			break
 		}
 		var attemptUsage types.TokenUsage
 		attemptUsage, err = active.CallJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
-		r.recordAttempt(cfg, err)
+		if r.recordAttempt(cfg, err) {
+			r.ObserveReliability(ctx, reliabilityEvent(ReliabilityCircuitOpened, cfg, ""))
+		}
 		usage.PromptTokens += attemptUsage.PromptTokens
 		usage.CompletionTokens += attemptUsage.CompletionTokens
 		usage.TotalTokens += attemptUsage.TotalTokens
@@ -232,6 +294,7 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 		}
 		if !r.consumeRetry(cfg.RetryBudgetPerMinute) {
 			err = &RetryBudgetError{Cause: err}
+			r.ObserveReliability(ctx, reliabilityEvent(ReliabilityRetryBudgetExhausted, cfg, ""))
 			break
 		}
 		if waitErr := WaitRetry(ctx, attempt, err); waitErr != nil {
@@ -240,7 +303,7 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 		}
 	}
 	span.SetAttributes(attribute.Int("llm.usage.prompt_tokens", usage.PromptTokens), attribute.Int("llm.usage.completion_tokens", usage.CompletionTokens), attribute.Int("llm.usage.total_tokens", usage.TotalTokens))
-	r.Observe(CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(started), Err: err, Attempts: attempts, FallbackUsed: err != nil && cfg.FallbackScene != ""})
+	r.ObserveContext(ctx, CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(started), Err: err, Attempts: attempts, FallbackUsed: err != nil && cfg.FallbackScene != "", EstimatedCostUSD: EstimateCostUSD(cfg, usage)})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -253,9 +316,11 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 			usage.CompletionTokens += fallbackUsage.CompletionTokens
 			usage.TotalTokens += fallbackUsage.TotalTokens
 			if fallbackErr == nil {
+				r.ObserveReliability(ctx, reliabilityEvent(ReliabilityFallbackSucceeded, cfg, cfg.FallbackScene))
 				span.SetStatus(codes.Ok, "fallback succeeded")
 				return usage, nil
 			}
+			r.ObserveReliability(ctx, reliabilityEvent(ReliabilityFallbackFailed, cfg, cfg.FallbackScene))
 			return usage, fmt.Errorf("scene %s failed: %v; fallback scene %s failed: %w", cfg.Scene, err, cfg.FallbackScene, fallbackErr)
 		}
 	}

@@ -11,9 +11,20 @@ import (
 
 type fallbackCaller struct{ calls []string }
 
-type captureObserver struct{ events []CallEvent }
+type captureObserver struct {
+	events            []CallEvent
+	reliabilityEvents []ReliabilityEvent
+	contexts          []context.Context
+}
 
 func (c *captureObserver) ObserveLLMCall(event CallEvent) { c.events = append(c.events, event) }
+func (c *captureObserver) ObserveLLMCallContext(ctx context.Context, event CallEvent) {
+	c.contexts = append(c.contexts, ctx)
+	c.ObserveLLMCall(event)
+}
+func (c *captureObserver) ObserveLLMReliability(_ context.Context, event ReliabilityEvent) {
+	c.reliabilityEvents = append(c.reliabilityEvents, event)
+}
 
 func (f *fallbackCaller) CallJSON(_ context.Context, cfg Config, _, _ string, _ map[string]any, dest any) (types.TokenUsage, error) {
 	f.calls = append(f.calls, cfg.Scene)
@@ -56,6 +67,30 @@ func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 	}
 	if len(capture.events) != 2 || capture.events[0].Scene != "primary" || !capture.events[0].FallbackUsed || capture.events[1].Scene != "fallback" || capture.events[1].Err != nil {
 		t.Fatalf("observer events = %+v", capture.events)
+	}
+	if len(capture.reliabilityEvents) != 1 || capture.reliabilityEvents[0].Kind != ReliabilityFallbackSucceeded {
+		t.Fatalf("reliability events = %+v", capture.reliabilityEvents)
+	}
+}
+
+func TestRuntimeObserverReceivesCallContext(t *testing.T) {
+	capture := &captureObserver{}
+	runtime := NewRuntime(&sequenceCaller{}, capture)
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "trace-value")
+	if _, err := runtime.CallJSON(ctx, Config{Scene: "writer", Provider: "openai", Model: "model"}, "", "", nil, &struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.contexts) != 1 || capture.contexts[0].Value(contextKey{}) != "trace-value" {
+		t.Fatalf("observer contexts = %+v", capture.contexts)
+	}
+}
+
+func TestEstimateCostUSD(t *testing.T) {
+	cfg := Config{InputCostPerMillionUSD: 2, OutputCostPerMillionUSD: 8}
+	usage := types.TokenUsage{PromptTokens: 1_000_000, CompletionTokens: 500_000}
+	if got := EstimateCostUSD(cfg, usage); got != 6 {
+		t.Fatalf("estimated cost = %f, want 6", got)
 	}
 }
 

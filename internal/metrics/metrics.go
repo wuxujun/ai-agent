@@ -12,21 +12,32 @@ import (
 )
 
 type Snapshot struct {
-	PlannerCalls       int64         `json:"planner_calls"`
-	PlannerFailures    int64         `json:"planner_failures"`
-	PlannerLatencySum  time.Duration `json:"planner_latency_sum"`
-	WriterCalls        int64         `json:"writer_calls"`
-	WriterFailures     int64         `json:"writer_failures"`
-	WriterLatencySum   time.Duration `json:"writer_latency_sum"`
-	ExecutorCalls      int64         `json:"executor_calls"`
-	ExecutorFailures   int64         `json:"executor_failures"`
-	ExecutorLatencySum time.Duration `json:"executor_latency_sum"`
-	RunAllCalls        int64         `json:"run_all_calls"`
-	TasksCompleted     int64         `json:"tasks_completed"`
-	FallbackHits       int64         `json:"fallback_hits"`
-	PromptTokens       int64         `json:"prompt_tokens"`
-	CompletionTokens   int64         `json:"completion_tokens"`
-	TotalTokens        int64         `json:"total_tokens"`
+	PlannerCalls            int64         `json:"planner_calls"`
+	PlannerFailures         int64         `json:"planner_failures"`
+	PlannerLatencySum       time.Duration `json:"planner_latency_sum"`
+	WriterCalls             int64         `json:"writer_calls"`
+	WriterFailures          int64         `json:"writer_failures"`
+	WriterLatencySum        time.Duration `json:"writer_latency_sum"`
+	ExecutorCalls           int64         `json:"executor_calls"`
+	ExecutorFailures        int64         `json:"executor_failures"`
+	ExecutorLatencySum      time.Duration `json:"executor_latency_sum"`
+	RunAllCalls             int64         `json:"run_all_calls"`
+	TasksCompleted          int64         `json:"tasks_completed"`
+	FallbackHits            int64         `json:"fallback_hits"`
+	PromptTokens            int64         `json:"prompt_tokens"`
+	CompletionTokens        int64         `json:"completion_tokens"`
+	TotalTokens             int64         `json:"total_tokens"`
+	LLMSceneCalls           int64         `json:"llm_scene_calls"`
+	LLMSceneErrors          int64         `json:"llm_scene_errors"`
+	LLMPromptTokens         int64         `json:"llm_prompt_tokens"`
+	LLMCompletionTokens     int64         `json:"llm_completion_tokens"`
+	LLMTotalTokens          int64         `json:"llm_total_tokens"`
+	LLMEstimatedCostUSD     float64       `json:"llm_estimated_cost_usd"`
+	LLMCircuitOpened        int64         `json:"llm_circuit_opened"`
+	LLMCircuitRejected      int64         `json:"llm_circuit_rejected"`
+	LLMRetryBudgetExhausted int64         `json:"llm_retry_budget_exhausted"`
+	LLMFallbackSucceeded    int64         `json:"llm_fallback_succeeded"`
+	LLMFallbackFailed       int64         `json:"llm_fallback_failed"`
 }
 
 type Collector struct {
@@ -49,12 +60,21 @@ type Collector struct {
 	tasksCompleted api.Int64Counter
 	fallbackHits   api.Int64Counter
 
-	promptTokens     api.Int64Counter
-	completionTokens api.Int64Counter
-	totalTokens      api.Int64Counter
-	llmSceneCalls    api.Int64Counter
-	llmSceneErrors   api.Int64Counter
-	llmSceneLatency  api.Float64Histogram
+	promptTokens             api.Int64Counter
+	completionTokens         api.Int64Counter
+	totalTokens              api.Int64Counter
+	llmSceneCalls            api.Int64Counter
+	llmSceneErrors           api.Int64Counter
+	llmSceneLatency          api.Float64Histogram
+	llmScenePromptTokens     api.Int64Counter
+	llmSceneCompletionTokens api.Int64Counter
+	llmSceneTotalTokens      api.Int64Counter
+	llmSceneEstimatedCost    api.Float64Counter
+	llmCircuitOpened         api.Int64Counter
+	llmCircuitRejected       api.Int64Counter
+	llmRetryBudgetExhausted  api.Int64Counter
+	llmFallbackSucceeded     api.Int64Counter
+	llmFallbackFailed        api.Int64Counter
 }
 
 func NewCollector() *Collector {
@@ -82,36 +102,101 @@ func NewCollector() *Collector {
 	llmSceneCalls, _ := meter.Int64Counter("agent.llm.scene.calls")
 	llmSceneErrors, _ := meter.Int64Counter("agent.llm.scene.errors")
 	llmSceneLatency, _ := meter.Float64Histogram("agent.llm.scene.latency_ms")
+	llmScenePromptTokens, _ := meter.Int64Counter("agent.llm.scene.prompt_tokens")
+	llmSceneCompletionTokens, _ := meter.Int64Counter("agent.llm.scene.completion_tokens")
+	llmSceneTotalTokens, _ := meter.Int64Counter("agent.llm.scene.total_tokens")
+	llmSceneEstimatedCost, _ := meter.Float64Counter("agent.llm.scene.estimated_cost_usd")
+	llmCircuitOpened, _ := meter.Int64Counter("agent.llm.circuit.opened")
+	llmCircuitRejected, _ := meter.Int64Counter("agent.llm.circuit.rejected")
+	llmRetryBudgetExhausted, _ := meter.Int64Counter("agent.llm.retry.budget_exhausted")
+	llmFallbackSucceeded, _ := meter.Int64Counter("agent.llm.fallback.succeeded")
+	llmFallbackFailed, _ := meter.Int64Counter("agent.llm.fallback.failed")
 
 	return &Collector{
-		plannerCalls:      plannerCalls,
-		plannerFailures:   plannerFailures,
-		plannerLatencyMs:  plannerLatencyMs,
-		writerCalls:       writerCalls,
-		writerFailures:    writerFailures,
-		writerLatencyMs:   writerLatencyMs,
-		executorCalls:     executorCalls,
-		executorFailures:  executorFailures,
-		executorLatencyMs: executorLatencyMs,
-		runAllCalls:       runAllCalls,
-		tasksCompleted:    tasksCompleted,
-		fallbackHits:      fallbackHits,
-		promptTokens:      promptTokens,
-		completionTokens:  completionTokens,
-		totalTokens:       totalTokens,
-		llmSceneCalls:     llmSceneCalls,
-		llmSceneErrors:    llmSceneErrors,
-		llmSceneLatency:   llmSceneLatency,
+		plannerCalls:             plannerCalls,
+		plannerFailures:          plannerFailures,
+		plannerLatencyMs:         plannerLatencyMs,
+		writerCalls:              writerCalls,
+		writerFailures:           writerFailures,
+		writerLatencyMs:          writerLatencyMs,
+		executorCalls:            executorCalls,
+		executorFailures:         executorFailures,
+		executorLatencyMs:        executorLatencyMs,
+		runAllCalls:              runAllCalls,
+		tasksCompleted:           tasksCompleted,
+		fallbackHits:             fallbackHits,
+		promptTokens:             promptTokens,
+		completionTokens:         completionTokens,
+		totalTokens:              totalTokens,
+		llmSceneCalls:            llmSceneCalls,
+		llmSceneErrors:           llmSceneErrors,
+		llmSceneLatency:          llmSceneLatency,
+		llmScenePromptTokens:     llmScenePromptTokens,
+		llmSceneCompletionTokens: llmSceneCompletionTokens,
+		llmSceneTotalTokens:      llmSceneTotalTokens,
+		llmSceneEstimatedCost:    llmSceneEstimatedCost,
+		llmCircuitOpened:         llmCircuitOpened,
+		llmCircuitRejected:       llmCircuitRejected,
+		llmRetryBudgetExhausted:  llmRetryBudgetExhausted,
+		llmFallbackSucceeded:     llmFallbackSucceeded,
+		llmFallbackFailed:        llmFallbackFailed,
 	}
 }
 
 func (c *Collector) ObserveLLMCall(event llmcore.CallEvent) {
+	c.ObserveLLMCallContext(context.Background(), event)
+}
+
+func (c *Collector) ObserveLLMCallContext(ctx context.Context, event llmcore.CallEvent) {
 	attrs := api.WithAttributes(attribute.String("llm.scene", event.Scene), attribute.String("llm.provider", event.Provider), attribute.String("llm.model", event.Model), attribute.Int("llm.attempts", event.Attempts), attribute.Bool("llm.fallback_used", event.FallbackUsed))
-	ctx := context.Background()
+	c.mu.Lock()
+	c.s.LLMSceneCalls++
+	c.s.LLMPromptTokens += int64(event.Usage.PromptTokens)
+	c.s.LLMCompletionTokens += int64(event.Usage.CompletionTokens)
+	c.s.LLMTotalTokens += int64(event.Usage.TotalTokens)
+	c.s.LLMEstimatedCostUSD += event.EstimatedCostUSD
+	if event.Err != nil {
+		c.s.LLMSceneErrors++
+	}
+	c.mu.Unlock()
 	c.llmSceneCalls.Add(ctx, 1, attrs)
 	c.llmSceneLatency.Record(ctx, float64(event.Duration.Milliseconds()), attrs)
+	c.llmScenePromptTokens.Add(ctx, int64(event.Usage.PromptTokens), attrs)
+	c.llmSceneCompletionTokens.Add(ctx, int64(event.Usage.CompletionTokens), attrs)
+	c.llmSceneTotalTokens.Add(ctx, int64(event.Usage.TotalTokens), attrs)
+	c.llmSceneEstimatedCost.Add(ctx, event.EstimatedCostUSD, attrs)
 	if event.Err != nil {
 		c.llmSceneErrors.Add(ctx, 1, attrs)
+	}
+}
+
+func (c *Collector) ObserveLLMReliability(ctx context.Context, event llmcore.ReliabilityEvent) {
+	attrs := api.WithAttributes(attribute.String("llm.scene", event.Scene), attribute.String("llm.provider", event.Provider), attribute.String("llm.model", event.Model), attribute.String("llm.fallback_scene", event.FallbackScene))
+	c.mu.Lock()
+	switch event.Kind {
+	case llmcore.ReliabilityCircuitOpened:
+		c.s.LLMCircuitOpened++
+	case llmcore.ReliabilityCircuitRejected:
+		c.s.LLMCircuitRejected++
+	case llmcore.ReliabilityRetryBudgetExhausted:
+		c.s.LLMRetryBudgetExhausted++
+	case llmcore.ReliabilityFallbackSucceeded:
+		c.s.LLMFallbackSucceeded++
+	case llmcore.ReliabilityFallbackFailed:
+		c.s.LLMFallbackFailed++
+	}
+	c.mu.Unlock()
+	switch event.Kind {
+	case llmcore.ReliabilityCircuitOpened:
+		c.llmCircuitOpened.Add(ctx, 1, attrs)
+	case llmcore.ReliabilityCircuitRejected:
+		c.llmCircuitRejected.Add(ctx, 1, attrs)
+	case llmcore.ReliabilityRetryBudgetExhausted:
+		c.llmRetryBudgetExhausted.Add(ctx, 1, attrs)
+	case llmcore.ReliabilityFallbackSucceeded:
+		c.llmFallbackSucceeded.Add(ctx, 1, attrs)
+	case llmcore.ReliabilityFallbackFailed:
+		c.llmFallbackFailed.Add(ctx, 1, attrs)
 	}
 }
 

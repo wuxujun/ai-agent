@@ -18,6 +18,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/executor"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
@@ -139,7 +140,8 @@ func main() {
 	model := resolvedLLM.Model
 	baseURL := resolvedLLM.BaseURL
 
-	requiresAPIKey := llmProvider != planner.ProviderOllama && llmProvider != planner.ProviderLiteLLM
+	providerSpec, providerRegistered := llmprovider.Lookup(string(llmProvider))
+	requiresAPIKey := !providerRegistered || providerSpec.RequiresAPIKey
 	if apiKey == "" && requiresAPIKey {
 		if mode == orchestrator.ModeEino || mode == orchestrator.ModeLegacy || mode == orchestrator.ModeMultiAgent {
 			log.Fatalf("%s provider requires an API Key", llmProvider)

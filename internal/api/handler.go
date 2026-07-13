@@ -107,11 +107,12 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		defer cancel()
 		scenes, healthy := llmcore.CheckConfiguredScenes(ctx)
 		verified := llmcore.AllScenesVerified(scenes)
+		readinessMode := config.Get().ResolveLLMReadinessMode()
 		status := http.StatusOK
 		if !healthy {
 			status = http.StatusServiceUnavailable
 		}
-		c.JSON(status, gin.H{"ready": healthy, "llm_verified": verified, "llm_scenes": scenes})
+		c.JSON(status, gin.H{"ready": healthy, "llm_verified": verified, "llm_readiness_mode": readinessMode, "llm_scenes": scenes})
 	})
 
 	return h
@@ -416,7 +417,11 @@ func (h *Handler) runAll(c *gin.Context) {
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	bgCtx, bgCancel := context.WithTimeout(context.Background(), timeout)
+	// Detach the asynchronous task from the HTTP request cancellation while
+	// retaining request-scoped values such as the shared LLM Runtime and trace
+	// context. The task's own wall-clock timeout remains the cancellation owner.
+	bgBase := context.WithoutCancel(c.Request.Context())
+	bgCtx, bgCancel := context.WithTimeout(bgBase, timeout)
 	owner := uuid.NewString()
 	run := &activeRun{cancel: bgCancel, owner: owner}
 

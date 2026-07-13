@@ -9,6 +9,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
 )
 
@@ -66,6 +67,8 @@ type Config struct {
 		Model                            string `mapstructure:"model"`
 		BaseURL                          string `mapstructure:"base_url"`
 		TimeoutSeconds                   int    `mapstructure:"timeout_seconds"`
+		ReadinessMode                    string `mapstructure:"readiness_mode"`
+		ReadinessCacheTTLSeconds         int    `mapstructure:"readiness_cache_ttl_seconds"`
 		CircuitBreakerFailureThreshold   int    `mapstructure:"circuit_breaker_failure_threshold"`
 		CircuitBreakerCooldownSeconds    int    `mapstructure:"circuit_breaker_cooldown_seconds"`
 		RetryBudgetPerMinute             int    `mapstructure:"retry_budget_per_minute"`
@@ -121,25 +124,29 @@ type Config struct {
 // llm settings. Pointer policy fields distinguish omission from an explicit
 // zero value that clears a gateway default.
 type LLMEndpointConfig struct {
-	Provider           string  `mapstructure:"provider"`
-	APIKey             string  `mapstructure:"api_key"`
-	Model              string  `mapstructure:"model"`
-	BaseURL            string  `mapstructure:"base_url"`
-	TimeoutSeconds     int     `mapstructure:"timeout_seconds"`
-	FallbackScene      *string `mapstructure:"fallback_scene"`
-	MaxRetries         *int    `mapstructure:"max_retries"`
-	MinRemainingTokens *int    `mapstructure:"min_remaining_tokens"`
+	Provider                string   `mapstructure:"provider"`
+	APIKey                  string   `mapstructure:"api_key"`
+	Model                   string   `mapstructure:"model"`
+	BaseURL                 string   `mapstructure:"base_url"`
+	TimeoutSeconds          int      `mapstructure:"timeout_seconds"`
+	FallbackScene           *string  `mapstructure:"fallback_scene"`
+	MaxRetries              *int     `mapstructure:"max_retries"`
+	MinRemainingTokens      *int     `mapstructure:"min_remaining_tokens"`
+	InputCostPerMillionUSD  *float64 `mapstructure:"input_cost_per_million_usd"`
+	OutputCostPerMillionUSD *float64 `mapstructure:"output_cost_per_million_usd"`
 }
 
 type ResolvedLLMConfig struct {
-	Provider           string
-	APIKey             string
-	Model              string
-	BaseURL            string
-	TimeoutSeconds     int
-	FallbackScene      string
-	MaxRetries         int
-	MinRemainingTokens int
+	Provider                string
+	APIKey                  string
+	Model                   string
+	BaseURL                 string
+	TimeoutSeconds          int
+	FallbackScene           string
+	MaxRetries              int
+	MinRemainingTokens      int
+	InputCostPerMillionUSD  float64
+	OutputCostPerMillionUSD float64
 }
 
 // ResolveLLMProviderConfig returns provider-specific defaults without carrying
@@ -159,6 +166,10 @@ func (c *Config) ResolveLLMProviderConfig(provider string) ResolvedLLMConfig {
 }
 
 const (
+	LLMReadinessConfigOnly = "config_only"
+	LLMReadinessGateway    = "gateway"
+	LLMReadinessInference  = "inference"
+
 	LLMSceneTaskPlanner         = "task_planner"
 	LLMSceneTaskFinalizer       = "task_finalizer"
 	LLMSceneContextCompressor   = "context_compressor"
@@ -172,6 +183,21 @@ const (
 	LLMSceneEmbedding           = "embedding"
 	LLMSceneADK                 = "adk"
 )
+
+func (c *Config) ResolveLLMReadinessMode() string {
+	mode := strings.TrimSpace(strings.ToLower(c.LLM.ReadinessMode))
+	if mode == "" {
+		return LLMReadinessGateway
+	}
+	return mode
+}
+
+func (c *Config) ResolveLLMReadinessCacheTTLSeconds() int {
+	if c.LLM.ReadinessCacheTTLSeconds <= 0 {
+		return 10
+	}
+	return c.LLM.ReadinessCacheTTLSeconds
+}
 
 // mu guards globalConfig for concurrent reads/writes.
 // Hot path: RLock for Get(); Cold path: Lock for Reload().
@@ -210,8 +236,10 @@ func setupViper() {
 	viper.SetDefault("orchestrator.mode", "eino")
 	viper.SetDefault("orchestrator.max_concurrent_tasks", 10)
 	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
-	viper.SetDefault("llm.provider", "openai-responses")
+	viper.SetDefault("llm.provider", llmprovider.OpenAIResponses)
 	viper.SetDefault("llm.timeout_seconds", 30)
+	viper.SetDefault("llm.readiness_mode", LLMReadinessGateway)
+	viper.SetDefault("llm.readiness_cache_ttl_seconds", 10)
 	viper.SetDefault("llm.circuit_breaker_failure_threshold", 5)
 	viper.SetDefault("llm.circuit_breaker_cooldown_seconds", 30)
 	viper.SetDefault("llm.retry_budget_per_minute", 60)
@@ -381,6 +409,14 @@ func cloneLLMEndpoint(source LLMEndpointConfig) LLMEndpointConfig {
 		value := *source.MinRemainingTokens
 		cloned.MinRemainingTokens = &value
 	}
+	if source.InputCostPerMillionUSD != nil {
+		value := *source.InputCostPerMillionUSD
+		cloned.InputCostPerMillionUSD = &value
+	}
+	if source.OutputCostPerMillionUSD != nil {
+		value := *source.OutputCostPerMillionUSD
+		cloned.OutputCostPerMillionUSD = &value
+	}
 	return cloned
 }
 
@@ -488,6 +524,8 @@ func diffConfigs(old, new *Config) []string {
 	addIf("llm.model", old.LLM.Model, new.LLM.Model)
 	addIf("llm.base_url", old.LLM.BaseURL, new.LLM.BaseURL)
 	addIfInt("llm.timeout_seconds", old.LLM.TimeoutSeconds, new.LLM.TimeoutSeconds)
+	addIf("llm.readiness_mode", old.LLM.ReadinessMode, new.LLM.ReadinessMode)
+	addIfInt("llm.readiness_cache_ttl_seconds", old.LLM.ReadinessCacheTTLSeconds, new.LLM.ReadinessCacheTTLSeconds)
 	addIfInt("llm.circuit_breaker_failure_threshold", old.LLM.CircuitBreakerFailureThreshold, new.LLM.CircuitBreakerFailureThreshold)
 	addIfInt("llm.circuit_breaker_cooldown_seconds", old.LLM.CircuitBreakerCooldownSeconds, new.LLM.CircuitBreakerCooldownSeconds)
 	addIfInt("llm.retry_budget_per_minute", old.LLM.RetryBudgetPerMinute, new.LLM.RetryBudgetPerMinute)
@@ -498,6 +536,9 @@ func diffConfigs(old, new *Config) []string {
 	addIf("llm.gateway.model", old.LLM.Gateway.Model, new.LLM.Gateway.Model)
 	addIf("llm.gateway.base_url", old.LLM.Gateway.BaseURL, new.LLM.Gateway.BaseURL)
 	addIfInt("llm.gateway.timeout_seconds", old.LLM.Gateway.TimeoutSeconds, new.LLM.Gateway.TimeoutSeconds)
+	if !reflect.DeepEqual(old.LLM.Gateway.InputCostPerMillionUSD, new.LLM.Gateway.InputCostPerMillionUSD) || !reflect.DeepEqual(old.LLM.Gateway.OutputCostPerMillionUSD, new.LLM.Gateway.OutputCostPerMillionUSD) {
+		changes = append(changes, "llm.gateway.cost_rates: changed")
+	}
 	if !reflect.DeepEqual(old.LLM.Scenes, new.LLM.Scenes) {
 		changes = append(changes, "llm.scenes: changed")
 	}
@@ -567,25 +608,29 @@ func redact(v string) string {
 // Helper methods to resolve dynamic fallback logic for API Keys and Providers
 func (c *Config) ResolveLLMProvider() string {
 	provider := c.LLM.Provider
-	if provider == "" || provider == "openai-responses" { // if not explicitly overridden by env
+	if provider == "" || provider == llmprovider.OpenAIResponses { // if not explicitly overridden by env
 		if c.LLM.OpenAIAPIKey != "" {
-			return "openai-responses"
+			return llmprovider.OpenAIResponses
 		}
 		if c.LLM.GeminiAPIKey != "" || c.LLM.GoogleAPIKey != "" {
-			return "gemini"
+			return llmprovider.Gemini
 		}
 	}
 	return provider
 }
 
 func (c *Config) ResolveLLMAPIKey(provider string) string {
-	switch provider {
-	case "openai", "openai-responses":
+	spec, registered := llmprovider.Lookup(provider)
+	if !registered {
+		return c.LLM.APIKey
+	}
+	switch spec.CredentialFamily {
+	case llmprovider.CredentialOpenAI:
 		if c.LLM.OpenAIAPIKey != "" {
 			return c.LLM.OpenAIAPIKey
 		}
 		return c.LLM.APIKey
-	case "gemini":
+	case llmprovider.CredentialGemini:
 		if c.LLM.GeminiAPIKey != "" {
 			return c.LLM.GeminiAPIKey
 		}
@@ -606,18 +651,10 @@ func (c *Config) ResolveLLMModel(provider string) string {
 }
 
 func defaultLLMModel(provider string) string {
-	switch provider {
-	case "openai-responses":
-		return "gpt-4.1-mini"
-	case "openai":
-		return "gpt-4.1-mini"
-	case "gemini":
-		return "gemini-2.5-flash"
-	case "ollama":
-		return "llama3"
-	default:
-		return "gpt-4.1-mini"
+	if spec, ok := llmprovider.Lookup(provider); ok {
+		return spec.DefaultModel
 	}
+	return ""
 }
 
 func (c *Config) ResolveLLMBaseURL(provider string) string {
@@ -628,16 +665,10 @@ func (c *Config) ResolveLLMBaseURL(provider string) string {
 }
 
 func defaultLLMBaseURL(provider string) string {
-	switch provider {
-	case "openai-responses":
-		return "https://api.openai.com/v1/responses"
-	case "openai":
-		return "https://api.openai.com/v1/chat/completions"
-	case "ollama":
-		return "http://localhost:11434/api/chat"
-	default:
-		return ""
+	if spec, ok := llmprovider.Lookup(provider); ok {
+		return spec.DefaultBaseURL
 	}
+	return ""
 }
 
 // ResolveLLMScene resolves a call-site profile while preserving compatibility
@@ -651,6 +682,8 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 	fallbackScene := ""
 	maxRetries := 0
 	minRemainingTokens := 0
+	inputCostPerMillionUSD := 0.0
+	outputCostPerMillionUSD := 0.0
 
 	apply := func(v LLMEndpointConfig) {
 		providerChanged := v.Provider != "" && v.Provider != provider
@@ -684,6 +717,12 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 		if v.MinRemainingTokens != nil {
 			minRemainingTokens = *v.MinRemainingTokens
 		}
+		if v.InputCostPerMillionUSD != nil {
+			inputCostPerMillionUSD = *v.InputCostPerMillionUSD
+		}
+		if v.OutputCostPerMillionUSD != nil {
+			outputCostPerMillionUSD = *v.OutputCostPerMillionUSD
+		}
 	}
 
 	apply(c.LLM.Gateway)
@@ -696,13 +735,21 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 	if timeout <= 0 {
 		timeout = 30
 	}
-	return ResolvedLLMConfig{Provider: provider, APIKey: apiKey, Model: model, BaseURL: baseURL, TimeoutSeconds: timeout, FallbackScene: fallbackScene, MaxRetries: maxRetries, MinRemainingTokens: minRemainingTokens}
+	return ResolvedLLMConfig{Provider: provider, APIKey: apiKey, Model: model, BaseURL: baseURL, TimeoutSeconds: timeout, FallbackScene: fallbackScene, MaxRetries: maxRetries, MinRemainingTokens: minRemainingTokens, InputCostPerMillionUSD: inputCostPerMillionUSD, OutputCostPerMillionUSD: outputCostPerMillionUSD}
 }
 
 // Validate rejects configuration that would otherwise fail only on the first
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	switch c.ResolveLLMReadinessMode() {
+	case LLMReadinessConfigOnly, LLMReadinessGateway, LLMReadinessInference:
+	default:
+		return fmt.Errorf("llm.readiness_mode must be one of %q, %q, or %q", LLMReadinessConfigOnly, LLMReadinessGateway, LLMReadinessInference)
+	}
+	if c.LLM.ReadinessCacheTTLSeconds < 0 {
+		return fmt.Errorf("llm.readiness_cache_ttl_seconds must be >= 0")
+	}
 	if c.LLM.ContextCompressionTraceThreshold < 0 {
 		return fmt.Errorf("llm.context_compression_trace_threshold must be >= 0")
 	}
@@ -712,17 +759,12 @@ func (c *Config) Validate() error {
 	if c.LLM.CircuitBreakerFailureThreshold < 0 || c.LLM.CircuitBreakerCooldownSeconds < 0 || c.LLM.RetryBudgetPerMinute < 0 {
 		return fmt.Errorf("llm circuit breaker and retry budget values must be >= 0")
 	}
-	validProvider := func(provider string) bool {
-		switch provider {
-		case "openai-responses", "openai", "gemini", "ollama", "litellm":
-			return true
-		default:
-			return false
-		}
-	}
 	validatePolicy := func(name string, endpoint LLMEndpointConfig) error {
 		if (endpoint.MaxRetries != nil && *endpoint.MaxRetries < 0) || (endpoint.MinRemainingTokens != nil && *endpoint.MinRemainingTokens < 0) {
 			return fmt.Errorf("%s retry and token policy values must be >= 0", name)
+		}
+		if (endpoint.InputCostPerMillionUSD != nil && *endpoint.InputCostPerMillionUSD < 0) || (endpoint.OutputCostPerMillionUSD != nil && *endpoint.OutputCostPerMillionUSD < 0) {
+			return fmt.Errorf("%s LLM cost values must be >= 0", name)
 		}
 		return nil
 	}
@@ -731,14 +773,24 @@ func (c *Config) Validate() error {
 	}
 	check := func(scene string) error {
 		resolved := c.ResolveLLMScene(scene)
-		if !validProvider(resolved.Provider) {
+		spec, registered := llmprovider.Lookup(resolved.Provider)
+		if !registered {
 			return fmt.Errorf("llm scene %q has unsupported provider %q", scene, resolved.Provider)
+		}
+		requiredCapability := llmprovider.CapabilityStructuredOutput
+		capabilityName := "structured output"
+		if scene == LLMSceneEmbedding {
+			requiredCapability = llmprovider.CapabilityEmbedding
+			capabilityName = "embedding"
+		}
+		if !spec.Supports(requiredCapability) {
+			return fmt.Errorf("llm scene %q provider %q does not support %s", scene, resolved.Provider, capabilityName)
 		}
 		if strings.TrimSpace(resolved.Model) == "" {
 			return fmt.Errorf("llm scene %q has empty model", scene)
 		}
-		if resolved.Provider == "litellm" && strings.TrimSpace(resolved.BaseURL) == "" {
-			return fmt.Errorf("llm scene %q uses litellm but has empty base_url", scene)
+		if spec.RequiresBaseURL && strings.TrimSpace(resolved.BaseURL) == "" {
+			return fmt.Errorf("llm scene %q provider %q requires base_url", scene, resolved.Provider)
 		}
 		if resolved.TimeoutSeconds <= 0 {
 			return fmt.Errorf("llm scene %q timeout_seconds must be > 0", scene)
@@ -776,7 +828,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if _, ok := c.LLM.Scenes[LLMSceneADK]; ok {
-		if provider := c.ResolveLLMScene(LLMSceneADK).Provider; provider != "gemini" {
+		provider := c.ResolveLLMScene(LLMSceneADK).Provider
+		spec, _ := llmprovider.Lookup(provider)
+		if spec.Protocol != llmprovider.ProtocolGemini {
 			return fmt.Errorf("llm scene %q only supports gemini provider, got %q", LLMSceneADK, provider)
 		}
 	}

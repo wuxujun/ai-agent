@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
@@ -59,12 +60,13 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	}
 
 	cfg := multiagent.LLMConfigForScene(config.LLMSceneEmbedding)
+	providerSpec, providerRegistered := llmprovider.Lookup(string(cfg.Provider))
 
 	// If no API key is set, go straight to local fallback to avoid timeouts
 	if cfg.APIKey == "" && cfg.Provider != planner.ProviderOllama {
 		return localEmbedding(text), nil
 	}
-	if cfg.Provider == planner.ProviderGemini && geminiEmbeddingUnsupportedLocation.Load() {
+	if providerRegistered && providerSpec.Protocol == llmprovider.ProtocolGemini && geminiEmbeddingUnsupportedLocation.Load() {
 		log.Debug("Gemini embedding disabled for this process after unsupported location error; using local embedding")
 		return localEmbedding(text), nil
 	}
@@ -76,19 +78,22 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	var vec []float32
 	var err error
 
-	switch cfg.Provider {
-	case planner.ProviderGemini:
+	if !providerRegistered || !providerSpec.Supports(llmprovider.CapabilityEmbedding) {
+		return localEmbedding(text), nil
+	}
+	switch providerSpec.Protocol {
+	case llmprovider.ProtocolGemini:
 		vec, err = getGeminiEmbedding(embCtx, text, cfg)
-	case planner.ProviderOpenAI, planner.ProviderOpenAIResponses, planner.ProviderLiteLLM:
+	case llmprovider.ProtocolOpenAIChat, llmprovider.ProtocolOpenAIResponses:
 		vec, err = getOpenAIEmbedding(embCtx, text, cfg)
-	case planner.ProviderOllama:
+	case llmprovider.ProtocolOllama:
 		vec, err = getOllamaEmbedding(embCtx, text, cfg)
 	default:
 		vec = localEmbedding(text)
 	}
 
 	if err != nil {
-		if cfg.Provider == planner.ProviderGemini && isUnsupportedLocationError(err) {
+		if providerSpec.Protocol == llmprovider.ProtocolGemini && isUnsupportedLocationError(err) {
 			if geminiEmbeddingUnsupportedLocation.CompareAndSwap(false, true) {
 				log.Warn("Gemini embedding API is unavailable from current location; disabling remote Gemini embeddings for this process",
 					"error", err,
@@ -344,4 +349,3 @@ func ApplyTimeDecay(score float32, timestamp time.Time, referenceTime time.Time,
 	decayFactor := float32(math.Exp(-decayRate * hours))
 	return score * decayFactor
 }
-

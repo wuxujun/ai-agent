@@ -20,6 +20,20 @@ AI_AGENT_LLM_API_KEY="$LITELLM_MASTER_KEY" \
 go run ./cmd/llm-eval -input Sample/llm-eval.jsonl
 ```
 
+Readiness defaults to `gateway`: the service checks LiteLLM liveness and model
+visibility without sending a paid generation request. Configure strict
+inference verification explicitly:
+
+```bash
+AI_AGENT_LLM_READINESS_MODE=inference \
+AI_AGENT_LLM_READINESS_CACHE_TTL_SECONDS=300 \
+go run ./cmd/server
+```
+
+Available modes are `config_only`, `gateway`, and `inference`. Only a successful
+`inference` probe sets `llm_verified=true`; it may incur provider cost. The
+selected mode is returned as `llm_readiness_mode` by `/ready`.
+
 Each case has a 30-second timeout by default. For CI, use JSON Lines output;
 the command exits with `0` when every case passes, `1` for evaluation failures,
 and `2` for invalid arguments or input:

@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/wuxujun/ai-agent/internal/api"
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -21,10 +22,17 @@ import (
 type mockPlanner struct {
 	blockCh   chan struct{}
 	startedCh chan struct{}
+	runtimeCh chan *llmcore.Runtime
 	tokens    []string
 }
 
 func (mp *mockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*planner.PlanDecision, error) {
+	if mp.runtimeCh != nil {
+		select {
+		case mp.runtimeCh <- llmcore.RuntimeFromContext(ctx):
+		default:
+		}
+	}
 	for _, tok := range mp.tokens {
 		onChunk(tok)
 	}
@@ -100,6 +108,35 @@ func TestCancelTask_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected status 404, got %d", w.Code)
+	}
+}
+
+func TestReadyReportsConfiguredProbeMode(t *testing.T) {
+	restore := config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = ""
+		cfg.LLM.Provider = "openai"
+		cfg.LLM.Model = "gpt-test"
+		cfg.LLM.ReadinessMode = config.LLMReadinessConfigOnly
+	})
+	t.Cleanup(restore)
+	r := setupTestRouter(t, store.NewMemoryStore(), nil)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/ready", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ready status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Ready         bool   `json:"ready"`
+		Verified      bool   `json:"llm_verified"`
+		ReadinessMode string `json:"llm_readiness_mode"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode readiness response: %v", err)
+	}
+	if !response.Ready || response.Verified || response.ReadinessMode != config.LLMReadinessConfigOnly {
+		t.Fatalf("readiness response = %+v", response)
 	}
 }
 
@@ -404,6 +441,60 @@ func TestRunAllTimeoutConfigHasDefault(t *testing.T) {
 	cfg := config.Get()
 	if cfg.Orchestrator.RunAllTimeoutSeconds <= 0 {
 		t.Fatalf("RunAllTimeoutSeconds default = %d, want positive (>= 600)", cfg.Orchestrator.RunAllTimeoutSeconds)
+	}
+}
+
+func TestRunAllPreservesLLMRuntimeWithoutRequestCancellation(t *testing.T) {
+	st := store.NewMemoryStore()
+	blockCh := make(chan struct{})
+	runtimeCh := make(chan *llmcore.Runtime, 1)
+	mp := &mockPlanner{blockCh: blockCh, runtimeCh: runtimeCh}
+	engine := &orchestrator.Engine{
+		Mode:     orchestrator.ModeLegacy,
+		Planner:  mp,
+		Executor: &mockExecutor{},
+		Store:    st,
+	}
+
+	gin.SetMode(gin.TestMode)
+	runtime := llmcore.NewDefaultRuntime(nil)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(llmcore.WithRuntime(c.Request.Context(), runtime))
+		c.Next()
+	})
+	handler := api.RegisterRoutes(r, st, engine, nil)
+
+	task := &types.Task{ID: "task-runtime-context", Status: types.StatusCreated, MaxSteps: 2, ToolBudget: 2}
+	if err := st.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatalf("SaveFullTask: %v", err)
+	}
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(requestCtx, http.MethodPost, "/api/tasks/task-runtime-context/run-all", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("run-all status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case got := <-runtimeCh:
+		if got != runtime {
+			t.Fatalf("background runtime = %p, want injected runtime %p", got, runtime)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for background planner")
+	}
+
+	// The accepted task owns its lifecycle; disconnecting the HTTP caller must
+	// not cancel it, but the request's Runtime value must remain available.
+	cancelRequest()
+	close(blockCh)
+	handler.Wait()
+	want := waitForTaskStatus(t, st, task.ID, types.StatusCompleted)
+	if want.FinalAnswer != "Mock final answer" {
+		t.Fatalf("FinalAnswer = %q, want mock answer", want.FinalAnswer)
 	}
 }
 

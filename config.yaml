@@ -86,6 +86,16 @@ llm:
   # Request timeout in seconds.
   # Env override: AI_AGENT_LLM_TIMEOUT_SECONDS
   timeout_seconds: 30
+  # Readiness probe level: config_only, gateway, or inference.
+  # gateway preserves the default behavior: LiteLLM liveness and model access
+  # are checked, while direct providers remain configured but unverified.
+  # inference sends a minimal structured generation request per configured scene
+  # and may incur provider cost. Env override: AI_AGENT_LLM_READINESS_MODE
+  readiness_mode: "gateway"
+  # Cache readiness results to limit probe traffic and inference cost.
+  # Increase this value when readiness_mode is inference.
+  # Env override: AI_AGENT_LLM_READINESS_CACHE_TTL_SECONDS
+  readiness_cache_ttl_seconds: 10
   # Runtime resilience. Set any value to 0 to disable that guard.
   circuit_breaker_failure_threshold: 5
   circuit_breaker_cooldown_seconds: 30
@@ -105,6 +115,9 @@ llm:
   #   api_key: ""
   #   base_url: "http://127.0.0.1:4000/v1/chat/completions"
   #   timeout_seconds: 30
+  #   # Optional pricing used only for estimated cost metrics.
+  #   input_cost_per_million_usd: 2.0
+  #   output_cost_per_million_usd: 8.0
 
   # Per-call-site profiles. Omitted fields inherit gateway, then legacy settings.
   # Set fallback_scene: "", max_retries: 0, or min_remaining_tokens: 0 to
@@ -112,6 +125,8 @@ llm:
   # scenes:
   #   task_planner:
   #     model: "agent-planner"
+  #     input_cost_per_million_usd: 2.0
+  #     output_cost_per_million_usd: 8.0
   #     fallback_scene: "task_planner_fallback"
   #     max_retries: 1
   #     min_remaining_tokens: 2000

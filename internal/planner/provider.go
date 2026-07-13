@@ -10,8 +10,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -42,11 +44,39 @@ type LLMProvider interface {
 }
 
 // providerRegistry maps provider names to their implementations.
-var providerRegistry = map[ProviderType]LLMProvider{}
+var providerRegistry = struct {
+	sync.RWMutex
+	providers map[ProviderType]LLMProvider
+}{providers: make(map[ProviderType]LLMProvider)}
 
 // RegisterProvider registers a custom LLM provider. Safe to call from init().
 func RegisterProvider(p LLMProvider) {
-	providerRegistry[p.Name()] = p
+	if p == nil {
+		panic("planner: cannot register a nil LLM provider")
+	}
+	name := p.Name()
+	if _, ok := llmprovider.Lookup(string(name)); !ok {
+		llmprovider.MustRegister(llmprovider.Specification{Name: string(name), Protocol: llmprovider.ProtocolOpenAIChat, Capabilities: llmprovider.CapabilityStructuredOutput | llmprovider.CapabilityStreaming, RequiresAPIKey: true, RequiresBaseURL: true})
+	}
+	providerRegistry.Lock()
+	providerRegistry.providers[name] = p
+	providerRegistry.Unlock()
+}
+
+func RegisterProviderWithSpec(p LLMProvider, spec llmprovider.Specification) error {
+	if p == nil {
+		return fmt.Errorf("planner: cannot register a nil LLM provider")
+	}
+	if spec.Name != string(p.Name()) {
+		return fmt.Errorf("planner provider name %q does not match specification %q", p.Name(), spec.Name)
+	}
+	if err := llmprovider.Register(spec); err != nil {
+		return err
+	}
+	providerRegistry.Lock()
+	providerRegistry.providers[p.Name()] = p
+	providerRegistry.Unlock()
+	return nil
 }
 
 func init() {
@@ -352,7 +382,10 @@ func parseOllama(resp *http.Response, onChunk func(string)) (string, types.Token
 
 // lookupProvider returns a registered provider by name, or an error.
 func lookupProvider(name ProviderType) (LLMProvider, error) {
-	if p, ok := providerRegistry[name]; ok {
+	providerRegistry.RLock()
+	p, ok := providerRegistry.providers[name]
+	providerRegistry.RUnlock()
+	if ok {
 		return p, nil
 	}
 	return nil, fmt.Errorf("unsupported LLM provider %q: register it via planner.RegisterProvider()", name)

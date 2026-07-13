@@ -50,5 +50,13 @@ func LLMConfigForScene(scene string) LLMConfig {
 // providers that support structured output (OpenAI json_schema, Ollama format).
 // It returns TokenUsage and error.
 func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
-	return llmcore.CallJSON(ctx, llmcore.Config{Scene: cfg.Scene, Provider: string(cfg.Provider), APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: cfg.BaseURL, Timeout: cfg.Timeout, FallbackScene: cfg.FallbackScene, MaxRetries: cfg.MaxRetries}, systemPrompt, userPrompt, schema, dest)
+	coreCfg := llmcore.ConfigForScene(cfg.Scene)
+	coreCfg.Provider = string(cfg.Provider)
+	coreCfg.APIKey = cfg.APIKey
+	coreCfg.Model = cfg.Model
+	coreCfg.BaseURL = cfg.BaseURL
+	coreCfg.Timeout = cfg.Timeout
+	coreCfg.FallbackScene = cfg.FallbackScene
+	coreCfg.MaxRetries = cfg.MaxRetries
+	return llmcore.CallJSON(ctx, coreCfg, systemPrompt, userPrompt, schema, dest)
 }

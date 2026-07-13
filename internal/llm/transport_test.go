@@ -1,6 +1,10 @@
 package llm
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
+)
 
 func TestExtractStructuredResponses(t *testing.T) {
 	text, usage, err := extractStructuredResponse("responses", []byte(`{"output":[{"content":[{"text":"{\"answer\":\"ok\"}"}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`))
@@ -29,5 +33,26 @@ func TestParseStructuredJSONFallback(t *testing.T) {
 	}
 	if err := parseStructuredJSON("no object", &output); err == nil {
 		t.Fatal("expected unparseable response error")
+	}
+}
+
+func TestStructuredRequestUsesRegisteredProtocol(t *testing.T) {
+	const providerName = "test-openai-compatible"
+	if _, exists := llmprovider.Lookup(providerName); !exists {
+		if err := llmprovider.Register(llmprovider.Specification{
+			Name:         providerName,
+			DefaultModel: "test-model",
+			Protocol:     llmprovider.ProtocolOpenAIChat,
+			Capabilities: llmprovider.CapabilityStructuredOutput,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body, kind, err := structuredRequest(Config{Provider: providerName, Model: "custom-model"}, "system", "user", map[string]any{"type": "object"})
+	if err != nil || kind != "chat" {
+		t.Fatalf("kind=%q body=%+v err=%v", kind, body, err)
+	}
+	if body["model"] != "custom-model" {
+		t.Fatalf("request body = %+v", body)
 	}
 }

@@ -2,12 +2,15 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
 )
 
 func TestLiteLLMHealthURL(t *testing.T) {
@@ -114,6 +117,24 @@ func TestHealthConfigKeyChangesWithModelOrCredential(t *testing.T) {
 	}
 }
 
+func TestHealthConfigKeyChangesWithReadinessPolicy(t *testing.T) {
+	first := &config.Config{}
+	first.LLM.Provider = "openai"
+	first.LLM.Model = "gpt-test"
+	first.LLM.ReadinessMode = config.LLMReadinessGateway
+	first.LLM.ReadinessCacheTTLSeconds = 10
+	second := *first
+	second.LLM.ReadinessMode = config.LLMReadinessInference
+	if healthConfigKey(first) == healthConfigKey(&second) {
+		t.Fatal("health cache key did not change with readiness mode")
+	}
+	second = *first
+	second.LLM.ReadinessCacheTTLSeconds = 60
+	if healthConfigKey(first) == healthConfigKey(&second) {
+		t.Fatal("health cache key did not change with readiness cache TTL")
+	}
+}
+
 func TestDirectProviderIsConfiguredButUnverified(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.LLM.Provider = "openai"
@@ -129,6 +150,98 @@ func TestDirectProviderIsConfiguredButUnverified(t *testing.T) {
 	}
 	if AllScenesVerified(scenes) {
 		t.Fatal("direct provider must not be reported as verified")
+	}
+}
+
+func TestConfigOnlyReadinessDoesNotProbeLiteLLM(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.LLM.Provider = "litellm"
+	cfg.LLM.Model = "agent-planner"
+	cfg.LLM.BaseURL = "://invalid-and-must-not-be-used"
+	cfg.LLM.ReadinessMode = config.LLMReadinessConfigOnly
+	scenes, healthy := probeConfiguredScenesWithInference(context.Background(), cfg, func(context.Context, string, config.ResolvedLLMConfig) error {
+		t.Fatal("config_only readiness called inference probe")
+		return nil
+	})
+	if !healthy {
+		t.Fatal("configured LiteLLM scene should pass config_only readiness")
+	}
+	health := scenes[config.LLMSceneTaskPlanner]
+	if health.Verified || health.Status != "configured_unverified" || health.GatewayReachable != nil || health.InferenceReachable != nil {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestGatewayReadinessDoesNotClaimInferenceVerification(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.LLM.Provider = "litellm"
+	cfg.LLM.Model = "agent-planner"
+	cfg.LLM.BaseURL = "http://litellm/v1/chat/completions"
+	cfg.LLM.TimeoutSeconds = 3
+	cfg.LLM.ReadinessMode = config.LLMReadinessGateway
+	scenes, healthy := probeConfiguredScenesWithProbes(context.Background(), cfg, probeSceneInference, func(context.Context, string, string, string, time.Duration) liteLLMProbeResult {
+		return liteLLMProbeResult{gatewayReachable: true, models: map[string]struct{}{"agent-planner": {}}}
+	})
+	if !healthy {
+		t.Fatalf("gateway readiness should pass: %+v", scenes)
+	}
+	health := scenes[config.LLMSceneTaskPlanner]
+	if health.Verified || health.Status != "gateway_verified" || health.GatewayReachable == nil || !*health.GatewayReachable || health.ModelAvailable == nil || !*health.ModelAvailable {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestInferenceReadinessRequiresSuccessfulCall(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.Model = "gpt-test"
+	cfg.LLM.BaseURL = "https://api.test/v1/chat/completions"
+	cfg.LLM.ReadinessMode = config.LLMReadinessInference
+	calls := 0
+	scenes, healthy := probeConfiguredScenesWithInference(context.Background(), cfg, func(_ context.Context, scene string, resolved config.ResolvedLLMConfig) error {
+		calls++
+		if scene != config.LLMSceneTaskPlanner || resolved.Model != "gpt-test" {
+			t.Fatalf("probe scene=%q config=%+v", scene, resolved)
+		}
+		return nil
+	})
+	if !healthy || calls != 1 {
+		t.Fatalf("healthy=%t calls=%d scenes=%+v", healthy, calls, scenes)
+	}
+	health := scenes[config.LLMSceneTaskPlanner]
+	if !health.Verified || health.Status != "ready" || health.InferenceReachable == nil || !*health.InferenceReachable {
+		t.Fatalf("health = %+v", health)
+	}
+
+	scenes, healthy = probeConfiguredScenesWithInference(context.Background(), cfg, func(context.Context, string, config.ResolvedLLMConfig) error {
+		return errors.New("probe rejected")
+	})
+	if healthy {
+		t.Fatal("failed inference probe was reported healthy")
+	}
+	health = scenes[config.LLMSceneTaskPlanner]
+	if health.Verified || health.Status != "unhealthy" || health.InferenceReachable == nil || *health.InferenceReachable {
+		t.Fatalf("failed health = %+v", health)
+	}
+}
+
+func TestSafeInferenceProbeErrorOmitsProviderDetail(t *testing.T) {
+	err := safeInferenceProbeError(errors.New("upstream echoed secret-token"))
+	if err.Error() != "inference probe failed" || strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("unsafe readiness error: %q", err)
+	}
+}
+
+func TestEmbeddingProbeURL(t *testing.T) {
+	cases := map[string]string{
+		embeddingProbeURL(llmprovider.ProtocolOpenAIChat, "https://api.test/v1/chat/completions"): "https://api.test/v1/embeddings",
+		embeddingProbeURL(llmprovider.ProtocolOpenAIResponses, "https://api.test/v1/responses"):   "https://api.test/v1/embeddings",
+		embeddingProbeURL(llmprovider.ProtocolOllama, "http://localhost:11434/api/chat"):          "http://localhost:11434/api/embeddings",
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("embedding URL = %q, want %q", got, want)
+		}
 	}
 }
 

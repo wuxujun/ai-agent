@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"google.golang.org/genai"
@@ -17,7 +18,14 @@ import (
 type nativeStructuredCaller struct{}
 
 func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
-	if cfg.Provider == "gemini" {
+	spec, ok := llmprovider.Lookup(cfg.Provider)
+	if !ok {
+		return types.TokenUsage{}, fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+	if !spec.Supports(llmprovider.CapabilityStructuredOutput) {
+		return types.TokenUsage{}, fmt.Errorf("provider %s does not support structured output", cfg.Provider)
+	}
+	if spec.Protocol == llmprovider.ProtocolGemini {
 		client, err := GetGeminiClient(cfg.APIKey, cfg.BaseURL)
 		if err != nil {
 			return types.TokenUsage{}, err
@@ -71,15 +79,19 @@ func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPr
 }
 
 func structuredRequest(cfg Config, systemPrompt, userPrompt string, schema map[string]any) (map[string]any, string, error) {
-	switch cfg.Provider {
-	case "openai-responses":
+	spec, ok := llmprovider.Lookup(cfg.Provider)
+	if !ok {
+		return nil, "", fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+	switch spec.Protocol {
+	case llmprovider.ProtocolOpenAIResponses:
 		return map[string]any{"model": cfg.Model, "input": []map[string]any{{"role": "system", "content": []map[string]any{{"type": "input_text", "text": systemPrompt}}}, {"role": "user", "content": []map[string]any{{"type": "input_text", "text": userPrompt}}}}, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "response", "strict": true, "schema": schema}}}, "responses", nil
-	case "openai", "litellm":
+	case llmprovider.ProtocolOpenAIChat:
 		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "response", "strict": true, "schema": schema}}}, "chat", nil
-	case "ollama":
+	case llmprovider.ProtocolOllama:
 		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "stream": false, "format": schema}, "ollama", nil
 	default:
-		return nil, "", fmt.Errorf("unsupported provider: %s", cfg.Provider)
+		return nil, "", fmt.Errorf("provider %s protocol %s is not supported by HTTP structured transport", cfg.Provider, spec.Protocol)
 	}
 }
 

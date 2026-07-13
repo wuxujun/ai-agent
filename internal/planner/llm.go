@@ -12,6 +12,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -29,11 +30,11 @@ var log = logger.Component("planner")
 type ProviderType string
 
 const (
-	ProviderOpenAIResponses ProviderType = "openai-responses"
-	ProviderOpenAI          ProviderType = "openai"
-	ProviderGemini          ProviderType = "gemini"
-	ProviderOllama          ProviderType = "ollama"
-	ProviderLiteLLM         ProviderType = "litellm"
+	ProviderOpenAIResponses ProviderType = llmprovider.OpenAIResponses
+	ProviderOpenAI          ProviderType = llmprovider.OpenAI
+	ProviderGemini          ProviderType = llmprovider.Gemini
+	ProviderOllama          ProviderType = llmprovider.Ollama
+	ProviderLiteLLM         ProviderType = llmprovider.LiteLLM
 )
 
 // LLMPlanner calls an LLM to produce a PlanDecision for each agent step.
@@ -210,6 +211,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	var primaryUsage types.TokenUsage
 	primaryResilience := llmcore.ConfigForScene(p.Scene)
 	primaryResilience.Provider = string(provider)
+	primaryResilience.APIKey = apiKey
 	primaryResilience.Model = model
 	primaryResilience.BaseURL = baseURL
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -232,7 +234,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		if attempt == maxRetries || !llmcore.IsRetryable(err) {
 			break
 		}
-		if budgetErr := llmcore.ConsumeRetry(ctx, primaryResilience.RetryBudgetPerMinute, err); budgetErr != nil {
+		if budgetErr := llmcore.ConsumeRetryForConfig(ctx, primaryResilience, err); budgetErr != nil {
 			err = budgetErr
 			break
 		}
@@ -241,7 +243,8 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			break
 		}
 	}
-	llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: p.Scene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != ""})
+	llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: p.Scene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != "", EstimatedCostUSD: llmcore.EstimateCostUSD(primaryResilience, primaryUsage)})
+	fallbackAttempted := err != nil && fallbackScene != ""
 	activeFallback := fallbackScene
 	for err != nil && activeFallback != "" {
 		span.SetAttributes(attribute.Bool("llm.fallback.triggered", true), attribute.String("llm.fallback.scene", activeFallback))
@@ -275,7 +278,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 				if attempt == fallback.MaxRetries || !llmcore.IsRetryable(err) {
 					break
 				}
-				if budgetErr := llmcore.ConsumeRetry(ctx, fallbackResilience.RetryBudgetPerMinute, err); budgetErr != nil {
+				if budgetErr := llmcore.ConsumeRetryForConfig(ctx, fallbackResilience, err); budgetErr != nil {
 					err = budgetErr
 					break
 				}
@@ -284,12 +287,19 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 					break
 				}
 			}
-			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Usage: sceneUsage, Duration: time.Since(fallbackStarted), Err: err, Attempts: fallbackAttempts, FallbackUsed: err != nil && fallback.FallbackScene != ""})
+			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Usage: sceneUsage, Duration: time.Since(fallbackStarted), Err: err, Attempts: fallbackAttempts, FallbackUsed: err != nil && fallback.FallbackScene != "", EstimatedCostUSD: llmcore.EstimateCostUSD(fallbackResilience, sceneUsage)})
 		} else {
 			err = lookupErr
 			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Err: err, Attempts: 1, FallbackUsed: fallback.FallbackScene != ""})
 		}
 		activeFallback = fallback.FallbackScene
+	}
+	if fallbackAttempted {
+		kind := llmcore.ReliabilityFallbackSucceeded
+		if err != nil {
+			kind = llmcore.ReliabilityFallbackFailed
+		}
+		llmcore.ObserveReliabilityContext(ctx, llmcore.ReliabilityEvent{Kind: kind, Scene: p.Scene, Provider: string(provider), Model: model, FallbackScene: fallbackScene})
 	}
 	if err != nil {
 		span.RecordError(err)
