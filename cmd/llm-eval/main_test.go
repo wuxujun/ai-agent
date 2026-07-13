@@ -364,6 +364,38 @@ func TestRunJudgeAssertionFailsBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestRunJudgeFailureStillCountsUsageAndCost(t *testing.T) {
+	input := writeEvalInput(t, `{"name":"judge","scene":"task_finalizer","judge_criteria":"Accurate","judge_input_cost_per_million_usd":3}`+"\n")
+	var stdout, stderr bytes.Buffer
+	code := runWithJudge(
+		[]string{"-input", input, "-format", "json", "-max-total-cost-usd", "2"}, &stdout, &stderr,
+		func(context.Context, evalCase, map[string]any) (string, types.TokenUsage, error) {
+			return "candidate", types.TokenUsage{PromptTokens: 10, TotalTokens: 10}, nil
+		},
+		func(context.Context, evalCase, string) (judgeResult, types.TokenUsage, error) {
+			return judgeResult{}, types.TokenUsage{PromptTokens: 1_000_000, TotalTokens: 1_000_000}, errors.New("judge unavailable")
+		},
+	)
+	if code != 1 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	var result caseResult
+	if err := json.Unmarshal([]byte(lines[0]), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Tokens != 1_000_010 || result.EstimatedCostUSD != 3 || result.JudgeScore != nil || !strings.Contains(result.Error, "judge unavailable") {
+		t.Fatalf("result = %+v", result)
+	}
+	var summary evalSummary
+	if err := json.Unmarshal([]byte(lines[1]), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.EstimatedCostUSD != 3 || summary.StoppedReason != "max_total_cost_usd_exceeded" {
+		t.Fatalf("summary = %+v", summary)
+	}
+}
+
 func TestRunRejectsJudgeCombinedWithTextAssertion(t *testing.T) {
 	input := writeEvalInput(t, `{"name":"judge","scene":"task_finalizer","expected_exact":"ok","judge_criteria":"Accurate"}`+"\n")
 	var stdout, stderr bytes.Buffer

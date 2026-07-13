@@ -298,7 +298,7 @@ func executeCase(item evalCase, timeout time.Duration, rates costRates, call eva
 		caseRates.outputPerMillionUSD = *item.OutputCostPerMillionUSD
 	}
 	estimatedCost := float64(answerUsage.PromptTokens)*caseRates.inputPerMillionUSD/1_000_000 + float64(answerUsage.CompletionTokens)*caseRates.outputPerMillionUSD/1_000_000
-	if judged != nil {
+	if assertion == "judge" {
 		judgeRates := caseRates
 		if item.JudgeInputCostPerMillionUSD != nil {
 			judgeRates.inputPerMillionUSD = *item.JudgeInputCostPerMillionUSD
