@@ -66,6 +66,9 @@ type Config struct {
 		Model                            string `mapstructure:"model"`
 		BaseURL                          string `mapstructure:"base_url"`
 		TimeoutSeconds                   int    `mapstructure:"timeout_seconds"`
+		CircuitBreakerFailureThreshold   int    `mapstructure:"circuit_breaker_failure_threshold"`
+		CircuitBreakerCooldownSeconds    int    `mapstructure:"circuit_breaker_cooldown_seconds"`
+		RetryBudgetPerMinute             int    `mapstructure:"retry_budget_per_minute"`
 		ContextCompressionTraceThreshold int    `mapstructure:"context_compression_trace_threshold"`
 		// ContextCompressionTokenThreshold triggers compression when the sum of
 		// all TotalTokens across task.Trace exceeds this value, regardless of
@@ -209,6 +212,9 @@ func setupViper() {
 	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
 	viper.SetDefault("llm.provider", "openai-responses")
 	viper.SetDefault("llm.timeout_seconds", 30)
+	viper.SetDefault("llm.circuit_breaker_failure_threshold", 5)
+	viper.SetDefault("llm.circuit_breaker_cooldown_seconds", 30)
+	viper.SetDefault("llm.retry_budget_per_minute", 60)
 	viper.SetDefault("llm.context_compression_trace_threshold", 8)
 	// context_compression_token_threshold: 0 = disabled by default
 	viper.SetDefault("llm.context_compression_token_threshold", 0)
@@ -482,6 +488,9 @@ func diffConfigs(old, new *Config) []string {
 	addIf("llm.model", old.LLM.Model, new.LLM.Model)
 	addIf("llm.base_url", old.LLM.BaseURL, new.LLM.BaseURL)
 	addIfInt("llm.timeout_seconds", old.LLM.TimeoutSeconds, new.LLM.TimeoutSeconds)
+	addIfInt("llm.circuit_breaker_failure_threshold", old.LLM.CircuitBreakerFailureThreshold, new.LLM.CircuitBreakerFailureThreshold)
+	addIfInt("llm.circuit_breaker_cooldown_seconds", old.LLM.CircuitBreakerCooldownSeconds, new.LLM.CircuitBreakerCooldownSeconds)
+	addIfInt("llm.retry_budget_per_minute", old.LLM.RetryBudgetPerMinute, new.LLM.RetryBudgetPerMinute)
 	addIfInt("llm.context_compression_trace_threshold", old.LLM.ContextCompressionTraceThreshold, new.LLM.ContextCompressionTraceThreshold)
 	addIfInt("llm.context_compression_token_threshold", old.LLM.ContextCompressionTokenThreshold, new.LLM.ContextCompressionTokenThreshold)
 	addIf("llm.gateway.provider", old.LLM.Gateway.Provider, new.LLM.Gateway.Provider)
@@ -699,6 +708,9 @@ func (c *Config) Validate() error {
 	}
 	if c.LLM.ContextCompressionTokenThreshold < 0 {
 		return fmt.Errorf("llm.context_compression_token_threshold must be >= 0")
+	}
+	if c.LLM.CircuitBreakerFailureThreshold < 0 || c.LLM.CircuitBreakerCooldownSeconds < 0 || c.LLM.RetryBudgetPerMinute < 0 {
+		return fmt.Errorf("llm circuit breaker and retry budget values must be >= 0")
 	}
 	validProvider := func(provider string) bool {
 		switch provider {

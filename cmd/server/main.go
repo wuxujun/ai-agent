@@ -181,7 +181,7 @@ func main() {
 	)
 
 	mc := metrics.NewCollector()
-	llmcore.RegisterObserver(mc)
+	llmRuntime := llmcore.NewDefaultRuntime(mc)
 
 	plannerClient := planner.NewLLMPlannerForScene(config.LLMSceneTaskPlanner)
 	plannerClient.Compressor = planner.NewLLMContextCompressor(config.LLMSceneContextCompressor)
@@ -220,6 +220,10 @@ func main() {
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 	r.Use(otelgin.Middleware("ai-agent"))
+	r.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(llmcore.WithRuntime(c.Request.Context(), llmRuntime))
+		c.Next()
+	})
 	apiHandler := api.RegisterRoutes(r, st, eng, mc)
 
 	// ── P0: Distributed Approval Bus (Redis Pub/Sub) ─────────────────────────

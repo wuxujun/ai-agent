@@ -113,3 +113,35 @@ func TestHealthConfigKeyChangesWithModelOrCredential(t *testing.T) {
 		t.Fatal("health cache key contains plaintext credential")
 	}
 }
+
+func TestDirectProviderIsConfiguredButUnverified(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.Model = "gpt-test"
+	cfg.LLM.BaseURL = "https://api.test/v1/chat/completions"
+	scenes, healthy := probeConfiguredScenes(context.Background(), cfg)
+	if !healthy {
+		t.Fatal("configured direct provider should remain ready")
+	}
+	health := scenes[config.LLMSceneTaskPlanner]
+	if !health.Configured || !health.Healthy || health.Verified || health.Status != "configured_unverified" {
+		t.Fatalf("health = %+v", health)
+	}
+	if AllScenesVerified(scenes) {
+		t.Fatal("direct provider must not be reported as verified")
+	}
+}
+
+func TestAllScenesVerified(t *testing.T) {
+	scenes := map[string]SceneHealth{
+		"planner": {Healthy: true, Verified: true, Status: "ready"},
+		"writer":  {Healthy: true, Verified: true, Status: "ready"},
+	}
+	if !AllScenesVerified(scenes) {
+		t.Fatal("all scenes should be verified")
+	}
+	scenes["writer"] = SceneHealth{Healthy: true, Status: "configured_unverified"}
+	if AllScenesVerified(scenes) {
+		t.Fatal("unverified scene was ignored")
+	}
+}

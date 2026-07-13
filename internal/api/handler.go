@@ -106,11 +106,12 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 		defer cancel()
 		scenes, healthy := llmcore.CheckConfiguredScenes(ctx)
+		verified := llmcore.AllScenesVerified(scenes)
 		status := http.StatusOK
 		if !healthy {
 			status = http.StatusServiceUnavailable
 		}
-		c.JSON(status, gin.H{"ready": healthy, "llm_scenes": scenes})
+		c.JSON(status, gin.H{"ready": healthy, "llm_verified": verified, "llm_scenes": scenes})
 	})
 
 	return h

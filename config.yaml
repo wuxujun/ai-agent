@@ -86,6 +86,10 @@ llm:
   # Request timeout in seconds.
   # Env override: AI_AGENT_LLM_TIMEOUT_SECONDS
   timeout_seconds: 30
+  # Runtime resilience. Set any value to 0 to disable that guard.
+  circuit_breaker_failure_threshold: 5
+  circuit_breaker_cooldown_seconds: 30
+  retry_budget_per_minute: 60
   context_compression_trace_threshold: 8
   # Optional: also trigger context compression when accumulated trace tokens exceed
   # this total. 0 (default) disables the token-based trigger; useful for tasks that

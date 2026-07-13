@@ -353,7 +353,7 @@ final_answer=excluded.final_answer
 			copy(taskSnap.Unresolved, task.Unresolved)
 
 			go func() {
-				asyncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				asyncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 				defer cancel()
 				mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
 				if err != nil {

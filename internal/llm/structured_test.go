@@ -43,12 +43,11 @@ func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 	}))
 	fake := &fallbackCaller{}
 	capture := &captureObserver{}
-	t.Cleanup(RegisterStructuredCaller(fake))
-	t.Cleanup(RegisterObserver(capture))
+	runtime := NewRuntime(fake, capture)
 	var output struct {
 		Answer string `json:"answer"`
 	}
-	usage, err := CallJSON(context.Background(), Config{Scene: "primary", Provider: "openai", Model: "primary", FallbackScene: "fallback"}, "system", "user", nil, &output)
+	usage, err := runtime.CallJSON(context.Background(), Config{Scene: "primary", Provider: "openai", Model: "primary", FallbackScene: "fallback"}, "system", "user", nil, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +61,8 @@ func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 
 func TestCallJSONRetriesAndBudgetPolicy(t *testing.T) {
 	fake := &retryCaller{}
-	t.Cleanup(RegisterStructuredCaller(fake))
-	usage, err := CallJSON(context.Background(), Config{Scene: "retry", Provider: "openai", Model: "model", MaxRetries: 1}, "", "", nil, &struct{}{})
+	runtime := NewRuntime(fake, nil)
+	usage, err := runtime.CallJSON(context.Background(), Config{Scene: "retry", Provider: "openai", Model: "model", MaxRetries: 1}, "", "", nil, &struct{}{})
 	if err != nil || fake.calls != 2 || usage.TotalTokens != 5 {
 		t.Fatalf("calls=%d usage=%+v err=%v", fake.calls, usage, err)
 	}
@@ -79,45 +78,63 @@ func TestCallJSONRetriesAndBudgetPolicy(t *testing.T) {
 func structuredTestPtr[T any](value T) *T { return &value }
 
 func TestRegisterStructuredCallerRestoreIsIdempotent(t *testing.T) {
-	callerMu.RLock()
-	original := caller
-	callerMu.RUnlock()
+	original := &fallbackCaller{}
+	runtime := NewRuntime(original, nil)
 	fake := &retryCaller{}
-	restore := RegisterStructuredCaller(fake)
+	restore := runtime.registerCaller(fake)
 	restore()
 	restore()
-	callerMu.RLock()
-	active := caller
-	callerMu.RUnlock()
+	runtime.mu.RLock()
+	active := runtime.caller
+	runtime.mu.RUnlock()
 	if active != original {
 		t.Fatal("caller was not restored")
 	}
 }
 
 func TestStaleCallerRestoreDoesNotOverwriteNewRegistration(t *testing.T) {
-	callerMu.RLock()
-	original := caller
-	callerMu.RUnlock()
+	original := &retryCaller{}
+	runtime := NewRuntime(original, nil)
 	first := &retryCaller{}
 	second := &fallbackCaller{}
-	restoreFirst := RegisterStructuredCaller(first)
-	restoreSecond := RegisterStructuredCaller(second)
+	restoreFirst := runtime.registerCaller(first)
+	restoreSecond := runtime.registerCaller(second)
 	restoreFirst()
-	callerMu.RLock()
-	active := caller
-	callerMu.RUnlock()
+	runtime.mu.RLock()
+	active := runtime.caller
+	runtime.mu.RUnlock()
 	if active != second {
 		t.Fatal("stale restore overwrote newer caller")
 	}
 	restoreSecond()
-	RegisterStructuredCaller(original)
+	if runtime.caller != first {
+		t.Fatal("newer restore did not reinstate its previous caller")
+	}
 }
 
-func TestRegisterStructuredCallerRejectsNil(t *testing.T) {
+func TestNewRuntimeRejectsNilCaller(t *testing.T) {
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected nil caller registration to panic")
 		}
 	}()
-	RegisterStructuredCaller(nil)
+	NewRuntime(nil, nil)
+}
+
+func TestContextRuntimeRoutesPackageCallAndObservation(t *testing.T) {
+	fake := &retryCaller{}
+	capture := &captureObserver{}
+	runtime := NewRuntime(fake, capture)
+	ctx := WithRuntime(context.Background(), runtime)
+
+	usage, err := CallJSON(ctx, Config{Scene: "context-runtime", Provider: "openai", Model: "model", MaxRetries: 1}, "", "", nil, &struct{}{})
+	if err != nil || fake.calls != 2 || usage.TotalTokens != 5 {
+		t.Fatalf("calls=%d usage=%+v err=%v", fake.calls, usage, err)
+	}
+	if len(capture.events) != 1 || capture.events[0].Scene != "context-runtime" || capture.events[0].Attempts != 2 {
+		t.Fatalf("observer events = %+v", capture.events)
+	}
+	if RuntimeFromContext(ctx) != runtime {
+		t.Fatal("context runtime was not resolved")
+	}
 }

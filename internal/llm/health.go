@@ -43,6 +43,8 @@ type SceneHealth struct {
 	GatewayReachable *bool  `json:"gateway_reachable,omitempty"`
 	ModelAvailable   *bool  `json:"model_available,omitempty"`
 	Healthy          bool   `json:"healthy"`
+	Verified         bool   `json:"verified"`
+	Status           string `json:"status"`
 	Error            string `json:"error,omitempty"`
 }
 
@@ -96,7 +98,8 @@ func probeConfiguredScenes(ctx context.Context, cfg *config.Config) (map[string]
 			Provider:   resolved.Provider,
 			Model:      resolved.Model,
 			Configured: resolved.Provider != "" && resolved.Model != "",
-			Healthy:    true,
+			Healthy:    resolved.Provider != "" && resolved.Model != "",
+			Status:     "configured_unverified",
 		}
 		if resolved.Provider == "litellm" {
 			healthURL, err := liteLLMHealthURL(resolved.BaseURL)
@@ -115,16 +118,27 @@ func probeConfiguredScenes(ctx context.Context, cfg *config.Config) (map[string]
 				_, available := probe.models[resolved.Model]
 				health.ModelAvailable = boolPtr(available)
 				health.Healthy = health.Configured && probe.gatewayReachable && available
+				health.Verified = health.Healthy
+				if health.Healthy {
+					health.Status = "ready"
+				}
 				err = probe.err
 			}
 			if err != nil {
 				health.Healthy = false
+				health.Verified = false
+				health.Status = "unhealthy"
 				health.Error = err.Error()
 			}
 		}
 		if !health.Configured {
 			health.Healthy = false
+			health.Verified = false
+			health.Status = "unhealthy"
 			health.Error = "provider and model must be configured"
+		}
+		if resolved.Provider == "litellm" && !health.Healthy {
+			health.Status = "unhealthy"
 		}
 		if !health.Healthy {
 			allHealthy = false
@@ -132,6 +146,18 @@ func probeConfiguredScenes(ctx context.Context, cfg *config.Config) (map[string]
 		result[scene] = health
 	}
 	return result, allHealthy
+}
+
+func AllScenesVerified(scenes map[string]SceneHealth) bool {
+	if len(scenes) == 0 {
+		return false
+	}
+	for _, health := range scenes {
+		if !health.Verified {
+			return false
+		}
+	}
+	return true
 }
 
 func storeSceneHealth(cacheKey string, result map[string]SceneHealth, healthy bool) {

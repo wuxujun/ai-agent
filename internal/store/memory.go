@@ -77,7 +77,7 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 				m.mu.Unlock()
 			}()
 
-			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 
 			mem, err := memory.CreateMemoryFromTask(bgCtx, &cloned)
@@ -250,8 +250,6 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 	)
 	return res, nil
 }
-
-
 
 func keywordOverlap(query, text string) float32 {
 	qWords := strings.Fields(strings.ToLower(query))

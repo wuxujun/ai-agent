@@ -315,6 +315,21 @@ func TestValidateLLMScenes(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNegativeLLMResilienceValues(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.LLM.CircuitBreakerFailureThreshold = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative circuit breaker validation error")
+	}
+	cfg.LLM.CircuitBreakerFailureThreshold = 0
+	cfg.LLM.RetryBudgetPerMinute = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative retry budget validation error")
+	}
+}
+
 func testPtr[T any](value T) *T { return &value }
 
 func TestConfigFileProviderWinsOverCredentialAutoDetection(t *testing.T) {

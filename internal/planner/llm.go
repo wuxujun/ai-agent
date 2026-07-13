@@ -208,10 +208,18 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	primaryStarted := time.Now()
 	primaryAttempts := 0
 	var primaryUsage types.TokenUsage
+	primaryResilience := llmcore.ConfigForScene(p.Scene)
+	primaryResilience.Provider = string(provider)
+	primaryResilience.Model = model
+	primaryResilience.BaseURL = baseURL
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		primaryAttempts++
+		if err = llmcore.BeforeAttempt(ctx, primaryResilience); err != nil {
+			break
+		}
 		var attemptUsage types.TokenUsage
 		textValue, attemptUsage, err = prov.Plan(ctx, req, onChunk)
+		llmcore.RecordAttempt(ctx, primaryResilience, err)
 		usage.PromptTokens += attemptUsage.PromptTokens
 		usage.CompletionTokens += attemptUsage.CompletionTokens
 		usage.TotalTokens += attemptUsage.TotalTokens
@@ -224,12 +232,16 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		if attempt == maxRetries || !llmcore.IsRetryable(err) {
 			break
 		}
+		if budgetErr := llmcore.ConsumeRetry(ctx, primaryResilience.RetryBudgetPerMinute, err); budgetErr != nil {
+			err = budgetErr
+			break
+		}
 		if waitErr := llmcore.WaitRetry(ctx, attempt, err); waitErr != nil {
 			err = waitErr
 			break
 		}
 	}
-	llmcore.Observe(llmcore.CallEvent{Scene: p.Scene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != ""})
+	llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: p.Scene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != ""})
 	activeFallback := fallbackScene
 	for err != nil && activeFallback != "" {
 		span.SetAttributes(attribute.Bool("llm.fallback.triggered", true), attribute.String("llm.fallback.scene", activeFallback))
@@ -242,10 +254,15 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			fallbackStarted := time.Now()
 			fallbackAttempts := 0
 			var sceneUsage types.TokenUsage
+			fallbackResilience := llmcore.ConfigForScene(activeFallback)
 			for attempt := 0; attempt <= fallback.MaxRetries; attempt++ {
 				fallbackAttempts++
+				if err = llmcore.BeforeAttempt(ctx, fallbackResilience); err != nil {
+					break
+				}
 				var fallbackUsage types.TokenUsage
 				textValue, fallbackUsage, err = fallbackProvider.Plan(ctx, fallbackReq, onChunk)
+				llmcore.RecordAttempt(ctx, fallbackResilience, err)
 				usage.PromptTokens += fallbackUsage.PromptTokens
 				usage.CompletionTokens += fallbackUsage.CompletionTokens
 				usage.TotalTokens += fallbackUsage.TotalTokens
@@ -258,15 +275,19 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 				if attempt == fallback.MaxRetries || !llmcore.IsRetryable(err) {
 					break
 				}
+				if budgetErr := llmcore.ConsumeRetry(ctx, fallbackResilience.RetryBudgetPerMinute, err); budgetErr != nil {
+					err = budgetErr
+					break
+				}
 				if waitErr := llmcore.WaitRetry(ctx, attempt, err); waitErr != nil {
 					err = waitErr
 					break
 				}
 			}
-			llmcore.Observe(llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Usage: sceneUsage, Duration: time.Since(fallbackStarted), Err: err, Attempts: fallbackAttempts, FallbackUsed: err != nil && fallback.FallbackScene != ""})
+			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Usage: sceneUsage, Duration: time.Since(fallbackStarted), Err: err, Attempts: fallbackAttempts, FallbackUsed: err != nil && fallback.FallbackScene != ""})
 		} else {
 			err = lookupErr
-			llmcore.Observe(llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Err: err, Attempts: 1, FallbackUsed: fallback.FallbackScene != ""})
+			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Err: err, Attempts: 1, FallbackUsed: fallback.FallbackScene != ""})
 		}
 		activeFallback = fallback.FallbackScene
 	}

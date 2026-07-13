@@ -39,6 +39,9 @@ func IsRetryable(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	if isResilienceStop(err) {
+		return false
+	}
 	var statusErr *HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return statusErr.StatusCode == 408 || statusErr.StatusCode == 429 || statusErr.StatusCode >= 500
