@@ -58,15 +58,15 @@ type Config struct {
 	} `mapstructure:"orchestrator"`
 
 	LLM struct {
-		Provider                         string                       `mapstructure:"provider"`
-		APIKey                           string                       `mapstructure:"api_key"`
-		OpenAIAPIKey                     string                       `mapstructure:"openai_api_key"`
-		GeminiAPIKey                     string                       `mapstructure:"gemini_api_key"`
-		GoogleAPIKey                     string                       `mapstructure:"google_api_key"`
-		Model                            string                       `mapstructure:"model"`
-		BaseURL                          string                       `mapstructure:"base_url"`
-		TimeoutSeconds                   int                          `mapstructure:"timeout_seconds"`
-		ContextCompressionTraceThreshold int                          `mapstructure:"context_compression_trace_threshold"`
+		Provider                         string `mapstructure:"provider"`
+		APIKey                           string `mapstructure:"api_key"`
+		OpenAIAPIKey                     string `mapstructure:"openai_api_key"`
+		GeminiAPIKey                     string `mapstructure:"gemini_api_key"`
+		GoogleAPIKey                     string `mapstructure:"google_api_key"`
+		Model                            string `mapstructure:"model"`
+		BaseURL                          string `mapstructure:"base_url"`
+		TimeoutSeconds                   int    `mapstructure:"timeout_seconds"`
+		ContextCompressionTraceThreshold int    `mapstructure:"context_compression_trace_threshold"`
 		// ContextCompressionTokenThreshold triggers compression when the sum of
 		// all TotalTokens across task.Trace exceeds this value, regardless of
 		// step count. 0 disables the token-based trigger.
@@ -114,16 +114,18 @@ type Config struct {
 }
 
 // LLMEndpointConfig is a provider/model profile used by a specific LLM scene.
-// Empty fields inherit from llm.gateway and then from the legacy llm settings.
+// Empty provider/model fields inherit from llm.gateway and then from the legacy
+// llm settings. Pointer policy fields distinguish omission from an explicit
+// zero value that clears a gateway default.
 type LLMEndpointConfig struct {
-	Provider           string `mapstructure:"provider"`
-	APIKey             string `mapstructure:"api_key"`
-	Model              string `mapstructure:"model"`
-	BaseURL            string `mapstructure:"base_url"`
-	TimeoutSeconds     int    `mapstructure:"timeout_seconds"`
-	FallbackScene      string `mapstructure:"fallback_scene"`
-	MaxRetries         int    `mapstructure:"max_retries"`
-	MinRemainingTokens int    `mapstructure:"min_remaining_tokens"`
+	Provider           string  `mapstructure:"provider"`
+	APIKey             string  `mapstructure:"api_key"`
+	Model              string  `mapstructure:"model"`
+	BaseURL            string  `mapstructure:"base_url"`
+	TimeoutSeconds     int     `mapstructure:"timeout_seconds"`
+	FallbackScene      *string `mapstructure:"fallback_scene"`
+	MaxRetries         *int    `mapstructure:"max_retries"`
+	MinRemainingTokens *int    `mapstructure:"min_remaining_tokens"`
 }
 
 type ResolvedLLMConfig struct {
@@ -171,8 +173,9 @@ const (
 // mu guards globalConfig for concurrent reads/writes.
 // Hot path: RLock for Get(); Cold path: Lock for Reload().
 var (
-	mu           sync.RWMutex
-	globalConfig *Config
+	mu             sync.RWMutex
+	globalConfig   *Config
+	configRevision uint64
 )
 
 // setupViper registers file paths, env-var bindings, and default values on the
@@ -304,6 +307,7 @@ func LoadConfig() *Config {
 	}
 
 	globalConfig = c
+	configRevision++
 	return globalConfig
 }
 
@@ -312,6 +316,66 @@ func LoadConfig() *Config {
 // calls — always call Get() at the point of use to pick up live updates.
 func Get() *Config {
 	return LoadConfig()
+}
+
+// OverrideForTesting replaces the global configuration with a cloned snapshot
+// and returns an idempotent restore function. It is intended for tests that
+// need a temporary configuration without mutating the shared object returned
+// by Get. A stale restore cannot overwrite a newer reload or override.
+func OverrideForTesting(mutate func(*Config)) func() {
+	if mutate == nil {
+		panic("config: nil test override")
+	}
+	_ = Get()
+	mu.Lock()
+	previous := globalConfig
+	replacement := cloneConfig(previous)
+	mutate(replacement)
+	globalConfig = replacement
+	configRevision++
+	revision := configRevision
+	mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if configRevision == revision {
+				globalConfig = previous
+				configRevision++
+			}
+		})
+	}
+}
+
+func cloneConfig(source *Config) *Config {
+	if source == nil {
+		return &Config{}
+	}
+	cloned := *source
+	cloned.LLM.Gateway = cloneLLMEndpoint(source.LLM.Gateway)
+	cloned.LLM.Scenes = make(map[string]LLMEndpointConfig, len(source.LLM.Scenes))
+	for scene, endpoint := range source.LLM.Scenes {
+		cloned.LLM.Scenes[scene] = cloneLLMEndpoint(endpoint)
+	}
+	return &cloned
+}
+
+func cloneLLMEndpoint(source LLMEndpointConfig) LLMEndpointConfig {
+	cloned := source
+	if source.FallbackScene != nil {
+		value := *source.FallbackScene
+		cloned.FallbackScene = &value
+	}
+	if source.MaxRetries != nil {
+		value := *source.MaxRetries
+		cloned.MaxRetries = &value
+	}
+	if source.MinRemainingTokens != nil {
+		value := *source.MinRemainingTokens
+		cloned.MinRemainingTokens = &value
+	}
+	return cloned
 }
 
 // Reload re-reads the configuration file and environment variables, atomically
@@ -342,6 +406,7 @@ func Reload() (*Config, []string, error) {
 	// Build a human-readable, redacted diff before swapping.
 	changes := diffConfigs(globalConfig, newCfg)
 	globalConfig = newCfg
+	configRevision++
 
 	if len(changes) == 0 {
 		logger.Info("reload complete, no changes detected")
@@ -601,14 +666,14 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 		if v.TimeoutSeconds > 0 {
 			timeout = v.TimeoutSeconds
 		}
-		if v.FallbackScene != "" {
-			fallbackScene = v.FallbackScene
+		if v.FallbackScene != nil {
+			fallbackScene = *v.FallbackScene
 		}
-		if v.MaxRetries > 0 {
-			maxRetries = v.MaxRetries
+		if v.MaxRetries != nil {
+			maxRetries = *v.MaxRetries
 		}
-		if v.MinRemainingTokens > 0 {
-			minRemainingTokens = v.MinRemainingTokens
+		if v.MinRemainingTokens != nil {
+			minRemainingTokens = *v.MinRemainingTokens
 		}
 	}
 
@@ -643,6 +708,15 @@ func (c *Config) Validate() error {
 			return false
 		}
 	}
+	validatePolicy := func(name string, endpoint LLMEndpointConfig) error {
+		if (endpoint.MaxRetries != nil && *endpoint.MaxRetries < 0) || (endpoint.MinRemainingTokens != nil && *endpoint.MinRemainingTokens < 0) {
+			return fmt.Errorf("%s retry and token policy values must be >= 0", name)
+		}
+		return nil
+	}
+	if err := validatePolicy("llm.gateway", c.LLM.Gateway); err != nil {
+		return err
+	}
 	check := func(scene string) error {
 		resolved := c.ResolveLLMScene(scene)
 		if !validProvider(resolved.Provider) {
@@ -664,8 +738,8 @@ func (c *Config) Validate() error {
 	}
 	for scene := range c.LLM.Scenes {
 		raw := c.LLM.Scenes[scene]
-		if raw.MaxRetries < 0 || raw.MinRemainingTokens < 0 {
-			return fmt.Errorf("llm scene %q retry and token policy values must be >= 0", scene)
+		if err := validatePolicy(fmt.Sprintf("llm scene %q", scene), raw); err != nil {
+			return err
 		}
 		if err := check(scene); err != nil {
 			return err

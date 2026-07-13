@@ -212,22 +212,73 @@ func TestResolveLLMScene(t *testing.T) {
 	cfg.LLM.OpenAIAPIKey = "openai-key"
 	cfg.LLM.TimeoutSeconds = 30
 	cfg.LLM.Gateway = LLMEndpointConfig{
-		Provider: "litellm",
-		APIKey:   "gateway-key",
-		BaseURL:  "http://litellm:4000/v1/chat/completions",
+		Provider:           "litellm",
+		APIKey:             "gateway-key",
+		BaseURL:            "http://litellm:4000/v1/chat/completions",
+		FallbackScene:      testPtr("gateway-fallback"),
+		MaxRetries:         testPtr(3),
+		MinRemainingTokens: testPtr(2000),
 	}
 	cfg.LLM.Scenes = map[string]LLMEndpointConfig{
-		LLMSceneMultiAgentWriter: {Model: "agent-writer", TimeoutSeconds: 60},
-		LLMSceneEmbedding:        {Model: "agent-embedding", BaseURL: "http://litellm:4000/v1/embeddings"},
+		LLMSceneMultiAgentWriter: {
+			Model:              "agent-writer",
+			TimeoutSeconds:     60,
+			FallbackScene:      testPtr(""),
+			MaxRetries:         testPtr(0),
+			MinRemainingTokens: testPtr(0),
+		},
+		LLMSceneEmbedding: {Model: "agent-embedding", BaseURL: "http://litellm:4000/v1/embeddings"},
 	}
 
 	writer := cfg.ResolveLLMScene(LLMSceneMultiAgentWriter)
 	if writer.Provider != "litellm" || writer.Model != "agent-writer" || writer.APIKey != "gateway-key" || writer.TimeoutSeconds != 60 {
 		t.Fatalf("unexpected writer scene: %+v", writer)
 	}
+	if writer.FallbackScene != "" || writer.MaxRetries != 0 || writer.MinRemainingTokens != 0 {
+		t.Fatalf("scene did not clear gateway policy: %+v", writer)
+	}
 	embedding := cfg.ResolveLLMScene(LLMSceneEmbedding)
 	if embedding.Model != "agent-embedding" || embedding.BaseURL != "http://litellm:4000/v1/embeddings" {
 		t.Fatalf("unexpected embedding scene: %+v", embedding)
+	}
+}
+
+func TestOverrideForTestingUsesIsolatedSnapshot(t *testing.T) {
+	original := Get()
+	retryCount := 2
+	restore := OverrideForTesting(func(cfg *Config) {
+		cfg.API.APIKey = "override-key"
+		cfg.LLM.Scenes = map[string]LLMEndpointConfig{
+			"isolated": {Model: "test-model", MaxRetries: &retryCount},
+		}
+	})
+	t.Cleanup(restore)
+
+	overridden := Get()
+	if overridden == original || overridden.API.APIKey != "override-key" {
+		t.Fatalf("override snapshot = %+v", overridden)
+	}
+	endpoint := overridden.LLM.Scenes["isolated"]
+	*endpoint.MaxRetries = 5
+	if _, exists := original.LLM.Scenes["isolated"]; exists {
+		t.Fatal("override mutated original scene map")
+	}
+
+	restore()
+	if Get() != original {
+		t.Fatal("restore did not reinstate original snapshot")
+	}
+}
+
+func TestCloneConfigCopiesEndpointPolicyPointers(t *testing.T) {
+	retries := 2
+	source := &Config{}
+	source.LLM.Scenes = map[string]LLMEndpointConfig{"scene": {MaxRetries: &retries}}
+	cloned := cloneConfig(source)
+	endpoint := cloned.LLM.Scenes["scene"]
+	*endpoint.MaxRetries = 5
+	if *source.LLM.Scenes["scene"].MaxRetries != 2 {
+		t.Fatal("clone shares endpoint policy pointer with source")
 	}
 }
 
@@ -246,18 +297,25 @@ func TestValidateLLMScenes(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid LiteLLM scene rejected: %v", err)
 	}
-	cfg.LLM.Scenes["writer"] = LLMEndpointConfig{Model: "writer", FallbackScene: "missing"}
+	cfg.LLM.Scenes["writer"] = LLMEndpointConfig{Model: "writer", FallbackScene: testPtr("missing")}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected unknown fallback scene validation error")
 	}
 	cfg.LLM.Scenes = map[string]LLMEndpointConfig{
-		"a": {Model: "a", FallbackScene: "b"},
-		"b": {Model: "b", FallbackScene: "a"},
+		"a": {Model: "a", FallbackScene: testPtr("b")},
+		"b": {Model: "b", FallbackScene: testPtr("a")},
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected fallback cycle validation error")
 	}
+	cfg.LLM.Scenes = nil
+	cfg.LLM.Gateway.MaxRetries = testPtr(-1)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative gateway retry validation error")
+	}
 }
+
+func testPtr[T any](value T) *T { return &value }
 
 func TestConfigFileProviderWinsOverCredentialAutoDetection(t *testing.T) {
 	resetConfig()
@@ -291,6 +349,20 @@ api:
   addr: "127.0.0.1:9999"
 store:
   type: "memory"
+llm:
+  provider: "litellm"
+  model: "default-model"
+  base_url: "http://litellm/v1/chat/completions"
+  gateway:
+    fallback_scene: "backup"
+    max_retries: 3
+    min_remaining_tokens: 2000
+  scenes:
+    writer:
+      model: "writer"
+      fallback_scene: ""
+      max_retries: 0
+      min_remaining_tokens: 0
 `)
 	if err := os.WriteFile(configPath, yamlContent, 0644); err != nil {
 		t.Fatal(err)
@@ -316,6 +388,10 @@ store:
 	}
 	if cfg.Store.Type != "memory" {
 		t.Errorf("expected store.type = memory, got %q", cfg.Store.Type)
+	}
+	writer := cfg.ResolveLLMScene("writer")
+	if writer.FallbackScene != "" || writer.MaxRetries != 0 || writer.MinRemainingTokens != 0 {
+		t.Fatalf("YAML explicit zero values did not clear gateway policy: %+v", writer)
 	}
 }
 

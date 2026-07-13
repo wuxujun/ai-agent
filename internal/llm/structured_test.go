@@ -38,23 +38,13 @@ func (r *retryCaller) CallJSON(_ context.Context, _ Config, _, _ string, _ map[s
 }
 
 func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
-	originalScenes := config.Get().LLM.Scenes
-	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{"fallback": {Model: "backup"}}
-	t.Cleanup(func() { config.Get().LLM.Scenes = originalScenes })
-	callerMu.Lock()
-	originalCaller := caller
-	originalObserver := observer
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{"fallback": {Model: "backup"}}
+	}))
 	fake := &fallbackCaller{}
 	capture := &captureObserver{}
-	caller = fake
-	observer = capture
-	callerMu.Unlock()
-	t.Cleanup(func() {
-		callerMu.Lock()
-		caller = originalCaller
-		observer = originalObserver
-		callerMu.Unlock()
-	})
+	t.Cleanup(RegisterStructuredCaller(fake))
+	t.Cleanup(RegisterObserver(capture))
 	var output struct {
 		Answer string `json:"answer"`
 	}
@@ -71,25 +61,63 @@ func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 }
 
 func TestCallJSONRetriesAndBudgetPolicy(t *testing.T) {
-	callerMu.Lock()
-	originalCaller := caller
 	fake := &retryCaller{}
-	caller = fake
-	callerMu.Unlock()
-	t.Cleanup(func() {
-		callerMu.Lock()
-		caller = originalCaller
-		callerMu.Unlock()
-	})
+	t.Cleanup(RegisterStructuredCaller(fake))
 	usage, err := CallJSON(context.Background(), Config{Scene: "retry", Provider: "openai", Model: "model", MaxRetries: 1}, "", "", nil, &struct{}{})
 	if err != nil || fake.calls != 2 || usage.TotalTokens != 5 {
 		t.Fatalf("calls=%d usage=%+v err=%v", fake.calls, usage, err)
 	}
-	originalScenes := config.Get().LLM.Scenes
-	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{"optional": {MinRemainingTokens: 20}}
-	t.Cleanup(func() { config.Get().LLM.Scenes = originalScenes })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{"optional": {MinRemainingTokens: structuredTestPtr(20)}}
+	}))
 	task := &types.Task{TokenBudget: 100, Trace: []types.StepTrace{{TokenUsage: types.TokenUsage{TotalTokens: 90}}}}
 	if AllowedForTask("optional", task) {
 		t.Fatal("optional scene should be skipped with only 10 tokens remaining")
 	}
+}
+
+func structuredTestPtr[T any](value T) *T { return &value }
+
+func TestRegisterStructuredCallerRestoreIsIdempotent(t *testing.T) {
+	callerMu.RLock()
+	original := caller
+	callerMu.RUnlock()
+	fake := &retryCaller{}
+	restore := RegisterStructuredCaller(fake)
+	restore()
+	restore()
+	callerMu.RLock()
+	active := caller
+	callerMu.RUnlock()
+	if active != original {
+		t.Fatal("caller was not restored")
+	}
+}
+
+func TestStaleCallerRestoreDoesNotOverwriteNewRegistration(t *testing.T) {
+	callerMu.RLock()
+	original := caller
+	callerMu.RUnlock()
+	first := &retryCaller{}
+	second := &fallbackCaller{}
+	restoreFirst := RegisterStructuredCaller(first)
+	restoreSecond := RegisterStructuredCaller(second)
+	restoreFirst()
+	callerMu.RLock()
+	active := caller
+	callerMu.RUnlock()
+	if active != second {
+		t.Fatal("stale restore overwrote newer caller")
+	}
+	restoreSecond()
+	RegisterStructuredCaller(original)
+}
+
+func TestRegisterStructuredCallerRejectsNil(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected nil caller registration to panic")
+		}
+	}()
+	RegisterStructuredCaller(nil)
 }

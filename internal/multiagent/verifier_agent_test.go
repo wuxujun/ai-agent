@@ -21,9 +21,9 @@ func (fixedVerifier) Verify(context.Context, string, string, []StepEvidence) (*V
 }
 
 func TestRunWritePhaseVerifierLowersConfidenceAndTracksUsage(t *testing.T) {
-	original := config.Get().LLM.Scenes
-	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneAnswerVerifier: {}}
-	t.Cleanup(func() { config.Get().LLM.Scenes = original })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneAnswerVerifier: {}}
+	}))
 	task := &types.Task{ID: "verify", Goal: "goal"}
 	c := &Coordinator{Writer: fixedWriter{}, Verifier: fixedVerifier{}}
 	confidence, err := c.runWritePhase(context.Background(), task, nil)

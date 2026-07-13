@@ -12,12 +12,12 @@ import (
 )
 
 func TestPlannerSceneRetriesPrimaryAndFallback(t *testing.T) {
-	originalScenes := config.Get().LLM.Scenes
-	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{
-		"primary":  {Provider: "openai-responses", Model: "primary", BaseURL: "http://primary.test/v1/responses", MaxRetries: 1, FallbackScene: "fallback"},
-		"fallback": {Provider: "openai-responses", Model: "fallback", BaseURL: "http://fallback.test/v1/responses", MaxRetries: 1},
-	}
-	t.Cleanup(func() { config.Get().LLM.Scenes = originalScenes })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"primary":  {Provider: "openai-responses", Model: "primary", BaseURL: "http://primary.test/v1/responses", MaxRetries: plannerTestPtr(1), FallbackScene: plannerTestPtr("fallback")},
+			"fallback": {Provider: "openai-responses", Model: "fallback", BaseURL: "http://fallback.test/v1/responses", MaxRetries: plannerTestPtr(1)},
+		}
+	}))
 	originalTransport := http.DefaultTransport
 	primaryCalls, fallbackCalls := 0, 0
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -43,3 +43,5 @@ func TestPlannerSceneRetriesPrimaryAndFallback(t *testing.T) {
 		t.Fatalf("decision=%+v primary_calls=%d fallback_calls=%d", decision, primaryCalls, fallbackCalls)
 	}
 }
+
+func plannerTestPtr[T any](value T) *T { return &value }

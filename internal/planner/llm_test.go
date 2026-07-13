@@ -177,9 +177,9 @@ func (s stubCompressor) Compress(context.Context, *types.Task) (string, types.To
 }
 
 func TestLLMPlannerIncludesCompressionUsage(t *testing.T) {
-	original := config.Get().LLM.Scenes
-	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneContextCompressor: {}}
-	t.Cleanup(func() { config.Get().LLM.Scenes = original })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneContextCompressor: {}}
+	}))
 	task := &types.Task{ID: "compress", Goal: "goal", MaxSteps: 10, ToolBudget: 10, Trace: make([]types.StepTrace, 8)}
 	body := `{"output":[{"content":[{"text":"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"answer\",\"actions\":[{\"action\":\"none\",\"parameters\":{}}]}"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}`
 	p := NewLLMPlannerWithProvider(ProviderOpenAIResponses, "key", "model", "https://llm.test/responses")
@@ -236,19 +236,13 @@ func TestUnmarshalDecisionFallback(t *testing.T) {
 // threshold, even when the step-count threshold has NOT been reached.
 func TestLLMPlannerTokenThresholdTrigger(t *testing.T) {
 	// Enable the context compressor scene.
-	origScenes := config.Get().LLM.Scenes
-	origTokenThr := config.Get().LLM.ContextCompressionTokenThreshold
-	origTraceThr := config.Get().LLM.ContextCompressionTraceThreshold
-	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneContextCompressor: {}}
-	// Set a very high trace threshold so only the token threshold fires.
-	config.Get().LLM.ContextCompressionTraceThreshold = 999
-	// Set token threshold to 100 tokens total.
-	config.Get().LLM.ContextCompressionTokenThreshold = 100
-	t.Cleanup(func() {
-		config.Get().LLM.Scenes = origScenes
-		config.Get().LLM.ContextCompressionTokenThreshold = origTokenThr
-		config.Get().LLM.ContextCompressionTraceThreshold = origTraceThr
-	})
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneContextCompressor: {}}
+		// Set a very high trace threshold so only the token threshold fires.
+		cfg.LLM.ContextCompressionTraceThreshold = 999
+		// Set token threshold to 100 tokens total.
+		cfg.LLM.ContextCompressionTokenThreshold = 100
+	}))
 
 	// Build a task with only 3 trace steps, but each carrying 40 tokens = 120 total > 100 threshold.
 	traces := []types.StepTrace{
@@ -271,4 +265,3 @@ func TestLLMPlannerTokenThresholdTrigger(t *testing.T) {
 		t.Fatalf("compressor calls = %d, want 1 (token threshold should have triggered compression)", calls)
 	}
 }
-

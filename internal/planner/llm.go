@@ -224,7 +224,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		if attempt == maxRetries || !llmcore.IsRetryable(err) {
 			break
 		}
-		if waitErr := llmcore.WaitRetry(ctx, attempt); waitErr != nil {
+		if waitErr := llmcore.WaitRetry(ctx, attempt, err); waitErr != nil {
 			err = waitErr
 			break
 		}
@@ -258,7 +258,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 				if attempt == fallback.MaxRetries || !llmcore.IsRetryable(err) {
 					break
 				}
-				if waitErr := llmcore.WaitRetry(ctx, attempt); waitErr != nil {
+				if waitErr := llmcore.WaitRetry(ctx, attempt, err); waitErr != nil {
 					err = waitErr
 					break
 				}

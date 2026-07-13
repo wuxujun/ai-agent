@@ -71,9 +71,8 @@ func runHTTPPlan(req *http.Request, client *http.Client, parser func(*http.Respo
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		body := string(bodyBytes)
-		return "", types.TokenUsage{}, &llmcore.HTTPStatusError{StatusCode: resp.StatusCode, Body: body}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, (4<<10)+1))
+		return "", types.TokenUsage{}, llmcore.NewHTTPStatusError(resp.StatusCode, resp.Header, body)
 	}
 	return parser(resp, onChunk)
 }

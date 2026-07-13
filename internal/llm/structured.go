@@ -41,21 +41,59 @@ type CallEvent struct {
 type Observer interface{ ObserveLLMCall(CallEvent) }
 
 var (
-	callerMu sync.RWMutex
-	caller   StructuredCaller = nativeStructuredCaller{}
-	observer Observer
+	callerMu         sync.RWMutex
+	caller           StructuredCaller = nativeStructuredCaller{}
+	observer         Observer
+	callerRevision   uint64
+	observerRevision uint64
 )
 
-func RegisterStructuredCaller(value StructuredCaller) {
+// RegisterStructuredCaller replaces the process-wide caller and returns an
+// idempotent restore function. A stale restore cannot overwrite a caller that
+// was registered later.
+func RegisterStructuredCaller(value StructuredCaller) func() {
+	if value == nil {
+		panic("llm: cannot register a nil structured caller")
+	}
 	callerMu.Lock()
+	previous := caller
 	caller = value
+	callerRevision++
+	revision := callerRevision
 	callerMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			callerMu.Lock()
+			defer callerMu.Unlock()
+			if callerRevision == revision {
+				caller = previous
+				callerRevision++
+			}
+		})
+	}
 }
 
-func RegisterObserver(value Observer) {
+// RegisterObserver replaces the process-wide observer and returns an
+// idempotent restore function. Passing nil intentionally disables observation.
+func RegisterObserver(value Observer) func() {
 	callerMu.Lock()
+	previous := observer
 	observer = value
+	observerRevision++
+	revision := observerRevision
 	callerMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			callerMu.Lock()
+			defer callerMu.Unlock()
+			if observerRevision == revision {
+				observer = previous
+				observerRevision++
+			}
+		})
+	}
 }
 
 func ConfigForScene(scene string) Config {
@@ -118,7 +156,7 @@ func callJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, 
 		if attempt == cfg.MaxRetries || !IsRetryable(err) {
 			break
 		}
-		if waitErr := WaitRetry(ctx, attempt); waitErr != nil {
+		if waitErr := WaitRetry(ctx, attempt, err); waitErr != nil {
 			err = waitErr
 			break
 		}

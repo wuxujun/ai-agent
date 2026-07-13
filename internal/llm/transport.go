@@ -61,11 +61,7 @@ func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPr
 		return types.TokenUsage{}, fmt.Errorf("LLM response exceeds 4 MiB limit")
 	}
 	if resp.StatusCode >= 300 {
-		body := raw
-		if len(body) > 64<<10 {
-			body = body[:64<<10]
-		}
-		return types.TokenUsage{}, &HTTPStatusError{StatusCode: resp.StatusCode, Body: string(body)}
+		return types.TokenUsage{}, NewHTTPStatusError(resp.StatusCode, resp.Header, raw)
 	}
 	text, usage, err := extractStructuredResponse(responseKind, raw)
 	if err != nil {

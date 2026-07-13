@@ -20,6 +20,20 @@ AI_AGENT_LLM_API_KEY="$LITELLM_MASTER_KEY" \
 go run ./cmd/llm-eval -input Sample/llm-eval.jsonl
 ```
 
+Each case has a 30-second timeout by default. For CI, use JSON Lines output;
+the command exits with `0` when every case passes, `1` for evaluation failures,
+and `2` for invalid arguments or input:
+
+```bash
+go run ./cmd/llm-eval \
+  -input Sample/llm-eval.jsonl \
+  -timeout 45s \
+  -format json
+```
+
+Use `-max-line-bytes` when an evaluation case must exceed the default 4 MiB
+JSONL line limit.
+
 The repository root `.env` is loaded by the server even when it starts from
 `deploy/e2e`. Explicit `AI_AGENT_LLM_PROVIDER=litellm` is therefore required
 when the root `.env` selects another provider.

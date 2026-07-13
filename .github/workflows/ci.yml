@@ -21,19 +21,22 @@ jobs:
         run: |
           unformatted="$(find cmd internal -name '*.go' -type f -print0 | xargs -0 gofmt -l)"
           test -z "$unformatted"
+      - name: Static analysis
+        run: go vet ./...
       - name: Unit tests
         run: go test ./...
       - name: Race tests
-        run: go test -race ./internal/llm/... ./internal/planner/... ./internal/multiagent/... ./internal/orchestrator/...
+        run: go test -race ./cmd/llm-eval ./internal/...
       - name: Compose validation
         env:
           OPENAI_API_KEY: test-openai-key
           GEMINI_API_KEY: test-gemini-key
           LITELLM_MASTER_KEY: test-master-key
         run: docker compose -f deploy/litellm/compose.yaml config --quiet
-      - name: Hardcoded provider key check
+      - name: Hardcoded secret check
         run: |
-          if git grep -nE '(sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{20,})' -- ':!**/*_test.go' ':!records/**'; then
-            echo "Potential hardcoded provider key found"
+          pattern='(sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[A-Z0-9]{16})'
+          if git grep -nE "$pattern" -- ':!records/**'; then
+            echo "Potential hardcoded secret found"
             exit 1
           fi

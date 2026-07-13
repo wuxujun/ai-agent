@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -54,12 +53,13 @@ func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, decision *
 	return nil, nil
 }
 
-func setupTestRouter(st store.Store, eng *orchestrator.Engine) *gin.Engine {
+func setupTestRouter(t *testing.T, st store.Store, eng *orchestrator.Engine) *gin.Engine {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
-	// Clear the default API key loaded from config.yaml during tests to bypass auth,
-	// except when explicitly set to the test auth key.
-	if config.Get().API.APIKey != "my-test-secret-api-key" {
-		config.Get().API.APIKey = ""
+	if config.Get().API.APIKey != "" && config.Get().API.APIKey != "my-test-secret-api-key" {
+		t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+			cfg.API.APIKey = ""
+		}))
 	}
 	r := gin.New()
 	api.RegisterRoutes(r, st, eng, nil)
@@ -92,7 +92,7 @@ func waitForTaskStatus(t *testing.T, st store.Store, taskID string, want types.T
 
 func TestCancelTask_NotFound(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodDelete, "/api/tasks/non-existent/cancel", nil)
@@ -105,7 +105,7 @@ func TestCancelTask_NotFound(t *testing.T) {
 
 func TestCancelTask_NotRunning(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	task := &types.Task{
 		ID:     "task-1",
@@ -124,7 +124,7 @@ func TestCancelTask_NotRunning(t *testing.T) {
 
 func TestCancelTask_Orphaned(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	task := &types.Task{
 		ID:     "task-1",
@@ -161,7 +161,7 @@ func TestCancelTask_Active(t *testing.T) {
 		Executor: &mockExecutor{},
 		Store:    st,
 	}
-	r := setupTestRouter(st, engine)
+	r := setupTestRouter(t, st, engine)
 
 	task := &types.Task{
 		ID:         "task-active",
@@ -209,7 +209,7 @@ func TestCancelTask_Active(t *testing.T) {
 // making the token budget gate a dead branch.
 func TestCreateTaskPersistsTokenBudget(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	body := `{"id":"task-tb","goal":"x","workspace":"./testdata","max_steps":3,"tool_budget":3,"token_budget":2500}`
 
@@ -241,7 +241,7 @@ func TestCreateTaskPersistsTokenBudget(t *testing.T) {
 
 func TestCreateTask_AutoGenerateID(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	body := `{"goal":"x","workspace":"./testdata","max_steps":3,"tool_budget":3}`
 
@@ -271,7 +271,6 @@ func TestCreateTask_AutoGenerateID(t *testing.T) {
 	}
 }
 
-
 // TestRunAllAlreadyRunningInDBDoesNotLeakReservation covers the cleanup path
 // that #7 hardened: when the DB TryTransitionTaskStatus rejects (because the
 // task is already Running in the persisted store — possibly from a peer
@@ -288,7 +287,7 @@ func TestRunAllAlreadyRunningInDBDoesNotLeakReservation(t *testing.T) {
 		Executor: &mockExecutor{},
 		Store:    st,
 	}
-	r := setupTestRouter(st, engine)
+	r := setupTestRouter(t, st, engine)
 
 	// Simulate an unsupported persisted state. The status is not in the allowed
 	// transition set, so the
@@ -345,8 +344,8 @@ func TestRunLeaseBlocksPeerRunAndRunAll(t *testing.T) {
 	}
 	// Separate routers create separate Handler.activeTasks maps, simulating two
 	// service instances that coordinate only through the shared Store lease.
-	r1 := setupTestRouter(st, engine)
-	r2 := setupTestRouter(st, engine)
+	r1 := setupTestRouter(t, st, engine)
+	r2 := setupTestRouter(t, st, engine)
 
 	task := &types.Task{
 		ID:         "task-peer-lease",
@@ -418,7 +417,7 @@ func TestRunAllDuplicateActiveTaskReturnsConflict(t *testing.T) {
 		Executor: &mockExecutor{},
 		Store:    st,
 	}
-	r := setupTestRouter(st, engine)
+	r := setupTestRouter(t, st, engine)
 
 	task := &types.Task{
 		ID:         "task-duplicate",
@@ -455,7 +454,7 @@ func TestRunAllDuplicateActiveTaskReturnsConflict(t *testing.T) {
 // returns the approval payload.
 func TestApproveSinglePendingResolvesImplicitly(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	id, ch := orchestrator.RegisterApproval("task-approve-single", &types.ApprovalRequest{
 		TaskID: "task-approve-single",
@@ -497,7 +496,7 @@ func TestApproveSinglePendingResolvesImplicitly(t *testing.T) {
 // surface 409 with the pending IDs so the client can pick one.
 func TestApproveMultiPendingReturnsConflict(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	taskID := "task-approve-multi"
 	id1, _ := orchestrator.RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "first"})
@@ -545,7 +544,7 @@ func TestApproveMultiPendingReturnsConflict(t *testing.T) {
 // entry's channel must receive false, and the sibling must stay pending.
 func TestRejectByApprovalIDResolvesSpecificEntry(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	taskID := "task-reject-explicit"
 	id1, ch1 := orchestrator.RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "first"})
@@ -592,7 +591,7 @@ func TestRejectByApprovalIDResolvesSpecificEntry(t *testing.T) {
 // pending entry that happens to share the task.
 func TestApproveByApprovalIDNotFoundReturns404(t *testing.T) {
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	taskID := "task-approve-unknown-id"
 	id, ch := orchestrator.RegisterApproval(taskID, &types.ApprovalRequest{TaskID: taskID, Action: "real"})
@@ -621,20 +620,12 @@ func TestApproveByApprovalIDNotFoundReturns404(t *testing.T) {
 }
 
 func TestAuthMiddleware(t *testing.T) {
-	// Set the environment variable for testing
-	t.Setenv("AI_AGENT_API_KEY", "my-test-secret-api-key")
-	cfg, _, err := config.Reload()
-	if err != nil {
-		t.Fatalf("failed to reload config for test: %v", err)
-	}
-	t.Logf("Reloaded config APIKey: %q, Env: %q", cfg.API.APIKey, os.Getenv("AI_AGENT_API_KEY"))
-	defer func() {
-		t.Setenv("AI_AGENT_API_KEY", "")
-		_, _, _ = config.Reload()
-	}()
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = "my-test-secret-api-key"
+	}))
 
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	// Test 1: No Key provided -> 401
 	w1 := httptest.NewRecorder()
@@ -673,15 +664,12 @@ func TestAuthMiddleware(t *testing.T) {
 }
 
 func TestAuthMiddleware_FailClosed(t *testing.T) {
-	// Directly clear the global API key.
-	originalKey := config.Get().API.APIKey
-	config.Get().API.APIKey = ""
-	defer func() {
-		config.Get().API.APIKey = originalKey
-	}()
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = ""
+	}))
 
 	st := store.NewMemoryStore()
-	r := setupTestRouter(st, nil)
+	r := setupTestRouter(t, st, nil)
 
 	// Temporarily switch mode to DebugMode so the test-bypass is not triggered.
 	originalMode := gin.Mode()
@@ -715,7 +703,7 @@ func TestRunTaskStep_Streaming(t *testing.T) {
 			Token:  chunk,
 		})
 	}
-	r := setupTestRouter(st, engine)
+	r := setupTestRouter(t, st, engine)
 
 	task := &types.Task{
 		ID:         "task-stream-run",
@@ -761,7 +749,7 @@ func TestRunAll_Streaming(t *testing.T) {
 			Token:  chunk,
 		})
 	}
-	r := setupTestRouter(st, engine)
+	r := setupTestRouter(t, st, engine)
 
 	task := &types.Task{
 		ID:         "task-stream-runall",

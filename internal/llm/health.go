@@ -2,7 +2,11 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -33,9 +37,19 @@ type healthCheckResult struct {
 }
 
 type SceneHealth struct {
-	Provider string `json:"provider"`
-	Healthy  bool   `json:"healthy"`
-	Error    string `json:"error,omitempty"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	Configured       bool   `json:"configured"`
+	GatewayReachable *bool  `json:"gateway_reachable,omitempty"`
+	ModelAvailable   *bool  `json:"model_available,omitempty"`
+	Healthy          bool   `json:"healthy"`
+	Error            string `json:"error,omitempty"`
+}
+
+type liteLLMProbeResult struct {
+	gatewayReachable bool
+	models           map[string]struct{}
+	err              error
 }
 
 func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
@@ -71,49 +85,49 @@ func cachedSceneHealth(cacheKey string) (map[string]SceneHealth, bool, bool) {
 func probeConfiguredScenes(ctx context.Context, cfg *config.Config) (map[string]SceneHealth, bool) {
 	result := make(map[string]SceneHealth, len(cfg.LLM.Scenes)+1)
 	allHealthy := true
-	probed := make(map[string]SceneHealth)
+	probed := make(map[string]liteLLMProbeResult)
 	scenes := map[string]struct{}{config.LLMSceneTaskPlanner: {}}
 	for scene := range cfg.LLM.Scenes {
 		scenes[scene] = struct{}{}
 	}
 	for scene := range scenes {
 		resolved := cfg.ResolveLLMScene(scene)
-		health := SceneHealth{Provider: resolved.Provider, Healthy: true}
+		health := SceneHealth{
+			Provider:   resolved.Provider,
+			Model:      resolved.Model,
+			Configured: resolved.Provider != "" && resolved.Model != "",
+			Healthy:    true,
+		}
 		if resolved.Provider == "litellm" {
 			healthURL, err := liteLLMHealthURL(resolved.BaseURL)
-			if cached, ok := probed[healthURL]; ok && err == nil {
-				health = cached
-				result[scene] = health
-				if !health.Healthy {
-					allHealthy = false
-				}
-				continue
+			modelsURL, modelsURLErr := liteLLMModelsURL(resolved.BaseURL)
+			if err == nil {
+				err = modelsURLErr
 			}
 			if err == nil {
-				req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-				if reqErr == nil {
-					if resolved.APIKey != "" {
-						req.Header.Set("Authorization", "Bearer "+resolved.APIKey)
-					}
-					client := telemetry.NewHTTPClient(minDuration(time.Duration(resolved.TimeoutSeconds)*time.Second, 3*time.Second))
-					resp, callErr := client.Do(req)
-					if callErr == nil {
-						_ = resp.Body.Close()
-						if resp.StatusCode >= 300 {
-							callErr = fmt.Errorf("health status %d", resp.StatusCode)
-						}
-					}
-					err = callErr
-				} else {
-					err = reqErr
+				probeKey := healthURL + "|" + apiKeyFingerprint(resolved.APIKey)
+				probe, ok := probed[probeKey]
+				if !ok {
+					probe = probeLiteLLM(ctx, healthURL, modelsURL, resolved.APIKey, time.Duration(resolved.TimeoutSeconds)*time.Second)
+					probed[probeKey] = probe
 				}
+				health.GatewayReachable = boolPtr(probe.gatewayReachable)
+				_, available := probe.models[resolved.Model]
+				health.ModelAvailable = boolPtr(available)
+				health.Healthy = health.Configured && probe.gatewayReachable && available
+				err = probe.err
 			}
 			if err != nil {
 				health.Healthy = false
 				health.Error = err.Error()
-				allHealthy = false
 			}
-			probed[healthURL] = health
+		}
+		if !health.Configured {
+			health.Healthy = false
+			health.Error = "provider and model must be configured"
+		}
+		if !health.Healthy {
+			allHealthy = false
 		}
 		result[scene] = health
 	}
@@ -141,7 +155,7 @@ func healthConfigKey(cfg *config.Config) string {
 	var key strings.Builder
 	for _, scene := range names {
 		resolved := cfg.ResolveLLMScene(scene)
-		fmt.Fprintf(&key, "%s|%s|%s;", scene, resolved.Provider, resolved.BaseURL)
+		fmt.Fprintf(&key, "%s|%s|%s|%s|%s;", scene, resolved.Provider, resolved.Model, resolved.BaseURL, apiKeyFingerprint(resolved.APIKey))
 	}
 	return key.String()
 }
@@ -155,6 +169,14 @@ func cloneSceneHealth(source map[string]SceneHealth) map[string]SceneHealth {
 }
 
 func liteLLMHealthURL(baseURL string) (string, error) {
+	return liteLLMRootURL(baseURL, "/health/liveliness")
+}
+
+func liteLLMModelsURL(baseURL string) (string, error) {
+	return liteLLMRootURL(baseURL, "/v1/models")
+}
+
+func liteLLMRootURL(baseURL, endpoint string) (string, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("invalid LiteLLM base URL %q", baseURL)
@@ -163,10 +185,66 @@ func liteLLMHealthURL(baseURL string) (string, error) {
 	if index := strings.Index(path, "/v1/"); index >= 0 {
 		path = path[:index]
 	}
-	parsed.Path = strings.TrimSuffix(path, "/") + "/health/liveliness"
+	parsed.Path = strings.TrimSuffix(path, "/") + endpoint
 	parsed.RawQuery = ""
 	return parsed.String(), nil
 }
+
+func probeLiteLLM(ctx context.Context, healthURL, modelsURL, apiKey string, timeout time.Duration) liteLLMProbeResult {
+	client := telemetry.NewHTTPClient(minDuration(timeout, 3*time.Second))
+	return probeLiteLLMWithClient(ctx, client, healthURL, modelsURL, apiKey)
+}
+
+func probeLiteLLMWithClient(ctx context.Context, client *http.Client, healthURL, modelsURL, apiKey string) liteLLMProbeResult {
+	if err := getLiteLLM(ctx, client, healthURL, apiKey, nil); err != nil {
+		return liteLLMProbeResult{err: fmt.Errorf("gateway health: %w", err)}
+	}
+	var response struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := getLiteLLM(ctx, client, modelsURL, apiKey, &response); err != nil {
+		return liteLLMProbeResult{gatewayReachable: true, err: fmt.Errorf("model listing: %w", err)}
+	}
+	models := make(map[string]struct{}, len(response.Data))
+	for _, model := range response.Data {
+		models[model.ID] = struct{}{}
+	}
+	return liteLLMProbeResult{gatewayReachable: true, models: models}
+}
+
+func getLiteLLM(ctx context.Context, client *http.Client, endpoint, apiKey string, output any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	if output == nil {
+		return nil
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(output); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+func apiKeyFingerprint(apiKey string) string {
+	sum := sha256.Sum256([]byte(apiKey))
+	return hex.EncodeToString(sum[:8])
+}
+
+func boolPtr(value bool) *bool { return &value }
 
 func minDuration(a, b time.Duration) time.Duration {
 	if a < b {
