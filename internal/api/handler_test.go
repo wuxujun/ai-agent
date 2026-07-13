@@ -792,6 +792,77 @@ func TestAuthMiddleware(t *testing.T) {
 	}
 }
 
+func TestTenantAuthenticationAndTaskIsolation(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = "my-test-secret-api-key"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "tenant-a-test-key", DailyLLMCallBudget: 2},
+			"tenant-b": {APIKey: "tenant-b-test-key"},
+		}
+	}))
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+
+	create := func(key, id string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		body := `{"id":"` + id + `","goal":"x","workspace":"./testdata"}`
+		req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", key)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", id, w.Code, w.Body.String())
+		}
+	}
+	create("tenant-a-test-key", "tenant-a-task")
+	create("tenant-b-test-key", "tenant-b-task")
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/tasks/tenant-b-task", nil)
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant get = %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/tasks", nil)
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	var list struct {
+		Tasks []types.Task `json:"tasks"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list.Tasks) != 1 || list.Tasks[0].TenantID != "tenant-a" {
+		t.Fatalf("tenant list = %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/metrics", nil)
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("tenant metrics access = %d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/usage", nil)
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"tenant_id":"tenant-a"`) || !strings.Contains(w.Body.String(), `"llm_calls":2`) {
+		t.Fatalf("tenant usage = %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/tasks", nil)
+	req.Header.Set("X-API-Key", "my-test-secret-api-key")
+	r.ServeHTTP(w, req)
+	list.Tasks = nil
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list.Tasks) != 2 {
+		t.Fatalf("admin list = %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAuthMiddleware_FailClosed(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.API.APIKey = ""

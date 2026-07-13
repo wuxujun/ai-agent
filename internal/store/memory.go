@@ -16,11 +16,12 @@ import (
 
 // MemoryStore implements Store in-memory for testing or ephemeral executions.
 type MemoryStore struct {
-	mu       sync.RWMutex
-	tasks    map[string]*types.Task
-	memories map[string]*types.Memory
-	leases   map[string]memoryLease
-	indexing map[string]bool // Tracks tasks currently undergoing async indexing
+	mu          sync.RWMutex
+	tasks       map[string]*types.Task
+	memories    map[string]*types.Memory
+	leases      map[string]memoryLease
+	indexing    map[string]bool // Tracks tasks currently undergoing async indexing
+	tenantUsage map[string]types.TenantLLMUsage
 }
 
 type memoryLease struct {
@@ -31,11 +32,54 @@ type memoryLease struct {
 // NewMemoryStore initializes a new MemoryStore.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		tasks:    make(map[string]*types.Task),
-		memories: make(map[string]*types.Memory),
-		leases:   make(map[string]memoryLease),
-		indexing: make(map[string]bool),
+		tasks:       make(map[string]*types.Task),
+		memories:    make(map[string]*types.Memory),
+		leases:      make(map[string]memoryLease),
+		indexing:    make(map[string]bool),
+		tenantUsage: make(map[string]types.TenantLLMUsage),
 	}
+}
+
+func tenantUsageKey(tenantID string, periodStart time.Time) string {
+	return tenantID + ":" + periodStart.UTC().Format("2006-01-02")
+}
+
+func (m *MemoryStore) ReserveTenantLLMCall(_ context.Context, tenantID string, periodStart time.Time, budget types.TenantLLMBudget) (types.TenantLLMUsage, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tenantUsage == nil {
+		m.tenantUsage = make(map[string]types.TenantLLMUsage)
+	}
+	key := tenantUsageKey(tenantID, periodStart)
+	usage := m.tenantUsage[key]
+	if (budget.MaxCalls > 0 && usage.Calls >= budget.MaxCalls) || (budget.MaxEstimatedCostUSD > 0 && usage.EstimatedCostUSD >= budget.MaxEstimatedCostUSD) {
+		return usage, false, nil
+	}
+	usage.Calls++
+	m.tenantUsage[key] = usage
+	return usage, true, nil
+}
+
+func (m *MemoryStore) AddTenantLLMCost(_ context.Context, tenantID string, periodStart time.Time, estimatedCostUSD float64) error {
+	if estimatedCostUSD <= 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tenantUsage == nil {
+		m.tenantUsage = make(map[string]types.TenantLLMUsage)
+	}
+	key := tenantUsageKey(tenantID, periodStart)
+	usage := m.tenantUsage[key]
+	usage.EstimatedCostUSD += estimatedCostUSD
+	m.tenantUsage[key] = usage
+	return nil
+}
+
+func (m *MemoryStore) GetTenantLLMUsage(_ context.Context, tenantID string, periodStart time.Time) (types.TenantLLMUsage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.tenantUsage[tenantUsageKey(tenantID, periodStart)], nil
 }
 
 // SaveFullTask saves or updates a task and its traces in memory.
@@ -136,6 +180,9 @@ func (m *MemoryStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Tas
 
 	tasks := make([]*types.Task, 0, len(m.tasks))
 	for _, t := range m.tasks {
+		if f.TenantID != "" && t.TenantID != f.TenantID {
+			continue
+		}
 		if f.Status != "" && t.Status != f.Status {
 			continue
 		}
@@ -213,6 +260,9 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 	var list []result
 
 	for _, mem := range m.memories {
+		if scopedTenant, scoped := tenantScope(ctx); scoped && !memoryTenantMatches(scopedTenant, mem.TenantID) {
+			continue
+		}
 		var score float32
 		if len(embedding) > 0 && len(mem.Embedding) > 0 {
 			// Cosine Similarity

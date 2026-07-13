@@ -77,6 +77,7 @@ func TestStores(t *testing.T) {
 			// 2. Save a task
 			task := &types.Task{
 				ID:                  "task-123",
+				TenantID:            "tenant-a",
 				Goal:                "Build a cool agent",
 				Status:              types.StatusCreated,
 				MaxSteps:            10,
@@ -149,6 +150,9 @@ func TestStores(t *testing.T) {
 			if retrieved.MaxSteps != task.MaxSteps {
 				t.Errorf("expected MaxSteps %d, got %d", task.MaxSteps, retrieved.MaxSteps)
 			}
+			if retrieved.TenantID != task.TenantID {
+				t.Errorf("expected TenantID %q, got %q", task.TenantID, retrieved.TenantID)
+			}
 			if retrieved.StepCount != task.StepCount {
 				t.Errorf("expected StepCount %d, got %d", task.StepCount, retrieved.StepCount)
 			}
@@ -178,6 +182,14 @@ func TestStores(t *testing.T) {
 			}
 			if retrieved.FinalAnswer != task.FinalAnswer {
 				t.Errorf("expected FinalAnswer %q, got %q", task.FinalAnswer, retrieved.FinalAnswer)
+			}
+			tenantTasks, err := s.ListTasks(ctx, store.ListFilter{TenantID: "tenant-a"})
+			if err != nil || len(tenantTasks) != 1 {
+				t.Fatalf("tenant-a list: count=%d err=%v", len(tenantTasks), err)
+			}
+			otherTenantTasks, err := s.ListTasks(ctx, store.ListFilter{TenantID: "tenant-b"})
+			if err != nil || len(otherTenantTasks) != 0 {
+				t.Fatalf("tenant-b list: count=%d err=%v", len(otherTenantTasks), err)
 			}
 
 			// Memories roundtrip: persisted records keep prompt-facing fields but
@@ -372,6 +384,57 @@ func TestStores(t *testing.T) {
 				t.Fatalf("AcquireTaskLease after expiry = %v, %v; want true, nil", acquired, err)
 			}
 			_ = s.ReleaseTaskLease(ctx, expiringLeaseID, "owner-b")
+
+			ledger, ok := s.(types.TenantUsageLedger)
+			if !ok {
+				t.Fatalf("%s does not implement TenantUsageLedger", name)
+			}
+			period := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+			budget := types.TenantLLMBudget{MaxCalls: 2, MaxEstimatedCostUSD: 1}
+			for i := 1; i <= 2; i++ {
+				usage, allowed, err := ledger.ReserveTenantLLMCall(ctx, "quota-"+name, period, budget)
+				if err != nil || !allowed || usage.Calls != i {
+					t.Fatalf("tenant reservation %d: usage=%+v allowed=%v err=%v", i, usage, allowed, err)
+				}
+			}
+			usage, allowed, err := ledger.ReserveTenantLLMCall(ctx, "quota-"+name, period, budget)
+			if err != nil || allowed || usage.Calls != 2 {
+				t.Fatalf("tenant call quota: usage=%+v allowed=%v err=%v", usage, allowed, err)
+			}
+			costTenant := "cost-quota-" + name
+			if _, allowed, err := ledger.ReserveTenantLLMCall(ctx, costTenant, period, budget); err != nil || !allowed {
+				t.Fatalf("initial cost reservation: allowed=%v err=%v", allowed, err)
+			}
+			if err := ledger.AddTenantLLMCost(ctx, costTenant, period, 1.25); err != nil {
+				t.Fatal(err)
+			}
+			usage, allowed, err = ledger.ReserveTenantLLMCall(ctx, costTenant, period, budget)
+			if err != nil || allowed || usage.EstimatedCostUSD != 1.25 {
+				t.Fatalf("tenant cost quota: usage=%+v allowed=%v err=%v", usage, allowed, err)
+			}
+			storedUsage, err := ledger.GetTenantLLMUsage(ctx, costTenant, period)
+			if err != nil || storedUsage != usage {
+				t.Fatalf("tenant usage read: got=%+v want=%+v err=%v", storedUsage, usage, err)
+			}
+
+			for _, tenantID := range []string{"tenant-a", "tenant-b"} {
+				mem := &types.Memory{ID: "isolated-memory-" + tenantID + "-" + name, TenantID: tenantID, TaskID: "isolated-task-" + tenantID, Goal: "isolated " + tenantID, KeyFindings: tenantID, Timestamp: time.Now()}
+				if err := s.SaveMemory(ctx, mem); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scopedMemories, err := s.QueryMemories(store.WithTenantScope(ctx, "tenant-a"), "isolated", nil, 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(scopedMemories) == 0 {
+				t.Fatal("tenant memory isolation query returned no results")
+			}
+			for _, mem := range scopedMemories {
+				if mem.TenantID != "tenant-a" {
+					t.Fatalf("tenant memory isolation failed: %+v", scopedMemories)
+				}
+			}
 		})
 	}
 }

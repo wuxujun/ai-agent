@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,10 +25,12 @@ type RedisStore struct {
 }
 
 const (
-	legacyTasksIndex    = "tasks:index"
-	tasksIndexV2        = "tasks:index:v2"
-	tasksIndexV2Marker  = "tasks:index:v2:migrated"
-	taskStatusIndexBase = "tasks:status:"
+	legacyTasksIndex          = "tasks:index"
+	tasksIndexV2              = "tasks:index:v2"
+	tasksIndexV2Marker        = "tasks:index:v3:migrated"
+	taskStatusIndexBase       = "tasks:status:"
+	taskTenantIndexBase       = "tasks:tenant:"
+	taskTenantStatusIndexBase = "tasks:tenant_status:"
 )
 
 var saveTaskScript = redis.NewScript(`
@@ -36,13 +39,33 @@ var saveTaskScript = redis.NewScript(`
 		local ok, oldTask = pcall(cjson.decode, existing)
 		if ok and oldTask["status"] then
 			redis.call('ZREM', ARGV[5] .. oldTask["status"], ARGV[2])
+			local oldTenant = oldTask["tenant_id"] or ""
+			redis.call('ZREM', ARGV[6] .. oldTenant, ARGV[2])
+			redis.call('ZREM', ARGV[7] .. oldTenant .. ":" .. oldTask["status"], ARGV[2])
 		end
 	end
+	local newTask = cjson.decode(ARGV[1])
+	local tenant = newTask["tenant_id"] or ""
 	redis.call('SET', KEYS[1], ARGV[1])
 	redis.call('ZADD', KEYS[2], 0, ARGV[2])
 	redis.call('ZADD', KEYS[3], ARGV[4], ARGV[2])
 	redis.call('ZADD', ARGV[5] .. ARGV[3], 0, ARGV[2])
+	redis.call('ZADD', ARGV[6] .. tenant, ARGV[4], ARGV[2])
+	redis.call('ZADD', ARGV[7] .. tenant .. ":" .. ARGV[3], 0, ARGV[2])
 	return 1
+`)
+
+var reserveTenantLLMCallScript = redis.NewScript(`
+	local calls = tonumber(redis.call('HGET', KEYS[1], 'calls') or '0')
+	local cost = tonumber(redis.call('HGET', KEYS[1], 'cost') or '0')
+	local max_calls = tonumber(ARGV[1])
+	local max_cost = tonumber(ARGV[2])
+	if (max_calls > 0 and calls >= max_calls) or (max_cost > 0 and cost >= max_cost) then
+		return {0, calls, tostring(cost)}
+	end
+	calls = redis.call('HINCRBY', KEYS[1], 'calls', 1)
+	redis.call('EXPIRE', KEYS[1], 3024000)
+	return {1, calls, tostring(cost)}
 `)
 
 // NewRedisStore creates a new RedisStore using standard URL/connection options.
@@ -68,6 +91,72 @@ func NewRedisStoreFromURL(urlStr string) (*RedisStore, error) {
 // taskKey formats the Redis key for a task.
 func (r *RedisStore) taskKey(id string) string {
 	return "task:" + id
+}
+
+func (r *RedisStore) tenantUsageKey(tenantID string, periodStart time.Time) string {
+	return "tenant:llm_usage:" + tenantID + ":" + periodStart.UTC().Format("2006-01-02")
+}
+
+func redisResultInt64(value any) (int64, error) {
+	return strconv.ParseInt(fmt.Sprint(value), 10, 64)
+}
+
+func (r *RedisStore) ReserveTenantLLMCall(ctx context.Context, tenantID string, periodStart time.Time, budget types.TenantLLMBudget) (types.TenantLLMUsage, bool, error) {
+	result, err := reserveTenantLLMCallScript.Run(ctx, r.client, []string{r.tenantUsageKey(tenantID, periodStart)}, budget.MaxCalls, budget.MaxEstimatedCostUSD).Slice()
+	if err != nil {
+		return types.TenantLLMUsage{}, false, err
+	}
+	if len(result) != 3 {
+		return types.TenantLLMUsage{}, false, fmt.Errorf("unexpected tenant usage ledger response")
+	}
+	allowed, err := redisResultInt64(result[0])
+	if err != nil {
+		return types.TenantLLMUsage{}, false, err
+	}
+	calls, err := redisResultInt64(result[1])
+	if err != nil {
+		return types.TenantLLMUsage{}, false, err
+	}
+	cost, err := strconv.ParseFloat(fmt.Sprint(result[2]), 64)
+	if err != nil {
+		return types.TenantLLMUsage{}, false, err
+	}
+	return types.TenantLLMUsage{Calls: int(calls), EstimatedCostUSD: cost}, allowed == 1, nil
+}
+
+func (r *RedisStore) AddTenantLLMCost(ctx context.Context, tenantID string, periodStart time.Time, estimatedCostUSD float64) error {
+	if estimatedCostUSD <= 0 {
+		return nil
+	}
+	key := r.tenantUsageKey(tenantID, periodStart)
+	pipe := r.client.TxPipeline()
+	pipe.HIncrByFloat(ctx, key, "cost", estimatedCostUSD)
+	pipe.Expire(ctx, key, 35*24*time.Hour)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (r *RedisStore) GetTenantLLMUsage(ctx context.Context, tenantID string, periodStart time.Time) (types.TenantLLMUsage, error) {
+	values, err := r.client.HMGet(ctx, r.tenantUsageKey(tenantID, periodStart), "calls", "cost").Result()
+	if err != nil {
+		return types.TenantLLMUsage{}, err
+	}
+	var usage types.TenantLLMUsage
+	if len(values) > 0 && values[0] != nil {
+		calls, err := redisResultInt64(values[0])
+		if err != nil {
+			return types.TenantLLMUsage{}, err
+		}
+		usage.Calls = int(calls)
+	}
+	if len(values) > 1 && values[1] != nil {
+		cost, err := strconv.ParseFloat(fmt.Sprint(values[1]), 64)
+		if err != nil {
+			return types.TenantLLMUsage{}, err
+		}
+		usage.EstimatedCostUSD = cost
+	}
+	return usage, nil
 }
 
 // Close closes the Redis client.
@@ -106,6 +195,8 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 		string(task.Status),
 		time.Now().UnixNano(),
 		taskStatusIndexBase,
+		taskTenantIndexBase,
+		taskTenantStatusIndexBase,
 	).Err()
 	if err != nil {
 		span.RecordError(err)
@@ -181,7 +272,11 @@ func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task
 
 	limit := resolveLimit(f.Limit, 50, 500)
 	index := tasksIndexV2
-	if f.Status != "" {
+	if f.TenantID != "" && f.Status != "" {
+		index = taskTenantStatusIndexBase + f.TenantID + ":" + string(f.Status)
+	} else if f.TenantID != "" {
+		index = taskTenantIndexBase + f.TenantID
+	} else if f.Status != "" {
 		index = taskStatusIndexBase + string(f.Status)
 	}
 	start := int64(f.Offset)
@@ -303,6 +398,8 @@ func (r *RedisStore) ensureTaskIndexes(ctx context.Context) error {
 			}
 			pipe.ZAdd(ctx, tasksIndexV2, redis.Z{Score: 0, Member: batch[i]})
 			pipe.ZAdd(ctx, taskStatusIndexBase+string(task.Status), redis.Z{Score: 0, Member: batch[i]})
+			pipe.ZAdd(ctx, taskTenantIndexBase+task.TenantID, redis.Z{Score: 0, Member: batch[i]})
+			pipe.ZAdd(ctx, taskTenantStatusIndexBase+task.TenantID+":"+string(task.Status), redis.Z{Score: 0, Member: batch[i]})
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return err
@@ -345,6 +442,9 @@ func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	if err != nil {
 		return fmt.Errorf("failed to index memory in redis: %w", err)
 	}
+	if err := r.client.ZAdd(ctx, "memories:tenant:"+mem.TenantID, redis.Z{Score: float64(mem.Timestamp.UnixNano()), Member: mem.ID}).Err(); err != nil {
+		return fmt.Errorf("failed to index tenant memory: %w", err)
+	}
 
 	return nil
 }
@@ -365,7 +465,11 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 	)
 
 	// 1. Get recent memory IDs from ZSET index (newest first)
-	ids, err := r.client.ZRevRange(ctx, "memories:index", 0, int64(candidateLimit-1)).Result()
+	index := "memories:index"
+	if scopedTenant, scoped := tenantScope(ctx); scoped && scopedTenant != "default" {
+		index = "memories:tenant:" + scopedTenant
+	}
+	ids, err := r.client.ZRevRange(ctx, index, 0, int64(candidateLimit-1)).Result()
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query memory index failed")
@@ -415,6 +519,9 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 		}
 		var mem types.Memory
 		if err := json.Unmarshal([]byte(valStr), &mem); err != nil {
+			continue
+		}
+		if scopedTenant, scoped := tenantScope(ctx); scoped && !memoryTenantMatches(scopedTenant, mem.TenantID) {
 			continue
 		}
 

@@ -17,8 +17,9 @@ import (
 // environment variables. Fields are grouped by subsystem.
 type Config struct {
 	API struct {
-		Addr   string `mapstructure:"addr"`
-		APIKey string `mapstructure:"api_key"`
+		Addr    string                     `mapstructure:"addr"`
+		APIKey  string                     `mapstructure:"api_key"`
+		Tenants map[string]APITenantConfig `mapstructure:"tenants"`
 	} `mapstructure:"api"`
 
 	Store struct {
@@ -119,6 +120,13 @@ type Config struct {
 		// relative to the server's working directory unless absolute.
 		Root string `mapstructure:"root"`
 	} `mapstructure:"skill"`
+}
+
+type APITenantConfig struct {
+	APIKey                string  `mapstructure:"api_key"`
+	Admin                 bool    `mapstructure:"admin"`
+	DailyLLMCallBudget    int     `mapstructure:"daily_llm_call_budget"`
+	DailyLLMCostBudgetUSD float64 `mapstructure:"daily_llm_cost_budget_usd"`
 }
 
 // LLMEndpointConfig is a provider/model profile used by a specific LLM scene.
@@ -406,6 +414,10 @@ func cloneConfig(source *Config) *Config {
 		return &Config{}
 	}
 	cloned := *source
+	cloned.API.Tenants = make(map[string]APITenantConfig, len(source.API.Tenants))
+	for tenantID, tenant := range source.API.Tenants {
+		cloned.API.Tenants[tenantID] = tenant
+	}
 	cloned.LLM.Gateway = cloneLLMEndpoint(source.LLM.Gateway)
 	cloned.LLM.Scenes = make(map[string]LLMEndpointConfig, len(source.LLM.Scenes))
 	for scene, endpoint := range source.LLM.Scenes {
@@ -553,6 +565,9 @@ func diffConfigs(old, new *Config) []string {
 	// API
 	addIf("api.addr", old.API.Addr, new.API.Addr)
 	addIf("api.api_key", old.API.APIKey, new.API.APIKey)
+	if !reflect.DeepEqual(old.API.Tenants, new.API.Tenants) {
+		changes = append(changes, "api.tenants: changed")
+	}
 
 	// LLM
 	addIf("llm.provider", old.LLM.Provider, new.LLM.Provider)
@@ -847,6 +862,27 @@ func routeMatches(rule LLMRouteRule, hints LLMRoutingHints) bool {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	seenTenantKeys := make(map[string]string, len(c.API.Tenants))
+	for tenantID, tenant := range c.API.Tenants {
+		if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(tenant.APIKey) == "" {
+			return fmt.Errorf("api tenant id and api_key must not be empty")
+		}
+		if tenant.DailyLLMCallBudget < 0 || tenant.DailyLLMCostBudgetUSD < 0 {
+			return fmt.Errorf("api tenant %q budgets must be >= 0", tenantID)
+		}
+		if previous, exists := seenTenantKeys[tenant.APIKey]; exists {
+			return fmt.Errorf("api tenants %q and %q use the same api_key", previous, tenantID)
+		}
+		if c.API.APIKey != "" && tenant.APIKey == c.API.APIKey {
+			return fmt.Errorf("api tenant %q duplicates api.api_key", tenantID)
+		}
+		seenTenantKeys[tenant.APIKey] = tenantID
+		if tenant.DailyLLMCostBudgetUSD > 0 {
+			if err := c.ValidateLLMCostBudgetCoverage(); err != nil {
+				return err
+			}
+		}
+	}
 	switch c.ResolveLLMReadinessMode() {
 	case LLMReadinessConfigOnly, LLMReadinessGateway, LLMReadinessInference:
 	default:

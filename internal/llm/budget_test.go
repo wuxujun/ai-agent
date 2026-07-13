@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -14,6 +15,31 @@ import (
 type budgetCaller struct {
 	calls int
 	usage types.TokenUsage
+}
+
+type fakeTenantLedger struct {
+	usage types.TenantLLMUsage
+	err   error
+}
+
+func (l *fakeTenantLedger) ReserveTenantLLMCall(_ context.Context, _ string, _ time.Time, budget types.TenantLLMBudget) (types.TenantLLMUsage, bool, error) {
+	if l.err != nil {
+		return l.usage, false, l.err
+	}
+	if (budget.MaxCalls > 0 && l.usage.Calls >= budget.MaxCalls) || (budget.MaxEstimatedCostUSD > 0 && l.usage.EstimatedCostUSD >= budget.MaxEstimatedCostUSD) {
+		return l.usage, false, nil
+	}
+	l.usage.Calls++
+	return l.usage, true, nil
+}
+
+func (l *fakeTenantLedger) AddTenantLLMCost(_ context.Context, _ string, _ time.Time, cost float64) error {
+	l.usage.EstimatedCostUSD += cost
+	return l.err
+}
+
+func (l *fakeTenantLedger) GetTenantLLMUsage(context.Context, string, time.Time) (types.TenantLLMUsage, error) {
+	return l.usage, l.err
 }
 
 func (c *budgetCaller) CallJSON(_ context.Context, _ Config, _, _ string, _ map[string]any, _ any) (types.TokenUsage, error) {
@@ -111,5 +137,37 @@ func TestTaskUsesConfiguredDefaultCallBudget(t *testing.T) {
 	}
 	if err := ReserveTaskLLMCall(ctx); err == nil {
 		t.Fatal("expected configured default call budget to reject second call")
+	}
+}
+
+func TestTaskEnforcesTenantDailyCallBudget(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Tenants = map[string]config.APITenantConfig{"tenant-a": {APIKey: "tenant-a-test-key", DailyLLMCallBudget: 2}}
+	}))
+	ledger := &fakeTenantLedger{}
+	ctx := WithTenantUsageLedger(context.Background(), ledger)
+	task := &types.Task{TenantID: "tenant-a"}
+	ctx = WithTaskBudget(ctx, task)
+	for range 2 {
+		if err := ReserveTaskLLMCall(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := ReserveTaskLLMCall(ctx)
+	var budgetErr *TaskBudgetError
+	if !errors.As(err, &budgetErr) || budgetErr.Kind != "tenant_call" || task.LLMCalls != 2 || ledger.usage.Calls != 2 {
+		t.Fatalf("err=%v task_calls=%d tenant_usage=%+v", err, task.LLMCalls, ledger.usage)
+	}
+}
+
+func TestTenantBudgetFailsClosedWithoutLedger(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Tenants = map[string]config.APITenantConfig{"tenant-a": {APIKey: "tenant-a-test-key", DailyLLMCallBudget: 1}}
+	}))
+	ctx := WithTaskBudget(context.Background(), &types.Task{TenantID: "tenant-a"})
+	err := ReserveTaskLLMCall(ctx)
+	var budgetErr *TaskBudgetError
+	if !errors.As(err, &budgetErr) || budgetErr.Kind != "tenant_ledger" {
+		t.Fatalf("missing-ledger error = %v", err)
 	}
 }

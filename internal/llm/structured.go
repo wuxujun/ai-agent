@@ -320,12 +320,14 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 	}
 	span.SetAttributes(attribute.Int("llm.usage.prompt_tokens", usage.PromptTokens), attribute.Int("llm.usage.completion_tokens", usage.CompletionTokens), attribute.Int("llm.usage.total_tokens", usage.TotalTokens))
 	estimatedCostUSD := EstimateCostUSD(cfg, usage)
-	RecordTaskLLMCost(ctx, estimatedCostUSD)
+	if costErr := RecordTaskLLMCost(ctx, estimatedCostUSD); costErr != nil {
+		err = costErr
+	}
 	r.ObserveContext(ctx, CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(started), Err: err, Attempts: attempts, FallbackUsed: err != nil && cfg.FallbackScene != "", EstimatedCostUSD: estimatedCostUSD})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		if cfg.FallbackScene != "" && !visited[cfg.FallbackScene] {
+		if cfg.FallbackScene != "" && !visited[cfg.FallbackScene] && !IsTaskBudgetError(err) {
 			visited[cfg.Scene] = true
 			visited[cfg.FallbackScene] = true
 			span.SetAttributes(attribute.Bool("llm.fallback.triggered", true), attribute.String("llm.fallback.scene", cfg.FallbackScene))

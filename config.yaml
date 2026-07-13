@@ -14,6 +14,16 @@ api:
   # Env override: AI_AGENT_API_KEY
   api_key: ""
 
+  # Optional trusted tenant principals. API keys should be injected into the
+  # runtime config from a secret manager and must not be committed.
+  # The legacy api_key above remains the "default" administrator principal.
+  # tenants:
+  #   project_a:
+  #     api_key: "<secret>"
+  #     admin: false
+  #     daily_llm_call_budget: 100
+  #     daily_llm_cost_budget_usd: 10
+
 # Storage configuration
 store:
   # The storage backend. Supported: "sqlite", "postgres", "redis", "memory"

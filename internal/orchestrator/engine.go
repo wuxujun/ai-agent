@@ -126,6 +126,12 @@ const (
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(e.Mode))
+	ctx = store.WithTenantScope(ctx, task.TenantID)
+	if e.Store != nil {
+		if ledger, ok := e.Store.(types.TenantUsageLedger); ok {
+			ctx = llmcore.WithTenantUsageLedger(ctx, ledger)
+		}
+	}
 	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	defer func() {

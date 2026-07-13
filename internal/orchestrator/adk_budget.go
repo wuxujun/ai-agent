@@ -28,11 +28,15 @@ func (m budgetedADKModel) GenerateContent(ctx context.Context, req *model.LLMReq
 		started := time.Now()
 		var usage types.TokenUsage
 		var callErr error
-		defer func() {
+		observe := func() error {
 			cost := llmcore.EstimateCostUSD(cfg, usage)
-			llmcore.RecordTaskLLMCost(ctx, cost)
+			costErr := llmcore.RecordTaskLLMCost(ctx, cost)
+			if costErr != nil {
+				callErr = costErr
+			}
 			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(started), Err: callErr, Attempts: 1, EstimatedCostUSD: cost})
-		}()
+			return costErr
+		}
 		for response, err := range m.delegate.GenerateContent(ctx, req, stream) {
 			callErr = err
 			if response != nil && response.UsageMetadata != nil {
@@ -42,8 +46,12 @@ func (m budgetedADKModel) GenerateContent(ctx context.Context, req *model.LLMReq
 				usage.TotalTokens = max(usage.TotalTokens, int(metadata.TotalTokenCount))
 			}
 			if !yield(response, err) {
+				_ = observe()
 				return
 			}
+		}
+		if err := observe(); err != nil {
+			yield(nil, err)
 		}
 	}
 }

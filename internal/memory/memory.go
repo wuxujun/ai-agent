@@ -49,6 +49,7 @@ func CreateMemoryFromTask(ctx context.Context, task *types.Task) (*types.Memory,
 
 	return &types.Memory{
 		ID:          "mem-" + task.ID,
+		TenantID:    task.TenantID,
 		TaskID:      task.ID,
 		Goal:        task.Goal,
 		FinalAnswer: task.FinalAnswer,

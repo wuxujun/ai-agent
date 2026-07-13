@@ -7,11 +7,27 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+type tenantScopeContextKey struct{}
+
+func WithTenantScope(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, tenantScopeContextKey{}, tenantID)
+}
+
+func tenantScope(ctx context.Context) (string, bool) {
+	tenantID, ok := ctx.Value(tenantScopeContextKey{}).(string)
+	return tenantID, ok
+}
+
+func memoryTenantMatches(scope, tenantID string) bool {
+	return tenantID == scope || (scope == "default" && tenantID == "")
+}
+
 // ListFilter controls the result set returned by ListTasks.
 // Zero values are safe: an empty Status means "all statuses", Limit=0 is
 // coerced by each implementation to its own default (50), and Offset=0 means
 // the first page.
 type ListFilter struct {
+	TenantID string
 	// Status, if non-empty, restricts results to tasks with this status
 	// (e.g. "created", "running", "completed", "failed").
 	Status types.TaskStatus

@@ -1,5 +1,10 @@
 package types
 
+import (
+	"context"
+	"time"
+)
+
 // AgentRole identifies which agent produced a StepTrace entry in multi-agent mode.
 type AgentRole string
 
@@ -80,6 +85,7 @@ type ApprovalResult struct {
 
 type Task struct {
 	ID          string     `json:"id"`
+	TenantID    string     `json:"tenant_id"`
 	Goal        string     `json:"goal"`
 	Status      TaskStatus `json:"status"`
 	MaxSteps    int        `json:"max_steps"`
@@ -98,4 +104,22 @@ type Task struct {
 	Trace               []StepTrace `json:"trace"`
 	FinalAnswer         string      `json:"final_answer"`
 	Memories            []Memory    `json:"memories,omitempty"`
+}
+
+type TenantLLMUsage struct {
+	Calls            int
+	EstimatedCostUSD float64
+}
+
+type TenantLLMBudget struct {
+	MaxCalls            int
+	MaxEstimatedCostUSD float64
+}
+
+// TenantUsageLedger provides an atomic, cross-task and cross-instance usage
+// boundary. PeriodStart is the UTC start of the accounting window.
+type TenantUsageLedger interface {
+	ReserveTenantLLMCall(ctx context.Context, tenantID string, periodStart time.Time, budget TenantLLMBudget) (TenantLLMUsage, bool, error)
+	AddTenantLLMCost(ctx context.Context, tenantID string, periodStart time.Time, estimatedCostUSD float64) error
+	GetTenantLLMUsage(ctx context.Context, tenantID string, periodStart time.Time) (TenantLLMUsage, error)
 }

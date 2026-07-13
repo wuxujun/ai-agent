@@ -258,7 +258,10 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		}
 	}
 	primaryCostUSD := llmcore.EstimateCostUSD(primaryResilience, primaryUsage)
-	llmcore.RecordTaskLLMCost(ctx, primaryCostUSD)
+	if costErr := llmcore.RecordTaskLLMCost(ctx, primaryCostUSD); costErr != nil {
+		err = costErr
+		fallbackScene = ""
+	}
 	llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeScene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != "", EstimatedCostUSD: primaryCostUSD})
 	fallbackAttempted := err != nil && fallbackScene != ""
 	activeFallback := fallbackScene
@@ -309,11 +312,16 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 				}
 			}
 			fallbackCostUSD := llmcore.EstimateCostUSD(fallbackResilience, sceneUsage)
-			llmcore.RecordTaskLLMCost(ctx, fallbackCostUSD)
+			if costErr := llmcore.RecordTaskLLMCost(ctx, fallbackCostUSD); costErr != nil {
+				err = costErr
+			}
 			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Usage: sceneUsage, Duration: time.Since(fallbackStarted), Err: err, Attempts: fallbackAttempts, FallbackUsed: err != nil && fallback.FallbackScene != "", EstimatedCostUSD: fallbackCostUSD})
 		} else {
 			err = lookupErr
 			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Err: err, Attempts: 1, FallbackUsed: fallback.FallbackScene != ""})
+		}
+		if llmcore.IsTaskBudgetError(err) {
+			break
 		}
 		activeFallback = fallback.FallbackScene
 	}

@@ -89,6 +89,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	api := r.Group("/api")
 	api.Use(AuthMiddleware())
 	tasks := api.Group("/tasks")
+	tasks.Use(TaskTenantMiddleware(st))
 	{
 		tasks.POST("", h.createTask)
 		tasks.POST("/:id/run", h.runTaskStep)
@@ -100,8 +101,9 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.POST("/:id/reject", h.rejectTask)
 		tasks.DELETE("/:id/cancel", h.cancelTask)
 	}
-	api.GET("/metrics", h.getMetrics)
-	api.POST("/config/reload", h.reloadConfig)
+	api.GET("/metrics", AdminMiddleware(), h.getMetrics)
+	api.GET("/usage", h.getTenantUsage)
+	api.POST("/config/reload", AdminMiddleware(), h.reloadConfig)
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
@@ -261,6 +263,7 @@ func (h *Handler) createTask(c *gin.Context) {
 
 	task := &types.Task{
 		ID:               taskID,
+		TenantID:         principalFromGin(c).TenantID,
 		Goal:             req.Goal,
 		Workspace:        req.Workspace,
 		MaxSteps:         req.MaxSteps,
@@ -675,6 +678,35 @@ func (h *Handler) getMetrics(c *gin.Context) {
 	c.JSON(http.StatusOK, h.metrics.Snapshot())
 }
 
+func (h *Handler) getTenantUsage(c *gin.Context) {
+	ledger, ok := h.store.(types.TenantUsageLedger)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "tenant usage ledger is unavailable"})
+		return
+	}
+	principal := principalFromGin(c)
+	now := time.Now().UTC()
+	periodStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	usage, err := ledger.GetTenantLLMUsage(c.Request.Context(), principal.TenantID, periodStart)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	tenant := config.Get().API.Tenants[principal.TenantID]
+	response := gin.H{
+		"tenant_id":          principal.TenantID,
+		"period_start":       periodStart.Format(time.RFC3339),
+		"period_end":         periodStart.Add(24 * time.Hour).Format(time.RFC3339),
+		"llm_calls":          usage.Calls,
+		"estimated_cost_usd": usage.EstimatedCostUSD,
+		"limits": gin.H{
+			"llm_calls":          tenant.DailyLLMCallBudget,
+			"estimated_cost_usd": tenant.DailyLLMCostBudgetUSD,
+		},
+	}
+	c.JSON(http.StatusOK, response)
+}
+
 // approvalAction is the optional JSON body for /approve and /reject. When
 // approval_id is empty, the unique pending approval for the task is resolved;
 // when ambiguous (>1 pending) the handler returns 409 with the pending IDs.
@@ -783,6 +815,10 @@ func (h *Handler) listTasks(c *gin.Context) {
 	defer cancel()
 
 	f := store.ListFilter{}
+	principal := principalFromGin(c)
+	if !principal.Admin {
+		f.TenantID = principal.TenantID
+	}
 
 	if s := c.Query("status"); s != "" {
 		f.Status = types.TaskStatus(s)

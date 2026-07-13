@@ -481,6 +481,25 @@ func TestValidateLLMCostBudgetRequiresPricing(t *testing.T) {
 	}
 }
 
+func TestValidateAPITenants(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.API.APIKey = "admin-key"
+	cfg.API.Tenants = map[string]APITenantConfig{"tenant-a": {APIKey: "tenant-key", DailyLLMCallBudget: 10}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid tenant rejected: %v", err)
+	}
+	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "tenant-key"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "same api_key") {
+		t.Fatalf("duplicate tenant key error = %v", err)
+	}
+	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", DailyLLMCallBudget: -1}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "budgets must be") {
+		t.Fatalf("negative tenant budget error = %v", err)
+	}
+}
+
 func TestValidateLLMReadinessSettings(t *testing.T) {
 	cfg := &Config{}
 	cfg.LLM.Provider = "openai"
