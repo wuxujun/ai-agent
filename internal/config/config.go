@@ -124,16 +124,25 @@ type Config struct {
 // llm settings. Pointer policy fields distinguish omission from an explicit
 // zero value that clears a gateway default.
 type LLMEndpointConfig struct {
-	Provider                string   `mapstructure:"provider"`
-	APIKey                  string   `mapstructure:"api_key"`
-	Model                   string   `mapstructure:"model"`
-	BaseURL                 string   `mapstructure:"base_url"`
-	TimeoutSeconds          int      `mapstructure:"timeout_seconds"`
-	FallbackScene           *string  `mapstructure:"fallback_scene"`
-	MaxRetries              *int     `mapstructure:"max_retries"`
-	MinRemainingTokens      *int     `mapstructure:"min_remaining_tokens"`
-	InputCostPerMillionUSD  *float64 `mapstructure:"input_cost_per_million_usd"`
-	OutputCostPerMillionUSD *float64 `mapstructure:"output_cost_per_million_usd"`
+	Provider                string         `mapstructure:"provider"`
+	APIKey                  string         `mapstructure:"api_key"`
+	Model                   string         `mapstructure:"model"`
+	BaseURL                 string         `mapstructure:"base_url"`
+	TimeoutSeconds          int            `mapstructure:"timeout_seconds"`
+	FallbackScene           *string        `mapstructure:"fallback_scene"`
+	MaxRetries              *int           `mapstructure:"max_retries"`
+	MinRemainingTokens      *int           `mapstructure:"min_remaining_tokens"`
+	InputCostPerMillionUSD  *float64       `mapstructure:"input_cost_per_million_usd"`
+	OutputCostPerMillionUSD *float64       `mapstructure:"output_cost_per_million_usd"`
+	Routes                  []LLMRouteRule `mapstructure:"routes" json:"routes,omitempty"`
+}
+
+type LLMRouteRule struct {
+	TargetScene        string `mapstructure:"target_scene" json:"target_scene"`
+	MinRemainingTokens *int   `mapstructure:"min_remaining_tokens" json:"min_remaining_tokens,omitempty"`
+	MaxRemainingTokens *int   `mapstructure:"max_remaining_tokens" json:"max_remaining_tokens,omitempty"`
+	MinStepCount       *int   `mapstructure:"min_step_count" json:"min_step_count,omitempty"`
+	MaxStepCount       *int   `mapstructure:"max_step_count" json:"max_step_count,omitempty"`
 }
 
 type ResolvedLLMConfig struct {
@@ -147,6 +156,12 @@ type ResolvedLLMConfig struct {
 	MinRemainingTokens      int
 	InputCostPerMillionUSD  float64
 	OutputCostPerMillionUSD float64
+}
+
+type LLMRoutingHints struct {
+	HasRemainingTokens bool
+	RemainingTokens    int
+	StepCount          int
 }
 
 // ResolveLLMProviderConfig returns provider-specific defaults without carrying
@@ -417,6 +432,26 @@ func cloneLLMEndpoint(source LLMEndpointConfig) LLMEndpointConfig {
 		value := *source.OutputCostPerMillionUSD
 		cloned.OutputCostPerMillionUSD = &value
 	}
+	cloned.Routes = make([]LLMRouteRule, len(source.Routes))
+	for i, route := range source.Routes {
+		cloned.Routes[i] = cloneLLMRouteRule(route)
+	}
+	return cloned
+}
+
+func cloneLLMRouteRule(source LLMRouteRule) LLMRouteRule {
+	cloned := source
+	cloneInt := func(value *int) *int {
+		if value == nil {
+			return nil
+		}
+		copy := *value
+		return &copy
+	}
+	cloned.MinRemainingTokens = cloneInt(source.MinRemainingTokens)
+	cloned.MaxRemainingTokens = cloneInt(source.MaxRemainingTokens)
+	cloned.MinStepCount = cloneInt(source.MinStepCount)
+	cloned.MaxStepCount = cloneInt(source.MaxStepCount)
 	return cloned
 }
 
@@ -738,6 +773,50 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 	return ResolvedLLMConfig{Provider: provider, APIKey: apiKey, Model: model, BaseURL: baseURL, TimeoutSeconds: timeout, FallbackScene: fallbackScene, MaxRetries: maxRetries, MinRemainingTokens: minRemainingTokens, InputCostPerMillionUSD: inputCostPerMillionUSD, OutputCostPerMillionUSD: outputCostPerMillionUSD}
 }
 
+func (c *Config) ResolveLLMRoutedScene(scene string, hints LLMRoutingHints) string {
+	current := scene
+	visited := make(map[string]bool)
+	for current != "" && !visited[current] {
+		visited[current] = true
+		endpoint, configured := c.LLM.Scenes[current]
+		if !configured {
+			break
+		}
+		target := ""
+		for _, rule := range endpoint.Routes {
+			if routeMatches(rule, hints) {
+				target = rule.TargetScene
+				break
+			}
+		}
+		if target == "" {
+			break
+		}
+		current = target
+	}
+	return current
+}
+
+func routeMatches(rule LLMRouteRule, hints LLMRoutingHints) bool {
+	if rule.MinRemainingTokens != nil {
+		if !hints.HasRemainingTokens || hints.RemainingTokens < *rule.MinRemainingTokens {
+			return false
+		}
+	}
+	if rule.MaxRemainingTokens != nil {
+		if !hints.HasRemainingTokens || hints.RemainingTokens > *rule.MaxRemainingTokens {
+			return false
+		}
+	}
+	if rule.MinStepCount != nil && hints.StepCount < *rule.MinStepCount {
+		return false
+	}
+	if rule.MaxStepCount != nil && hints.StepCount > *rule.MaxStepCount {
+		return false
+	}
+	return true
+}
+
 // Validate rejects configuration that would otherwise fail only on the first
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
@@ -749,6 +828,9 @@ func (c *Config) Validate() error {
 	}
 	if c.LLM.ReadinessCacheTTLSeconds < 0 {
 		return fmt.Errorf("llm.readiness_cache_ttl_seconds must be >= 0")
+	}
+	if len(c.LLM.Gateway.Routes) > 0 {
+		return fmt.Errorf("llm.gateway.routes is not supported; configure routes on a named scene")
 	}
 	if c.LLM.ContextCompressionTraceThreshold < 0 {
 		return fmt.Errorf("llm.context_compression_trace_threshold must be >= 0")
@@ -802,12 +884,23 @@ func (c *Config) Validate() error {
 	}
 	for scene := range c.LLM.Scenes {
 		raw := c.LLM.Scenes[scene]
+		if len(raw.Routes) > 0 && (scene == LLMSceneEmbedding || scene == LLMSceneADK) {
+			return fmt.Errorf("llm scene %q does not support dynamic routes", scene)
+		}
 		if err := validatePolicy(fmt.Sprintf("llm scene %q", scene), raw); err != nil {
 			return err
 		}
 		if err := check(scene); err != nil {
 			return err
 		}
+		for index, route := range raw.Routes {
+			if err := c.validateLLMRoute(scene, index, route); err != nil {
+				return err
+			}
+		}
+	}
+	if err := c.validateLLMRouteCycles(); err != nil {
+		return err
 	}
 	for scene := range c.LLM.Scenes {
 		seen := map[string]bool{scene: true}
@@ -832,6 +925,67 @@ func (c *Config) Validate() error {
 		spec, _ := llmprovider.Lookup(provider)
 		if spec.Protocol != llmprovider.ProtocolGemini {
 			return fmt.Errorf("llm scene %q only supports gemini provider, got %q", LLMSceneADK, provider)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateLLMRoute(scene string, index int, route LLMRouteRule) error {
+	name := fmt.Sprintf("llm scene %q route %d", scene, index)
+	if strings.TrimSpace(route.TargetScene) == "" {
+		return fmt.Errorf("%s target_scene is required", name)
+	}
+	if route.TargetScene != LLMSceneTaskPlanner {
+		if _, exists := c.LLM.Scenes[route.TargetScene]; !exists {
+			return fmt.Errorf("%s references unknown target_scene %q", name, route.TargetScene)
+		}
+	}
+	if route.MinRemainingTokens == nil && route.MaxRemainingTokens == nil && route.MinStepCount == nil && route.MaxStepCount == nil {
+		return fmt.Errorf("%s must define at least one routing condition", name)
+	}
+	for field, value := range map[string]*int{
+		"min_remaining_tokens": route.MinRemainingTokens,
+		"max_remaining_tokens": route.MaxRemainingTokens,
+		"min_step_count":       route.MinStepCount,
+		"max_step_count":       route.MaxStepCount,
+	} {
+		if value != nil && *value < 0 {
+			return fmt.Errorf("%s %s must be >= 0", name, field)
+		}
+	}
+	if route.MinRemainingTokens != nil && route.MaxRemainingTokens != nil && *route.MinRemainingTokens > *route.MaxRemainingTokens {
+		return fmt.Errorf("%s remaining token range is invalid", name)
+	}
+	if route.MinStepCount != nil && route.MaxStepCount != nil && *route.MinStepCount > *route.MaxStepCount {
+		return fmt.Errorf("%s step range is invalid", name)
+	}
+	return nil
+}
+
+func (c *Config) validateLLMRouteCycles() error {
+	state := make(map[string]uint8)
+	var visit func(string) error
+	visit = func(scene string) error {
+		if state[scene] == 1 {
+			return fmt.Errorf("llm route cycle detected at scene %q", scene)
+		}
+		if state[scene] == 2 {
+			return nil
+		}
+		state[scene] = 1
+		for _, route := range c.LLM.Scenes[scene].Routes {
+			if _, configured := c.LLM.Scenes[route.TargetScene]; configured {
+				if err := visit(route.TargetScene); err != nil {
+					return err
+				}
+			}
+		}
+		state[scene] = 2
+		return nil
+	}
+	for scene := range c.LLM.Scenes {
+		if err := visit(scene); err != nil {
+			return err
 		}
 	}
 	return nil

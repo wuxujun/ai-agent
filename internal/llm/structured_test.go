@@ -48,6 +48,50 @@ func (r *retryCaller) CallJSON(_ context.Context, _ Config, _, _ string, _ map[s
 	return types.TokenUsage{TotalTokens: 3}, nil
 }
 
+type routingCaller struct{ config Config }
+
+func (r *routingCaller) CallJSON(_ context.Context, cfg Config, _, _ string, _ map[string]any, _ any) (types.TokenUsage, error) {
+	r.config = cfg
+	return types.TokenUsage{}, nil
+}
+
+func TestCallJSONRoutesByTaskBudgetAndStep(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Provider = "openai-responses"
+		cfg.LLM.Model = "default"
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"planner": {
+				Model:  "strong",
+				Routes: []config.LLMRouteRule{{TargetScene: "economy", MaxRemainingTokens: structuredTestPtr(25), MinStepCount: structuredTestPtr(2)}},
+			},
+			"economy": {Model: "economy-model", MaxRetries: structuredTestPtr(1)},
+		}
+	}))
+	fake := &routingCaller{}
+	runtime := NewRuntime(fake, nil)
+	task := &types.Task{TokenBudget: 100, StepCount: 3, Trace: []types.StepTrace{{TokenUsage: types.TokenUsage{TotalTokens: 80}}}}
+	ctx := WithTaskRoutingHints(context.Background(), task)
+	if _, err := runtime.CallJSON(ctx, ConfigForScene("planner"), "", "", nil, &struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.config.Scene != "economy" || fake.config.Model != "economy-model" || fake.config.MaxRetries != 1 {
+		t.Fatalf("routed config = %+v", fake.config)
+	}
+}
+
+func TestRemainingTokenRouteRequiresTaskBudget(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"planner": {Routes: []config.LLMRouteRule{{TargetScene: "economy", MaxRemainingTokens: structuredTestPtr(25)}}},
+			"economy": {Model: "economy-model"},
+		}
+	}))
+	ctx := WithTaskRoutingHints(context.Background(), &types.Task{StepCount: 3})
+	if got := ResolveRoutedScene(ctx, "planner"); got != "planner" {
+		t.Fatalf("scene without token budget = %q, want planner", got)
+	}
+}
+
 func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{"fallback": {Model: "backup"}}

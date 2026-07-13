@@ -832,7 +832,7 @@ func (h *Handler) reloadConfig(c *gin.Context) {
 	}
 	for scene := range sceneNames {
 		resolved := cfg.ResolveLLMScene(scene)
-		activeScenes[scene] = gin.H{"provider": resolved.Provider, "model": resolved.Model, "base_url": resolved.BaseURL, "timeout_seconds": resolved.TimeoutSeconds}
+		activeScenes[scene] = gin.H{"provider": resolved.Provider, "model": resolved.Model, "base_url": resolved.BaseURL, "timeout_seconds": resolved.TimeoutSeconds, "routes": cfg.LLM.Scenes[scene].Routes}
 	}
 	resp["active_scenes"] = activeScenes
 	c.JSON(http.StatusOK, resp)

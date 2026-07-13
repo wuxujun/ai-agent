@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Config struct {
@@ -247,6 +248,14 @@ func EstimateCostUSD(cfg Config, usage types.TokenUsage) float64 {
 }
 
 func (r *Runtime) CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
+	logicalScene := cfg.Scene
+	cfg = ResolveRoutedConfig(ctx, cfg)
+	if logicalScene != cfg.Scene {
+		trace.SpanFromContext(ctx).AddEvent("llm.route.selected", trace.WithAttributes(
+			attribute.String("llm.logical_scene", logicalScene),
+			attribute.String("llm.scene", cfg.Scene),
+		))
+	}
 	return r.callJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest, map[string]bool{})
 }
 

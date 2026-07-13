@@ -125,6 +125,7 @@ const (
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(e.Mode))
+	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	defer func() {
 		if err != nil {
 			engineLog.Error("step execution failed", "task_id", task.ID, "error", err)

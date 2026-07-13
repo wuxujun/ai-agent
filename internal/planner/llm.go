@@ -86,14 +86,14 @@ func NewLLMPlannerForScene(scene string) *LLMPlanner {
 // for this call by merging the struct's static overrides with the current live
 // config. This is called at the top of PlanNext so that any config hot-reload
 // (e.g. API key rotation) is reflected immediately on the next LLM request.
-func (p *LLMPlanner) resolveCredentials() (provider ProviderType, apiKey, model, baseURL string, timeout time.Duration) {
+func (p *LLMPlanner) resolveCredentials(scene string) (provider ProviderType, apiKey, model, baseURL string, timeout time.Duration) {
 	cfg := config.Get() // always read the latest snapshot
 	timeout = time.Duration(cfg.LLM.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	if p.Scene != "" && p.Provider == "" && p.APIKey == "" && p.Model == "" && p.BaseURL == "" {
-		resolved := cfg.ResolveLLMScene(p.Scene)
+	if scene != "" && p.Provider == "" && p.APIKey == "" && p.Model == "" && p.BaseURL == "" {
+		resolved := cfg.ResolveLLMScene(scene)
 		return ProviderType(resolved.Provider), resolved.APIKey, resolved.Model, resolved.BaseURL, time.Duration(resolved.TimeoutSeconds) * time.Second
 	}
 
@@ -120,14 +120,19 @@ func (p *LLMPlanner) resolveCredentials() (provider ProviderType, apiKey, model,
 }
 
 func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*PlanDecision, error) {
+	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	ctx, span := tracer.Start(ctx, "planner.plan_next")
 	defer span.End()
+	activeScene := p.Scene
+	if p.Provider == "" && p.APIKey == "" && p.Model == "" && p.BaseURL == "" {
+		activeScene = llmcore.ResolveRoutedScene(ctx, p.Scene)
+	}
 
 	// Resolve credentials at call time so hot-reloaded config (e.g. rotated API
 	// keys) is picked up without restarting the server.
-	provider, apiKey, model, baseURL, timeout := p.resolveCredentials()
+	provider, apiKey, model, baseURL, timeout := p.resolveCredentials(activeScene)
 	client := p.Client
-	if p.Scene != "" {
+	if activeScene != "" {
 		client = telemetry.NewHTTPClient(timeout)
 	}
 
@@ -135,6 +140,8 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		attribute.String("agent.task.id", task.ID),
 		attribute.String("llm.provider", string(provider)),
 		attribute.String("llm.model", model),
+		attribute.String("llm.logical_scene", p.Scene),
+		attribute.String("llm.scene", activeScene),
 		attribute.Int("agent.task.step_count", task.StepCount),
 	)
 
@@ -200,8 +207,8 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 
 	log.Info("sending request to provider", "provider", provider, "base_url", baseURL, "model", model)
 	maxRetries, fallbackScene := 0, ""
-	if p.Scene != "" {
-		policy := config.Get().ResolveLLMScene(p.Scene)
+	if activeScene != "" {
+		policy := config.Get().ResolveLLMScene(activeScene)
 		maxRetries, fallbackScene = policy.MaxRetries, policy.FallbackScene
 	}
 	var textValue string
@@ -209,7 +216,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	primaryStarted := time.Now()
 	primaryAttempts := 0
 	var primaryUsage types.TokenUsage
-	primaryResilience := llmcore.ConfigForScene(p.Scene)
+	primaryResilience := llmcore.ConfigForScene(activeScene)
 	primaryResilience.Provider = string(provider)
 	primaryResilience.APIKey = apiKey
 	primaryResilience.Model = model
@@ -243,7 +250,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			break
 		}
 	}
-	llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: p.Scene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != "", EstimatedCostUSD: llmcore.EstimateCostUSD(primaryResilience, primaryUsage)})
+	llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeScene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != "", EstimatedCostUSD: llmcore.EstimateCostUSD(primaryResilience, primaryUsage)})
 	fallbackAttempted := err != nil && fallbackScene != ""
 	activeFallback := fallbackScene
 	for err != nil && activeFallback != "" {
@@ -299,7 +306,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		if err != nil {
 			kind = llmcore.ReliabilityFallbackFailed
 		}
-		llmcore.ObserveReliabilityContext(ctx, llmcore.ReliabilityEvent{Kind: kind, Scene: p.Scene, Provider: string(provider), Model: model, FallbackScene: fallbackScene})
+		llmcore.ObserveReliabilityContext(ctx, llmcore.ReliabilityEvent{Kind: kind, Scene: activeScene, Provider: string(provider), Model: model, FallbackScene: fallbackScene})
 	}
 	if err != nil {
 		span.RecordError(err)

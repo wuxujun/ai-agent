@@ -67,6 +67,7 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 //  2. Research – ResearcherAgent executes each step (budget-gated)
 //  3. Write  – WriterAgent synthesises all evidence into a final answer
 func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
+	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	ctx, span := tracer.Start(ctx, "multiagent.coordinator.run")
 	defer span.End()
 
@@ -109,7 +110,8 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		}
 
 		// ── Phase 3: Write ─────────────────────────────────────────────────────────
-		conf, writeErr := c.runWritePhase(ctx, task, allEvidence)
+		phaseCtx := llmcore.WithTaskRoutingHints(ctx, task)
+		conf, writeErr := c.runWritePhase(phaseCtx, task, allEvidence)
 		if writeErr != nil {
 			break // fallback happened or writer failed
 		}
@@ -131,7 +133,8 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 			task.StepCount++
 
 			// Re-plan additional steps based on traces history
-			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
+			replanCtx := llmcore.WithTaskRoutingHints(ctx, task)
+			newPlan, replanErr := c.Planner.Replan(replanCtx, task.Goal, task.Workspace, task.Trace, task.Memories)
 			if replanErr != nil || len(newPlan.Steps) == 0 {
 				log.Error("Adaptive replan failed or returned empty steps — stopping loop")
 				break

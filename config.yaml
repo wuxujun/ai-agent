@@ -120,6 +120,7 @@ llm:
   #   output_cost_per_million_usd: 8.0
 
   # Per-call-site profiles. Omitted fields inherit gateway, then legacy settings.
+  # Dynamic routes apply to generation scenes; embedding and adk reject routes.
   # Set fallback_scene: "", max_retries: 0, or min_remaining_tokens: 0 to
   # explicitly clear the corresponding gateway policy for one scene.
   # scenes:
@@ -130,6 +131,14 @@ llm:
   #     fallback_scene: "task_planner_fallback"
   #     max_retries: 1
   #     min_remaining_tokens: 2000
+  #     # Ordered, first-match routing rules. The target is another scene and
+  #     # inherits that scene's provider, model, pricing, retries and fallback.
+  #     routes:
+  #       - target_scene: "task_planner_economy"
+  #         max_remaining_tokens: 4000
+  #         min_step_count: 2
+  #   task_planner_economy:
+  #     model: "agent-planner-fast"
   #   task_planner_fallback:
   #     model: "agent-planner-backup"
   #   task_finalizer:

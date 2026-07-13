@@ -44,4 +44,39 @@ func TestPlannerSceneRetriesPrimaryAndFallback(t *testing.T) {
 	}
 }
 
+func TestPlannerRoutesToSceneFromTaskHints(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"primary": {
+				Provider: "openai-responses",
+				Model:    "strong",
+				BaseURL:  "http://primary.test/v1/responses",
+				Routes: []config.LLMRouteRule{{
+					TargetScene:        "economy",
+					MaxRemainingTokens: plannerTestPtr(25),
+					MinStepCount:       plannerTestPtr(2),
+				}},
+			},
+			"economy": {Provider: "openai-responses", Model: "economy", BaseURL: "http://economy.test/v1/responses"},
+		}
+	}))
+	originalTransport := http.DefaultTransport
+	calledHost := ""
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calledHost = req.URL.Host
+		body := `{"output":[{"content":[{"text":"{\"thought_summary\":\"routed\",\"stop\":true,\"final_answer\":\"done\",\"actions\":[{\"action\":\"none\",\"parameters\":{}}]}"}]}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	task := &types.Task{ID: "route", Goal: "goal", MaxSteps: 5, StepCount: 2, ToolBudget: 1, TokenBudget: 100, Trace: []types.StepTrace{{TokenUsage: types.TokenUsage{TotalTokens: 80}}}}
+	decision, err := NewLLMPlannerForScene("primary").PlanNext(context.Background(), task, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calledHost != "economy.test" || decision.FinalAnswer != "done" {
+		t.Fatalf("host=%q decision=%+v", calledHost, decision)
+	}
+}
+
 func plannerTestPtr[T any](value T) *T { return &value }

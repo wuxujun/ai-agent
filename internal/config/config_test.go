@@ -295,6 +295,91 @@ func TestCloneConfigCopiesEndpointPolicyPointers(t *testing.T) {
 	}
 }
 
+func TestResolveLLMRoutedSceneUsesFirstMatchingRule(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Scenes = map[string]LLMEndpointConfig{
+		"planner": {
+			Routes: []LLMRouteRule{
+				{TargetScene: "economy", MaxRemainingTokens: testPtr(1000)},
+				{TargetScene: "late_steps", MinStepCount: testPtr(5)},
+			},
+		},
+		"economy":    {Model: "economy-model"},
+		"late_steps": {Model: "late-model"},
+	}
+
+	if got := cfg.ResolveLLMRoutedScene("planner", LLMRoutingHints{HasRemainingTokens: true, RemainingTokens: 800, StepCount: 8}); got != "economy" {
+		t.Fatalf("routed scene = %q, want economy", got)
+	}
+	if got := cfg.ResolveLLMRoutedScene("planner", LLMRoutingHints{StepCount: 8}); got != "late_steps" {
+		t.Fatalf("routed scene without token budget = %q, want late_steps", got)
+	}
+	if got := cfg.ResolveLLMRoutedScene("planner", LLMRoutingHints{HasRemainingTokens: true, RemainingTokens: 2000, StepCount: 1}); got != "planner" {
+		t.Fatalf("unmatched scene = %q, want planner", got)
+	}
+}
+
+func TestCloneConfigCopiesRoutePointers(t *testing.T) {
+	source := &Config{}
+	source.LLM.Scenes = map[string]LLMEndpointConfig{
+		"planner": {Routes: []LLMRouteRule{{TargetScene: "economy", MaxRemainingTokens: testPtr(1000)}}},
+	}
+	cloned := cloneConfig(source)
+	*cloned.LLM.Scenes["planner"].Routes[0].MaxRemainingTokens = 500
+	if got := *source.LLM.Scenes["planner"].Routes[0].MaxRemainingTokens; got != 1000 {
+		t.Fatalf("clone shares route pointer with source: %d", got)
+	}
+}
+
+func TestValidateLLMRoutes(t *testing.T) {
+	validBase := func() *Config {
+		cfg := &Config{}
+		cfg.LLM.Provider = "openai-responses"
+		cfg.LLM.TimeoutSeconds = 30
+		cfg.LLM.Scenes = map[string]LLMEndpointConfig{
+			"planner": {Model: "planner", Routes: []LLMRouteRule{{TargetScene: "economy", MaxRemainingTokens: testPtr(1000)}}},
+			"economy": {Model: "economy"},
+		}
+		return cfg
+	}
+	if err := validBase().Validate(); err != nil {
+		t.Fatalf("valid routes rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"missing target", func(cfg *Config) {
+			cfg.LLM.Scenes["planner"] = LLMEndpointConfig{Model: "planner", Routes: []LLMRouteRule{{TargetScene: "missing", MaxStepCount: testPtr(2)}}}
+		}},
+		{"missing condition", func(cfg *Config) {
+			cfg.LLM.Scenes["planner"] = LLMEndpointConfig{Model: "planner", Routes: []LLMRouteRule{{TargetScene: "economy"}}}
+		}},
+		{"invalid range", func(cfg *Config) {
+			cfg.LLM.Scenes["planner"] = LLMEndpointConfig{Model: "planner", Routes: []LLMRouteRule{{TargetScene: "economy", MinStepCount: testPtr(3), MaxStepCount: testPtr(2)}}}
+		}},
+		{"cycle", func(cfg *Config) {
+			cfg.LLM.Scenes["economy"] = LLMEndpointConfig{Model: "economy", Routes: []LLMRouteRule{{TargetScene: "planner", MinStepCount: testPtr(1)}}}
+		}},
+		{"unsupported embedding", func(cfg *Config) {
+			cfg.LLM.Scenes[LLMSceneEmbedding] = LLMEndpointConfig{Model: "embedding", Routes: []LLMRouteRule{{TargetScene: "economy", MinStepCount: testPtr(1)}}}
+		}},
+		{"unsupported adk", func(cfg *Config) {
+			cfg.LLM.Scenes[LLMSceneADK] = LLMEndpointConfig{Provider: "gemini", Model: "gemini", Routes: []LLMRouteRule{{TargetScene: "economy", MinStepCount: testPtr(1)}}}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validBase()
+			tc.mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected route validation error")
+			}
+		})
+	}
+}
+
 func TestValidateLLMScenes(t *testing.T) {
 	cfg := &Config{}
 	cfg.LLM.Provider = "openai-responses"
@@ -447,6 +532,11 @@ llm:
       fallback_scene: ""
       max_retries: 0
       min_remaining_tokens: 0
+      routes:
+        - target_scene: "writer-economy"
+          max_remaining_tokens: 1000
+    writer-economy:
+      model: "writer-fast"
 `)
 	if err := os.WriteFile(configPath, yamlContent, 0644); err != nil {
 		t.Fatal(err)
@@ -476,6 +566,10 @@ llm:
 	writer := cfg.ResolveLLMScene("writer")
 	if writer.FallbackScene != "" || writer.MaxRetries != 0 || writer.MinRemainingTokens != 0 {
 		t.Fatalf("YAML explicit zero values did not clear gateway policy: %+v", writer)
+	}
+	routes := cfg.LLM.Scenes["writer"].Routes
+	if len(routes) != 1 || routes[0].TargetScene != "writer-economy" || routes[0].MaxRemainingTokens == nil || *routes[0].MaxRemainingTokens != 1000 {
+		t.Fatalf("YAML routes not decoded: %+v", routes)
 	}
 }
 
