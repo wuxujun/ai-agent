@@ -23,6 +23,7 @@ func TestCollectorTracksLLMUsageCostAndReliability(t *testing.T) {
 		llmcore.ReliabilityCircuitOpened,
 		llmcore.ReliabilityCircuitRejected,
 		llmcore.ReliabilityRetryBudgetExhausted,
+		llmcore.ReliabilityTaskBudgetRejected,
 		llmcore.ReliabilityFallbackSucceeded,
 		llmcore.ReliabilityFallbackFailed,
 	} {
@@ -39,7 +40,7 @@ func TestCollectorTracksLLMUsageCostAndReliability(t *testing.T) {
 	if snapshot.LLMEstimatedCostUSD != 0.001 {
 		t.Fatalf("estimated cost = %f, want 0.001", snapshot.LLMEstimatedCostUSD)
 	}
-	if snapshot.LLMCircuitOpened != 1 || snapshot.LLMCircuitRejected != 1 || snapshot.LLMRetryBudgetExhausted != 1 || snapshot.LLMFallbackSucceeded != 1 || snapshot.LLMFallbackFailed != 1 {
+	if snapshot.LLMCircuitOpened != 1 || snapshot.LLMCircuitRejected != 1 || snapshot.LLMRetryBudgetExhausted != 1 || snapshot.LLMTaskBudgetRejected != 1 || snapshot.LLMFallbackSucceeded != 1 || snapshot.LLMFallbackFailed != 1 {
 		t.Fatalf("reliability counters = %+v", snapshot)
 	}
 }

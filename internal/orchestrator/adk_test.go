@@ -62,6 +62,9 @@ func TestAdkNextExecutesModelAndCompletes(t *testing.T) {
 	if m.calls != 1 {
 		t.Fatalf("expected 1 model call, got %d", m.calls)
 	}
+	if task.LLMCalls != 1 {
+		t.Fatalf("expected ADK call to consume task LLM quota, got %d", task.LLMCalls)
+	}
 
 	if task.Status != types.StatusCompleted {
 		t.Fatalf("expected task status completed, got %s", task.Status)

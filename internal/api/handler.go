@@ -62,6 +62,10 @@ type CreateTaskRequest struct {
 	// 0 (default) disables the limit; positive values stop the task once the
 	// summed TokenUsage across trace entries reaches the budget.
 	TokenBudget int `json:"token_budget"`
+	// LLM budgets override process defaults when positive; zero inherits the
+	// configured default, which is unlimited unless explicitly set.
+	LLMCallBudget    int     `json:"llm_call_budget"`
+	LLMCostBudgetUSD float64 `json:"llm_cost_budget_usd"`
 }
 
 func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector) *Handler {
@@ -222,6 +226,16 @@ func (h *Handler) createTask(c *gin.Context) {
 	if req.ToolBudget <= 0 {
 		req.ToolBudget = 5
 	}
+	if req.TokenBudget < 0 || req.LLMCallBudget < 0 || req.LLMCostBudgetUSD < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token and LLM budgets must be greater than or equal to zero"})
+		return
+	}
+	if req.LLMCostBudgetUSD > 0 {
+		if err := config.Get().ValidateLLMCostBudgetCoverage(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
 	if err := policy.ValidateWorkspace(req.Workspace); err != nil {
 		c.Error(err)
@@ -246,13 +260,15 @@ func (h *Handler) createTask(c *gin.Context) {
 	}
 
 	task := &types.Task{
-		ID:          taskID,
-		Goal:        req.Goal,
-		Workspace:   req.Workspace,
-		MaxSteps:    req.MaxSteps,
-		ToolBudget:  req.ToolBudget,
-		TokenBudget: req.TokenBudget,
-		Status:      types.StatusCreated,
+		ID:               taskID,
+		Goal:             req.Goal,
+		Workspace:        req.Workspace,
+		MaxSteps:         req.MaxSteps,
+		ToolBudget:       req.ToolBudget,
+		TokenBudget:      req.TokenBudget,
+		LLMCallBudget:    req.LLMCallBudget,
+		LLMCostBudgetUSD: req.LLMCostBudgetUSD,
+		Status:           types.StatusCreated,
 	}
 
 	if err := h.store.SaveFullTask(ctx, task); err != nil {
@@ -824,6 +840,10 @@ func (h *Handler) reloadConfig(c *gin.Context) {
 		// which provider and model are now active.
 		"active_provider": cfg.ResolveLLMProvider(),
 		"active_model":    cfg.ResolveLLMModel(cfg.ResolveLLMProvider()),
+		"llm_task_budget_defaults": gin.H{
+			"max_calls":              cfg.LLM.MaxCallsPerTask,
+			"max_estimated_cost_usd": cfg.LLM.MaxEstimatedCostUSDPerTask,
+		},
 	}
 	activeScenes := make(map[string]gin.H, len(cfg.LLM.Scenes)+1)
 	sceneNames := map[string]struct{}{config.LLMSceneTaskPlanner: {}}

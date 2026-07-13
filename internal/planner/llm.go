@@ -120,12 +120,19 @@ func (p *LLMPlanner) resolveCredentials(scene string) (provider ProviderType, ap
 }
 
 func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk func(string)) (*PlanDecision, error) {
+	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	ctx, span := tracer.Start(ctx, "planner.plan_next")
 	defer span.End()
 	activeScene := p.Scene
 	if p.Provider == "" && p.APIKey == "" && p.Model == "" && p.BaseURL == "" {
 		activeScene = llmcore.ResolveRoutedScene(ctx, p.Scene)
+	}
+	if err := llmcore.ReserveTaskLLMCallForConfig(ctx, llmcore.ConfigForScene(activeScene)); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		llmcore.ObserveReliabilityContext(ctx, llmcore.ReliabilityEvent{Kind: llmcore.ReliabilityTaskBudgetRejected, Scene: activeScene})
+		return nil, err
 	}
 
 	// Resolve credentials at call time so hot-reloaded config (e.g. rotated API
@@ -250,10 +257,17 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 			break
 		}
 	}
-	llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeScene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != "", EstimatedCostUSD: llmcore.EstimateCostUSD(primaryResilience, primaryUsage)})
+	primaryCostUSD := llmcore.EstimateCostUSD(primaryResilience, primaryUsage)
+	llmcore.RecordTaskLLMCost(ctx, primaryCostUSD)
+	llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeScene, Provider: string(provider), Model: model, Usage: primaryUsage, Duration: time.Since(primaryStarted), Err: err, Attempts: primaryAttempts, FallbackUsed: err != nil && fallbackScene != "", EstimatedCostUSD: primaryCostUSD})
 	fallbackAttempted := err != nil && fallbackScene != ""
 	activeFallback := fallbackScene
 	for err != nil && activeFallback != "" {
+		if budgetErr := llmcore.ReserveTaskLLMCallForConfig(ctx, llmcore.ConfigForScene(activeFallback)); budgetErr != nil {
+			err = budgetErr
+			llmcore.ObserveReliabilityContext(ctx, llmcore.ReliabilityEvent{Kind: llmcore.ReliabilityTaskBudgetRejected, Scene: activeFallback})
+			break
+		}
 		span.SetAttributes(attribute.Bool("llm.fallback.triggered", true), attribute.String("llm.fallback.scene", activeFallback))
 		fallback := config.Get().ResolveLLMScene(activeFallback)
 		fallbackProvider, lookupErr := lookupProvider(ProviderType(fallback.Provider))
@@ -294,7 +308,9 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 					break
 				}
 			}
-			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Usage: sceneUsage, Duration: time.Since(fallbackStarted), Err: err, Attempts: fallbackAttempts, FallbackUsed: err != nil && fallback.FallbackScene != "", EstimatedCostUSD: llmcore.EstimateCostUSD(fallbackResilience, sceneUsage)})
+			fallbackCostUSD := llmcore.EstimateCostUSD(fallbackResilience, sceneUsage)
+			llmcore.RecordTaskLLMCost(ctx, fallbackCostUSD)
+			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Usage: sceneUsage, Duration: time.Since(fallbackStarted), Err: err, Attempts: fallbackAttempts, FallbackUsed: err != nil && fallback.FallbackScene != "", EstimatedCostUSD: fallbackCostUSD})
 		} else {
 			err = lookupErr
 			llmcore.ObserveContext(ctx, llmcore.CallEvent{Scene: activeFallback, Provider: fallback.Provider, Model: fallback.Model, Err: err, Attempts: 1, FallbackUsed: fallback.FallbackScene != ""})

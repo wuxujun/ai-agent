@@ -79,17 +79,23 @@ type ApprovalResult struct {
 }
 
 type Task struct {
-	ID          string      `json:"id"`
-	Goal        string      `json:"goal"`
-	Status      TaskStatus  `json:"status"`
-	MaxSteps    int         `json:"max_steps"`
-	StepCount   int         `json:"step_count"`
-	Workspace   string      `json:"workspace"`
-	Hypothesis  string      `json:"hypothesis"`
-	Unresolved  []string    `json:"unresolved"`
-	ToolBudget  int         `json:"tool_budget"`
-	TokenBudget int         `json:"token_budget"`
-	Trace       []StepTrace `json:"trace"`
-	FinalAnswer string      `json:"final_answer"`
-	Memories    []Memory    `json:"memories,omitempty"`
+	ID          string     `json:"id"`
+	Goal        string     `json:"goal"`
+	Status      TaskStatus `json:"status"`
+	MaxSteps    int        `json:"max_steps"`
+	StepCount   int        `json:"step_count"`
+	Workspace   string     `json:"workspace"`
+	Hypothesis  string     `json:"hypothesis"`
+	Unresolved  []string   `json:"unresolved"`
+	ToolBudget  int        `json:"tool_budget"`
+	TokenBudget int        `json:"token_budget"`
+	// LLMCallBudget and LLMCostBudgetUSD override process defaults when positive.
+	// Accumulated values are persisted so resumed tasks retain their quota state.
+	LLMCallBudget       int         `json:"llm_call_budget"`
+	LLMCostBudgetUSD    float64     `json:"llm_cost_budget_usd"`
+	LLMCalls            int         `json:"llm_calls"`
+	LLMEstimatedCostUSD float64     `json:"llm_estimated_cost_usd"`
+	Trace               []StepTrace `json:"trace"`
+	FinalAnswer         string      `json:"final_answer"`
+	Memories            []Memory    `json:"memories,omitempty"`
 }

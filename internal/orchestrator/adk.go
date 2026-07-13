@@ -250,6 +250,7 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 			return nil, fmt.Errorf("failed to create gemini model: %w", err)
 		}
 	}
+	llmModel = budgetedADKModel{delegate: llmModel}
 
 	// Create tools
 	findFilesTool, err := functiontool.New(functiontool.Config{

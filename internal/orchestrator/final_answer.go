@@ -10,6 +10,7 @@ import (
 const (
 	limitReasonStepOrToolBudget = "step_or_tool_budget"
 	limitReasonTokenBudget      = "token_budget"
+	limitReasonLLMBudget        = "llm_budget"
 )
 
 func finalAnswerForLimit(task *types.Task, reason string) string {
@@ -21,6 +22,8 @@ func finalAnswerForLimit(task *types.Task, reason string) string {
 	switch reason {
 	case limitReasonTokenBudget:
 		b.WriteString("Stopped before a final answer could be produced because the token budget was reached.")
+	case limitReasonLLMBudget:
+		b.WriteString("Stopped before a final answer could be produced because the LLM call or estimated cost budget was reached.")
 	default:
 		b.WriteString("Stopped before a final answer could be produced because the step or tool budget limit was reached.")
 	}
@@ -31,7 +34,7 @@ func finalAnswerForLimit(task *types.Task, reason string) string {
 
 	progress := taskProgressSummary(task, 5)
 	if len(progress) == 0 {
-		b.WriteString("\n\nNo tool observations were recorded before the limit was reached. Increase max_steps, tool_budget, or token_budget and run the task again.")
+		b.WriteString("\n\nNo tool observations were recorded before the limit was reached. Increase the applicable task budget and run the task again.")
 		return b.String()
 	}
 
@@ -40,7 +43,7 @@ func finalAnswerForLimit(task *types.Task, reason string) string {
 		b.WriteString("\n- ")
 		b.WriteString(item)
 	}
-	b.WriteString("\n\nIncrease max_steps, tool_budget, or token_budget to continue from this partial result.")
+	b.WriteString("\n\nIncrease the applicable task budget to continue from this partial result.")
 	return b.String()
 }
 

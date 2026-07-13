@@ -67,6 +67,7 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 //  2. Research – ResearcherAgent executes each step (budget-gated)
 //  3. Write  – WriterAgent synthesises all evidence into a final answer
 func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
+	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	ctx, span := tracer.Start(ctx, "multiagent.coordinator.run")
 	defer span.End()

@@ -100,6 +100,12 @@ llm:
   circuit_breaker_failure_threshold: 5
   circuit_breaker_cooldown_seconds: 30
   retry_budget_per_minute: 60
+  # Default per-task logical LLM call limit; 0 disables the limit. A fallback
+  # scene counts as another call, while retries within one scene do not.
+  max_calls_per_task: 0
+  # Default per-task estimated USD limit; 0 disables the limit. Cost requires
+  # input/output pricing on the selected gateway or scene.
+  max_estimated_cost_usd_per_task: 0
   context_compression_trace_threshold: 8
   # Optional: also trigger context compression when accumulated trace tokens exceed
   # this total. 0 (default) disables the token-based trigger; useful for tasks that

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -125,9 +126,20 @@ const (
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(e.Mode))
+	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	defer func() {
 		if err != nil {
+			var budgetErr *llmcore.TaskBudgetError
+			if errors.As(err, &budgetErr) {
+				engineLog.Info("task reached LLM budget", "task_id", task.ID, "kind", budgetErr.Kind, "current", budgetErr.Current, "limit", budgetErr.Limit)
+				_ = SetTaskCompleted(task, finalAnswerForLimit(task, limitReasonLLMBudget))
+				if e.Metrics != nil {
+					e.Metrics.IncCompleted()
+				}
+				err = nil
+				return
+			}
 			engineLog.Error("step execution failed", "task_id", task.ID, "error", err)
 			_ = SetTaskFailed(task, err.Error())
 		}

@@ -59,20 +59,22 @@ type Config struct {
 	} `mapstructure:"orchestrator"`
 
 	LLM struct {
-		Provider                         string `mapstructure:"provider"`
-		APIKey                           string `mapstructure:"api_key"`
-		OpenAIAPIKey                     string `mapstructure:"openai_api_key"`
-		GeminiAPIKey                     string `mapstructure:"gemini_api_key"`
-		GoogleAPIKey                     string `mapstructure:"google_api_key"`
-		Model                            string `mapstructure:"model"`
-		BaseURL                          string `mapstructure:"base_url"`
-		TimeoutSeconds                   int    `mapstructure:"timeout_seconds"`
-		ReadinessMode                    string `mapstructure:"readiness_mode"`
-		ReadinessCacheTTLSeconds         int    `mapstructure:"readiness_cache_ttl_seconds"`
-		CircuitBreakerFailureThreshold   int    `mapstructure:"circuit_breaker_failure_threshold"`
-		CircuitBreakerCooldownSeconds    int    `mapstructure:"circuit_breaker_cooldown_seconds"`
-		RetryBudgetPerMinute             int    `mapstructure:"retry_budget_per_minute"`
-		ContextCompressionTraceThreshold int    `mapstructure:"context_compression_trace_threshold"`
+		Provider                         string  `mapstructure:"provider"`
+		APIKey                           string  `mapstructure:"api_key"`
+		OpenAIAPIKey                     string  `mapstructure:"openai_api_key"`
+		GeminiAPIKey                     string  `mapstructure:"gemini_api_key"`
+		GoogleAPIKey                     string  `mapstructure:"google_api_key"`
+		Model                            string  `mapstructure:"model"`
+		BaseURL                          string  `mapstructure:"base_url"`
+		TimeoutSeconds                   int     `mapstructure:"timeout_seconds"`
+		ReadinessMode                    string  `mapstructure:"readiness_mode"`
+		ReadinessCacheTTLSeconds         int     `mapstructure:"readiness_cache_ttl_seconds"`
+		CircuitBreakerFailureThreshold   int     `mapstructure:"circuit_breaker_failure_threshold"`
+		CircuitBreakerCooldownSeconds    int     `mapstructure:"circuit_breaker_cooldown_seconds"`
+		RetryBudgetPerMinute             int     `mapstructure:"retry_budget_per_minute"`
+		MaxCallsPerTask                  int     `mapstructure:"max_calls_per_task"`
+		MaxEstimatedCostUSDPerTask       float64 `mapstructure:"max_estimated_cost_usd_per_task"`
+		ContextCompressionTraceThreshold int     `mapstructure:"context_compression_trace_threshold"`
 		// ContextCompressionTokenThreshold triggers compression when the sum of
 		// all TotalTokens across task.Trace exceeds this value, regardless of
 		// step count. 0 disables the token-based trigger.
@@ -258,6 +260,8 @@ func setupViper() {
 	viper.SetDefault("llm.circuit_breaker_failure_threshold", 5)
 	viper.SetDefault("llm.circuit_breaker_cooldown_seconds", 30)
 	viper.SetDefault("llm.retry_budget_per_minute", 60)
+	viper.SetDefault("llm.max_calls_per_task", 0)
+	viper.SetDefault("llm.max_estimated_cost_usd_per_task", 0.0)
 	viper.SetDefault("llm.context_compression_trace_threshold", 8)
 	// context_compression_token_threshold: 0 = disabled by default
 	viper.SetDefault("llm.context_compression_token_threshold", 0)
@@ -564,6 +568,10 @@ func diffConfigs(old, new *Config) []string {
 	addIfInt("llm.circuit_breaker_failure_threshold", old.LLM.CircuitBreakerFailureThreshold, new.LLM.CircuitBreakerFailureThreshold)
 	addIfInt("llm.circuit_breaker_cooldown_seconds", old.LLM.CircuitBreakerCooldownSeconds, new.LLM.CircuitBreakerCooldownSeconds)
 	addIfInt("llm.retry_budget_per_minute", old.LLM.RetryBudgetPerMinute, new.LLM.RetryBudgetPerMinute)
+	addIfInt("llm.max_calls_per_task", old.LLM.MaxCallsPerTask, new.LLM.MaxCallsPerTask)
+	if old.LLM.MaxEstimatedCostUSDPerTask != new.LLM.MaxEstimatedCostUSDPerTask {
+		changes = append(changes, fmt.Sprintf("llm.max_estimated_cost_usd_per_task: %g -> %g", old.LLM.MaxEstimatedCostUSDPerTask, new.LLM.MaxEstimatedCostUSDPerTask))
+	}
 	addIfInt("llm.context_compression_trace_threshold", old.LLM.ContextCompressionTraceThreshold, new.LLM.ContextCompressionTraceThreshold)
 	addIfInt("llm.context_compression_token_threshold", old.LLM.ContextCompressionTokenThreshold, new.LLM.ContextCompressionTokenThreshold)
 	addIf("llm.gateway.provider", old.LLM.Gateway.Provider, new.LLM.Gateway.Provider)
@@ -797,6 +805,24 @@ func (c *Config) ResolveLLMRoutedScene(scene string, hints LLMRoutingHints) stri
 	return current
 }
 
+// ValidateLLMCostBudgetCoverage ensures every configured generation scene has
+// pricing, so a task cost limit cannot be bypassed by an unpriced call.
+func (c *Config) ValidateLLMCostBudgetCoverage() error {
+	scenes := map[string]struct{}{LLMSceneTaskPlanner: {}}
+	for scene := range c.LLM.Scenes {
+		if scene != LLMSceneEmbedding {
+			scenes[scene] = struct{}{}
+		}
+	}
+	for scene := range scenes {
+		resolved := c.ResolveLLMScene(scene)
+		if resolved.InputCostPerMillionUSD == 0 && resolved.OutputCostPerMillionUSD == 0 {
+			return fmt.Errorf("llm scene %q requires input or output pricing when a task cost budget is enabled", scene)
+		}
+	}
+	return nil
+}
+
 func routeMatches(rule LLMRouteRule, hints LLMRoutingHints) bool {
 	if rule.MinRemainingTokens != nil {
 		if !hints.HasRemainingTokens || hints.RemainingTokens < *rule.MinRemainingTokens {
@@ -838,8 +864,13 @@ func (c *Config) Validate() error {
 	if c.LLM.ContextCompressionTokenThreshold < 0 {
 		return fmt.Errorf("llm.context_compression_token_threshold must be >= 0")
 	}
-	if c.LLM.CircuitBreakerFailureThreshold < 0 || c.LLM.CircuitBreakerCooldownSeconds < 0 || c.LLM.RetryBudgetPerMinute < 0 {
-		return fmt.Errorf("llm circuit breaker and retry budget values must be >= 0")
+	if c.LLM.CircuitBreakerFailureThreshold < 0 || c.LLM.CircuitBreakerCooldownSeconds < 0 || c.LLM.RetryBudgetPerMinute < 0 || c.LLM.MaxCallsPerTask < 0 || c.LLM.MaxEstimatedCostUSDPerTask < 0 {
+		return fmt.Errorf("llm resilience and task budget values must be >= 0")
+	}
+	if c.LLM.MaxEstimatedCostUSDPerTask > 0 {
+		if err := c.ValidateLLMCostBudgetCoverage(); err != nil {
+			return err
+		}
 	}
 	validatePolicy := func(name string, endpoint LLMEndpointConfig) error {
 		if (endpoint.MaxRetries != nil && *endpoint.MaxRetries < 0) || (endpoint.MinRemainingTokens != nil && *endpoint.MinRemainingTokens < 0) {

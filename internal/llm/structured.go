@@ -60,6 +60,7 @@ const (
 	ReliabilityRetryBudgetExhausted ReliabilityEventKind = "retry_budget_exhausted"
 	ReliabilityFallbackSucceeded    ReliabilityEventKind = "fallback_succeeded"
 	ReliabilityFallbackFailed       ReliabilityEventKind = "fallback_failed"
+	ReliabilityTaskBudgetRejected   ReliabilityEventKind = "task_budget_rejected"
 )
 
 type ReliabilityEvent struct {
@@ -264,6 +265,12 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 	ctx, span := otel.Tracer("ai-agent/llm").Start(ctx, "llm.structured_call")
 	defer span.End()
 	span.SetAttributes(attribute.String("llm.scene", cfg.Scene), attribute.String("llm.provider", cfg.Provider), attribute.String("llm.model", cfg.Model))
+	if err := ReserveTaskLLMCallForConfig(ctx, cfg); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		r.ObserveReliability(ctx, reliabilityEvent(ReliabilityTaskBudgetRejected, cfg, ""))
+		return types.TokenUsage{}, err
+	}
 	r.mu.RLock()
 	active := r.caller
 	r.mu.RUnlock()
@@ -312,7 +319,9 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 		}
 	}
 	span.SetAttributes(attribute.Int("llm.usage.prompt_tokens", usage.PromptTokens), attribute.Int("llm.usage.completion_tokens", usage.CompletionTokens), attribute.Int("llm.usage.total_tokens", usage.TotalTokens))
-	r.ObserveContext(ctx, CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(started), Err: err, Attempts: attempts, FallbackUsed: err != nil && cfg.FallbackScene != "", EstimatedCostUSD: EstimateCostUSD(cfg, usage)})
+	estimatedCostUSD := EstimateCostUSD(cfg, usage)
+	RecordTaskLLMCost(ctx, estimatedCostUSD)
+	r.ObserveContext(ctx, CallEvent{Scene: cfg.Scene, Provider: cfg.Provider, Model: cfg.Model, Usage: usage, Duration: time.Since(started), Err: err, Attempts: attempts, FallbackUsed: err != nil && cfg.FallbackScene != "", EstimatedCostUSD: estimatedCostUSD})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

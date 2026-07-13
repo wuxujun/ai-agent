@@ -76,16 +76,20 @@ func TestStores(t *testing.T) {
 
 			// 2. Save a task
 			task := &types.Task{
-				ID:          "task-123",
-				Goal:        "Build a cool agent",
-				Status:      types.StatusCreated,
-				MaxSteps:    10,
-				StepCount:   1,
-				Workspace:   "/tmp/workspace",
-				Hypothesis:  "Initial hypothesis",
-				Unresolved:  []string{"subtask-a", "subtask-b"},
-				ToolBudget:  5,
-				TokenBudget: 1234,
+				ID:                  "task-123",
+				Goal:                "Build a cool agent",
+				Status:              types.StatusCreated,
+				MaxSteps:            10,
+				StepCount:           1,
+				Workspace:           "/tmp/workspace",
+				Hypothesis:          "Initial hypothesis",
+				Unresolved:          []string{"subtask-a", "subtask-b"},
+				ToolBudget:          5,
+				TokenBudget:         1234,
+				LLMCallBudget:       7,
+				LLMCostBudgetUSD:    2.5,
+				LLMCalls:            3,
+				LLMEstimatedCostUSD: 1.25,
 				Memories: []types.Memory{
 					{
 						ID:          "mem-rag-1",
@@ -168,6 +172,9 @@ func TestStores(t *testing.T) {
 			}
 			if retrieved.TokenBudget != task.TokenBudget {
 				t.Errorf("expected TokenBudget %d, got %d", task.TokenBudget, retrieved.TokenBudget)
+			}
+			if retrieved.LLMCallBudget != task.LLMCallBudget || retrieved.LLMCostBudgetUSD != task.LLMCostBudgetUSD || retrieved.LLMCalls != task.LLMCalls || retrieved.LLMEstimatedCostUSD != task.LLMEstimatedCostUSD {
+				t.Errorf("expected LLM budget state %+v, got %+v", task, retrieved)
 			}
 			if retrieved.FinalAnswer != task.FinalAnswer {
 				t.Errorf("expected FinalAnswer %q, got %q", task.FinalAnswer, retrieved.FinalAnswer)

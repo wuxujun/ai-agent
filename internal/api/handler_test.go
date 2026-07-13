@@ -276,6 +276,44 @@ func TestCreateTaskPersistsTokenBudget(t *testing.T) {
 	}
 }
 
+func TestCreateTaskPersistsLLMBudgets(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = nil
+		cfg.LLM.Gateway.InputCostPerMillionUSD = apiTestPtr(1.0)
+	}))
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	body := `{"id":"task-llm-budget","goal":"x","workspace":"./testdata","llm_call_budget":4,"llm_cost_budget_usd":1.5}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
+	}
+	got, err := st.GetTask(context.Background(), "task-llm-budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LLMCallBudget != 4 || got.LLMCostBudgetUSD != 1.5 {
+		t.Fatalf("persisted LLM budgets = %+v", got)
+	}
+}
+
+func TestCreateTaskRejectsNegativeLLMBudget(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"goal":"x","workspace":"./testdata","llm_call_budget":-1}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func apiTestPtr[T any](value T) *T { return &value }
+
 func TestCreateTask_AutoGenerateID(t *testing.T) {
 	st := store.NewMemoryStore()
 	r := setupTestRouter(t, st, nil)

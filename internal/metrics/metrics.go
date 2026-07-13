@@ -36,6 +36,7 @@ type Snapshot struct {
 	LLMCircuitOpened        int64         `json:"llm_circuit_opened"`
 	LLMCircuitRejected      int64         `json:"llm_circuit_rejected"`
 	LLMRetryBudgetExhausted int64         `json:"llm_retry_budget_exhausted"`
+	LLMTaskBudgetRejected   int64         `json:"llm_task_budget_rejected"`
 	LLMFallbackSucceeded    int64         `json:"llm_fallback_succeeded"`
 	LLMFallbackFailed       int64         `json:"llm_fallback_failed"`
 }
@@ -73,6 +74,7 @@ type Collector struct {
 	llmCircuitOpened         api.Int64Counter
 	llmCircuitRejected       api.Int64Counter
 	llmRetryBudgetExhausted  api.Int64Counter
+	llmTaskBudgetRejected    api.Int64Counter
 	llmFallbackSucceeded     api.Int64Counter
 	llmFallbackFailed        api.Int64Counter
 }
@@ -109,6 +111,7 @@ func NewCollector() *Collector {
 	llmCircuitOpened, _ := meter.Int64Counter("agent.llm.circuit.opened")
 	llmCircuitRejected, _ := meter.Int64Counter("agent.llm.circuit.rejected")
 	llmRetryBudgetExhausted, _ := meter.Int64Counter("agent.llm.retry.budget_exhausted")
+	llmTaskBudgetRejected, _ := meter.Int64Counter("agent.llm.task_budget.rejected")
 	llmFallbackSucceeded, _ := meter.Int64Counter("agent.llm.fallback.succeeded")
 	llmFallbackFailed, _ := meter.Int64Counter("agent.llm.fallback.failed")
 
@@ -138,6 +141,7 @@ func NewCollector() *Collector {
 		llmCircuitOpened:         llmCircuitOpened,
 		llmCircuitRejected:       llmCircuitRejected,
 		llmRetryBudgetExhausted:  llmRetryBudgetExhausted,
+		llmTaskBudgetRejected:    llmTaskBudgetRejected,
 		llmFallbackSucceeded:     llmFallbackSucceeded,
 		llmFallbackFailed:        llmFallbackFailed,
 	}
@@ -180,6 +184,8 @@ func (c *Collector) ObserveLLMReliability(ctx context.Context, event llmcore.Rel
 		c.s.LLMCircuitRejected++
 	case llmcore.ReliabilityRetryBudgetExhausted:
 		c.s.LLMRetryBudgetExhausted++
+	case llmcore.ReliabilityTaskBudgetRejected:
+		c.s.LLMTaskBudgetRejected++
 	case llmcore.ReliabilityFallbackSucceeded:
 		c.s.LLMFallbackSucceeded++
 	case llmcore.ReliabilityFallbackFailed:
@@ -193,6 +199,8 @@ func (c *Collector) ObserveLLMReliability(ctx context.Context, event llmcore.Rel
 		c.llmCircuitRejected.Add(ctx, 1, attrs)
 	case llmcore.ReliabilityRetryBudgetExhausted:
 		c.llmRetryBudgetExhausted.Add(ctx, 1, attrs)
+	case llmcore.ReliabilityTaskBudgetRejected:
+		c.llmTaskBudgetRejected.Add(ctx, 1, attrs)
 	case llmcore.ReliabilityFallbackSucceeded:
 		c.llmFallbackSucceeded.Add(ctx, 1, attrs)
 	case llmcore.ReliabilityFallbackFailed:

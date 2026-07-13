@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
@@ -74,6 +75,15 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	// Set a reasonable timeout for embedding generation
 	embCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
+	if llmcore.TaskCostBudgetEnabled(embCtx) {
+		log.Warn("remote embedding skipped because its token cost cannot be accounted under the task cost budget; using local embedding")
+		return localEmbedding(text), nil
+	}
+	if budgetErr := llmcore.ReserveTaskLLMCall(embCtx); budgetErr != nil {
+		llmcore.ObserveReliabilityContext(embCtx, llmcore.ReliabilityEvent{Kind: llmcore.ReliabilityTaskBudgetRejected, Scene: config.LLMSceneEmbedding, Provider: string(cfg.Provider), Model: cfg.Model})
+		log.Warn("remote embedding skipped by task LLM budget; using local embedding", "error", budgetErr)
+		return localEmbedding(text), nil
+	}
 
 	var vec []float32
 	var err error

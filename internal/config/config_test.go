@@ -460,6 +460,25 @@ func TestValidateRejectsNegativeLLMResilienceValues(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected negative retry budget validation error")
 	}
+	cfg.LLM.RetryBudgetPerMinute = 0
+	cfg.LLM.MaxCallsPerTask = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative task call budget validation error")
+	}
+}
+
+func TestValidateLLMCostBudgetRequiresPricing(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.LLM.MaxEstimatedCostUSDPerTask = 1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "requires input or output pricing") {
+		t.Fatalf("missing pricing validation error = %v", err)
+	}
+	cfg.LLM.Gateway.InputCostPerMillionUSD = testPtr(1.0)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("priced task cost budget rejected: %v", err)
+	}
 }
 
 func TestValidateLLMReadinessSettings(t *testing.T) {

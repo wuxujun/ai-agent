@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS tasks (
 	unresolved_json TEXT NOT NULL,
 	tool_budget INT NOT NULL,
 	token_budget INT NOT NULL DEFAULT 0,
+	llm_call_budget INT NOT NULL DEFAULT 0,
+	llm_cost_budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+	llm_calls INT NOT NULL DEFAULT 0,
+	llm_estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
 	memories_json TEXT NOT NULL DEFAULT '[]',
 	final_answer TEXT NOT NULL
 );
@@ -106,6 +110,10 @@ CREATE TABLE IF NOT EXISTS task_leases (
 	// Idempotent migrations for existing databases that predate these columns.
 	// Postgres supports IF NOT EXISTS on ADD COLUMN since 9.6.
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget INT NOT NULL DEFAULT 0`)
+	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_call_budget INT NOT NULL DEFAULT 0`)
+	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_cost_budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0`)
+	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_calls INT NOT NULL DEFAULT 0`)
+	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS memories_json TEXT NOT NULL DEFAULT '[]'`)
 	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS error_text TEXT NOT NULL DEFAULT ''`)
 	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS prompt_tokens INT NOT NULL DEFAULT 0`)
@@ -133,8 +141,8 @@ func (p *PostgresStore) SaveTask(ctx context.Context, task *types.Task) error {
 	}
 
 	_, err = p.db.ExecContext(ctx, `
-INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, memories_json, final_answer)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, final_answer)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 ON CONFLICT(id) DO UPDATE SET
 goal=EXCLUDED.goal,
 status=EXCLUDED.status,
@@ -145,11 +153,15 @@ hypothesis=EXCLUDED.hypothesis,
 unresolved_json=EXCLUDED.unresolved_json,
 tool_budget=EXCLUDED.tool_budget,
 token_budget=EXCLUDED.token_budget,
+llm_call_budget=EXCLUDED.llm_call_budget,
+llm_cost_budget_usd=EXCLUDED.llm_cost_budget_usd,
+llm_calls=EXCLUDED.llm_calls,
+llm_estimated_cost_usd=EXCLUDED.llm_estimated_cost_usd,
 memories_json=EXCLUDED.memories_json,
 final_answer=EXCLUDED.final_answer
 `,
 		task.ID, task.Goal, string(task.Status), task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, string(memoriesJSON), task.FinalAnswer,
+		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), task.FinalAnswer,
 	)
 	return err
 }
@@ -259,8 +271,8 @@ func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) erro
 	}
 
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, memories_json, final_answer)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, final_answer)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 ON CONFLICT(id) DO UPDATE SET
 goal=EXCLUDED.goal,
 status=EXCLUDED.status,
@@ -271,10 +283,14 @@ hypothesis=EXCLUDED.hypothesis,
 unresolved_json=EXCLUDED.unresolved_json,
 tool_budget=EXCLUDED.tool_budget,
 token_budget=EXCLUDED.token_budget,
+llm_call_budget=EXCLUDED.llm_call_budget,
+llm_cost_budget_usd=EXCLUDED.llm_cost_budget_usd,
+llm_calls=EXCLUDED.llm_calls,
+llm_estimated_cost_usd=EXCLUDED.llm_estimated_cost_usd,
 memories_json=EXCLUDED.memories_json,
 final_answer=EXCLUDED.final_answer`,
 		task.ID, task.Goal, task.Status, task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, string(memoriesJSON), task.FinalAnswer,
+		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), task.FinalAnswer,
 	)
 	if err != nil {
 		span.RecordError(err)
@@ -376,7 +392,7 @@ func (p *PostgresStore) GetTask(ctx context.Context, id string) (*types.Task, er
 	span.SetAttributes(attribute.String("agent.task.id", id))
 
 	row := p.db.QueryRowContext(ctx, `
-SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, memories_json, final_answer
+SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, final_answer
 FROM tasks WHERE id = $1
 `, id)
 
@@ -386,7 +402,7 @@ FROM tasks WHERE id = $1
 
 	err := row.Scan(
 		&task.ID, &task.Goal, &task.Status, &task.MaxSteps, &task.StepCount,
-		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &memoriesJSON, &task.FinalAnswer,
+		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &task.FinalAnswer,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -451,7 +467,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.T
 	args = append(args, f.Offset, limit)
 
 	query := fmt.Sprintf(`
-SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, memories_json, final_answer
+SELECT id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, final_answer
 FROM tasks
 %s
 ORDER BY id ASC
@@ -471,7 +487,7 @@ LIMIT $%d OFFSET $%d
 		var memoriesJSON string
 		if err := rows.Scan(
 			&t.ID, &t.Goal, &t.Status, &t.MaxSteps, &t.StepCount,
-			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &memoriesJSON, &t.FinalAnswer,
+			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &t.FinalAnswer,
 		); err != nil {
 			return nil, err
 		}

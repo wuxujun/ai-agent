@@ -50,3 +50,10 @@ func TestFinalAnswerForLimitWithoutTraceExplainsNoObservations(t *testing.T) {
 		t.Fatalf("expected no-observation explanation, got %q", got)
 	}
 }
+
+func TestFinalAnswerForLLMBudget(t *testing.T) {
+	got := finalAnswerForLimit(&types.Task{Goal: "finish task"}, limitReasonLLMBudget)
+	if !strings.Contains(got, "LLM call or estimated cost budget") {
+		t.Fatalf("expected LLM budget reason, got %q", got)
+	}
+}
