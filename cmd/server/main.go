@@ -188,6 +188,7 @@ func main() {
 
 	plannerClient := planner.NewLLMPlannerForScene(config.LLMSceneTaskPlanner)
 	plannerClient.Compressor = planner.NewLLMContextCompressor(config.LLMSceneContextCompressor)
+	plannerClient.ArgumentRepairer = planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)
 
 	fallbackPlanner := &planner.MockPlanner{}
 

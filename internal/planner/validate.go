@@ -22,12 +22,24 @@ type Validator interface {
 	Validate(params map[string]any) error
 }
 
+type ToolArgumentValidationError struct {
+	ActionIndex int
+	Action      string
+	Err         error
+}
+
+func (e *ToolArgumentValidationError) Error() string {
+	return fmt.Sprintf("validation failed for action %s: %v", e.Action, e.Err)
+}
+
+func (e *ToolArgumentValidationError) Unwrap() error { return e.Err }
+
 func ValidateDecision(d *PlanDecision) error {
 	if len(d.Actions) == 0 {
 		return errors.New("decision must contain at least one action")
 	}
 
-	for _, ac := range d.Actions {
+	for i, ac := range d.Actions {
 		// "none" is the sentinel stop action and is never a registered tool.
 		// Every other action must correspond to a tool in the registry, so the
 		// set of valid actions stays in lock-step with PlannerDecisionSchema
@@ -46,20 +58,25 @@ func ValidateDecision(d *PlanDecision) error {
 			return errors.New("stop=true requires action=none")
 		}
 
-		tool, ok := tools.Get(ac.Action)
-		if !ok {
-			return fmt.Errorf("invalid action: %s", ac.Action)
-		}
-
-		// Tools that implement the optional Validator interface get their
-		// per-tool checks invoked here. Tools that don't are passed through
-		// (Execute remains the final gate). The middleware wrapper does not
-		// satisfy Validator itself, so we have to unwrap it to the underlying
-		// tool — registry.Register wraps every tool in toolMiddleware.
-		if v, ok := unwrapValidator(tool); ok {
-			if err := v.Validate(ac.Parameters); err != nil {
-				return fmt.Errorf("validation failed for action %s: %w", ac.Action, err)
+		if err := ValidateToolArguments(ac.Action, ac.Parameters); err != nil {
+			var argumentErr *ToolArgumentValidationError
+			if errors.As(err, &argumentErr) {
+				return &ToolArgumentValidationError{ActionIndex: i, Action: argumentErr.Action, Err: argumentErr.Err}
 			}
+			return err
+		}
+	}
+	return nil
+}
+
+func ValidateToolArguments(action string, params map[string]any) error {
+	tool, ok := tools.Get(action)
+	if !ok {
+		return fmt.Errorf("invalid action: %s", action)
+	}
+	if v, ok := unwrapValidator(tool); ok {
+		if err := v.Validate(params); err != nil {
+			return &ToolArgumentValidationError{ActionIndex: -1, Action: action, Err: err}
 		}
 	}
 	return nil

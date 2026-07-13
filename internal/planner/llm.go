@@ -45,9 +45,10 @@ const (
 // time, so a hot-config-reload (e.g. API-key rotation) is picked up
 // automatically without restarting the server.
 type LLMPlanner struct {
-	Scene      string
-	Compressor ContextCompressor
-	Provider   ProviderType
+	Scene            string
+	Compressor       ContextCompressor
+	ArgumentRepairer ToolArgumentRepairer
+	Provider         ProviderType
 	// APIKey overrides config.Get().ResolveLLMAPIKey when non-empty.
 	APIKey string
 	// Model overrides config.Get().ResolveLLMModel when non-empty.
@@ -350,11 +351,27 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		return nil, fmt.Errorf("invalid planner decision: %w", err)
 	}
 
-	if err := ValidateDecision(&decision); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "decision validation failed")
-		log.Error("validation failed for decision", "task_id", task.ID, "decision", decision, "error", err)
-		return nil, err
+	if validationErr := ValidateDecision(&decision); validationErr != nil {
+		var argumentErr *ToolArgumentValidationError
+		if p.ArgumentRepairer != nil && toolArgumentRepairConfigured() && llmcore.AllowedForTask(config.LLMSceneToolArgumentRepair, task) && errors.As(validationErr, &argumentErr) {
+			repaired, repairUsage, repairErr := p.ArgumentRepairer.Repair(ctx, task.Goal, argumentErr.Action, decision.Actions[argumentErr.ActionIndex].Parameters, argumentErr)
+			addTokenUsage(&usage, repairUsage)
+			if repairErr == nil {
+				decision.Actions[argumentErr.ActionIndex].Parameters = repaired
+				validationErr = ValidateDecision(&decision)
+				if validationErr == nil {
+					span.AddEvent("tool_arguments_repaired", trace.WithAttributes(attribute.String("tool.action", argumentErr.Action), attribute.Int("tool.action_index", argumentErr.ActionIndex)))
+				}
+			} else {
+				validationErr = fmt.Errorf("%w; tool argument repair failed: %v", validationErr, repairErr)
+			}
+		}
+		if validationErr != nil {
+			span.RecordError(validationErr)
+			span.SetStatus(codes.Error, "decision validation failed")
+			log.Error("validation failed for decision", "task_id", task.ID, "decision", decision, "error", validationErr)
+			return nil, validationErr
+		}
 	}
 
 	var actionNames []string
@@ -376,6 +393,12 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	decision.TokenUsage.CompletionTokens += compressionUsage.CompletionTokens
 	decision.TokenUsage.TotalTokens += compressionUsage.TotalTokens
 	return &decision, nil
+}
+
+func addTokenUsage(total *types.TokenUsage, additional types.TokenUsage) {
+	total.PromptTokens += additional.PromptTokens
+	total.CompletionTokens += additional.CompletionTokens
+	total.TotalTokens += additional.TotalTokens
 }
 
 func extractStructuredText(raw map[string]any) (string, error) {

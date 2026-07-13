@@ -35,6 +35,9 @@ type ResearchStep struct {
 	Command     string `json:"command"`      // used by execute_code
 	Args        string `json:"args"`         // used by execute_code
 	URL         string `json:"url"`          // used by http_fetch
+	// RepairedParameters is populated after plan-time argument repair. It is
+	// intentionally excluded from LLM JSON and is shared by approval and execution.
+	RepairedParameters map[string]any `json:"-"`
 }
 
 // ResearchPlan is the structured output of the PlannerAgent.

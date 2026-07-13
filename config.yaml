@@ -163,6 +163,8 @@ llm:
   #     model: "agent-verifier"
   #   safety_guard:
   #     model: "agent-safety"
+  #   tool_argument_repair:
+  #     model: "agent-fast"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:

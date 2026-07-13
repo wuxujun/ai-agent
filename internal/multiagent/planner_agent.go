@@ -2,10 +2,13 @@ package multiagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -34,7 +37,8 @@ Rules:
 
 // PlannerAgent decomposes a user goal into a structured ResearchPlan using an LLM.
 type PlannerAgent struct {
-	Config LLMConfig
+	Config           LLMConfig
+	ArgumentRepairer planner.ToolArgumentRepairer
 }
 
 // jsonSchema returns the JSON Schema used to enforce structured output.
@@ -113,6 +117,11 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 		return nil, fmt.Errorf("PlannerAgent LLM call failed: %w", err)
 	}
 	plan.TokenUsage = usage
+	if repairUsage, repairErr := p.repairToolArguments(ctx, goal, &plan); repairErr != nil {
+		return nil, repairErr
+	} else {
+		addMultiAgentUsage(&plan.TokenUsage, repairUsage)
+	}
 
 	if len(plan.Steps) == 0 {
 		return nil, fmt.Errorf("PlannerAgent returned an empty steps list")
@@ -182,12 +191,55 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 		return nil, fmt.Errorf("PlannerAgent Replan LLM call failed: %w", err)
 	}
 	plan.TokenUsage = usage
+	if repairUsage, repairErr := p.repairToolArguments(ctx, goal, &plan); repairErr != nil {
+		return nil, repairErr
+	} else {
+		addMultiAgentUsage(&plan.TokenUsage, repairUsage)
+	}
 
 	log.Info("Revised plan created", "summary", plan.ThoughtSummary, "steps", len(plan.Steps))
 	for i, s := range plan.Steps {
 		log.Info("Revised step", "num", i+1, "action", s.Action, "desc", s.Description)
 	}
 	return &plan, nil
+}
+
+func (p *PlannerAgent) repairToolArguments(ctx context.Context, goal string, plan *ResearchPlan) (types.TokenUsage, error) {
+	var usage types.TokenUsage
+	if p.ArgumentRepairer == nil {
+		return usage, nil
+	}
+	if _, configured := config.Get().LLM.Scenes[config.LLMSceneToolArgumentRepair]; !configured || !llmcore.AllowedForTaskContext(ctx, config.LLMSceneToolArgumentRepair) {
+		return usage, nil
+	}
+	for i := range plan.Steps {
+		step := &plan.Steps[i]
+		params := stepToParams(*step)
+		if step.Action == "find_files" && params["pattern"] == "" {
+			params["pattern"] = "*"
+		}
+		validationErr := planner.ValidateToolArguments(step.Action, params)
+		if validationErr == nil {
+			continue
+		}
+		var argumentErr *planner.ToolArgumentValidationError
+		if !errors.As(validationErr, &argumentErr) {
+			return usage, validationErr
+		}
+		repaired, repairUsage, err := p.ArgumentRepairer.Repair(ctx, goal, step.Action, params, argumentErr)
+		addMultiAgentUsage(&usage, repairUsage)
+		if err != nil {
+			return usage, fmt.Errorf("repair arguments for step %s action %s: %w", step.ID, step.Action, err)
+		}
+		step.RepairedParameters = repaired
+	}
+	return usage, nil
+}
+
+func addMultiAgentUsage(total *types.TokenUsage, additional types.TokenUsage) {
+	total.PromptTokens += additional.PromptTokens
+	total.CompletionTokens += additional.CompletionTokens
+	total.TotalTokens += additional.TotalTokens
 }
 
 func formatTracesForReplanner(traces []types.StepTrace) string {

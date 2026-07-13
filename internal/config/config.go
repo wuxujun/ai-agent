@@ -199,6 +199,7 @@ const (
 	LLMSceneTaskFinalizer       = "task_finalizer"
 	LLMSceneCitationVerifier    = "citation_verifier"
 	LLMSceneSafetyGuard         = "safety_guard"
+	LLMSceneToolArgumentRepair  = "tool_argument_repair"
 	LLMSceneContextCompressor   = "context_compressor"
 	LLMSceneAnswerVerifier      = "answer_verifier"
 	LLMSceneMemorySummarizer    = "memory_summarizer"

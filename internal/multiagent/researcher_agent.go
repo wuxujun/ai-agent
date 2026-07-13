@@ -68,6 +68,13 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 // parameter map expected by tools.Tool.Execute. Every possible key is populated;
 // each tool reads only the keys it needs, so the superset mapping is safe.
 func stepToParams(step ResearchStep) map[string]interface{} {
+	if step.RepairedParameters != nil {
+		params := make(map[string]interface{}, len(step.RepairedParameters))
+		for name, value := range step.RepairedParameters {
+			params[name] = value
+		}
+		return params
+	}
 	return map[string]interface{}{
 		"pattern": step.FileGlob,    // find_files
 		"glob":    step.FileGlob,    // search_text filter

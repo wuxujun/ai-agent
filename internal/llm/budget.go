@@ -67,6 +67,20 @@ func WithTaskBudget(ctx context.Context, task *types.Task) context.Context {
 	return context.WithValue(ctx, taskBudgetContextKey{}, &taskBudgetState{task: task, maxCalls: maxCalls, maxCost: maxCost, tenantID: task.TenantID, periodStart: periodStart, tenantBudget: tenantBudget, ledger: ledger})
 }
 
+func AllowedForTaskContext(ctx context.Context, scene string) bool {
+	if ctx == nil {
+		return true
+	}
+	state, _ := ctx.Value(taskBudgetContextKey{}).(*taskBudgetState)
+	if state == nil {
+		return true
+	}
+	state.mu.Lock()
+	task := state.task
+	state.mu.Unlock()
+	return AllowedForTask(scene, task)
+}
+
 type tenantLedgerContextKey struct{}
 
 func WithTenantUsageLedger(ctx context.Context, ledger types.TenantUsageLedger) context.Context {

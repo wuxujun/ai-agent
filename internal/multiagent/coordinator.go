@@ -10,6 +10,7 @@ import (
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
+	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
@@ -52,7 +53,7 @@ type Coordinator struct {
 // derived from environment variables (same vars as the main planner).
 func NewCoordinator(mc *metrics.Collector) *Coordinator {
 	return &Coordinator{
-		Planner:    &PlannerAgent{},
+		Planner:    &PlannerAgent{ArgumentRepairer: planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)},
 		Researcher: &ResearcherAgent{},
 		Writer:     &WriterAgent{},
 		Metrics:    mc,
@@ -303,6 +304,9 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 				log.Error("Replanner failed — continuing with remaining steps", "error", replanErr)
 			} else if len(newPlan.Steps) > 0 {
 				log.Info("Replanner generated revised steps", "count", len(newPlan.Steps))
+				if c.Metrics != nil {
+					c.Metrics.ObserveTokens(newPlan.TokenUsage.PromptTokens, newPlan.TokenUsage.CompletionTokens, newPlan.TokenUsage.TotalTokens, "replanner")
+				}
 				task.Trace = append(task.Trace, types.StepTrace{
 					Step:        task.StepCount,
 					Goal:        task.Goal,
@@ -310,6 +314,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 					Query:       "replanner",
 					Observation: fmt.Sprintf("[replanner] %s — %d step(s) revised due to failure", newPlan.ThoughtSummary, len(newPlan.Steps)),
 					AgentRole:   RolePlanner,
+					TokenUsage:  newPlan.TokenUsage,
 				})
 				task.StepCount++
 				currentSteps = newPlan.Steps
@@ -674,6 +679,10 @@ func buildStepQuery(step ResearchStep) string {
 }
 
 func paramsToStep(params map[string]any, step *ResearchStep) {
+	step.RepairedParameters = make(map[string]any, len(params))
+	for name, value := range params {
+		step.RepairedParameters[name] = value
+	}
 	if pattern, ok := params["pattern"].(string); ok {
 		step.FileGlob = pattern
 	}
