@@ -1,0 +1,15 @@
+title = "ai-agent secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known non-secret values used by unit tests and local examples"
+regexTarget = "secret"
+regexes = [
+  '''^sk-secret$''',
+  '''^my-test-secret-api-key$''',
+  '''^test-master-key$''',
+  '''^test-openai-key$''',
+  '''^test-gemini-key$''',
+]

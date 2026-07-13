@@ -13,6 +13,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
@@ -33,10 +35,9 @@ jobs:
           GEMINI_API_KEY: test-gemini-key
           LITELLM_MASTER_KEY: test-master-key
         run: docker compose -f deploy/litellm/compose.yaml config --quiet
-      - name: Hardcoded secret check
-        run: |
-          pattern='(sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[A-Z0-9]{16})'
-          if git grep -nE "$pattern" -- ':!records/**'; then
-            echo "Potential hardcoded secret found"
-            exit 1
-          fi
+      - name: Secret scan
+        run: >-
+          docker run --rm
+          -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.27.2
+          git --redact --verbose --config /repo/.gitleaks.toml /repo

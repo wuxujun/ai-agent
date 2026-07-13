@@ -74,7 +74,7 @@ func SearchWithRG(ctx context.Context, workspace string, query string, glob stri
 	if glob != "" {
 		args = append(args, "-g", glob)
 	}
-	args = append(args, query, ".")
+	args = append(args, "--", query, ".")
 
 	out, err := RunCommand(ctx, workspace, "rg", args...)
 	if err != nil && strings.TrimSpace(out) == "" {
