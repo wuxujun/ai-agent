@@ -12,6 +12,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
+	"golang.org/x/sync/singleflight"
 )
 
 const healthCacheTTL = 10 * time.Second
@@ -24,6 +25,13 @@ var healthCache struct {
 	key     string
 }
 
+var healthProbeGroup singleflight.Group
+
+type healthCheckResult struct {
+	scenes  map[string]SceneHealth
+	healthy bool
+}
+
 type SceneHealth struct {
 	Provider string `json:"provider"`
 	Healthy  bool   `json:"healthy"`
@@ -33,15 +41,34 @@ type SceneHealth struct {
 func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
 	cfg := config.Get()
 	cacheKey := healthConfigKey(cfg)
-	healthCache.Lock()
-	if time.Since(healthCache.at) < healthCacheTTL && healthCache.result != nil && healthCache.key == cacheKey {
-		result := cloneSceneHealth(healthCache.result)
-		healthy := healthCache.healthy
-		healthCache.Unlock()
+	if result, healthy, ok := cachedSceneHealth(cacheKey); ok {
 		return result, healthy
 	}
-	healthCache.Unlock()
 
+	value, _, _ := healthProbeGroup.Do(cacheKey, func() (any, error) {
+		// A caller may have populated the cache while this call waited to join
+		// the singleflight group.
+		if result, healthy, ok := cachedSceneHealth(cacheKey); ok {
+			return healthCheckResult{scenes: result, healthy: healthy}, nil
+		}
+		result, healthy := probeConfiguredScenes(ctx, cfg)
+		storeSceneHealth(cacheKey, result, healthy)
+		return healthCheckResult{scenes: result, healthy: healthy}, nil
+	})
+	checked := value.(healthCheckResult)
+	return cloneSceneHealth(checked.scenes), checked.healthy
+}
+
+func cachedSceneHealth(cacheKey string) (map[string]SceneHealth, bool, bool) {
+	healthCache.Lock()
+	defer healthCache.Unlock()
+	if time.Since(healthCache.at) < healthCacheTTL && healthCache.result != nil && healthCache.key == cacheKey {
+		return cloneSceneHealth(healthCache.result), healthCache.healthy, true
+	}
+	return nil, false, false
+}
+
+func probeConfiguredScenes(ctx context.Context, cfg *config.Config) (map[string]SceneHealth, bool) {
 	result := make(map[string]SceneHealth, len(cfg.LLM.Scenes)+1)
 	allHealthy := true
 	probed := make(map[string]SceneHealth)
@@ -90,13 +117,16 @@ func CheckConfiguredScenes(ctx context.Context) (map[string]SceneHealth, bool) {
 		}
 		result[scene] = health
 	}
+	return result, allHealthy
+}
+
+func storeSceneHealth(cacheKey string, result map[string]SceneHealth, healthy bool) {
 	healthCache.Lock()
+	defer healthCache.Unlock()
 	healthCache.at = time.Now()
 	healthCache.result = cloneSceneHealth(result)
-	healthCache.healthy = allHealthy
+	healthCache.healthy = healthy
 	healthCache.key = cacheKey
-	healthCache.Unlock()
-	return result, allHealthy
 }
 
 func healthConfigKey(cfg *config.Config) string {

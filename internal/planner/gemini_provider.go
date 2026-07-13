@@ -47,11 +47,7 @@ func (p *geminiProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 		"base_url", req.BaseURL,
 		"response_mime_type", cfg.ResponseMIMEType,
 		"system_prompt_len", len(req.SystemPrompt),
-		"system_prompt_preview", previewLogText(req.SystemPrompt, 500),
-		"system_prompt_truncated", isLogTextTruncated(req.SystemPrompt, 500),
 		"user_prompt_len", len(req.UserPrompt),
-		"user_prompt_preview", previewLogText(req.UserPrompt, 1000),
-		"user_prompt_truncated", isLogTextTruncated(req.UserPrompt, 1000),
 	)
 
 	iter := client.Models.GenerateContentStream(ctx, req.Model, contents, cfg)
@@ -85,25 +81,10 @@ func (p *geminiProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 	log.Info("Gemini planner response",
 		"model", req.Model,
 		"response_len", len(responseText),
-		"response_preview", previewLogText(responseText, 1000),
-		"response_truncated", isLogTextTruncated(responseText, 1000),
 		"prompt_tokens", usage.PromptTokens,
 		"completion_tokens", usage.CompletionTokens,
 		"total_tokens", usage.TotalTokens,
 	)
 
 	return responseText, usage, nil
-}
-
-func previewLogText(text string, limit int) string {
-	text = strings.Join(strings.Fields(text), " ")
-	if limit <= 0 || len(text) <= limit {
-		return text
-	}
-	return text[:limit] + "..."
-}
-
-func isLogTextTruncated(text string, limit int) bool {
-	text = strings.Join(strings.Fields(text), " ")
-	return limit > 0 && len(text) > limit
 }

@@ -418,6 +418,7 @@ func diffConfigs(old, new *Config) []string {
 	addIf("llm.base_url", old.LLM.BaseURL, new.LLM.BaseURL)
 	addIfInt("llm.timeout_seconds", old.LLM.TimeoutSeconds, new.LLM.TimeoutSeconds)
 	addIfInt("llm.context_compression_trace_threshold", old.LLM.ContextCompressionTraceThreshold, new.LLM.ContextCompressionTraceThreshold)
+	addIfInt("llm.context_compression_token_threshold", old.LLM.ContextCompressionTokenThreshold, new.LLM.ContextCompressionTokenThreshold)
 	addIf("llm.gateway.provider", old.LLM.Gateway.Provider, new.LLM.Gateway.Provider)
 	addIf("llm.gateway.api_key", old.LLM.Gateway.APIKey, new.LLM.Gateway.APIKey)
 	addIf("llm.gateway.model", old.LLM.Gateway.Model, new.LLM.Gateway.Model)
@@ -451,6 +452,9 @@ func diffConfigs(old, new *Config) []string {
 	// Search
 	addIf("search.url", old.Search.URL, new.Search.URL)
 	addIf("search.api_key", old.Search.APIKey, new.Search.APIKey)
+
+	// Embedding
+	addIf("embedding.model", old.Embedding.Model, new.Embedding.Model)
 
 	// Tool / Log / Skill / Telemetry
 	addIfInt("tool.timeout_seconds", old.Tool.TimeoutSeconds, new.Tool.TimeoutSeconds)

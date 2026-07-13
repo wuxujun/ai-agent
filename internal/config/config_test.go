@@ -318,3 +318,29 @@ store:
 		t.Errorf("expected store.type = memory, got %q", cfg.Store.Type)
 	}
 }
+
+func TestDiffConfigs_IncludesNewFields(t *testing.T) {
+	oldCfg := &Config{}
+	newCfg := &Config{}
+
+	newCfg.Embedding.Model = "new-embedding-model"
+	newCfg.LLM.ContextCompressionTokenThreshold = 50000
+
+	changes := diffConfigs(oldCfg, newCfg)
+	var foundEmbeddingModel, foundTokenThreshold bool
+	for _, change := range changes {
+		if change == "embedding.model: \"\" → \"new-embedding-model\"" {
+			foundEmbeddingModel = true
+		}
+		if change == "llm.context_compression_token_threshold: 0 → 50000" {
+			foundTokenThreshold = true
+		}
+	}
+
+	if !foundEmbeddingModel {
+		t.Errorf("diffConfigs did not report change in embedding.model; changes: %v", changes)
+	}
+	if !foundTokenThreshold {
+		t.Errorf("diffConfigs did not report change in llm.context_compression_token_threshold; changes: %v", changes)
+	}
+}
