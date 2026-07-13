@@ -24,6 +24,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/skills"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
@@ -204,6 +205,8 @@ func main() {
 		Store:    st,
 	}
 	eng.Finalizer = planner.NewLLMTaskFinalizer(config.LLMSceneTaskFinalizer)
+	eng.CitationVerifier = planner.NewLLMCitationVerifier(config.LLMSceneCitationVerifier)
+	eng.SafetyGuard = policy.NewLLMSafetyGuard(config.LLMSceneSafetyGuard)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner

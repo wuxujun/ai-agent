@@ -159,6 +159,10 @@ llm:
   #     model: "agent-planner-backup"
   #   task_finalizer:
   #     model: "agent-writer"
+  #   citation_verifier:
+  #     model: "agent-verifier"
+  #   safety_guard:
+  #     model: "agent-safety"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:

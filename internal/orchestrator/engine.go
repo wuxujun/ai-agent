@@ -17,6 +17,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -27,13 +28,15 @@ import (
 )
 
 type Engine struct {
-	Planner         planner.Planner
-	Finalizer       planner.TaskFinalizer
-	Executor        executor.Executor
-	Metrics         *metrics.Collector
-	Mode            Mode
-	AdkModel        model.LLM
-	LLMSceneEnabled func(string) bool
+	Planner          planner.Planner
+	Finalizer        planner.TaskFinalizer
+	CitationVerifier planner.CitationVerifier
+	SafetyGuard      policy.SafetyGuard
+	Executor         executor.Executor
+	Metrics          *metrics.Collector
+	Mode             Mode
+	AdkModel         model.LLM
+	LLMSceneEnabled  func(string) bool
 	// Coordinator is required when Mode == ModeMultiAgent.
 	Coordinator *multiagent.Coordinator
 	// Store handles database persistence and long-term memory.
@@ -108,6 +111,112 @@ func (e *Engine) finalizeAnswer(ctx context.Context, task *types.Task, fallback 
 	return answer, usage
 }
 
+func (e *Engine) verifyCitations(ctx context.Context, task *types.Task) {
+	if e.CitationVerifier == nil || !e.llmSceneEnabled(config.LLMSceneCitationVerifier) {
+		return
+	}
+	if !llmcore.AllowedForTask(config.LLMSceneCitationVerifier, task) || !planner.HasCitationEvidence(task) {
+		return
+	}
+	result, usage, err := e.CitationVerifier.Verify(ctx, task, task.FinalAnswer)
+	if err != nil {
+		engineLog.Warn("citation verifier failed; keeping original answer", "task_id", task.ID, "error", err)
+		return
+	}
+	if result == nil || strings.TrimSpace(result.VerifiedAnswer) == "" {
+		engineLog.Warn("citation verifier returned no answer; keeping original answer", "task_id", task.ID)
+		return
+	}
+	task.FinalAnswer = result.VerifiedAnswer
+	task.Trace = append(task.Trace, types.StepTrace{
+		Step:        task.StepCount,
+		Action:      "citation_verify",
+		Observation: fmt.Sprintf("supported=%t unsupported_claims=%d citation_issues=%d", result.Supported, len(result.UnsupportedClaims), len(result.CitationIssues)),
+		TokenUsage:  usage,
+	})
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "citation_verifier")
+	}
+}
+
+func (e *Engine) safetySceneAvailable(task *types.Task) bool {
+	return e.SafetyGuard != nil && e.llmSceneEnabled(config.LLMSceneSafetyGuard) && llmcore.AllowedForTask(config.LLMSceneSafetyGuard, task)
+}
+
+func (e *Engine) guardInput(ctx context.Context, task *types.Task) bool {
+	if !e.safetySceneAvailable(task) || taskHasAction(task, "safety_guard_input") {
+		return true
+	}
+	decision, usage, err := e.SafetyGuard.Evaluate(ctx, policy.SafetyStageInput, task, task.Goal)
+	trace := types.StepTrace{Step: task.StepCount, Action: "safety_guard_input", TokenUsage: usage}
+	if err != nil {
+		trace.Observation = "check_failed; existing deterministic policies remain active"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("input safety guard failed; continuing with deterministic policies", "task_id", task.ID, "error", err)
+		e.observeSafetyUsage(usage, "safety_guard_input")
+		return true
+	}
+	if decision == nil || strings.TrimSpace(decision.SafeText) == "" {
+		trace.Observation = "check_failed; existing deterministic policies remain active"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("input safety guard returned no decision; continuing with deterministic policies", "task_id", task.ID)
+		e.observeSafetyUsage(usage, "safety_guard_input")
+		return true
+	}
+	trace.Observation = fmt.Sprintf("allowed=%t categories=%s", decision.Allowed, strings.Join(decision.Categories, ","))
+	task.Trace = append(task.Trace, trace)
+	e.observeSafetyUsage(usage, "safety_guard_input")
+	if decision.Allowed {
+		return true
+	}
+	_ = SetTaskCompleted(task, decision.SafeText)
+	if e.Metrics != nil {
+		e.Metrics.IncCompleted()
+	}
+	return false
+}
+
+func (e *Engine) guardOutput(ctx context.Context, task *types.Task) {
+	if !e.safetySceneAvailable(task) {
+		return
+	}
+	decision, usage, err := e.SafetyGuard.Evaluate(ctx, policy.SafetyStageOutput, task, task.FinalAnswer)
+	trace := types.StepTrace{Step: task.StepCount, Action: "safety_guard_output", TokenUsage: usage}
+	if err != nil {
+		trace.Observation = "check_failed; output preserved"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("output safety guard failed; keeping original answer", "task_id", task.ID, "error", err)
+		e.observeSafetyUsage(usage, "safety_guard_output")
+		return
+	}
+	if decision == nil || strings.TrimSpace(decision.SafeText) == "" {
+		trace.Observation = "check_failed; output preserved"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("output safety guard returned no decision; keeping original answer", "task_id", task.ID)
+		e.observeSafetyUsage(usage, "safety_guard_output")
+		return
+	}
+	trace.Observation = fmt.Sprintf("allowed=%t categories=%s", decision.Allowed, strings.Join(decision.Categories, ","))
+	task.Trace = append(task.Trace, trace)
+	task.FinalAnswer = decision.SafeText
+	e.observeSafetyUsage(usage, "safety_guard_output")
+}
+
+func (e *Engine) observeSafetyUsage(usage types.TokenUsage, operation string) {
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, operation)
+	}
+}
+
+func taskHasAction(task *types.Task, action string) bool {
+	for _, trace := range task.Trace {
+		if trace.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
 var tracer = otel.Tracer("ai-agent/orchestrator")
 
 // engineLog is the package-level logger for engine.go; the package-level "log"
@@ -126,6 +235,7 @@ const (
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(e.Mode))
+	wasCompleted := task.Status == types.StatusCompleted
 	ctx = store.WithTenantScope(ctx, task.TenantID)
 	if e.Store != nil {
 		if ledger, ok := e.Store.(types.TenantUsageLedger); ok {
@@ -150,6 +260,9 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			_ = SetTaskFailed(task, err.Error())
 		}
 	}()
+	if !wasCompleted && !e.guardInput(ctx, task) {
+		return nil
+	}
 
 	if task.StepCount == 0 && len(task.Memories) == 0 {
 		var retrievedMems []types.Memory
@@ -219,6 +332,10 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		err = e.runMultiAgentNext(ctx, task)
 	default:
 		err = fmt.Errorf("unsupported orchestrator mode: %s", e.Mode)
+	}
+	if err == nil && !wasCompleted && task.Status == types.StatusCompleted && strings.TrimSpace(task.FinalAnswer) != "" {
+		e.verifyCitations(ctx, task)
+		e.guardOutput(ctx, task)
 	}
 	return err
 }
