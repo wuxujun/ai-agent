@@ -87,6 +87,12 @@ llm:
   # Env override: AI_AGENT_LLM_TIMEOUT_SECONDS
   timeout_seconds: 30
   context_compression_trace_threshold: 8
+  # Optional: also trigger context compression when accumulated trace tokens exceed
+  # this total. 0 (default) disables the token-based trigger; useful for tasks that
+  # generate large observations without many steps (e.g. code execution outputs).
+  # Env override: AI_AGENT_LLM_CONTEXT_COMPRESSION_TOKEN_THRESHOLD
+  # context_compression_token_threshold: 40000
+
 
   # Optional shared gateway defaults. LiteLLM exposes an OpenAI-compatible
   # /v1/chat/completions endpoint and model aliases configured in LiteLLM.

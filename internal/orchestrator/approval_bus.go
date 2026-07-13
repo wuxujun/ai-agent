@@ -138,6 +138,17 @@ func (b *ApprovalBus) dispatchApproval(msg *redis.Message) {
 	var resolved bool
 	if bm.ApprovalID != "" {
 		resolved = ResolveApprovalByID(bm.ApprovalID, *bm.Result)
+		// If the specific ID didn't resolve, this is a stale/duplicate Pub/Sub
+		// delivery (the approval was already handled by another instance, or the
+		// message was re-delivered after a crash). We intentionally do NOT fall
+		// through to ResolveApproval(taskID) here — that would risk auto-approving
+		// a different, unrelated pending action on the same task (BUG_REPORT.md #3).
+		if !resolved {
+			busLog.Warn("approval bus: ignoring stale or duplicate message (approval already resolved or unknown)",
+				"approval_id", bm.ApprovalID,
+				"task_id", bm.TaskID,
+			)
+		}
 	} else {
 		resolved = ResolveApproval(bm.TaskID, *bm.Result)
 	}

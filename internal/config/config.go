@@ -67,6 +67,10 @@ type Config struct {
 		BaseURL                          string                       `mapstructure:"base_url"`
 		TimeoutSeconds                   int                          `mapstructure:"timeout_seconds"`
 		ContextCompressionTraceThreshold int                          `mapstructure:"context_compression_trace_threshold"`
+		// ContextCompressionTokenThreshold triggers compression when the sum of
+		// all TotalTokens across task.Trace exceeds this value, regardless of
+		// step count. 0 disables the token-based trigger.
+		ContextCompressionTokenThreshold int                          `mapstructure:"context_compression_token_threshold"`
 		Gateway                          LLMEndpointConfig            `mapstructure:"gateway"`
 		Scenes                           map[string]LLMEndpointConfig `mapstructure:"scenes"`
 	} `mapstructure:"llm"`
@@ -203,6 +207,8 @@ func setupViper() {
 	viper.SetDefault("llm.provider", "openai-responses")
 	viper.SetDefault("llm.timeout_seconds", 30)
 	viper.SetDefault("llm.context_compression_trace_threshold", 8)
+	// context_compression_token_threshold: 0 = disabled by default
+	viper.SetDefault("llm.context_compression_token_threshold", 0)
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("telemetry.enabled", true)
 	viper.SetDefault("telemetry.endpoint", "127.0.0.1:4318")
@@ -621,6 +627,9 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 func (c *Config) Validate() error {
 	if c.LLM.ContextCompressionTraceThreshold < 0 {
 		return fmt.Errorf("llm.context_compression_trace_threshold must be >= 0")
+	}
+	if c.LLM.ContextCompressionTokenThreshold < 0 {
+		return fmt.Errorf("llm.context_compression_token_threshold must be >= 0")
 	}
 	validProvider := func(provider string) bool {
 		switch provider {

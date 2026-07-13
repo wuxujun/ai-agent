@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/genai"
 )
 
@@ -140,10 +141,31 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	promptTask := task
 	var compressionUsage types.TokenUsage
 	threshold := config.Get().LLM.ContextCompressionTraceThreshold
+	tokenThreshold := config.Get().LLM.ContextCompressionTokenThreshold
 	_, compressionEnabled := config.Get().LLM.Scenes[config.LLMSceneContextCompressor]
 	previousSummary, traceStart := traceSinceSummary(task)
 	newTraces := task.Trace[traceStart:]
-	if p.Compressor != nil && compressionEnabled && llmcore.AllowedForTask(config.LLMSceneContextCompressor, task) && threshold > 0 && len(newTraces) >= threshold {
+
+	// Calculate accumulated tokens across new traces for token-budget-based trigger.
+	var accumulatedTokens int
+	for _, tr := range newTraces {
+		accumulatedTokens += tr.TokenUsage.TotalTokens
+	}
+	traceLimitHit := threshold > 0 && len(newTraces) >= threshold
+	tokenLimitHit := tokenThreshold > 0 && accumulatedTokens >= tokenThreshold
+
+	if p.Compressor != nil && compressionEnabled && llmcore.AllowedForTask(config.LLMSceneContextCompressor, task) && (traceLimitHit || tokenLimitHit) {
+		reason := "trace_count"
+		if tokenLimitHit && !traceLimitHit {
+			reason = "token_budget"
+		}
+		log.Info("triggering context compression", "task_id", task.ID, "reason", reason, "new_traces", len(newTraces), "accumulated_tokens", accumulatedTokens)
+		span.AddEvent("context_compression_triggered", trace.WithAttributes(
+			attribute.String("compression.reason", reason),
+			attribute.Int("compression.new_trace_count", len(newTraces)),
+			attribute.Int("compression.accumulated_tokens", accumulatedTokens),
+		))
+
 		if summary, usage, compressErr := p.Compressor.Compress(ctx, task); compressErr != nil {
 			log.Warn("context compression failed; using original trace", "task_id", task.ID, "error", compressErr)
 		} else {
@@ -280,6 +302,9 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	span.SetAttributes(
 		attribute.StringSlice("agent.planner.actions", actionNames),
 		attribute.Bool("agent.planner.stop", decision.Stop),
+		attribute.Int("llm.usage.prompt_tokens", usage.PromptTokens),
+		attribute.Int("llm.usage.completion_tokens", usage.CompletionTokens),
+		attribute.Int("llm.usage.total_tokens", usage.TotalTokens),
 	)
 
 	log.Info("decision ready", "task_id", task.ID, "thought", decision.ThoughtSummary, "actions", actionNames, "stop", decision.Stop, "final_answer", decision.FinalAnswer, "num_actions", len(decision.Actions))

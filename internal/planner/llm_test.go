@@ -229,3 +229,46 @@ func TestUnmarshalDecisionFallback(t *testing.T) {
 		t.Errorf("expected thought_summary 'Finding files', got %q", decision.ThoughtSummary)
 	}
 }
+
+// TestLLMPlannerTokenThresholdTrigger is the regression test for the
+// context_compression_token_threshold feature: compression must fire when the
+// accumulated TotalTokens across new traces exceeds the configured token
+// threshold, even when the step-count threshold has NOT been reached.
+func TestLLMPlannerTokenThresholdTrigger(t *testing.T) {
+	// Enable the context compressor scene.
+	origScenes := config.Get().LLM.Scenes
+	origTokenThr := config.Get().LLM.ContextCompressionTokenThreshold
+	origTraceThr := config.Get().LLM.ContextCompressionTraceThreshold
+	config.Get().LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneContextCompressor: {}}
+	// Set a very high trace threshold so only the token threshold fires.
+	config.Get().LLM.ContextCompressionTraceThreshold = 999
+	// Set token threshold to 100 tokens total.
+	config.Get().LLM.ContextCompressionTokenThreshold = 100
+	t.Cleanup(func() {
+		config.Get().LLM.Scenes = origScenes
+		config.Get().LLM.ContextCompressionTokenThreshold = origTokenThr
+		config.Get().LLM.ContextCompressionTraceThreshold = origTraceThr
+	})
+
+	// Build a task with only 3 trace steps, but each carrying 40 tokens = 120 total > 100 threshold.
+	traces := []types.StepTrace{
+		{Step: 0, Action: "find_files", TokenUsage: types.TokenUsage{TotalTokens: 40}},
+		{Step: 1, Action: "read_file", TokenUsage: types.TokenUsage{TotalTokens: 40}},
+		{Step: 2, Action: "web_search", TokenUsage: types.TokenUsage{TotalTokens: 40}},
+	}
+	task := &types.Task{ID: "tok-thr", Goal: "goal", MaxSteps: 10, ToolBudget: 10, Trace: traces}
+
+	body := `{"output":[{"content":[{"text":"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"answer\",\"actions\":[{\"action\":\"none\",\"parameters\":{}}]}"}]}],"usage":{"input_tokens":5,"output_tokens\":2,"total_tokens":7}}`
+	p := NewLLMPlannerWithProvider(ProviderOpenAIResponses, "key", "model", "https://llm.test/responses")
+	calls := 0
+	p.Compressor = stubCompressor{calls: &calls}
+	p.Client = fakeHTTPClient(http.StatusOK, "application/json", body)
+
+	_, _ = p.PlanNext(context.Background(), task, nil)
+
+	// Compressor must have been called exactly once despite trace count (3) < trace threshold (999).
+	if calls != 1 {
+		t.Fatalf("compressor calls = %d, want 1 (token threshold should have triggered compression)", calls)
+	}
+}
+
