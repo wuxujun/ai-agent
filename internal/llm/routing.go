@@ -2,12 +2,16 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 type routingHintsContextKey struct{}
+
+const IntentRouteTraceAction = "intent_route"
 
 func WithRoutingHints(ctx context.Context, hints config.LLMRoutingHints) context.Context {
 	return context.WithValue(ctx, routingHintsContextKey{}, hints)
@@ -22,6 +26,26 @@ func WithTaskRoutingHints(ctx context.Context, task *types.Task) context.Context
 		usedTokens += trace.TokenUsage.TotalTokens
 	}
 	hints := config.LLMRoutingHints{StepCount: task.StepCount}
+	for i := len(task.Trace) - 1; i >= 0; i-- {
+		trace := task.Trace[i]
+		if trace.Action != IntentRouteTraceAction || strings.TrimSpace(trace.Query) == "" {
+			continue
+		}
+		var details struct {
+			Complexity  string `json:"complexity"`
+			CostTier    string `json:"cost_tier"`
+			LatencyTier string `json:"latency_tier"`
+			QualityTier string `json:"quality_tier"`
+		}
+		if json.Unmarshal([]byte(trace.Observation), &details) == nil {
+			hints.Intent = trace.Query
+			hints.Complexity = details.Complexity
+			hints.CostTier = details.CostTier
+			hints.LatencyTier = details.LatencyTier
+			hints.QualityTier = details.QualityTier
+		}
+		break
+	}
 	if task.TokenBudget > 0 {
 		hints.HasRemainingTokens = true
 		hints.RemainingTokens = max(task.TokenBudget-usedTokens, 0)

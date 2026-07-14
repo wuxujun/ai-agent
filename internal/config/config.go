@@ -148,11 +148,16 @@ type LLMEndpointConfig struct {
 }
 
 type LLMRouteRule struct {
-	TargetScene        string `mapstructure:"target_scene" json:"target_scene"`
-	MinRemainingTokens *int   `mapstructure:"min_remaining_tokens" json:"min_remaining_tokens,omitempty"`
-	MaxRemainingTokens *int   `mapstructure:"max_remaining_tokens" json:"max_remaining_tokens,omitempty"`
-	MinStepCount       *int   `mapstructure:"min_step_count" json:"min_step_count,omitempty"`
-	MaxStepCount       *int   `mapstructure:"max_step_count" json:"max_step_count,omitempty"`
+	TargetScene        string   `mapstructure:"target_scene" json:"target_scene"`
+	MinRemainingTokens *int     `mapstructure:"min_remaining_tokens" json:"min_remaining_tokens,omitempty"`
+	MaxRemainingTokens *int     `mapstructure:"max_remaining_tokens" json:"max_remaining_tokens,omitempty"`
+	MinStepCount       *int     `mapstructure:"min_step_count" json:"min_step_count,omitempty"`
+	MaxStepCount       *int     `mapstructure:"max_step_count" json:"max_step_count,omitempty"`
+	Intents            []string `mapstructure:"intents" json:"intents,omitempty"`
+	Complexities       []string `mapstructure:"complexities" json:"complexities,omitempty"`
+	CostTiers          []string `mapstructure:"cost_tiers" json:"cost_tiers,omitempty"`
+	LatencyTiers       []string `mapstructure:"latency_tiers" json:"latency_tiers,omitempty"`
+	QualityTiers       []string `mapstructure:"quality_tiers" json:"quality_tiers,omitempty"`
 }
 
 type ResolvedLLMConfig struct {
@@ -172,6 +177,11 @@ type LLMRoutingHints struct {
 	HasRemainingTokens bool
 	RemainingTokens    int
 	StepCount          int
+	Intent             string
+	Complexity         string
+	CostTier           string
+	LatencyTier        string
+	QualityTier        string
 }
 
 // ResolveLLMProviderConfig returns provider-specific defaults without carrying
@@ -195,21 +205,23 @@ const (
 	LLMReadinessGateway    = "gateway"
 	LLMReadinessInference  = "inference"
 
-	LLMSceneTaskPlanner         = "task_planner"
-	LLMSceneTaskFinalizer       = "task_finalizer"
-	LLMSceneCitationVerifier    = "citation_verifier"
-	LLMSceneSafetyGuard         = "safety_guard"
-	LLMSceneToolArgumentRepair  = "tool_argument_repair"
-	LLMSceneContextCompressor   = "context_compressor"
-	LLMSceneAnswerVerifier      = "answer_verifier"
-	LLMSceneMemorySummarizer    = "memory_summarizer"
-	LLMSceneRAGQueryRewriter    = "rag_query_rewriter"
-	LLMSceneRAGReranker         = "rag_reranker"
-	LLMSceneMultiAgentPlanner   = "multiagent_planner"
-	LLMSceneMultiAgentReplanner = "multiagent_replanner"
-	LLMSceneMultiAgentWriter    = "multiagent_writer"
-	LLMSceneEmbedding           = "embedding"
-	LLMSceneADK                 = "adk"
+	LLMSceneTaskPlanner            = "task_planner"
+	LLMSceneTaskFinalizer          = "task_finalizer"
+	LLMSceneCitationVerifier       = "citation_verifier"
+	LLMSceneSafetyGuard            = "safety_guard"
+	LLMSceneToolArgumentRepair     = "tool_argument_repair"
+	LLMSceneIntentRouter           = "intent_router"
+	LLMSceneMemoryConflictResolver = "memory_conflict_resolver"
+	LLMSceneContextCompressor      = "context_compressor"
+	LLMSceneAnswerVerifier         = "answer_verifier"
+	LLMSceneMemorySummarizer       = "memory_summarizer"
+	LLMSceneRAGQueryRewriter       = "rag_query_rewriter"
+	LLMSceneRAGReranker            = "rag_reranker"
+	LLMSceneMultiAgentPlanner      = "multiagent_planner"
+	LLMSceneMultiAgentReplanner    = "multiagent_replanner"
+	LLMSceneMultiAgentWriter       = "multiagent_writer"
+	LLMSceneEmbedding              = "embedding"
+	LLMSceneADK                    = "adk"
 )
 
 func (c *Config) ResolveLLMReadinessMode() string {
@@ -460,6 +472,11 @@ func cloneLLMEndpoint(source LLMEndpointConfig) LLMEndpointConfig {
 
 func cloneLLMRouteRule(source LLMRouteRule) LLMRouteRule {
 	cloned := source
+	cloned.Intents = append([]string(nil), source.Intents...)
+	cloned.Complexities = append([]string(nil), source.Complexities...)
+	cloned.CostTiers = append([]string(nil), source.CostTiers...)
+	cloned.LatencyTiers = append([]string(nil), source.LatencyTiers...)
+	cloned.QualityTiers = append([]string(nil), source.QualityTiers...)
 	cloneInt := func(value *int) *int {
 		if value == nil {
 			return nil
@@ -858,7 +875,22 @@ func routeMatches(rule LLMRouteRule, hints LLMRoutingHints) bool {
 	if rule.MaxStepCount != nil && hints.StepCount > *rule.MaxStepCount {
 		return false
 	}
+	if !routeStringMatches(rule.Intents, hints.Intent) || !routeStringMatches(rule.Complexities, hints.Complexity) || !routeStringMatches(rule.CostTiers, hints.CostTier) || !routeStringMatches(rule.LatencyTiers, hints.LatencyTier) || !routeStringMatches(rule.QualityTiers, hints.QualityTier) {
+		return false
+	}
 	return true
+}
+
+func routeStringMatches(allowed []string, actual string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, candidate := range allowed {
+		if candidate == actual {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate rejects configuration that would otherwise fail only on the first
@@ -1010,8 +1042,19 @@ func (c *Config) validateLLMRoute(scene string, index int, route LLMRouteRule) e
 			return fmt.Errorf("%s references unknown target_scene %q", name, route.TargetScene)
 		}
 	}
-	if route.MinRemainingTokens == nil && route.MaxRemainingTokens == nil && route.MinStepCount == nil && route.MaxStepCount == nil {
+	if route.MinRemainingTokens == nil && route.MaxRemainingTokens == nil && route.MinStepCount == nil && route.MaxStepCount == nil && len(route.Intents) == 0 && len(route.Complexities) == 0 && len(route.CostTiers) == 0 && len(route.LatencyTiers) == 0 && len(route.QualityTiers) == 0 {
 		return fmt.Errorf("%s must define at least one routing condition", name)
+	}
+	for field, values := range map[string][]string{
+		"intents":       route.Intents,
+		"complexities":  route.Complexities,
+		"cost_tiers":    route.CostTiers,
+		"latency_tiers": route.LatencyTiers,
+		"quality_tiers": route.QualityTiers,
+	} {
+		if err := validateRouteValues(name, field, values); err != nil {
+			return err
+		}
 	}
 	for field, value := range map[string]*int{
 		"min_remaining_tokens": route.MinRemainingTokens,
@@ -1028,6 +1071,27 @@ func (c *Config) validateLLMRoute(scene string, index int, route LLMRouteRule) e
 	}
 	if route.MinStepCount != nil && route.MaxStepCount != nil && *route.MinStepCount > *route.MaxStepCount {
 		return fmt.Errorf("%s step range is invalid", name)
+	}
+	return nil
+}
+
+func validateRouteValues(routeName, field string, values []string) error {
+	allowed := map[string]map[string]bool{
+		"intents":       {"coding": true, "research": true, "writing": true, "data_analysis": true, "automation": true, "general": true},
+		"complexities":  {"low": true, "medium": true, "high": true},
+		"cost_tiers":    {"economy": true, "balanced": true, "unconstrained": true},
+		"latency_tiers": {"fast": true, "balanced": true, "flexible": true},
+		"quality_tiers": {"economy": true, "balanced": true, "quality": true},
+	}[field]
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		if !allowed[value] {
+			return fmt.Errorf("%s %s contains unsupported value %q", routeName, field, value)
+		}
+		if seen[value] {
+			return fmt.Errorf("%s %s contains duplicate value %q", routeName, field, value)
+		}
+		seen[value] = true
 	}
 	return nil
 }

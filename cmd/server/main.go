@@ -20,6 +20,7 @@ import (
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
+	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
@@ -208,6 +209,8 @@ func main() {
 	eng.Finalizer = planner.NewLLMTaskFinalizer(config.LLMSceneTaskFinalizer)
 	eng.CitationVerifier = planner.NewLLMCitationVerifier(config.LLMSceneCitationVerifier)
 	eng.SafetyGuard = policy.NewLLMSafetyGuard(config.LLMSceneSafetyGuard)
+	eng.IntentRouter = planner.NewLLMIntentRouter(config.LLMSceneIntentRouter)
+	eng.MemoryConflictResolver = memory.NewLLMMemoryConflictResolver(config.LLMSceneMemoryConflictResolver)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner
@@ -216,6 +219,7 @@ func main() {
 		eng.Coordinator = multiagent.NewCoordinator(mc)
 		eng.Coordinator.Verifier = &multiagent.VerifierAgent{}
 		eng.Coordinator.SuspendForApproval = eng.SuspendForApproval
+		eng.Coordinator.ResolveMemoryConflicts = eng.ResolveMemoryConflicts
 		slog.Info("multi-agent mode enabled",
 			"coordinator_provider", os.Getenv("AI_AGENT_LLM_PROVIDER"),
 		)

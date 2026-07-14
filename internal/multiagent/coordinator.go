@@ -40,13 +40,14 @@ type Writer interface {
 //
 // It updates task.Trace and task.Status in-place.
 type Coordinator struct {
-	Planner            Planner
-	Researcher         Researcher
-	Writer             Writer
-	Verifier           AnswerVerifier
-	Metrics            *metrics.Collector
-	SuspendForApproval func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
-	EventCallback      func(taskID string, status types.TaskStatus)
+	Planner                Planner
+	Researcher             Researcher
+	Writer                 Writer
+	Verifier               AnswerVerifier
+	Metrics                *metrics.Collector
+	SuspendForApproval     func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
+	ResolveMemoryConflicts func(ctx context.Context, task *types.Task)
+	EventCallback          func(taskID string, status types.TaskStatus)
 }
 
 // NewCoordinator creates a Coordinator wired to the default LLM configuration
@@ -113,6 +114,10 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 
 		// ── Phase 3: Write ─────────────────────────────────────────────────────────
 		phaseCtx := llmcore.WithTaskRoutingHints(ctx, task)
+		if c.ResolveMemoryConflicts != nil {
+			c.ResolveMemoryConflicts(phaseCtx, task)
+			phaseCtx = llmcore.WithTaskRoutingHints(ctx, task)
+		}
 		conf, writeErr := c.runWritePhase(phaseCtx, task, allEvidence)
 		if writeErr != nil {
 			break // fallback happened or writer failed

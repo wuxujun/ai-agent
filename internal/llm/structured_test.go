@@ -92,6 +92,20 @@ func TestRemainingTokenRouteRequiresTaskBudget(t *testing.T) {
 	}
 }
 
+func TestTaskRoutingHintsRestoreIntentClassificationFromTrace(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"planner": {Routes: []config.LLMRouteRule{{TargetScene: "quality", Intents: []string{"coding"}, Complexities: []string{"high"}, CostTiers: []string{"unconstrained"}, LatencyTiers: []string{"flexible"}, QualityTiers: []string{"quality"}}}},
+			"quality": {Model: "quality-model"},
+		}
+	}))
+	task := &types.Task{Trace: []types.StepTrace{{Action: IntentRouteTraceAction, Query: "coding", Observation: `{"complexity":"high","cost_tier":"unconstrained","latency_tier":"flexible","quality_tier":"quality"}`}}}
+	ctx := WithTaskRoutingHints(context.Background(), task)
+	if got := ResolveRoutedScene(ctx, "planner"); got != "quality" {
+		t.Fatalf("restored intent route = %q, want quality", got)
+	}
+}
+
 func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{"fallback": {Model: "backup"}}

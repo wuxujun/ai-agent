@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,15 +29,17 @@ import (
 )
 
 type Engine struct {
-	Planner          planner.Planner
-	Finalizer        planner.TaskFinalizer
-	CitationVerifier planner.CitationVerifier
-	SafetyGuard      policy.SafetyGuard
-	Executor         executor.Executor
-	Metrics          *metrics.Collector
-	Mode             Mode
-	AdkModel         model.LLM
-	LLMSceneEnabled  func(string) bool
+	Planner                planner.Planner
+	Finalizer              planner.TaskFinalizer
+	CitationVerifier       planner.CitationVerifier
+	SafetyGuard            policy.SafetyGuard
+	IntentRouter           planner.IntentRouter
+	MemoryConflictResolver memory.ConflictResolver
+	Executor               executor.Executor
+	Metrics                *metrics.Collector
+	Mode                   Mode
+	AdkModel               model.LLM
+	LLMSceneEnabled        func(string) bool
 	// Coordinator is required when Mode == ModeMultiAgent.
 	Coordinator *multiagent.Coordinator
 	// Store handles database persistence and long-term memory.
@@ -217,6 +220,66 @@ func taskHasAction(task *types.Task, action string) bool {
 	return false
 }
 
+func (e *Engine) routeIntent(ctx context.Context, task *types.Task) {
+	if e.IntentRouter == nil || !e.llmSceneEnabled(config.LLMSceneIntentRouter) || taskHasAction(task, llmcore.IntentRouteTraceAction) {
+		return
+	}
+	if !llmcore.AllowedForTask(config.LLMSceneIntentRouter, task) {
+		return
+	}
+	decision, usage, err := e.IntentRouter.Route(ctx, task)
+	trace := types.StepTrace{Step: task.StepCount, Action: llmcore.IntentRouteTraceAction, TokenUsage: usage}
+	if err != nil || decision == nil {
+		trace.Observation = "check_failed; default scene routing preserved"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("intent router failed; preserving default scene routing", "task_id", task.ID, "error", err)
+		if e.Metrics != nil {
+			e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "intent_router")
+		}
+		return
+	}
+	details, _ := json.Marshal(map[string]string{"complexity": decision.Complexity, "cost_tier": decision.CostTier, "latency_tier": decision.LatencyTier, "quality_tier": decision.QualityTier})
+	trace.Query = decision.Intent
+	trace.Observation = string(details)
+	task.Trace = append(task.Trace, trace)
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "intent_router")
+	}
+}
+
+func (e *Engine) ResolveMemoryConflicts(ctx context.Context, task *types.Task) {
+	if e.MemoryConflictResolver == nil || !e.llmSceneEnabled(config.LLMSceneMemoryConflictResolver) || len(task.Memories) == 0 {
+		return
+	}
+	evidenceCount := memory.ConflictEvidenceCount(task)
+	if len(task.Memories) < 2 && evidenceCount == 0 {
+		return
+	}
+	version := fmt.Sprintf("evidence:%d", evidenceCount)
+	for _, trace := range task.Trace {
+		if trace.Action == memory.ConflictResolutionTraceAction && trace.Query == version {
+			return
+		}
+	}
+	if !llmcore.AllowedForTask(config.LLMSceneMemoryConflictResolver, task) {
+		return
+	}
+	resolution, usage, err := e.MemoryConflictResolver.Resolve(ctx, task)
+	trace := types.StepTrace{Step: task.StepCount, Action: memory.ConflictResolutionTraceAction, Query: version, TokenUsage: usage}
+	if err != nil || resolution == nil {
+		trace.Observation = "check_failed; all retrieved memories preserved"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("memory conflict resolver failed; preserving memories", "task_id", task.ID, "error", err)
+	} else {
+		task.Memories = resolution.Memories
+		trace.Observation = fmt.Sprintf("kept=%d dropped=%d conflicts=%d", len(resolution.Memories), resolution.Dropped, resolution.ConflictCount)
+		task.Trace = append(task.Trace, trace)
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "memory_conflict_resolver")
+	}
+}
+
 var tracer = otel.Tracer("ai-agent/orchestrator")
 
 // engineLog is the package-level logger for engine.go; the package-level "log"
@@ -262,6 +325,10 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	}()
 	if !wasCompleted && !e.guardInput(ctx, task) {
 		return nil
+	}
+	if !wasCompleted {
+		e.routeIntent(ctx, task)
+		ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	}
 
 	if task.StepCount == 0 && len(task.Memories) == 0 {
@@ -317,6 +384,10 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 				e.Metrics.ObserveTokens(ragUsage.PromptTokens, ragUsage.CompletionTokens, ragUsage.TotalTokens, "rag")
 			}
 		}
+	}
+	if !wasCompleted {
+		e.ResolveMemoryConflicts(ctx, task)
+		ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	}
 
 	switch e.Mode {

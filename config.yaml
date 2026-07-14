@@ -153,8 +153,16 @@ llm:
   #       - target_scene: "task_planner_economy"
   #         max_remaining_tokens: 4000
   #         min_step_count: 2
+  #       - target_scene: "task_planner_quality"
+  #         intents: ["coding", "research"]
+  #         complexities: ["high"]
+  #         cost_tiers: ["unconstrained"]
+  #         latency_tiers: ["flexible"]
+  #         quality_tiers: ["quality"]
   #   task_planner_economy:
   #     model: "agent-planner-fast"
+  #   task_planner_quality:
+  #     model: "agent-planner-strong"
   #   task_planner_fallback:
   #     model: "agent-planner-backup"
   #   task_finalizer:
@@ -165,6 +173,10 @@ llm:
   #     model: "agent-safety"
   #   tool_argument_repair:
   #     model: "agent-fast"
+  #   intent_router:
+  #     model: "agent-fast"
+  #   memory_conflict_resolver:
+  #     model: "agent-verifier"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:

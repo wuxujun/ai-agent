@@ -302,10 +302,12 @@ func TestResolveLLMRoutedSceneUsesFirstMatchingRule(t *testing.T) {
 			Routes: []LLMRouteRule{
 				{TargetScene: "economy", MaxRemainingTokens: testPtr(1000)},
 				{TargetScene: "late_steps", MinStepCount: testPtr(5)},
+				{TargetScene: "quality", Intents: []string{"coding"}, Complexities: []string{"high"}, CostTiers: []string{"unconstrained"}, LatencyTiers: []string{"flexible"}, QualityTiers: []string{"quality"}},
 			},
 		},
 		"economy":    {Model: "economy-model"},
 		"late_steps": {Model: "late-model"},
+		"quality":    {Model: "quality-model"},
 	}
 
 	if got := cfg.ResolveLLMRoutedScene("planner", LLMRoutingHints{HasRemainingTokens: true, RemainingTokens: 800, StepCount: 8}); got != "economy" {
@@ -317,17 +319,29 @@ func TestResolveLLMRoutedSceneUsesFirstMatchingRule(t *testing.T) {
 	if got := cfg.ResolveLLMRoutedScene("planner", LLMRoutingHints{HasRemainingTokens: true, RemainingTokens: 2000, StepCount: 1}); got != "planner" {
 		t.Fatalf("unmatched scene = %q, want planner", got)
 	}
+	if got := cfg.ResolveLLMRoutedScene("planner", LLMRoutingHints{Intent: "coding", Complexity: "high", CostTier: "unconstrained", LatencyTier: "flexible", QualityTier: "quality"}); got != "quality" {
+		t.Fatalf("intent-routed scene = %q, want quality", got)
+	}
 }
 
 func TestCloneConfigCopiesRoutePointers(t *testing.T) {
 	source := &Config{}
 	source.LLM.Scenes = map[string]LLMEndpointConfig{
-		"planner": {Routes: []LLMRouteRule{{TargetScene: "economy", MaxRemainingTokens: testPtr(1000)}}},
+		"planner": {Routes: []LLMRouteRule{{TargetScene: "economy", MaxRemainingTokens: testPtr(1000), Intents: []string{"coding"}, CostTiers: []string{"economy"}, LatencyTiers: []string{"fast"}}}},
 	}
 	cloned := cloneConfig(source)
 	*cloned.LLM.Scenes["planner"].Routes[0].MaxRemainingTokens = 500
 	if got := *source.LLM.Scenes["planner"].Routes[0].MaxRemainingTokens; got != 1000 {
 		t.Fatalf("clone shares route pointer with source: %d", got)
+	}
+	cloned.LLM.Scenes["planner"].Routes[0].Intents[0] = "writing"
+	if got := source.LLM.Scenes["planner"].Routes[0].Intents[0]; got != "coding" {
+		t.Fatalf("clone shares route intent slice: %q", got)
+	}
+	cloned.LLM.Scenes["planner"].Routes[0].CostTiers[0] = "balanced"
+	cloned.LLM.Scenes["planner"].Routes[0].LatencyTiers[0] = "balanced"
+	if source.LLM.Scenes["planner"].Routes[0].CostTiers[0] != "economy" || source.LLM.Scenes["planner"].Routes[0].LatencyTiers[0] != "fast" {
+		t.Fatal("clone shares cost or latency route slices")
 	}
 }
 
@@ -367,6 +381,15 @@ func TestValidateLLMRoutes(t *testing.T) {
 		}},
 		{"unsupported adk", func(cfg *Config) {
 			cfg.LLM.Scenes[LLMSceneADK] = LLMEndpointConfig{Provider: "gemini", Model: "gemini", Routes: []LLMRouteRule{{TargetScene: "economy", MinStepCount: testPtr(1)}}}
+		}},
+		{"unsupported intent", func(cfg *Config) {
+			cfg.LLM.Scenes["planner"] = LLMEndpointConfig{Model: "planner", Routes: []LLMRouteRule{{TargetScene: "economy", Intents: []string{"unknown"}}}}
+		}},
+		{"duplicate quality tier", func(cfg *Config) {
+			cfg.LLM.Scenes["planner"] = LLMEndpointConfig{Model: "planner", Routes: []LLMRouteRule{{TargetScene: "economy", QualityTiers: []string{"quality", "quality"}}}}
+		}},
+		{"unsupported latency tier", func(cfg *Config) {
+			cfg.LLM.Scenes["planner"] = LLMEndpointConfig{Model: "planner", Routes: []LLMRouteRule{{TargetScene: "economy", LatencyTiers: []string{"instant"}}}}
 		}},
 	}
 	for _, tc := range tests {
@@ -573,6 +596,11 @@ llm:
       routes:
         - target_scene: "writer-economy"
           max_remaining_tokens: 1000
+          intents: ["writing"]
+          complexities: ["medium"]
+          cost_tiers: ["balanced"]
+          latency_tiers: ["balanced"]
+          quality_tiers: ["balanced"]
     writer-economy:
       model: "writer-fast"
 `)
@@ -606,7 +634,7 @@ llm:
 		t.Fatalf("YAML explicit zero values did not clear gateway policy: %+v", writer)
 	}
 	routes := cfg.LLM.Scenes["writer"].Routes
-	if len(routes) != 1 || routes[0].TargetScene != "writer-economy" || routes[0].MaxRemainingTokens == nil || *routes[0].MaxRemainingTokens != 1000 {
+	if len(routes) != 1 || routes[0].TargetScene != "writer-economy" || routes[0].MaxRemainingTokens == nil || *routes[0].MaxRemainingTokens != 1000 || len(routes[0].Intents) != 1 || routes[0].Intents[0] != "writing" || len(routes[0].Complexities) != 1 || routes[0].Complexities[0] != "medium" || len(routes[0].CostTiers) != 1 || routes[0].CostTiers[0] != "balanced" || len(routes[0].LatencyTiers) != 1 || routes[0].LatencyTiers[0] != "balanced" || len(routes[0].QualityTiers) != 1 || routes[0].QualityTiers[0] != "balanced" {
 		t.Fatalf("YAML routes not decoded: %+v", routes)
 	}
 }
