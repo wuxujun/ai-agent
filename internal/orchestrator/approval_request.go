@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -21,6 +22,10 @@ func (e *Engine) BuildApprovalRequest(task *types.Task, action string, params ma
 		risk = tool.RiskLevel()
 	}
 
+	preview := buildApprovalPreview(task.Workspace, action, params)
+	if warnings := planCriticApprovalWarnings(task); warnings != "" {
+		preview = truncateForApproval("Plan critic warnings:\n"+truncateForApproval(warnings, 600)+"\n\n"+preview, approvalPreviewLimit)
+	}
 	req := &types.ApprovalRequest{
 		TaskID:           task.ID,
 		Action:           action,
@@ -28,9 +33,29 @@ func (e *Engine) BuildApprovalRequest(task *types.Task, action string, params ma
 		Workspace:        task.Workspace,
 		Parameters:       safeApprovalParameters(params),
 		ParameterSummary: approvalParameterSummary(params),
-		Preview:          buildApprovalPreview(task.Workspace, action, params),
+		Preview:          preview,
 	}
 	return req
+}
+
+func planCriticApprovalWarnings(task *types.Task) string {
+	for i := len(task.Trace) - 1; i >= 0; i-- {
+		trace := task.Trace[i]
+		if trace.Action != plancritic.TraceAction {
+			continue
+		}
+		var lines []string
+		for _, evidence := range trace.Evidence {
+			for _, line := range evidence.Lines {
+				lines = append(lines, "- "+line)
+				if len(lines) >= 8 {
+					return strings.Join(lines, "\n")
+				}
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	return ""
 }
 
 func safeApprovalParameters(params map[string]any) map[string]any {

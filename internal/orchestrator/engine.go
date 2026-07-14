@@ -18,8 +18,10 @@ import (
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
+	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/review"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -33,21 +35,23 @@ import (
 )
 
 type Engine struct {
-	Planner                planner.Planner
-	Finalizer              planner.TaskFinalizer
-	CitationVerifier       planner.CitationVerifier
-	SafetyGuard            policy.SafetyGuard
-	IntentRouter           planner.IntentRouter
-	MemoryConflictResolver memory.ConflictResolver
-	CodeReviewer           review.CodeReviewer
-	CollectCodeChanges     func(context.Context, string) (review.ChangeSet, error)
-	TestGenerator          testgen.Generator
-	FailureDiagnoser       diagnostics.Diagnoser
-	Executor               executor.Executor
-	Metrics                *metrics.Collector
-	Mode                   Mode
-	AdkModel               model.LLM
-	LLMSceneEnabled        func(string) bool
+	Planner                 planner.Planner
+	Finalizer               planner.TaskFinalizer
+	CitationVerifier        planner.CitationVerifier
+	SafetyGuard             policy.SafetyGuard
+	IntentRouter            planner.IntentRouter
+	MemoryConflictResolver  memory.ConflictResolver
+	CodeReviewer            review.CodeReviewer
+	CollectCodeChanges      func(context.Context, string) (review.ChangeSet, error)
+	TestGenerator           testgen.Generator
+	FailureDiagnoser        diagnostics.Diagnoser
+	PlanCritic              plancritic.Critic
+	PromptInjectionDetector promptguard.Detector
+	Executor                executor.Executor
+	Metrics                 *metrics.Collector
+	Mode                    Mode
+	AdkModel                model.LLM
+	LLMSceneEnabled         func(string) bool
 	// Coordinator is required when Mode == ModeMultiAgent.
 	Coordinator *multiagent.Coordinator
 	// Store handles database persistence and long-term memory.
@@ -319,6 +323,37 @@ func (e *Engine) observeFailureDiagnosisUsage(usage types.TokenUsage) {
 	}
 }
 
+func (e *Engine) critiqueDecision(ctx context.Context, task *types.Task, decision *planner.PlanDecision) {
+	if e.PlanCritic == nil || decision == nil || decision.Stop || !e.llmSceneEnabled(config.LLMScenePlanCritic) {
+		return
+	}
+	if !llmcore.AllowedForTask(config.LLMScenePlanCritic, task) {
+		return
+	}
+	plan := plancritic.Plan{Summary: decision.ThoughtSummary, Steps: make([]plancritic.Step, 0, len(decision.Actions))}
+	for _, action := range decision.Actions {
+		if action.Action == "none" {
+			continue
+		}
+		plan.Steps = append(plan.Steps, plancritic.Step{Action: action.Action, Parameters: action.Parameters})
+	}
+	if len(plan.Steps) == 0 || !plancritic.ShouldCritique(task, plan) {
+		return
+	}
+	fingerprint := plancritic.Fingerprint(plan)
+	if plancritic.AlreadyCritiqued(task, fingerprint) {
+		return
+	}
+	result, usage, err := e.PlanCritic.Critique(ctx, task, plan)
+	plancritic.ApplyResult(task, plan, result, usage, err)
+	if err != nil {
+		engineLog.Warn("plan critic failed; deterministic controls remain active", "task_id", task.ID, "error", err)
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "plan_critic")
+	}
+}
+
 func (e *Engine) collectChanges(ctx context.Context, workspace string) (review.ChangeSet, error) {
 	collector := e.CollectCodeChanges
 	if collector == nil {
@@ -553,6 +588,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		// 1. Try querying third-party RAG search URL if configured (query up to 5 candidates)
 		if config.Get().RAG.SearchURL != "" {
 			if extMems, extErr := memory.SearchThirdPartyRAG(ctx, retrievalQuery); extErr == nil && len(extMems) > 0 {
+				extMems = e.inspectExternalMemories(ctx, task, extMems)
 				retrievedMems = append(retrievedMems, extMems...)
 				engineLog.Info("retrieved memories from third-party RAG URL", "task_id", task.ID, "count", len(extMems))
 			} else if extErr != nil {
@@ -676,6 +712,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		span.SetStatus(codes.Error, "planner failure")
 		return err
 	}
+	e.critiqueDecision(ctx, task, decision)
 
 	if e.Metrics != nil {
 		e.Metrics.ObserveTokens(
@@ -737,6 +774,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	engineLog.Info("executing actions", "task_id", task.ID, "actions", actionNames)
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)
+	traces, injectionAudit := e.inspectExternalTraces(ctx, task, traces)
 
 	// Tool failures are recorded in the traces and are non-fatal (the executor
 	// only returns err on context cancellation); surface them to metrics but
@@ -773,6 +811,9 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		}
 	}
 	task.Trace = append(task.Trace, traces...)
+	if injectionAudit != nil {
+		task.Trace = append(task.Trace, *injectionAudit)
+	}
 	_ = SetTaskRunning(task)
 
 	engineLog.Info("step completed", "step", task.StepCount, "task_id", task.ID, "remaining_budget", task.ToolBudget)

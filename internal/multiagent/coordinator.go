@@ -10,7 +10,9 @@ import (
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
+	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
@@ -40,24 +42,28 @@ type Writer interface {
 //
 // It updates task.Trace and task.Status in-place.
 type Coordinator struct {
-	Planner                Planner
-	Researcher             Researcher
-	Writer                 Writer
-	Verifier               AnswerVerifier
-	Metrics                *metrics.Collector
-	SuspendForApproval     func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
-	ResolveMemoryConflicts func(ctx context.Context, task *types.Task)
-	EventCallback          func(taskID string, status types.TaskStatus)
+	Planner                 Planner
+	Researcher              Researcher
+	Writer                  Writer
+	Verifier                AnswerVerifier
+	Metrics                 *metrics.Collector
+	SuspendForApproval      func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
+	ResolveMemoryConflicts  func(ctx context.Context, task *types.Task)
+	PlanCritic              plancritic.Critic
+	PromptInjectionDetector promptguard.Detector
+	EventCallback           func(taskID string, status types.TaskStatus)
 }
 
 // NewCoordinator creates a Coordinator wired to the default LLM configuration
 // derived from environment variables (same vars as the main planner).
 func NewCoordinator(mc *metrics.Collector) *Coordinator {
 	return &Coordinator{
-		Planner:    &PlannerAgent{ArgumentRepairer: planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)},
-		Researcher: &ResearcherAgent{},
-		Writer:     &WriterAgent{},
-		Metrics:    mc,
+		Planner:                 &PlannerAgent{ArgumentRepairer: planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)},
+		Researcher:              &ResearcherAgent{},
+		Writer:                  &WriterAgent{},
+		PlanCritic:              plancritic.NewLLMCritic(config.LLMScenePlanCritic),
+		PromptInjectionDetector: promptguard.NewLLMDetector(config.LLMScenePromptInjectionDetector),
+		Metrics:                 mc,
 	}
 }
 
@@ -161,6 +167,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 				TokenUsage:  newPlan.TokenUsage,
 			})
 			task.StepCount++
+			c.critiqueResearchPlan(replanCtx, task, newPlan)
 
 			// Prepare new steps for the next iteration
 			currentSteps = newPlan.Steps
@@ -221,9 +228,38 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	})
 	task.StepCount++
 	task.Status = types.StatusRunning
+	c.critiqueResearchPlan(ctx, task, plan)
 
 	log.Info("Phase 1 done", "steps_planned", len(plan.Steps), "elapsed", elapsed)
 	return plan, nil
+}
+
+func (c *Coordinator) critiqueResearchPlan(ctx context.Context, task *types.Task, plan *ResearchPlan) {
+	if c.PlanCritic == nil || plan == nil {
+		return
+	}
+	if _, enabled := config.Get().LLM.Scenes[config.LLMScenePlanCritic]; !enabled || !llmcore.AllowedForTask(config.LLMScenePlanCritic, task) {
+		return
+	}
+	neutral := plancritic.Plan{Summary: plan.ThoughtSummary, Steps: make([]plancritic.Step, 0, len(plan.Steps))}
+	for _, step := range plan.Steps {
+		neutral.Steps = append(neutral.Steps, plancritic.Step{Action: step.Action, Description: step.Description, Parameters: stepToParams(step)})
+	}
+	if !plancritic.ShouldCritique(task, neutral) {
+		return
+	}
+	fingerprint := plancritic.Fingerprint(neutral)
+	if plancritic.AlreadyCritiqued(task, fingerprint) {
+		return
+	}
+	result, usage, err := c.PlanCritic.Critique(ctx, task, neutral)
+	plancritic.ApplyResult(task, neutral, result, usage, err)
+	if err != nil {
+		log.Warn("Plan critic failed; deterministic controls remain active", "task_id", task.ID, "error", err)
+	}
+	if c.Metrics != nil {
+		c.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "plan_critic")
+	}
 }
 
 func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, steps []ResearchStep) []StepEvidence {
@@ -322,6 +358,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 					TokenUsage:  newPlan.TokenUsage,
 				})
 				task.StepCount++
+				c.critiqueResearchPlan(ctx, task, newPlan)
 				currentSteps = newPlan.Steps
 				continue
 			}
@@ -445,7 +482,15 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 		if c.Metrics != nil {
 			c.Metrics.ObserveExecutor(r.elapsed, r.err, r.action)
 		}
+		audit := c.inspectStepEvidence(ctx, task, r.ev, r.failed)
+		if r.ev != nil {
+			r.tr.Observation = fmt.Sprintf("[researcher] %s", r.ev.Observation)
+			r.tr.Evidence = r.ev.Evidence
+		}
 		task.Trace = append(task.Trace, r.tr)
+		if audit != nil {
+			task.Trace = append(task.Trace, *audit)
+		}
 		if r.ev != nil && !r.failed {
 			evidence = append(evidence, *r.ev)
 		}
@@ -506,11 +551,15 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 		var obs string
 		if err != nil {
 			obs = fmt.Sprintf("[researcher] fatal error: %v", err)
-		} else {
+		} else if ev != nil {
 			obs = fmt.Sprintf("[researcher] %s", ev.Observation)
 		}
 
 		failed := (err != nil) || (ev != nil && ev.Failed)
+		audit := c.inspectStepEvidence(ctx, task, ev, failed)
+		if ev != nil && err == nil {
+			obs = fmt.Sprintf("[researcher] %s", ev.Observation)
+		}
 
 		var trEvidence []types.Evidence
 		if ev != nil {
@@ -531,6 +580,9 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 			TokenUsage:  tokenUsage,
 			AgentRole:   RoleResearcher,
 		})
+		if audit != nil {
+			task.Trace = append(task.Trace, *audit)
+		}
 
 		if ev != nil && !failed {
 			evidence = append(evidence, *ev)

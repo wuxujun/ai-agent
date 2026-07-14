@@ -192,6 +192,7 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 		olog.Error("planner failed", "task_id", task.ID, "error", err)
 		return state, err
 	}
+	e.critiqueDecision(ctx, task, decision)
 
 	var actionNames []string
 	for _, ac := range decision.Actions {
@@ -252,6 +253,7 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 	olog.Info("executing actions", "task_id", task.ID, "actions", actionNames)
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)
+	traces, injectionAudit := e.inspectExternalTraces(ctx, task, traces)
 
 	// Count per-action failures. Tool failures are recorded in the traces and
 	// are non-fatal (the executor only returns err on context cancellation), so
@@ -289,6 +291,9 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 		}
 	}
 	task.Trace = append(task.Trace, traces...)
+	if injectionAudit != nil {
+		task.Trace = append(task.Trace, *injectionAudit)
+	}
 	_ = SetTaskRunning(task)
 
 	olog.Info("step completed", "step", task.StepCount, "task_id", task.ID, "remaining_budget", task.ToolBudget)

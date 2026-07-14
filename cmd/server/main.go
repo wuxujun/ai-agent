@@ -25,8 +25,10 @@ import (
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
+	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/review"
 	"github.com/wuxujun/ai-agent/internal/skills"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -217,6 +219,8 @@ func main() {
 	eng.CodeReviewer = review.NewLLMCodeReviewer(config.LLMSceneCodeReviewer)
 	eng.TestGenerator = testgen.NewLLMGenerator(config.LLMSceneTestGenerator)
 	eng.FailureDiagnoser = diagnostics.NewLLMDiagnoser(config.LLMSceneFailureDiagnoser)
+	eng.PlanCritic = plancritic.NewLLMCritic(config.LLMScenePlanCritic)
+	eng.PromptInjectionDetector = promptguard.NewLLMDetector(config.LLMScenePromptInjectionDetector)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner

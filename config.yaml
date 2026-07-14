@@ -187,6 +187,10 @@ llm:
   #     model: "agent-coder"
   #   failure_diagnoser:
   #     model: "agent-diagnoser"
+  #   plan_critic:
+  #     model: "agent-reviewer"
+  #   prompt_injection_detector:
+  #     model: "agent-safety"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:
