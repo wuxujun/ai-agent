@@ -199,6 +199,8 @@ llm:
   #     model: "agent-verifier"
   #   fact_freshness_checker:
   #     model: "agent-verifier"
+  #   numeric_consistency_checker:
+  #     model: "agent-verifier"
   #   answer_uncertainty_calibrator:
   #     model: "agent-verifier"
   #   context_compressor:

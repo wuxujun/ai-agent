@@ -27,6 +27,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
+	"github.com/wuxujun/ai-agent/internal/numericconsistency"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/planner"
@@ -230,6 +231,7 @@ func main() {
 	eng.EvidenceConflictResolver = evidenceconflict.NewLLMResolver(config.LLMSceneEvidenceConflictResolver)
 	eng.SourceCredibilityScorer = sourcecredibility.NewLLMScorer(config.LLMSceneSourceCredibilityScorer)
 	eng.FactFreshnessChecker = factfreshness.NewLLMChecker(config.LLMSceneFactFreshnessChecker)
+	eng.NumericConsistencyChecker = numericconsistency.NewLLMChecker(config.LLMSceneNumericConsistencyChecker)
 	eng.AnswerUncertaintyCalibrator = uncertainty.NewLLMCalibrator(config.LLMSceneAnswerUncertaintyCalibrator)
 
 	// Inject a Coordinator when running in multi-agent mode.

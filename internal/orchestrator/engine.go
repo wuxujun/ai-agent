@@ -21,6 +21,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/memory"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
+	"github.com/wuxujun/ai-agent/internal/numericconsistency"
 	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/policy"
@@ -56,6 +57,7 @@ type Engine struct {
 	EvidenceConflictResolver    evidenceconflict.Resolver
 	SourceCredibilityScorer     sourcecredibility.Scorer
 	FactFreshnessChecker        factfreshness.Checker
+	NumericConsistencyChecker   numericconsistency.Checker
 	AnswerUncertaintyCalibrator uncertainty.Calibrator
 	Executor                    executor.Executor
 	Metrics                     *metrics.Collector
@@ -422,6 +424,20 @@ func (e *Engine) checkFactFreshness(ctx context.Context, task *types.Task) {
 	}
 }
 
+func (e *Engine) checkNumericConsistency(ctx context.Context, task *types.Task) {
+	if e.NumericConsistencyChecker == nil || !e.llmSceneEnabled(config.LLMSceneNumericConsistencyChecker) || !numericconsistency.ShouldCheck(task) || !llmcore.AllowedForTask(config.LLMSceneNumericConsistencyChecker, task) {
+		return
+	}
+	result, usage, err := e.NumericConsistencyChecker.Check(ctx, task, task.FinalAnswer)
+	numericconsistency.Apply(task, result, usage, err)
+	if err != nil {
+		engineLog.Warn("numeric consistency checker failed; no risk marker added", "task_id", task.ID, "error", err)
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "numeric_consistency_checker")
+	}
+}
+
 func (e *Engine) safetySceneAvailable(task *types.Task) bool {
 	return e.SafetyGuard != nil && e.llmSceneEnabled(config.LLMSceneSafetyGuard) && llmcore.AllowedForTask(config.LLMSceneSafetyGuard, task)
 }
@@ -693,6 +709,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		e.verifyCitations(ctx, task)
 		e.runCodeQualityGates(ctx, task)
 		e.checkFactFreshness(ctx, task)
+		e.checkNumericConsistency(ctx, task)
 		e.calibrateAnswerUncertainty(ctx, task)
 		e.guardOutput(ctx, task)
 	}

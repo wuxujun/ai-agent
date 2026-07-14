@@ -9,6 +9,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
 	"github.com/wuxujun/ai-agent/internal/factfreshness"
 	"github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/numericconsistency"
 	"github.com/wuxujun/ai-agent/internal/sourcecredibility"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -92,6 +93,18 @@ func TestShouldCalibrateAcceptsFreshnessAudit(t *testing.T) {
 	items := evidenceCatalog(task)
 	if len(items) != 1 || items[0].Action != factfreshness.TraceAction {
 		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestShouldCalibrateAcceptsNumericAudit(t *testing.T) {
+	task := &types.Task{FinalAnswer: "answer 20", Trace: []types.StepTrace{{Action: numericconsistency.TraceAction, Observation: "has_numeric_claims=true numeric_consistency=inconsistent"}}}
+	if !ShouldCalibrate(task) {
+		t.Fatal("numeric audit should be available to uncertainty calibration")
+	}
+	result := &Result{Confidence: "low", NeedsQualification: true, Reasons: []string{"numeric_inconsistency"}, Summary: "numeric mismatch"}
+	Apply(task, result, types.TokenUsage{}, nil)
+	if !strings.Contains(task.FinalAnswer, "unresolved numeric inconsistencies") {
+		t.Fatalf("answer=%q", task.FinalAnswer)
 	}
 }
 
