@@ -17,6 +17,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/api"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
+	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
 	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 	"github.com/wuxujun/ai-agent/internal/executor"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
@@ -32,6 +33,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/review"
 	"github.com/wuxujun/ai-agent/internal/skills"
+	"github.com/wuxujun/ai-agent/internal/sourcecredibility"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"github.com/wuxujun/ai-agent/internal/testgen"
@@ -223,6 +225,8 @@ func main() {
 	eng.PlanCritic = plancritic.NewLLMCritic(config.LLMScenePlanCritic)
 	eng.PromptInjectionDetector = promptguard.NewLLMDetector(config.LLMScenePromptInjectionDetector)
 	eng.EvidenceRelevanceFilter = evidencefilter.NewLLMFilter(config.LLMSceneEvidenceRelevanceFilter)
+	eng.EvidenceConflictResolver = evidenceconflict.NewLLMResolver(config.LLMSceneEvidenceConflictResolver)
+	eng.SourceCredibilityScorer = sourcecredibility.NewLLMScorer(config.LLMSceneSourceCredibilityScorer)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner

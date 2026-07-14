@@ -11,6 +11,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
+	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
 	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
@@ -25,6 +26,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/review"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
+	"github.com/wuxujun/ai-agent/internal/sourcecredibility"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/testgen"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -36,24 +38,26 @@ import (
 )
 
 type Engine struct {
-	Planner                 planner.Planner
-	Finalizer               planner.TaskFinalizer
-	CitationVerifier        planner.CitationVerifier
-	SafetyGuard             policy.SafetyGuard
-	IntentRouter            planner.IntentRouter
-	MemoryConflictResolver  memory.ConflictResolver
-	CodeReviewer            review.CodeReviewer
-	CollectCodeChanges      func(context.Context, string) (review.ChangeSet, error)
-	TestGenerator           testgen.Generator
-	FailureDiagnoser        diagnostics.Diagnoser
-	PlanCritic              plancritic.Critic
-	PromptInjectionDetector promptguard.Detector
-	EvidenceRelevanceFilter evidencefilter.Filter
-	Executor                executor.Executor
-	Metrics                 *metrics.Collector
-	Mode                    Mode
-	AdkModel                model.LLM
-	LLMSceneEnabled         func(string) bool
+	Planner                  planner.Planner
+	Finalizer                planner.TaskFinalizer
+	CitationVerifier         planner.CitationVerifier
+	SafetyGuard              policy.SafetyGuard
+	IntentRouter             planner.IntentRouter
+	MemoryConflictResolver   memory.ConflictResolver
+	CodeReviewer             review.CodeReviewer
+	CollectCodeChanges       func(context.Context, string) (review.ChangeSet, error)
+	TestGenerator            testgen.Generator
+	FailureDiagnoser         diagnostics.Diagnoser
+	PlanCritic               plancritic.Critic
+	PromptInjectionDetector  promptguard.Detector
+	EvidenceRelevanceFilter  evidencefilter.Filter
+	EvidenceConflictResolver evidenceconflict.Resolver
+	SourceCredibilityScorer  sourcecredibility.Scorer
+	Executor                 executor.Executor
+	Metrics                  *metrics.Collector
+	Mode                     Mode
+	AdkModel                 model.LLM
+	LLMSceneEnabled          func(string) bool
 	// Coordinator is required when Mode == ModeMultiAgent.
 	Coordinator *multiagent.Coordinator
 	// Store handles database persistence and long-term memory.
@@ -778,6 +782,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	traces, err := e.Executor.Execute(ctx, task, decision)
 	traces, injectionAudit := e.inspectExternalTraces(ctx, task, traces)
 	traces, relevanceAudits := e.filterExternalTraces(ctx, task, traces)
+	conflictAudits := e.resolveEvidenceConflicts(ctx, task, traces)
 
 	// Tool failures are recorded in the traces and are non-fatal (the executor
 	// only returns err on context cancellation); surface them to metrics but
@@ -818,6 +823,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		task.Trace = append(task.Trace, *injectionAudit)
 	}
 	task.Trace = append(task.Trace, relevanceAudits...)
+	task.Trace = append(task.Trace, conflictAudits...)
 	_ = SetTaskRunning(task)
 
 	engineLog.Info("step completed", "step", task.StepCount, "task_id", task.ID, "remaining_budget", task.ToolBudget)

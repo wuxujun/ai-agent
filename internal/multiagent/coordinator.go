@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
 	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
@@ -14,6 +15,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/promptguard"
+	"github.com/wuxujun/ai-agent/internal/sourcecredibility"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
@@ -43,30 +45,34 @@ type Writer interface {
 //
 // It updates task.Trace and task.Status in-place.
 type Coordinator struct {
-	Planner                 Planner
-	Researcher              Researcher
-	Writer                  Writer
-	Verifier                AnswerVerifier
-	Metrics                 *metrics.Collector
-	SuspendForApproval      func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
-	ResolveMemoryConflicts  func(ctx context.Context, task *types.Task)
-	PlanCritic              plancritic.Critic
-	PromptInjectionDetector promptguard.Detector
-	EvidenceRelevanceFilter evidencefilter.Filter
-	EventCallback           func(taskID string, status types.TaskStatus)
+	Planner                  Planner
+	Researcher               Researcher
+	Writer                   Writer
+	Verifier                 AnswerVerifier
+	Metrics                  *metrics.Collector
+	SuspendForApproval       func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
+	ResolveMemoryConflicts   func(ctx context.Context, task *types.Task)
+	PlanCritic               plancritic.Critic
+	PromptInjectionDetector  promptguard.Detector
+	EvidenceRelevanceFilter  evidencefilter.Filter
+	EvidenceConflictResolver evidenceconflict.Resolver
+	SourceCredibilityScorer  sourcecredibility.Scorer
+	EventCallback            func(taskID string, status types.TaskStatus)
 }
 
 // NewCoordinator creates a Coordinator wired to the default LLM configuration
 // derived from environment variables (same vars as the main planner).
 func NewCoordinator(mc *metrics.Collector) *Coordinator {
 	return &Coordinator{
-		Planner:                 &PlannerAgent{ArgumentRepairer: planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)},
-		Researcher:              &ResearcherAgent{},
-		Writer:                  &WriterAgent{},
-		PlanCritic:              plancritic.NewLLMCritic(config.LLMScenePlanCritic),
-		PromptInjectionDetector: promptguard.NewLLMDetector(config.LLMScenePromptInjectionDetector),
-		EvidenceRelevanceFilter: evidencefilter.NewLLMFilter(config.LLMSceneEvidenceRelevanceFilter),
-		Metrics:                 mc,
+		Planner:                  &PlannerAgent{ArgumentRepairer: planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)},
+		Researcher:               &ResearcherAgent{},
+		Writer:                   &WriterAgent{},
+		PlanCritic:               plancritic.NewLLMCritic(config.LLMScenePlanCritic),
+		PromptInjectionDetector:  promptguard.NewLLMDetector(config.LLMScenePromptInjectionDetector),
+		EvidenceRelevanceFilter:  evidencefilter.NewLLMFilter(config.LLMSceneEvidenceRelevanceFilter),
+		EvidenceConflictResolver: evidenceconflict.NewLLMResolver(config.LLMSceneEvidenceConflictResolver),
+		SourceCredibilityScorer:  sourcecredibility.NewLLMScorer(config.LLMSceneSourceCredibilityScorer),
+		Metrics:                  mc,
 	}
 }
 
@@ -123,11 +129,15 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 
 		// ── Phase 3: Write ─────────────────────────────────────────────────────────
 		phaseCtx := llmcore.WithTaskRoutingHints(ctx, task)
+		writerEvidence := append([]StepEvidence(nil), allEvidence...)
+		if annotation := c.resolveEvidenceConflicts(phaseCtx, task, allEvidence); annotation != nil {
+			writerEvidence = append(writerEvidence, *annotation)
+		}
 		if c.ResolveMemoryConflicts != nil {
 			c.ResolveMemoryConflicts(phaseCtx, task)
 			phaseCtx = llmcore.WithTaskRoutingHints(ctx, task)
 		}
-		conf, writeErr := c.runWritePhase(phaseCtx, task, allEvidence)
+		conf, writeErr := c.runWritePhase(phaseCtx, task, writerEvidence)
 		if writeErr != nil {
 			break // fallback happened or writer failed
 		}
