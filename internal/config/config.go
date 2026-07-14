@@ -213,6 +213,7 @@ const (
 	LLMSceneIntentRouter           = "intent_router"
 	LLMSceneMemoryConflictResolver = "memory_conflict_resolver"
 	LLMSceneVisionAnalyzer         = "vision_analyzer"
+	LLMSceneCodeReviewer           = "code_reviewer"
 	LLMSceneContextCompressor      = "context_compressor"
 	LLMSceneAnswerVerifier         = "answer_verifier"
 	LLMSceneMemorySummarizer       = "memory_summarizer"

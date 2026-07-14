@@ -181,6 +181,8 @@ llm:
   #     # The selected model must accept image input. LiteLLM can route this
   #     # alias to any OpenAI-compatible multimodal backend.
   #     model: "agent-vision"
+  #   code_reviewer:
+  #     model: "agent-reviewer"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:

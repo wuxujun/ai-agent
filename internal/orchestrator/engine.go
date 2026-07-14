@@ -19,6 +19,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"github.com/wuxujun/ai-agent/internal/review"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -35,6 +36,8 @@ type Engine struct {
 	SafetyGuard            policy.SafetyGuard
 	IntentRouter           planner.IntentRouter
 	MemoryConflictResolver memory.ConflictResolver
+	CodeReviewer           review.CodeReviewer
+	CollectCodeChanges     func(context.Context, string) (review.ChangeSet, error)
 	Executor               executor.Executor
 	Metrics                *metrics.Collector
 	Mode                   Mode
@@ -139,6 +142,67 @@ func (e *Engine) verifyCitations(ctx context.Context, task *types.Task) {
 	})
 	if e.Metrics != nil {
 		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "citation_verifier")
+	}
+}
+
+func (e *Engine) reviewCodeChanges(ctx context.Context, task *types.Task) {
+	if e.CodeReviewer == nil || !e.llmSceneEnabled(config.LLMSceneCodeReviewer) || taskHasAction(task, "code_review") {
+		return
+	}
+	if !llmcore.AllowedForTask(config.LLMSceneCodeReviewer, task) || !review.TaskMayHaveCodeChanges(task) {
+		return
+	}
+	collector := e.CollectCodeChanges
+	if collector == nil {
+		collector = review.CollectChanges
+	}
+	changes, err := collector(ctx, task.Workspace)
+	if err != nil {
+		engineLog.Warn("code review change collection failed; skipping review", "task_id", task.ID, "error", err)
+		return
+	}
+	if strings.TrimSpace(changes.Diff) == "" || len(changes.Paths) == 0 {
+		return
+	}
+	result, usage, err := e.CodeReviewer.Review(ctx, task, changes)
+	trace := types.StepTrace{Step: task.StepCount, Action: "code_review", TokenUsage: usage}
+	if err != nil {
+		trace.Observation = "review_failed; final answer preserved"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("code reviewer failed; keeping original answer", "task_id", task.ID, "error", err)
+		e.observeCodeReviewUsage(usage)
+		return
+	}
+	if result == nil {
+		trace.Observation = "review_failed; final answer preserved"
+		task.Trace = append(task.Trace, trace)
+		e.observeCodeReviewUsage(usage)
+		return
+	}
+	trace.Observation = fmt.Sprintf("findings=%d summary=%s", len(result.Findings), result.Summary)
+	for _, finding := range result.Findings {
+		trace.Evidence = append(trace.Evidence, types.Evidence{Path: finding.Path, Query: "code review", Lines: []string{fmt.Sprintf("[%s] line %d: %s: %s", finding.Severity, finding.Line, finding.Title, finding.Detail)}})
+	}
+	task.Trace = append(task.Trace, trace)
+	e.observeCodeReviewUsage(usage)
+	if len(result.Findings) == 0 {
+		return
+	}
+	var section strings.Builder
+	section.WriteString("\n\n## Code review\n")
+	for _, finding := range result.Findings {
+		location := finding.Path
+		if finding.Line > 0 {
+			location = fmt.Sprintf("%s:%d", location, finding.Line)
+		}
+		fmt.Fprintf(&section, "- [%s] `%s` %s: %s\n", strings.ToUpper(finding.Severity), location, finding.Title, finding.Detail)
+	}
+	task.FinalAnswer = strings.TrimSpace(task.FinalAnswer) + strings.TrimRight(section.String(), "\n")
+}
+
+func (e *Engine) observeCodeReviewUsage(usage types.TokenUsage) {
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "code_reviewer")
 	}
 }
 
@@ -406,6 +470,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	}
 	if err == nil && !wasCompleted && task.Status == types.StatusCompleted && strings.TrimSpace(task.FinalAnswer) != "" {
 		e.verifyCitations(ctx, task)
+		e.reviewCodeChanges(ctx, task)
 		e.guardOutput(ctx, task)
 	}
 	return err
