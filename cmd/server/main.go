@@ -30,6 +30,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/skills"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
+	"github.com/wuxujun/ai-agent/internal/testgen"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -213,6 +214,7 @@ func main() {
 	eng.IntentRouter = planner.NewLLMIntentRouter(config.LLMSceneIntentRouter)
 	eng.MemoryConflictResolver = memory.NewLLMMemoryConflictResolver(config.LLMSceneMemoryConflictResolver)
 	eng.CodeReviewer = review.NewLLMCodeReviewer(config.LLMSceneCodeReviewer)
+	eng.TestGenerator = testgen.NewLLMGenerator(config.LLMSceneTestGenerator)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner

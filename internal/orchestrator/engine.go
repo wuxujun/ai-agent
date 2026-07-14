@@ -21,6 +21,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/review"
 	"github.com/wuxujun/ai-agent/internal/store"
+	"github.com/wuxujun/ai-agent/internal/testgen"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
@@ -38,6 +39,7 @@ type Engine struct {
 	MemoryConflictResolver memory.ConflictResolver
 	CodeReviewer           review.CodeReviewer
 	CollectCodeChanges     func(context.Context, string) (review.ChangeSet, error)
+	TestGenerator          testgen.Generator
 	Executor               executor.Executor
 	Metrics                *metrics.Collector
 	Mode                   Mode
@@ -146,17 +148,10 @@ func (e *Engine) verifyCitations(ctx context.Context, task *types.Task) {
 }
 
 func (e *Engine) reviewCodeChanges(ctx context.Context, task *types.Task) {
-	if e.CodeReviewer == nil || !e.llmSceneEnabled(config.LLMSceneCodeReviewer) || taskHasAction(task, "code_review") {
+	if !e.codeReviewEligible(task) || !review.TaskMayHaveCodeChanges(task) {
 		return
 	}
-	if !llmcore.AllowedForTask(config.LLMSceneCodeReviewer, task) || !review.TaskMayHaveCodeChanges(task) {
-		return
-	}
-	collector := e.CollectCodeChanges
-	if collector == nil {
-		collector = review.CollectChanges
-	}
-	changes, err := collector(ctx, task.Workspace)
+	changes, err := e.collectChanges(ctx, task.Workspace)
 	if err != nil {
 		engineLog.Warn("code review change collection failed; skipping review", "task_id", task.ID, "error", err)
 		return
@@ -164,6 +159,14 @@ func (e *Engine) reviewCodeChanges(ctx context.Context, task *types.Task) {
 	if strings.TrimSpace(changes.Diff) == "" || len(changes.Paths) == 0 {
 		return
 	}
+	e.reviewCodeChangesWithSet(ctx, task, changes)
+}
+
+func (e *Engine) codeReviewEligible(task *types.Task) bool {
+	return e.CodeReviewer != nil && e.llmSceneEnabled(config.LLMSceneCodeReviewer) && !taskHasAction(task, "code_review") && llmcore.AllowedForTask(config.LLMSceneCodeReviewer, task)
+}
+
+func (e *Engine) reviewCodeChangesWithSet(ctx context.Context, task *types.Task, changes review.ChangeSet) {
 	result, usage, err := e.CodeReviewer.Review(ctx, task, changes)
 	trace := types.StepTrace{Step: task.StepCount, Action: "code_review", TokenUsage: usage}
 	if err != nil {
@@ -203,6 +206,99 @@ func (e *Engine) reviewCodeChanges(ctx context.Context, task *types.Task) {
 func (e *Engine) observeCodeReviewUsage(usage types.TokenUsage) {
 	if e.Metrics != nil {
 		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "code_reviewer")
+	}
+}
+
+func (e *Engine) generateTestSuggestions(ctx context.Context, task *types.Task) {
+	if !e.testGenerationEligible(task) || !review.TaskMayHaveCodeChanges(task) {
+		return
+	}
+	changes, err := e.collectChanges(ctx, task.Workspace)
+	if err != nil {
+		engineLog.Warn("test generation change collection failed; skipping", "task_id", task.ID, "error", err)
+		return
+	}
+	if strings.TrimSpace(changes.Diff) == "" || len(changes.Paths) == 0 {
+		return
+	}
+	e.generateTestSuggestionsWithSet(ctx, task, changes)
+}
+
+func (e *Engine) testGenerationEligible(task *types.Task) bool {
+	return e.TestGenerator != nil && e.llmSceneEnabled(config.LLMSceneTestGenerator) && !taskHasAction(task, "test_generate") && llmcore.AllowedForTask(config.LLMSceneTestGenerator, task)
+}
+
+func (e *Engine) generateTestSuggestionsWithSet(ctx context.Context, task *types.Task, changes review.ChangeSet) {
+	result, usage, err := e.TestGenerator.Generate(ctx, task, changes)
+	trace := types.StepTrace{Step: task.StepCount, Action: "test_generate", TokenUsage: usage}
+	if err != nil {
+		trace.Observation = "generation_failed; final answer preserved"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("test generator failed; keeping original answer", "task_id", task.ID, "error", err)
+		e.observeTestGenerationUsage(usage)
+		return
+	}
+	if result == nil {
+		trace.Observation = "generation_failed; final answer preserved"
+		task.Trace = append(task.Trace, trace)
+		e.observeTestGenerationUsage(usage)
+		return
+	}
+	trace.Observation = fmt.Sprintf("suggestions=%d summary=%s", len(result.Suggestions), result.Summary)
+	for _, suggestion := range result.Suggestions {
+		trace.Evidence = append(trace.Evidence, types.Evidence{Path: suggestion.Path, Query: "suggested regression test", Lines: []string{fmt.Sprintf("[%s] %s: covers %s; %s", suggestion.Priority, suggestion.Name, suggestion.Covers, suggestion.Rationale)}})
+	}
+	task.Trace = append(task.Trace, trace)
+	e.observeTestGenerationUsage(usage)
+	if len(result.Suggestions) == 0 {
+		return
+	}
+	var section strings.Builder
+	section.WriteString("\n\n## Suggested tests\n")
+	for _, suggestion := range result.Suggestions {
+		fmt.Fprintf(&section, "- [%s] `%s` %s (%s): %s. %s\n\n", strings.ToUpper(suggestion.Priority), suggestion.Path, suggestion.Name, suggestion.Framework, suggestion.Covers, suggestion.Rationale)
+		for _, line := range strings.Split(suggestion.SuggestedCode, "\n") {
+			section.WriteString("    ")
+			section.WriteString(line)
+			section.WriteByte('\n')
+		}
+	}
+	task.FinalAnswer = strings.TrimSpace(task.FinalAnswer) + strings.TrimRight(section.String(), "\n")
+}
+
+func (e *Engine) observeTestGenerationUsage(usage types.TokenUsage) {
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "test_generator")
+	}
+}
+
+func (e *Engine) collectChanges(ctx context.Context, workspace string) (review.ChangeSet, error) {
+	collector := e.CollectCodeChanges
+	if collector == nil {
+		collector = review.CollectChanges
+	}
+	return collector(ctx, workspace)
+}
+
+func (e *Engine) runCodeQualityGates(ctx context.Context, task *types.Task) {
+	if !review.TaskMayHaveCodeChanges(task) || (!e.codeReviewEligible(task) && !e.testGenerationEligible(task)) {
+		return
+	}
+	changes, err := e.collectChanges(ctx, task.Workspace)
+	if err != nil {
+		engineLog.Warn("code quality change collection failed; skipping gates", "task_id", task.ID, "error", err)
+		return
+	}
+	if strings.TrimSpace(changes.Diff) == "" || len(changes.Paths) == 0 {
+		return
+	}
+	if e.codeReviewEligible(task) {
+		e.reviewCodeChangesWithSet(ctx, task, changes)
+	}
+	// Re-evaluate after code review because it may consume the remaining task
+	// token allowance needed by the test generation scene.
+	if e.testGenerationEligible(task) {
+		e.generateTestSuggestionsWithSet(ctx, task, changes)
 	}
 }
 
@@ -470,7 +566,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	}
 	if err == nil && !wasCompleted && task.Status == types.StatusCompleted && strings.TrimSpace(task.FinalAnswer) != "" {
 		e.verifyCitations(ctx, task)
-		e.reviewCodeChanges(ctx, task)
+		e.runCodeQualityGates(ctx, task)
 		e.guardOutput(ctx, task)
 	}
 	return err

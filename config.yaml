@@ -183,6 +183,8 @@ llm:
   #     model: "agent-vision"
   #   code_reviewer:
   #     model: "agent-reviewer"
+  #   test_generator:
+  #     model: "agent-coder"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:
