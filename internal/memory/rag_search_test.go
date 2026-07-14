@@ -412,5 +412,3 @@ func TestSearchThirdPartyRAG_SelfHealingRetry(t *testing.T) {
 		t.Errorf("unexpected memories: %+v", mems)
 	}
 }
-
-

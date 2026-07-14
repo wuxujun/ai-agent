@@ -132,4 +132,3 @@ func TestMemoryStoreTimeDecay(t *testing.T) {
 		t.Errorf("expected mem-new-weak first when decay is enabled, got %s", res2[0].ID)
 	}
 }
-

@@ -233,4 +233,3 @@ func TestApplyTimeDecay(t *testing.T) {
 		t.Errorf("expected future memory to have score 1.0 (no decay), got %f", scoreFuture)
 	}
 }
-
