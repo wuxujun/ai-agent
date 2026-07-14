@@ -197,6 +197,8 @@ llm:
   #     model: "agent-verifier"
   #   source_credibility_scorer:
   #     model: "agent-verifier"
+  #   answer_uncertainty_calibrator:
+  #     model: "agent-verifier"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:

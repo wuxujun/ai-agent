@@ -39,6 +39,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/testgen"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"github.com/wuxujun/ai-agent/internal/uncertainty"
 )
 
 var slog = logger.Component("server")
@@ -227,6 +228,7 @@ func main() {
 	eng.EvidenceRelevanceFilter = evidencefilter.NewLLMFilter(config.LLMSceneEvidenceRelevanceFilter)
 	eng.EvidenceConflictResolver = evidenceconflict.NewLLMResolver(config.LLMSceneEvidenceConflictResolver)
 	eng.SourceCredibilityScorer = sourcecredibility.NewLLMScorer(config.LLMSceneSourceCredibilityScorer)
+	eng.AnswerUncertaintyCalibrator = uncertainty.NewLLMCalibrator(config.LLMSceneAnswerUncertaintyCalibrator)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner

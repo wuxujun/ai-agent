@@ -31,6 +31,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/testgen"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"github.com/wuxujun/ai-agent/internal/uncertainty"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -38,26 +39,27 @@ import (
 )
 
 type Engine struct {
-	Planner                  planner.Planner
-	Finalizer                planner.TaskFinalizer
-	CitationVerifier         planner.CitationVerifier
-	SafetyGuard              policy.SafetyGuard
-	IntentRouter             planner.IntentRouter
-	MemoryConflictResolver   memory.ConflictResolver
-	CodeReviewer             review.CodeReviewer
-	CollectCodeChanges       func(context.Context, string) (review.ChangeSet, error)
-	TestGenerator            testgen.Generator
-	FailureDiagnoser         diagnostics.Diagnoser
-	PlanCritic               plancritic.Critic
-	PromptInjectionDetector  promptguard.Detector
-	EvidenceRelevanceFilter  evidencefilter.Filter
-	EvidenceConflictResolver evidenceconflict.Resolver
-	SourceCredibilityScorer  sourcecredibility.Scorer
-	Executor                 executor.Executor
-	Metrics                  *metrics.Collector
-	Mode                     Mode
-	AdkModel                 model.LLM
-	LLMSceneEnabled          func(string) bool
+	Planner                     planner.Planner
+	Finalizer                   planner.TaskFinalizer
+	CitationVerifier            planner.CitationVerifier
+	SafetyGuard                 policy.SafetyGuard
+	IntentRouter                planner.IntentRouter
+	MemoryConflictResolver      memory.ConflictResolver
+	CodeReviewer                review.CodeReviewer
+	CollectCodeChanges          func(context.Context, string) (review.ChangeSet, error)
+	TestGenerator               testgen.Generator
+	FailureDiagnoser            diagnostics.Diagnoser
+	PlanCritic                  plancritic.Critic
+	PromptInjectionDetector     promptguard.Detector
+	EvidenceRelevanceFilter     evidencefilter.Filter
+	EvidenceConflictResolver    evidenceconflict.Resolver
+	SourceCredibilityScorer     sourcecredibility.Scorer
+	AnswerUncertaintyCalibrator uncertainty.Calibrator
+	Executor                    executor.Executor
+	Metrics                     *metrics.Collector
+	Mode                        Mode
+	AdkModel                    model.LLM
+	LLMSceneEnabled             func(string) bool
 	// Coordinator is required when Mode == ModeMultiAgent.
 	Coordinator *multiagent.Coordinator
 	// Store handles database persistence and long-term memory.
@@ -390,6 +392,20 @@ func (e *Engine) runCodeQualityGates(ctx context.Context, task *types.Task) {
 	}
 }
 
+func (e *Engine) calibrateAnswerUncertainty(ctx context.Context, task *types.Task) {
+	if e.AnswerUncertaintyCalibrator == nil || !e.llmSceneEnabled(config.LLMSceneAnswerUncertaintyCalibrator) || !uncertainty.ShouldCalibrate(task) || !llmcore.AllowedForTask(config.LLMSceneAnswerUncertaintyCalibrator, task) {
+		return
+	}
+	result, usage, err := e.AnswerUncertaintyCalibrator.Calibrate(ctx, task, task.FinalAnswer)
+	uncertainty.Apply(task, result, usage, err)
+	if err != nil {
+		engineLog.Warn("answer uncertainty calibrator failed; final answer preserved", "task_id", task.ID, "error", err)
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "answer_uncertainty_calibrator")
+	}
+}
+
 func (e *Engine) safetySceneAvailable(task *types.Task) bool {
 	return e.SafetyGuard != nil && e.llmSceneEnabled(config.LLMSceneSafetyGuard) && llmcore.AllowedForTask(config.LLMSceneSafetyGuard, task)
 }
@@ -660,6 +676,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	if err == nil && !wasCompleted && task.Status == types.StatusCompleted && strings.TrimSpace(task.FinalAnswer) != "" {
 		e.verifyCitations(ctx, task)
 		e.runCodeQualityGates(ctx, task)
+		e.calibrateAnswerUncertainty(ctx, task)
 		e.guardOutput(ctx, task)
 	}
 	return err
