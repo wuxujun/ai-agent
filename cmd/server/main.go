@@ -16,6 +16,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/api"
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/diagnostics"
 	"github.com/wuxujun/ai-agent/internal/executor"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
@@ -215,6 +216,7 @@ func main() {
 	eng.MemoryConflictResolver = memory.NewLLMMemoryConflictResolver(config.LLMSceneMemoryConflictResolver)
 	eng.CodeReviewer = review.NewLLMCodeReviewer(config.LLMSceneCodeReviewer)
 	eng.TestGenerator = testgen.NewLLMGenerator(config.LLMSceneTestGenerator)
+	eng.FailureDiagnoser = diagnostics.NewLLMDiagnoser(config.LLMSceneFailureDiagnoser)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner

@@ -215,6 +215,7 @@ const (
 	LLMSceneVisionAnalyzer         = "vision_analyzer"
 	LLMSceneCodeReviewer           = "code_reviewer"
 	LLMSceneTestGenerator          = "test_generator"
+	LLMSceneFailureDiagnoser       = "failure_diagnoser"
 	LLMSceneContextCompressor      = "context_compressor"
 	LLMSceneAnswerVerifier         = "answer_verifier"
 	LLMSceneMemorySummarizer       = "memory_summarizer"

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/diagnostics"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
@@ -20,6 +21,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/review"
+	"github.com/wuxujun/ai-agent/internal/sanitize"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/testgen"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -40,6 +42,7 @@ type Engine struct {
 	CodeReviewer           review.CodeReviewer
 	CollectCodeChanges     func(context.Context, string) (review.ChangeSet, error)
 	TestGenerator          testgen.Generator
+	FailureDiagnoser       diagnostics.Diagnoser
 	Executor               executor.Executor
 	Metrics                *metrics.Collector
 	Mode                   Mode
@@ -272,6 +275,50 @@ func (e *Engine) observeTestGenerationUsage(usage types.TokenUsage) {
 	}
 }
 
+func (e *Engine) diagnoseFailure(ctx context.Context, task *types.Task, failure error) {
+	if e.FailureDiagnoser == nil || !e.llmSceneEnabled(config.LLMSceneFailureDiagnoser) || taskHasAction(task, diagnostics.TraceAction) {
+		return
+	}
+	if !llmcore.AllowedForTask(config.LLMSceneFailureDiagnoser, task) {
+		return
+	}
+	result, usage, err := e.FailureDiagnoser.Diagnose(ctx, task, failure)
+	trace := types.StepTrace{Step: task.StepCount, Action: diagnostics.TraceAction, TokenUsage: usage}
+	if err != nil || result == nil {
+		trace.Observation = "diagnosis_failed; original failure preserved"
+		task.Trace = append(task.Trace, trace)
+		engineLog.Warn("failure diagnoser failed; preserving original failure", "task_id", task.ID, "error", err)
+		e.observeFailureDiagnosisUsage(usage)
+		return
+	}
+	trace.Query = result.Category
+	trace.Observation = fmt.Sprintf("retryable=%t root_cause=%s", result.Retryable, result.RootCause)
+	lines := append([]string{"Root cause: " + result.RootCause}, result.Evidence...)
+	for index, step := range result.RecoverySteps {
+		lines = append(lines, fmt.Sprintf("Recovery %d: %s", index+1, step))
+	}
+	trace.Evidence = []types.Evidence{{Path: result.FailedAction, Query: "failure diagnosis", Lines: lines}}
+	task.Trace = append(task.Trace, trace)
+	e.observeFailureDiagnosisUsage(usage)
+
+	var answer strings.Builder
+	fmt.Fprintf(&answer, "Failed: %s\n\n## Failure diagnosis\n- Category: %s\n- Root cause: %s\n- Failed step: %d", sanitize.Secrets(failure.Error()), result.Category, result.RootCause, result.FailedStep)
+	if result.FailedAction != "" {
+		fmt.Fprintf(&answer, "\n- Failed action: `%s`", result.FailedAction)
+	}
+	fmt.Fprintf(&answer, "\n- Retryable: %t\n\n### Recovery steps\n", result.Retryable)
+	for index, step := range result.RecoverySteps {
+		fmt.Fprintf(&answer, "%d. %s\n", index+1, step)
+	}
+	task.FinalAnswer = strings.TrimSpace(answer.String())
+}
+
+func (e *Engine) observeFailureDiagnosisUsage(usage types.TokenUsage) {
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "failure_diagnoser")
+	}
+}
+
 func (e *Engine) collectChanges(ctx context.Context, workspace string) (review.ChangeSet, error) {
 	collector := e.CollectCodeChanges
 	if collector == nil {
@@ -479,8 +526,12 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 				err = nil
 				return
 			}
-			engineLog.Error("step execution failed", "task_id", task.ID, "error", err)
-			_ = SetTaskFailed(task, err.Error())
+			safeFailure := sanitize.Secrets(err.Error())
+			engineLog.Error("step execution failed", "task_id", task.ID, "error", safeFailure)
+			_ = SetTaskFailed(task, safeFailure)
+			if ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				e.diagnoseFailure(ctx, task, errors.New(safeFailure))
+			}
 		}
 	}()
 	if !wasCompleted && !e.guardInput(ctx, task) {

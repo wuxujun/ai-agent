@@ -185,6 +185,8 @@ llm:
   #     model: "agent-reviewer"
   #   test_generator:
   #     model: "agent-coder"
+  #   failure_diagnoser:
+  #     model: "agent-diagnoser"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:
