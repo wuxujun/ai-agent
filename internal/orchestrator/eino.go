@@ -254,6 +254,7 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)
 	traces, injectionAudit := e.inspectExternalTraces(ctx, task, traces)
+	traces, relevanceAudits := e.filterExternalTraces(ctx, task, traces)
 
 	// Count per-action failures. Tool failures are recorded in the traces and
 	// are non-fatal (the executor only returns err on context cancellation), so
@@ -294,6 +295,7 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 	if injectionAudit != nil {
 		task.Trace = append(task.Trace, *injectionAudit)
 	}
+	task.Trace = append(task.Trace, relevanceAudits...)
 	_ = SetTaskRunning(task)
 
 	olog.Info("step completed", "step", task.StepCount, "task_id", task.ID, "remaining_budget", task.ToolBudget)

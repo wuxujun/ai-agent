@@ -191,6 +191,8 @@ llm:
   #     model: "agent-reviewer"
   #   prompt_injection_detector:
   #     model: "agent-safety"
+  #   evidence_relevance_filter:
+  #     model: "agent-reranker"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:

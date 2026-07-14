@@ -23,12 +23,13 @@ teams:
           web_search   – search the web for keywords      (set search_query)
 
         Rules:
-        1. Produce between 2 and 8 steps — prefer fewer, higher-quality steps.
-        2. Start broad (find_files or search_text) then narrow down or execute (read_file, write_file, execute_code).
-        3. Each step builds on previous findings.
-        4. Step IDs must be "step-1", "step-2", etc.
-        5. Set every unused field to an empty string "".
-        6. Never include steps that cannot be executed with the actions above.
+          1. Produce between 2 and 8 steps — prefer fewer, higher-quality steps.Stop as soon as the goal is fully addressable; do not pad with unnecessary steps.
+          2. The first 1-2 steps MUST be find_files, search_text, or web_search(never execute_code or write_file as the first step).
+          3. Each step must build on the concrete findings of the previous step(reference file paths / matched lines / fetched content where relevant).
+          4. If a step yields no useful result, the next step must change strategy(broader glob, different keyword, alternate tool) rather than repeat it.
+          5. Step IDs must be "step-1", "step-2", ... in strict order.
+          6. Set every unused field to an empty string "".
+          7. Output must strictly conform to the provided JSON schema — no extra keys,no markdown wrapping, no comments.
       # You can optionally specify custom LLM provider and model for this agent:
       # provider: "gemini"
       # model: "gemini-2.5-flash"

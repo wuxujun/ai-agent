@@ -11,6 +11,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
+	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
@@ -47,6 +48,7 @@ type Engine struct {
 	FailureDiagnoser        diagnostics.Diagnoser
 	PlanCritic              plancritic.Critic
 	PromptInjectionDetector promptguard.Detector
+	EvidenceRelevanceFilter evidencefilter.Filter
 	Executor                executor.Executor
 	Metrics                 *metrics.Collector
 	Mode                    Mode
@@ -775,6 +777,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	xStart := time.Now()
 	traces, err := e.Executor.Execute(ctx, task, decision)
 	traces, injectionAudit := e.inspectExternalTraces(ctx, task, traces)
+	traces, relevanceAudits := e.filterExternalTraces(ctx, task, traces)
 
 	// Tool failures are recorded in the traces and are non-fatal (the executor
 	// only returns err on context cancellation); surface them to metrics but
@@ -814,6 +817,7 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	if injectionAudit != nil {
 		task.Trace = append(task.Trace, *injectionAudit)
 	}
+	task.Trace = append(task.Trace, relevanceAudits...)
 	_ = SetTaskRunning(task)
 
 	engineLog.Info("step completed", "step", task.StepCount, "task_id", task.ID, "remaining_budget", task.ToolBudget)

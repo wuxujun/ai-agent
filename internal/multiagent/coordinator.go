@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
@@ -51,6 +52,7 @@ type Coordinator struct {
 	ResolveMemoryConflicts  func(ctx context.Context, task *types.Task)
 	PlanCritic              plancritic.Critic
 	PromptInjectionDetector promptguard.Detector
+	EvidenceRelevanceFilter evidencefilter.Filter
 	EventCallback           func(taskID string, status types.TaskStatus)
 }
 
@@ -63,6 +65,7 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 		Writer:                  &WriterAgent{},
 		PlanCritic:              plancritic.NewLLMCritic(config.LLMScenePlanCritic),
 		PromptInjectionDetector: promptguard.NewLLMDetector(config.LLMScenePromptInjectionDetector),
+		EvidenceRelevanceFilter: evidencefilter.NewLLMFilter(config.LLMSceneEvidenceRelevanceFilter),
 		Metrics:                 mc,
 	}
 }
@@ -483,6 +486,7 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 			c.Metrics.ObserveExecutor(r.elapsed, r.err, r.action)
 		}
 		audit := c.inspectStepEvidence(ctx, task, r.ev, r.failed)
+		relevanceAudit := c.filterStepEvidence(ctx, task, r.ev, r.failed)
 		if r.ev != nil {
 			r.tr.Observation = fmt.Sprintf("[researcher] %s", r.ev.Observation)
 			r.tr.Evidence = r.ev.Evidence
@@ -490,6 +494,9 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 		task.Trace = append(task.Trace, r.tr)
 		if audit != nil {
 			task.Trace = append(task.Trace, *audit)
+		}
+		if relevanceAudit != nil {
+			task.Trace = append(task.Trace, *relevanceAudit)
 		}
 		if r.ev != nil && !r.failed {
 			evidence = append(evidence, *r.ev)
@@ -557,6 +564,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 
 		failed := (err != nil) || (ev != nil && ev.Failed)
 		audit := c.inspectStepEvidence(ctx, task, ev, failed)
+		relevanceAudit := c.filterStepEvidence(ctx, task, ev, failed)
 		if ev != nil && err == nil {
 			obs = fmt.Sprintf("[researcher] %s", ev.Observation)
 		}
@@ -582,6 +590,9 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 		})
 		if audit != nil {
 			task.Trace = append(task.Trace, *audit)
+		}
+		if relevanceAudit != nil {
+			task.Trace = append(task.Trace, *relevanceAudit)
 		}
 
 		if ev != nil && !failed {

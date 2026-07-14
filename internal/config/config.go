@@ -218,6 +218,7 @@ const (
 	LLMSceneFailureDiagnoser        = "failure_diagnoser"
 	LLMScenePlanCritic              = "plan_critic"
 	LLMScenePromptInjectionDetector = "prompt_injection_detector"
+	LLMSceneEvidenceRelevanceFilter = "evidence_relevance_filter"
 	LLMSceneContextCompressor       = "context_compressor"
 	LLMSceneAnswerVerifier          = "answer_verifier"
 	LLMSceneMemorySummarizer        = "memory_summarizer"

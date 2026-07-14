@@ -17,6 +17,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/api"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
+	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 	"github.com/wuxujun/ai-agent/internal/executor"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
@@ -221,6 +222,7 @@ func main() {
 	eng.FailureDiagnoser = diagnostics.NewLLMDiagnoser(config.LLMSceneFailureDiagnoser)
 	eng.PlanCritic = plancritic.NewLLMCritic(config.LLMScenePlanCritic)
 	eng.PromptInjectionDetector = promptguard.NewLLMDetector(config.LLMScenePromptInjectionDetector)
+	eng.EvidenceRelevanceFilter = evidencefilter.NewLLMFilter(config.LLMSceneEvidenceRelevanceFilter)
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner
