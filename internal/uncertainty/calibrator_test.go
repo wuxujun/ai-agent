@@ -7,6 +7,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
+	"github.com/wuxujun/ai-agent/internal/factfreshness"
 	"github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/sourcecredibility"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -80,6 +81,17 @@ func TestShouldCalibrateRequiresEvidenceAndRunsOnce(t *testing.T) {
 	}
 	if ShouldCalibrate(&types.Task{FinalAnswer: "answer"}) || ShouldCalibrate(&types.Task{Trace: []types.StepTrace{{Action: "web_search"}}}) {
 		t.Fatal("answer and evidence are both required")
+	}
+}
+
+func TestShouldCalibrateAcceptsFreshnessAudit(t *testing.T) {
+	task := &types.Task{FinalAnswer: "answer", Trace: []types.StepTrace{{Action: factfreshness.TraceAction, Observation: "time_sensitive=true freshness=unknown"}}}
+	if !ShouldCalibrate(task) {
+		t.Fatal("freshness audit should be available to uncertainty calibration")
+	}
+	items := evidenceCatalog(task)
+	if len(items) != 1 || items[0].Action != factfreshness.TraceAction {
+		t.Fatalf("items=%+v", items)
 	}
 }
 

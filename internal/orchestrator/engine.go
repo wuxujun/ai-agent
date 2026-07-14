@@ -15,6 +15,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
+	"github.com/wuxujun/ai-agent/internal/factfreshness"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/memory"
@@ -54,6 +55,7 @@ type Engine struct {
 	EvidenceRelevanceFilter     evidencefilter.Filter
 	EvidenceConflictResolver    evidenceconflict.Resolver
 	SourceCredibilityScorer     sourcecredibility.Scorer
+	FactFreshnessChecker        factfreshness.Checker
 	AnswerUncertaintyCalibrator uncertainty.Calibrator
 	Executor                    executor.Executor
 	Metrics                     *metrics.Collector
@@ -406,6 +408,20 @@ func (e *Engine) calibrateAnswerUncertainty(ctx context.Context, task *types.Tas
 	}
 }
 
+func (e *Engine) checkFactFreshness(ctx context.Context, task *types.Task) {
+	if e.FactFreshnessChecker == nil || !e.llmSceneEnabled(config.LLMSceneFactFreshnessChecker) || !factfreshness.ShouldCheck(task) || !llmcore.AllowedForTask(config.LLMSceneFactFreshnessChecker, task) {
+		return
+	}
+	result, usage, err := e.FactFreshnessChecker.Check(ctx, task, task.FinalAnswer)
+	factfreshness.Apply(task, result, usage, err)
+	if err != nil {
+		engineLog.Warn("fact freshness checker failed; no risk marker added", "task_id", task.ID, "error", err)
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "fact_freshness_checker")
+	}
+}
+
 func (e *Engine) safetySceneAvailable(task *types.Task) bool {
 	return e.SafetyGuard != nil && e.llmSceneEnabled(config.LLMSceneSafetyGuard) && llmcore.AllowedForTask(config.LLMSceneSafetyGuard, task)
 }
@@ -676,6 +692,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	if err == nil && !wasCompleted && task.Status == types.StatusCompleted && strings.TrimSpace(task.FinalAnswer) != "" {
 		e.verifyCitations(ctx, task)
 		e.runCodeQualityGates(ctx, task)
+		e.checkFactFreshness(ctx, task)
 		e.calibrateAnswerUncertainty(ctx, task)
 		e.guardOutput(ctx, task)
 	}

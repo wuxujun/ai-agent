@@ -20,6 +20,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
 	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 	"github.com/wuxujun/ai-agent/internal/executor"
+	"github.com/wuxujun/ai-agent/internal/factfreshness"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
@@ -228,6 +229,7 @@ func main() {
 	eng.EvidenceRelevanceFilter = evidencefilter.NewLLMFilter(config.LLMSceneEvidenceRelevanceFilter)
 	eng.EvidenceConflictResolver = evidenceconflict.NewLLMResolver(config.LLMSceneEvidenceConflictResolver)
 	eng.SourceCredibilityScorer = sourcecredibility.NewLLMScorer(config.LLMSceneSourceCredibilityScorer)
+	eng.FactFreshnessChecker = factfreshness.NewLLMChecker(config.LLMSceneFactFreshnessChecker)
 	eng.AnswerUncertaintyCalibrator = uncertainty.NewLLMCalibrator(config.LLMSceneAnswerUncertaintyCalibrator)
 
 	// Inject a Coordinator when running in multi-agent mode.

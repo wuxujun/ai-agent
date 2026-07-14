@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
+	"github.com/wuxujun/ai-agent/internal/factfreshness"
 	"github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
@@ -79,7 +80,7 @@ func ShouldCalibrate(task *types.Task) bool {
 		return false
 	}
 	for _, trace := range task.Trace {
-		if promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == "citation_verify" {
+		if promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == factfreshness.TraceAction || trace.Action == "citation_verify" {
 			return true
 		}
 	}
@@ -158,7 +159,7 @@ func evidenceCatalog(task *types.Task) []evidenceItem {
 		if trace.Action == TraceAction {
 			continue
 		}
-		if strings.TrimSpace(trace.Observation) != "" && (promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == "citation_verify") {
+		if strings.TrimSpace(trace.Observation) != "" && (promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == factfreshness.TraceAction || trace.Action == "citation_verify") {
 			items = append(items, evidenceItem{Action: trace.Action, Source: trace.Query, Content: truncate(sanitize.Secrets(trace.Observation), 1200)})
 		}
 		for _, evidence := range trace.Evidence {

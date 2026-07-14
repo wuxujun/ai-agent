@@ -221,6 +221,7 @@ const (
 	LLMSceneEvidenceRelevanceFilter     = "evidence_relevance_filter"
 	LLMSceneEvidenceConflictResolver    = "evidence_conflict_resolver"
 	LLMSceneSourceCredibilityScorer     = "source_credibility_scorer"
+	LLMSceneFactFreshnessChecker        = "fact_freshness_checker"
 	LLMSceneAnswerUncertaintyCalibrator = "answer_uncertainty_calibrator"
 	LLMSceneContextCompressor           = "context_compressor"
 	LLMSceneAnswerVerifier              = "answer_verifier"
