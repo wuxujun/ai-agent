@@ -310,14 +310,23 @@ func probeSceneInference(ctx context.Context, scene string, resolved config.Reso
 		"required":             []string{"ok"},
 		"additionalProperties": false,
 	}
-	_, err := (nativeStructuredCaller{}).CallJSON(ctx, Config{
+	cfg := Config{
 		Scene:    scene,
 		Provider: resolved.Provider,
 		APIKey:   resolved.APIKey,
 		Model:    resolved.Model,
 		BaseURL:  resolved.BaseURL,
 		Timeout:  time.Duration(resolved.TimeoutSeconds) * time.Second,
-	}, "This is a readiness probe. Return JSON only.", `Return {"ok":true}.`, schema, &output)
+	}
+	var err error
+	if scene == config.LLMSceneVisionAnalyzer {
+		// A valid 1x1 GIF keeps the probe small while verifying the configured
+		// model, rather than only the provider protocol, accepts image input.
+		image := VisionInput{MIMEType: "image/gif", Data: []byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;")}
+		_, err = (nativeStructuredCaller{}).CallVisionJSON(ctx, cfg, "This is a readiness probe. Return JSON only.", `Return {"ok":true}.`, image, schema, &output)
+	} else {
+		_, err = (nativeStructuredCaller{}).CallJSON(ctx, cfg, "This is a readiness probe. Return JSON only.", `Return {"ok":true}.`, schema, &output)
+	}
 	if err != nil {
 		return safeInferenceProbeError(err)
 	}

@@ -412,6 +412,10 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 			if ev != nil {
 				trEvidence = ev.Evidence
 			}
+			var tokenUsage types.TokenUsage
+			if ev != nil {
+				tokenUsage = ev.TokenUsage
+			}
 
 			tr := types.StepTrace{
 				Step:        baseStep + idx,
@@ -420,6 +424,7 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 				Query:       buildStepQuery(s),
 				Observation: obs,
 				Evidence:    trEvidence,
+				TokenUsage:  tokenUsage,
 				AgentRole:   RoleResearcher,
 			}
 
@@ -511,6 +516,10 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 		if ev != nil {
 			trEvidence = ev.Evidence
 		}
+		var tokenUsage types.TokenUsage
+		if ev != nil {
+			tokenUsage = ev.TokenUsage
+		}
 
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount,
@@ -519,6 +528,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 			Query:       buildStepQuery(step),
 			Observation: obs,
 			Evidence:    trEvidence,
+			TokenUsage:  tokenUsage,
 			AgentRole:   RoleResearcher,
 		})
 
@@ -678,6 +688,8 @@ func buildStepQuery(step ResearchStep) string {
 		return fmt.Sprintf("url=%q", step.URL)
 	case "web_search":
 		return fmt.Sprintf("query=%q", step.SearchQuery)
+	case "analyze_image":
+		return fmt.Sprintf("path=%q prompt=%q", step.FilePath, step.Prompt)
 	default:
 		return fmt.Sprintf("action=%q", step.Action)
 	}
@@ -699,6 +711,9 @@ func paramsToStep(params map[string]any, step *ResearchStep) {
 	}
 	if path, ok := params["path"].(string); ok {
 		step.FilePath = path
+	}
+	if prompt, ok := params["prompt"].(string); ok {
+		step.Prompt = prompt
 	}
 	if content, ok := params["content"].(string); ok {
 		step.Content = content

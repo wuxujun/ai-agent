@@ -80,6 +80,7 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 			tr.Query = res.Query
 			tr.Observation = res.Observation
 			tr.Evidence = res.Evidence
+			tr.TokenUsage = res.TokenUsage
 			traces[idx] = tr
 		}(i, ac)
 	}

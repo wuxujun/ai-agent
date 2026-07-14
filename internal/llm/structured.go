@@ -36,6 +36,15 @@ type StructuredCaller interface {
 	CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error)
 }
 
+type VisionInput struct {
+	MIMEType string
+	Data     []byte
+}
+
+type VisionStructuredCaller interface {
+	CallVisionJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, image VisionInput, schema map[string]any, dest any) (types.TokenUsage, error)
+}
+
 type CallEvent struct {
 	Scene, Provider, Model string
 	Usage                  types.TokenUsage
@@ -205,6 +214,10 @@ func CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, 
 	return RuntimeFromContext(ctx).CallJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
 }
 
+func CallVisionJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, image VisionInput, schema map[string]any, dest any) (types.TokenUsage, error) {
+	return RuntimeFromContext(ctx).CallVisionJSON(ctx, cfg, systemPrompt, userPrompt, image, schema, dest)
+}
+
 func Observe(event CallEvent) {
 	defaultRuntime.Observe(event)
 }
@@ -257,10 +270,29 @@ func (r *Runtime) CallJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 			attribute.String("llm.scene", cfg.Scene),
 		))
 	}
-	return r.callJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest, map[string]bool{})
+	return r.callStructured(ctx, cfg, map[string]bool{}, func(callCtx context.Context, caller StructuredCaller, active Config) (types.TokenUsage, error) {
+		return caller.CallJSON(callCtx, active, systemPrompt, userPrompt, schema, dest)
+	})
 }
 
-func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any, visited map[string]bool) (types.TokenUsage, error) {
+func (r *Runtime) CallVisionJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, image VisionInput, schema map[string]any, dest any) (types.TokenUsage, error) {
+	logicalScene := cfg.Scene
+	cfg = ResolveRoutedConfig(ctx, cfg)
+	if logicalScene != cfg.Scene {
+		trace.SpanFromContext(ctx).AddEvent("llm.route.selected", trace.WithAttributes(attribute.String("llm.logical_scene", logicalScene), attribute.String("llm.scene", cfg.Scene)))
+	}
+	return r.callStructured(ctx, cfg, map[string]bool{}, func(callCtx context.Context, caller StructuredCaller, active Config) (types.TokenUsage, error) {
+		visionCaller, ok := caller.(VisionStructuredCaller)
+		if !ok {
+			return types.TokenUsage{}, fmt.Errorf("structured LLM caller does not support vision input")
+		}
+		return visionCaller.CallVisionJSON(callCtx, active, systemPrompt, userPrompt, image, schema, dest)
+	})
+}
+
+type structuredInvocation func(context.Context, StructuredCaller, Config) (types.TokenUsage, error)
+
+func (r *Runtime) callStructured(ctx context.Context, cfg Config, visited map[string]bool, invoke structuredInvocation) (types.TokenUsage, error) {
 	started := time.Now()
 	ctx, span := otel.Tracer("ai-agent/llm").Start(ctx, "llm.structured_call")
 	defer span.End()
@@ -294,7 +326,7 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 			break
 		}
 		var attemptUsage types.TokenUsage
-		attemptUsage, err = active.CallJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
+		attemptUsage, err = invoke(ctx, active, cfg)
 		if r.recordAttempt(cfg, err) {
 			r.ObserveReliability(ctx, reliabilityEvent(ReliabilityCircuitOpened, cfg, ""))
 		}
@@ -331,7 +363,7 @@ func (r *Runtime) callJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 			visited[cfg.Scene] = true
 			visited[cfg.FallbackScene] = true
 			span.SetAttributes(attribute.Bool("llm.fallback.triggered", true), attribute.String("llm.fallback.scene", cfg.FallbackScene))
-			fallbackUsage, fallbackErr := r.callJSON(ctx, ConfigForScene(cfg.FallbackScene), systemPrompt, userPrompt, schema, dest, visited)
+			fallbackUsage, fallbackErr := r.callStructured(ctx, ConfigForScene(cfg.FallbackScene), visited, invoke)
 			usage.PromptTokens += fallbackUsage.PromptTokens
 			usage.CompletionTokens += fallbackUsage.CompletionTokens
 			usage.TotalTokens += fallbackUsage.TotalTokens

@@ -13,6 +13,7 @@ type ToolResult struct {
 	Query       string
 	Observation string
 	Evidence    []types.Evidence
+	TokenUsage  types.TokenUsage
 }
 
 type Tool interface {

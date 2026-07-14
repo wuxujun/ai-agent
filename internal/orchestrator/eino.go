@@ -283,7 +283,9 @@ func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*ei
 	// task.Trace entries always carry zero TokenUsage and the gate is dead.
 	for i := range traces {
 		if i == 0 {
-			traces[i].TokenUsage = decision.TokenUsage
+			traces[i].TokenUsage.PromptTokens += decision.TokenUsage.PromptTokens
+			traces[i].TokenUsage.CompletionTokens += decision.TokenUsage.CompletionTokens
+			traces[i].TokenUsage.TotalTokens += decision.TokenUsage.TotalTokens
 		}
 	}
 	task.Trace = append(task.Trace, traces...)

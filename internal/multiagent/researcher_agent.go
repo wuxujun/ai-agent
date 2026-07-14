@@ -59,6 +59,7 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 	}
 	ev.Observation = result.Observation
 	ev.Evidence = result.Evidence
+	ev.TokenUsage = result.TokenUsage
 
 	log.Info("Research step done", "step_id", step.ID, "observation", ev.Observation, "evidence_count", len(ev.Evidence))
 	return ev, nil
@@ -84,5 +85,6 @@ func stepToParams(step ResearchStep) map[string]interface{} {
 		"command": step.Command,     // execute_code
 		"args":    step.Args,        // execute_code
 		"url":     step.URL,         // http_fetch
+		"prompt":  step.Prompt,      // analyze_image
 	}
 }

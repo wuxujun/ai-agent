@@ -470,6 +470,33 @@ func TestValidateUsesProviderCapabilities(t *testing.T) {
 	}
 }
 
+func TestValidateVisionSceneRequiresVisionCapability(t *testing.T) {
+	const providerName = "test-structured-without-vision"
+	if _, exists := llmprovider.Lookup(providerName); !exists {
+		if err := llmprovider.Register(llmprovider.Specification{Name: providerName, DefaultModel: "text", Protocol: llmprovider.ProtocolOpenAIChat, Capabilities: llmprovider.CapabilityStructuredOutput}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &Config{}
+	cfg.LLM.Provider = llmprovider.OpenAI
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.LLM.Scenes = map[string]LLMEndpointConfig{LLMSceneVisionAnalyzer: {Provider: providerName, Model: "text"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "does not support vision input") {
+		t.Fatalf("expected vision capability error, got %v", err)
+	}
+	cfg.LLM.Scenes[LLMSceneVisionAnalyzer] = LLMEndpointConfig{Provider: llmprovider.OpenAI, Model: "vision"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("vision-capable provider rejected: %v", err)
+	}
+	cfg.LLM.Scenes = map[string]LLMEndpointConfig{
+		LLMSceneVisionAnalyzer: {Provider: llmprovider.OpenAI, Model: "vision", Routes: []LLMRouteRule{{TargetScene: "vision-economy", MinStepCount: testPtr(1)}}},
+		"vision-economy":       {Provider: providerName, Model: "text"},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "does not support vision input") {
+		t.Fatalf("expected routed vision capability error, got %v", err)
+	}
+}
+
 func TestValidateRejectsNegativeLLMResilienceValues(t *testing.T) {
 	cfg := &Config{}
 	cfg.LLM.Provider = "openai"

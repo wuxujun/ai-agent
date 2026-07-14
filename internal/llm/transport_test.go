@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
@@ -10,6 +12,28 @@ func TestExtractStructuredResponses(t *testing.T) {
 	text, usage, err := extractStructuredResponse("responses", []byte(`{"output":[{"content":[{"text":"{\"answer\":\"ok\"}"}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`))
 	if err != nil || text != `{"answer":"ok"}` || usage.TotalTokens != 15 {
 		t.Fatalf("text=%q usage=%+v err=%v", text, usage, err)
+	}
+}
+
+func TestVisionStructuredRequestUsesProtocolSpecificImageShape(t *testing.T) {
+	image := VisionInput{MIMEType: "image/png", Data: []byte("png")}
+	tests := []struct{ provider, kind, contains string }{
+		{llmprovider.OpenAIResponses, "responses", `"type":"input_image"`},
+		{llmprovider.OpenAI, "chat", `"type":"image_url"`},
+		{llmprovider.LiteLLM, "chat", `"type":"image_url"`},
+		{llmprovider.Ollama, "ollama", `"images":["cG5n"]`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.provider, func(t *testing.T) {
+			body, kind, err := visionStructuredRequest(Config{Provider: tc.provider, Model: "vision"}, "system", "user", image, map[string]any{"type": "object"})
+			if err != nil || kind != tc.kind {
+				t.Fatalf("kind=%q body=%+v err=%v", kind, body, err)
+			}
+			raw, err := json.Marshal(body)
+			if err != nil || !strings.Contains(string(raw), tc.contains) {
+				t.Fatalf("request=%s contains=%q err=%v", raw, tc.contains, err)
+			}
+		})
 	}
 }
 

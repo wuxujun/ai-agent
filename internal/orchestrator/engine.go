@@ -555,7 +555,9 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	task.ToolBudget -= len(traces)
 	for i := range traces {
 		if i == 0 {
-			traces[i].TokenUsage = decision.TokenUsage
+			traces[i].TokenUsage.PromptTokens += decision.TokenUsage.PromptTokens
+			traces[i].TokenUsage.CompletionTokens += decision.TokenUsage.CompletionTokens
+			traces[i].TokenUsage.TotalTokens += decision.TokenUsage.TotalTokens
 		}
 	}
 	task.Trace = append(task.Trace, traces...)

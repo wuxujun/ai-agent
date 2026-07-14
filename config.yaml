@@ -177,6 +177,10 @@ llm:
   #     model: "agent-fast"
   #   memory_conflict_resolver:
   #     model: "agent-verifier"
+  #   vision_analyzer:
+  #     # The selected model must accept image input. LiteLLM can route this
+  #     # alias to any OpenAI-compatible multimodal backend.
+  #     model: "agent-vision"
   #   context_compressor:
   #     model: "agent-fast"
   #   answer_verifier:

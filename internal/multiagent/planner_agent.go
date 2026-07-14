@@ -26,6 +26,7 @@ Available actions:
   git_diff     – show git diff of the workspace   (optionally set file_path for a single file)
   http_fetch   – fetch content from a public URL  (set url; private/loopback addresses are blocked)
   web_search   – search the web for keywords      (set search_query)
+  analyze_image – analyze a workspace image       (set file_path and prompt)
 
 Rules:
 1. Produce between 2 and 8 steps — prefer fewer, higher-quality steps.
@@ -58,8 +59,9 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 			"command":      map[string]any{"type": "string", "description": "Command/Interpreter to run (execute_code only)"},
 			"args":         map[string]any{"type": "string", "description": "Space-separated arguments (execute_code only)"},
 			"url":          map[string]any{"type": "string", "description": "Absolute http/https URL to fetch (http_fetch only)"},
+			"prompt":       map[string]any{"type": "string", "description": "Question or analysis instruction (analyze_image only)"},
 		},
-		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url"},
+		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt"},
 		"additionalProperties": false,
 	}
 
@@ -148,6 +150,7 @@ Available actions:
   git_diff     – show git diff of the workspace   (optionally set file_path for a single file)
   http_fetch   – fetch content from a public URL  (set url; private/loopback addresses are blocked)
   web_search   – search the web for keywords      (set search_query)
+  analyze_image – analyze a workspace image       (set file_path and prompt)
 
 Rules:
 1. Analyze the trace and explain why you think it failed in thought_summary.

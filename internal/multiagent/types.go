@@ -35,6 +35,7 @@ type ResearchStep struct {
 	Command     string `json:"command"`      // used by execute_code
 	Args        string `json:"args"`         // used by execute_code
 	URL         string `json:"url"`          // used by http_fetch
+	Prompt      string `json:"prompt"`       // used by analyze_image
 	// RepairedParameters is populated after plan-time argument repair. It is
 	// intentionally excluded from LLM JSON and is shared by approval and execution.
 	RepairedParameters map[string]any `json:"-"`
@@ -54,6 +55,7 @@ type StepEvidence struct {
 	Action      string           `json:"action"`
 	Observation string           `json:"observation"`
 	Evidence    []types.Evidence `json:"evidence,omitempty"`
+	TokenUsage  types.TokenUsage `json:"token_usage,omitempty"`
 	// Failed is set to true by ResearcherAgent when the step could not be
 	// completed (tool error or policy violation). Coordinator uses this flag
 	// instead of parsing Observation strings, avoiding false positives when

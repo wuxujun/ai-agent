@@ -55,6 +55,35 @@ func (r *routingCaller) CallJSON(_ context.Context, cfg Config, _, _ string, _ m
 	return types.TokenUsage{}, nil
 }
 
+type visionCaller struct{ image VisionInput }
+
+func (v *visionCaller) CallJSON(context.Context, Config, string, string, map[string]any, any) (types.TokenUsage, error) {
+	return types.TokenUsage{}, nil
+}
+
+func (v *visionCaller) CallVisionJSON(_ context.Context, _ Config, _, _ string, image VisionInput, _ map[string]any, dest any) (types.TokenUsage, error) {
+	v.image = image
+	dest.(*struct {
+		OK bool `json:"ok"`
+	}).OK = true
+	return types.TokenUsage{PromptTokens: 4, CompletionTokens: 2, TotalTokens: 6}, nil
+}
+
+func TestRuntimeCallVisionJSON(t *testing.T) {
+	caller := &visionCaller{}
+	runtime := NewRuntime(caller, nil)
+	var output struct {
+		OK bool `json:"ok"`
+	}
+	usage, err := runtime.CallVisionJSON(context.Background(), Config{Scene: "vision", Provider: "openai", Model: "vision"}, "system", "user", VisionInput{MIMEType: "image/png", Data: []byte("data")}, nil, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !output.OK || usage.TotalTokens != 6 || caller.image.MIMEType != "image/png" {
+		t.Fatalf("output=%+v usage=%+v image=%+v", output, usage, caller.image)
+	}
+}
+
 func TestCallJSONRoutesByTaskBudgetAndStep(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.LLM.Provider = "openai-responses"

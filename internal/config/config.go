@@ -212,6 +212,7 @@ const (
 	LLMSceneToolArgumentRepair     = "tool_argument_repair"
 	LLMSceneIntentRouter           = "intent_router"
 	LLMSceneMemoryConflictResolver = "memory_conflict_resolver"
+	LLMSceneVisionAnalyzer         = "vision_analyzer"
 	LLMSceneContextCompressor      = "context_compressor"
 	LLMSceneAnswerVerifier         = "answer_verifier"
 	LLMSceneMemorySummarizer       = "memory_summarizer"
@@ -955,6 +956,27 @@ func (c *Config) Validate() error {
 	if err := validatePolicy("llm.gateway", c.LLM.Gateway); err != nil {
 		return err
 	}
+	visionScenes := map[string]bool{}
+	var markVisionScene func(string)
+	markVisionScene = func(scene string) {
+		if visionScenes[scene] {
+			return
+		}
+		visionScenes[scene] = true
+		endpoint, ok := c.LLM.Scenes[scene]
+		if !ok {
+			return
+		}
+		if fallback := c.ResolveLLMScene(scene).FallbackScene; fallback != "" {
+			markVisionScene(fallback)
+		}
+		for _, route := range endpoint.Routes {
+			markVisionScene(route.TargetScene)
+		}
+	}
+	if _, configured := c.LLM.Scenes[LLMSceneVisionAnalyzer]; configured {
+		markVisionScene(LLMSceneVisionAnalyzer)
+	}
 	check := func(scene string) error {
 		resolved := c.ResolveLLMScene(scene)
 		spec, registered := llmprovider.Lookup(resolved.Provider)
@@ -969,6 +991,9 @@ func (c *Config) Validate() error {
 		}
 		if !spec.Supports(requiredCapability) {
 			return fmt.Errorf("llm scene %q provider %q does not support %s", scene, resolved.Provider, capabilityName)
+		}
+		if visionScenes[scene] && !spec.Supports(llmprovider.CapabilityVision) {
+			return fmt.Errorf("llm scene %q provider %q does not support vision input", scene, resolved.Provider)
 		}
 		if strings.TrimSpace(resolved.Model) == "" {
 			return fmt.Errorf("llm scene %q has empty model", scene)

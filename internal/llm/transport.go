@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +45,44 @@ func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPr
 	if err != nil {
 		return types.TokenUsage{}, err
 	}
+	return callStructuredHTTP(ctx, cfg, body, responseKind, dest)
+}
+
+func (nativeStructuredCaller) CallVisionJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, image VisionInput, schema map[string]any, dest any) (types.TokenUsage, error) {
+	spec, ok := llmprovider.Lookup(cfg.Provider)
+	if !ok {
+		return types.TokenUsage{}, fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+	if !spec.Supports(llmprovider.CapabilityStructuredOutput) || !spec.Supports(llmprovider.CapabilityVision) {
+		return types.TokenUsage{}, fmt.Errorf("provider %s does not support structured vision input", cfg.Provider)
+	}
+	if image.MIMEType == "" || len(image.Data) == 0 {
+		return types.TokenUsage{}, fmt.Errorf("vision input requires MIME type and image data")
+	}
+	if spec.Protocol == llmprovider.ProtocolGemini {
+		client, err := GetGeminiClient(cfg.APIKey, cfg.BaseURL)
+		if err != nil {
+			return types.TokenUsage{}, err
+		}
+		parts := []*genai.Part{genai.NewPartFromBytes(image.Data, image.MIMEType), genai.NewPartFromText(userPrompt)}
+		resp, err := client.Models.GenerateContent(ctx, cfg.Model, []*genai.Content{{Role: "user", Parts: parts}}, &genai.GenerateContentConfig{SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: systemPrompt}}}, ResponseMIMEType: "application/json"})
+		if err != nil {
+			return types.TokenUsage{}, err
+		}
+		var usage types.TokenUsage
+		if resp.UsageMetadata != nil {
+			usage = types.TokenUsage{PromptTokens: int(resp.UsageMetadata.PromptTokenCount), CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount), TotalTokens: int(resp.UsageMetadata.TotalTokenCount)}
+		}
+		return usage, parseStructuredJSON(resp.Text(), dest)
+	}
+	body, responseKind, err := visionStructuredRequest(cfg, systemPrompt, userPrompt, image, schema)
+	if err != nil {
+		return types.TokenUsage{}, err
+	}
+	return callStructuredHTTP(ctx, cfg, body, responseKind, dest)
+}
+
+func callStructuredHTTP(ctx context.Context, cfg Config, body map[string]any, responseKind string, dest any) (types.TokenUsage, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return types.TokenUsage{}, err
@@ -76,6 +115,26 @@ func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPr
 		return usage, err
 	}
 	return usage, parseStructuredJSON(text, dest)
+}
+
+func visionStructuredRequest(cfg Config, systemPrompt, userPrompt string, image VisionInput, schema map[string]any) (map[string]any, string, error) {
+	spec, ok := llmprovider.Lookup(cfg.Provider)
+	if !ok {
+		return nil, "", fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+	encoded := base64.StdEncoding.EncodeToString(image.Data)
+	dataURL := "data:" + image.MIMEType + ";base64," + encoded
+	switch spec.Protocol {
+	case llmprovider.ProtocolOpenAIResponses:
+		return map[string]any{"model": cfg.Model, "input": []map[string]any{{"role": "system", "content": []map[string]any{{"type": "input_text", "text": systemPrompt}}}, {"role": "user", "content": []map[string]any{{"type": "input_text", "text": userPrompt}, {"type": "input_image", "image_url": dataURL}}}}, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "response", "strict": true, "schema": schema}}}, "responses", nil
+	case llmprovider.ProtocolOpenAIChat:
+		content := []map[string]any{{"type": "text", "text": userPrompt}, {"type": "image_url", "image_url": map[string]any{"url": dataURL}}}
+		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": content}}, "response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "response", "strict": true, "schema": schema}}}, "chat", nil
+	case llmprovider.ProtocolOllama:
+		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt, "images": []string{encoded}}}, "stream": false, "format": schema}, "ollama", nil
+	default:
+		return nil, "", fmt.Errorf("provider %s protocol %s is not supported by HTTP vision transport", cfg.Provider, spec.Protocol)
+	}
 }
 
 func structuredRequest(cfg Config, systemPrompt, userPrompt string, schema map[string]any) (map[string]any, string, error) {
