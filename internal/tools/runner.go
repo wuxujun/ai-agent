@@ -30,6 +30,7 @@ func RunCommand(ctx context.Context, dir string, name string, args ...string) (s
 
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	configureCommandCancellation(cmd)
 
 	var out bytes.Buffer
 	var stderr bytes.Buffer
