@@ -101,7 +101,11 @@ type Config struct {
 	} `mapstructure:"search"`
 
 	Log struct {
-		Level string `mapstructure:"level"`
+		Level         string `mapstructure:"level"`
+		Console       bool   `mapstructure:"console"`
+		FileEnabled   bool   `mapstructure:"file_enabled"`
+		Directory     string `mapstructure:"directory"`
+		RetentionDays int    `mapstructure:"retention_days"`
 	} `mapstructure:"log"`
 
 	Telemetry struct {
@@ -301,6 +305,10 @@ func setupViper() {
 	// context_compression_token_threshold: 0 = disabled by default
 	viper.SetDefault("llm.context_compression_token_threshold", 0)
 	viper.SetDefault("log.level", "info")
+	viper.SetDefault("log.console", true)
+	viper.SetDefault("log.file_enabled", true)
+	viper.SetDefault("log.directory", "logs")
+	viper.SetDefault("log.retention_days", 30)
 	viper.SetDefault("telemetry.enabled", true)
 	viper.SetDefault("telemetry.endpoint", "127.0.0.1:4318")
 	viper.SetDefault("telemetry.environment", "dev")
@@ -664,6 +672,14 @@ func diffConfigs(old, new *Config) []string {
 	// Tool / Log / Skill / Telemetry
 	addIfInt("tool.timeout_seconds", old.Tool.TimeoutSeconds, new.Tool.TimeoutSeconds)
 	addIf("log.level", old.Log.Level, new.Log.Level)
+	if old.Log.Console != new.Log.Console {
+		changes = append(changes, fmt.Sprintf("log.console: %t → %t", old.Log.Console, new.Log.Console))
+	}
+	if old.Log.FileEnabled != new.Log.FileEnabled {
+		changes = append(changes, fmt.Sprintf("log.file_enabled: %t → %t", old.Log.FileEnabled, new.Log.FileEnabled))
+	}
+	addIf("log.directory", old.Log.Directory, new.Log.Directory)
+	addIfInt("log.retention_days", old.Log.RetentionDays, new.Log.RetentionDays)
 	addIf("skill.root", old.Skill.Root, new.Skill.Root)
 	if old.Telemetry.Enabled != new.Telemetry.Enabled {
 		changes = append(changes, fmt.Sprintf("telemetry.enabled: %t → %t", old.Telemetry.Enabled, new.Telemetry.Enabled))
@@ -909,6 +925,23 @@ func routeStringMatches(allowed []string, actual string) bool {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.Log.Level)) {
+	case "", "debug", "info", "warn", "warning", "error":
+	default:
+		return fmt.Errorf("log.level must be one of debug, info, warn, or error")
+	}
+	// A completely zero-valued Log section is accepted for callers that build
+	// Config directly; configs loaded through Viper always receive defaults.
+	logConfigured := c.Log.Level != "" || c.Log.Directory != "" || c.Log.RetentionDays != 0
+	if logConfigured && !c.Log.Console && !c.Log.FileEnabled {
+		return fmt.Errorf("at least one of log.console or log.file_enabled must be enabled")
+	}
+	if c.Log.FileEnabled && strings.TrimSpace(c.Log.Directory) == "" {
+		return fmt.Errorf("log.directory must not be empty when file logging is enabled")
+	}
+	if c.Log.RetentionDays < 0 {
+		return fmt.Errorf("log.retention_days must be >= 0")
+	}
 	seenTenantKeys := make(map[string]string, len(c.API.Tenants))
 	for tenantID, tenant := range c.API.Tenants {
 		if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(tenant.APIKey) == "" {

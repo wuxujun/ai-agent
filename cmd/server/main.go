@@ -55,8 +55,14 @@ func main() {
 
 	cfg := config.Get()
 
-	// Sync log level from config into the structured logger.
-	logger.Reinit(cfg.Log.Level)
+	if err := configureLogger(cfg); err != nil {
+		log.Fatalf("failed to initialize file logging: %v", err)
+	}
+	defer func() {
+		if err := logger.Close(); err != nil {
+			log.Printf("failed to close log files: %v", err)
+		}
+	}()
 
 	shutdown := telemetry.NoopShutdown
 	if cfg.Telemetry.Enabled {
@@ -380,7 +386,9 @@ waitLoop:
 				slog.Error("config reload failed", "error", err)
 			} else {
 				slog.Info("config reloaded", "changes", len(changes))
-				logger.Reinit(config.Get().Log.Level)
+				if err := configureLogger(config.Get()); err != nil {
+					slog.Error("logging reconfiguration failed; keeping previous outputs", "error", err)
+				}
 			}
 		default:
 			// SIGINT / SIGTERM — begin graceful shutdown.
@@ -403,4 +411,14 @@ waitLoop:
 		slog.Error("background task shutdown timed out", "error", err)
 	}
 	slog.Info("shutdown complete")
+}
+
+func configureLogger(cfg *config.Config) error {
+	return logger.Configure(logger.Options{
+		Level:         cfg.Log.Level,
+		Console:       cfg.Log.Console,
+		FileEnabled:   cfg.Log.FileEnabled,
+		Directory:     cfg.Log.Directory,
+		RetentionDays: cfg.Log.RetentionDays,
+	})
 }

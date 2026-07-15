@@ -259,6 +259,23 @@ log:
   # Env override: AI_AGENT_LOG_LEVEL
   level: "info"
 
+  # Keep writing JSON logs to stdout.
+  # Env override: AI_AGENT_LOG_CONSOLE
+  console: true
+
+  # Write each level to its own daily-rotated file, for example
+  # logs/info-2026-07-15.log and logs/error-2026-07-15.log.
+  # Env override: AI_AGENT_LOG_FILE_ENABLED
+  file_enabled: true
+
+  # Directory for rotated log files.
+  # Env override: AI_AGENT_LOG_DIRECTORY
+  directory: "logs"
+
+  # Delete rotated files older than this many days. 0 keeps them forever.
+  # Env override: AI_AGENT_LOG_RETENTION_DAYS
+  retention_days: 30
+
 # OpenTelemetry configuration
 telemetry:
   # Enable OTLP traces and metrics export. If false, instrumentation stays no-op.

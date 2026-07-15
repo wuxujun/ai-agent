@@ -61,6 +61,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Telemetry.Exporter != "otlp" {
 		t.Errorf("expected telemetry.exporter default to be otlp, got %q", cfg.Telemetry.Exporter)
 	}
+	if !cfg.Log.Console || !cfg.Log.FileEnabled || cfg.Log.Directory != "logs" || cfg.Log.RetentionDays != 30 {
+		t.Errorf("unexpected log defaults: %+v", cfg.Log)
+	}
 }
 
 func TestConfigEnvOverrides(t *testing.T) {

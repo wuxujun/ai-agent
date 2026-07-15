@@ -1,86 +1,353 @@
-// Package logger provides a structured, leveled logger for ai-agent built on
-// top of the standard library's log/slog package.
-//
-// # Design goals
-//
-//  1. Every log line is JSON, machine-parseable, and filterable by task_id,
-//     component, level, and trace_id without grep hacks.
-//  2. Task-scoped loggers are cheap: TaskLogger / FromCtx add pre-bound
-//     key-value pairs once and re-use the same *slog.Logger for all calls.
-//  3. Hot-reload friendly: Reinit replaces the global handler atomically when
-//     the log level changes at runtime (no restart required).
-//
-// # Usage
-//
-//	// Package-level component logger (create once per package)
-//	var log = logger.Component("orchestrator")
-//
-//	// Task-scoped logger (create once per task invocation)
-//	tlog := logger.FromCtx(ctx, task.ID)
-//	tlog.Info("step started", "step", n, "budget", task.ToolBudget)
-//	// → {"time":"…","level":"INFO","msg":"step started","component":"orchestrator","task_id":"abc","step":1,"budget":5}
-//
-// # JSON field conventions
-//
-//	time       – RFC 3339 nano timestamp (slog default)
-//	level      – DEBUG / INFO / WARN / ERROR
-//	msg        – human-readable message (no interpolated IDs)
-//	component  – subsystem name ("orchestrator", "planner", "store", …)
-//	task_id    – task identifier; present whenever a task is in scope
-//	error      – error string (error-level logs)
+// Package logger provides structured JSON logging to the console and to
+// level-specific, daily-rotated files.
 package logger
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
-	"unsafe"
+	"time"
 )
 
-// ctxKey is the unexported key type for storing a *slog.Logger in a context.
 type ctxKey struct{}
 
-// ── Global logger ────────────────────────────────────────────────────────────
+// Options controls console and file logging. RetentionDays is based on the
+// date in the rotated filename; zero keeps files indefinitely.
+type Options struct {
+	Level         string
+	Console       bool
+	FileEnabled   bool
+	Directory     string
+	RetentionDays int
+}
 
-// defaultLogger is the package-level logger. Access is via atomic pointer so
-// Reinit can swap it without a mutex and without breaking concurrent readers.
-var defaultLoggerPtr atomic.Pointer[slog.Logger]
+type handlerState struct {
+	mu      sync.RWMutex
+	handler slog.Handler
+	closer  io.Closer
+}
+
+// dynamicHandler keeps package-level component loggers hot-reloadable. A
+// derived slog.Logger retains its attributes, while every record uses the
+// latest configured output handler.
+type dynamicHandler struct {
+	state      *atomic.Pointer[handlerState]
+	operations []handlerOperation
+}
+
+type handlerOperation struct {
+	group string
+	attrs []slog.Attr
+}
+
+func (h *dynamicHandler) current() *handlerState { return h.state.Load() }
+
+func (h *dynamicHandler) resolved(s *handlerState) slog.Handler {
+	target := s.handler
+	for _, operation := range h.operations {
+		if operation.group != "" {
+			target = target.WithGroup(operation.group)
+		} else {
+			target = target.WithAttrs(operation.attrs)
+		}
+	}
+	return target
+}
+
+func (h *dynamicHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	s := h.current()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return h.resolved(s).Enabled(ctx, level)
+}
+
+func (h *dynamicHandler) Handle(ctx context.Context, record slog.Record) error {
+	s := h.current()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return h.resolved(s).Handle(ctx, record)
+}
+
+func (h *dynamicHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	cloned := *h
+	cloned.operations = append(append([]handlerOperation(nil), h.operations...), handlerOperation{attrs: append([]slog.Attr(nil), attrs...)})
+	return &cloned
+}
+
+func (h *dynamicHandler) WithGroup(name string) slog.Handler {
+	cloned := *h
+	cloned.operations = append(append([]handlerOperation(nil), h.operations...), handlerOperation{group: name})
+	return &cloned
+}
+
+type multiHandler []slog.Handler
+
+func (h multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, item := range h {
+		if item.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h multiHandler) Handle(ctx context.Context, record slog.Record) error {
+	var firstErr error
+	for _, item := range h {
+		if item.Enabled(ctx, record.Level) {
+			if err := item.Handle(ctx, record); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+func (h multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	result := make(multiHandler, len(h))
+	for i, item := range h {
+		result[i] = item.WithAttrs(attrs)
+	}
+	return result
+}
+
+func (h multiHandler) WithGroup(name string) slog.Handler {
+	result := make(multiHandler, len(h))
+	for i, item := range h {
+		result[i] = item.WithGroup(name)
+	}
+	return result
+}
+
+type exactLevelHandler struct {
+	level   slog.Level
+	minimum slog.Level
+	handler slog.Handler
+}
+
+func (h exactLevelHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.minimum && normalizedLevel(level) == h.level
+}
+func (h exactLevelHandler) Handle(ctx context.Context, record slog.Record) error {
+	return h.handler.Handle(ctx, record)
+}
+func (h exactLevelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return exactLevelHandler{level: h.level, minimum: h.minimum, handler: h.handler.WithAttrs(attrs)}
+}
+func (h exactLevelHandler) WithGroup(name string) slog.Handler {
+	return exactLevelHandler{level: h.level, minimum: h.minimum, handler: h.handler.WithGroup(name)}
+}
+
+func normalizedLevel(level slog.Level) slog.Level {
+	switch {
+	case level < slog.LevelInfo:
+		return slog.LevelDebug
+	case level < slog.LevelWarn:
+		return slog.LevelInfo
+	case level < slog.LevelError:
+		return slog.LevelWarn
+	default:
+		return slog.LevelError
+	}
+}
+
+type dailyWriter struct {
+	mu            sync.Mutex
+	directory     string
+	levelName     string
+	retentionDays int
+	date          string
+	file          *os.File
+	now           func() time.Time
+}
+
+func (w *dailyWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	date := w.now().Format(time.DateOnly)
+	if w.file == nil || w.date != date {
+		if err := w.rotate(date); err != nil {
+			return 0, err
+		}
+	}
+	return w.file.Write(p)
+}
+
+func (w *dailyWriter) rotate(date string) error {
+	if w.file != nil {
+		if err := w.file.Close(); err != nil {
+			return err
+		}
+		w.file = nil
+	}
+	if err := os.MkdirAll(w.directory, 0o755); err != nil {
+		return fmt.Errorf("create log directory: %w", err)
+	}
+	path := filepath.Join(w.directory, w.levelName+"-"+date+".log")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open log file %s: %w", path, err)
+	}
+	w.file = file
+	w.date = date
+	if err := w.removeExpired(); err != nil {
+		_ = file.Close()
+		w.file = nil
+		return fmt.Errorf("remove expired %s logs: %w", w.levelName, err)
+	}
+	return nil
+}
+
+func (w *dailyWriter) removeExpired() error {
+	if w.retentionDays <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(w.directory)
+	if err != nil {
+		return err
+	}
+	cutoff := w.now().AddDate(0, 0, -w.retentionDays)
+	prefix := w.levelName + "-"
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		dateText := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".log")
+		date, parseErr := time.ParseInLocation(time.DateOnly, dateText, w.now().Location())
+		if parseErr == nil && date.Before(time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, cutoff.Location())) {
+			if err := os.Remove(filepath.Join(w.directory, name)); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (w *dailyWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
+
+type closeGroup []io.Closer
+
+func (g closeGroup) Close() error {
+	var firstErr error
+	for _, closer := range g {
+		if err := closer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+var state atomic.Pointer[handlerState]
+var defaultLogger *slog.Logger
 
 func init() {
-	setDefault(newLogger(levelFromEnv()))
+	initial := &handlerState{handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelFromEnv()})}
+	state.Store(initial)
+	defaultLogger = slog.New(&dynamicHandler{state: &state})
+	slog.SetDefault(defaultLogger)
 }
 
-func newLogger(level slog.Level) *slog.Logger {
-	opts := &slog.HandlerOptions{Level: level}
-	return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+// Configure atomically applies logging outputs. Existing component loggers
+// immediately pick up the new settings.
+func Configure(options Options) error {
+	if options.RetentionDays < 0 {
+		return fmt.Errorf("retention days must be greater than or equal to zero")
+	}
+	level := parseLevel(options.Level)
+	handlerOptions := &slog.HandlerOptions{Level: level}
+	var handlers multiHandler
+	var closers closeGroup
+	if options.Console {
+		handlers = append(handlers, slog.NewJSONHandler(os.Stdout, handlerOptions))
+	}
+	if options.FileEnabled {
+		directory := strings.TrimSpace(options.Directory)
+		if directory == "" {
+			return fmt.Errorf("log directory must not be empty when file logging is enabled")
+		}
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			return fmt.Errorf("create log directory: %w", err)
+		}
+		for _, spec := range []struct {
+			name  string
+			level slog.Level
+		}{{"debug", slog.LevelDebug}, {"info", slog.LevelInfo}, {"warn", slog.LevelWarn}, {"error", slog.LevelError}} {
+			writer := &dailyWriter{directory: directory, levelName: spec.name, retentionDays: options.RetentionDays, now: time.Now}
+			// Rotate now so configuration failures are reported during startup,
+			// rather than being silently delayed until the first record.
+			writer.mu.Lock()
+			err := writer.rotate(time.Now().Format(time.DateOnly))
+			writer.mu.Unlock()
+			if err != nil {
+				_ = closeGroup(closers).Close()
+				return err
+			}
+			closers = append(closers, writer)
+			jsonHandler := slog.NewJSONHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug})
+			handlers = append(handlers, exactLevelHandler{level: spec.level, minimum: level, handler: jsonHandler})
+		}
+	}
+	if len(handlers) == 0 {
+		return fmt.Errorf("at least one log output must be enabled")
+	}
+	newState := &handlerState{handler: handlers, closer: closers}
+	old := state.Swap(newState)
+	if old != nil {
+		old.mu.Lock()
+		if old.closer != nil {
+			_ = old.closer.Close()
+		}
+		old.mu.Unlock()
+	}
+	return nil
 }
 
-func setDefault(l *slog.Logger) {
-	// Store via unsafe.Pointer so we can use atomic.Pointer[slog.Logger].
-	// This is safe: slog.Logger is not mutated after construction.
-	_ = unsafe.Sizeof(l) // silence linter
-	defaultLoggerPtr.Store(l)
-	slog.SetDefault(l)
+// Reinit preserves the existing API for callers that only change log level.
+func Reinit(level string) {
+	newState := &handlerState{handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(level)})}
+	old := state.Swap(newState)
+	if old != nil {
+		old.mu.Lock()
+		if old.closer != nil {
+			_ = old.closer.Close()
+		}
+		old.mu.Unlock()
+	}
 }
 
-// L returns the current default structured logger.
-func L() *slog.Logger { return defaultLoggerPtr.Load() }
-
-// Reinit replaces the global logger with a new one at the given level string.
-// Call this after a config hot-reload that changes log.level. Safe for
-// concurrent use; in-flight log calls finish before the swap is visible.
-func Reinit(levelStr string) {
-	setDefault(newLogger(parseLevel(levelStr)))
+// Close flushes and closes active log files.
+func Close() error {
+	current := state.Load()
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	if current.closer == nil {
+		return nil
+	}
+	err := current.closer.Close()
+	current.closer = nil
+	return err
 }
 
-func levelFromEnv() slog.Level {
-	return parseLevel(os.Getenv("AI_AGENT_LOG_LEVEL"))
-}
+func levelFromEnv() slog.Level { return parseLevel(os.Getenv("AI_AGENT_LOG_LEVEL")) }
 
-func parseLevel(s string) slog.Level {
-	switch strings.ToUpper(s) {
+func parseLevel(value string) slog.Level {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case "DEBUG":
 		return slog.LevelDebug
 	case "WARN", "WARNING":
@@ -92,77 +359,25 @@ func parseLevel(s string) slog.Level {
 	}
 }
 
-// ── Component loggers ────────────────────────────────────────────────────────
-
-// Component returns a logger pre-tagged with a "component" field.
-// Intended for package-level var declarations:
-//
-//	var log = logger.Component("planner")
-func Component(name string) *slog.Logger {
-	return L().With(slog.String("component", name))
-}
-
-// With returns the default logger enriched with additional key-value attributes.
-func With(args ...any) *slog.Logger { return L().With(args...) }
-
-// TaskLogger returns a logger pre-tagged with both "component" and "task_id".
-// Use this when you already have both values but no context to carry them.
+func L() *slog.Logger                    { return defaultLogger }
+func Component(name string) *slog.Logger { return L().With(slog.String("component", name)) }
+func With(args ...any) *slog.Logger      { return L().With(args...) }
 func TaskLogger(component, taskID string) *slog.Logger {
-	return L().With(
-		slog.String("component", component),
-		slog.String("task_id", taskID),
-	)
+	return L().With(slog.String("component", component), slog.String("task_id", taskID))
 }
-
-// ── Context helpers ──────────────────────────────────────────────────────────
-
-// WithCtx embeds a task-scoped logger into ctx so that FromCtx can retrieve it
-// later without threading task_id through every function signature.
-//
-// Typical usage in an HTTP handler or goroutine entry point:
-//
-//	ctx = logger.WithCtx(ctx, logger.TaskLogger("api", task.ID))
 func WithCtx(ctx context.Context, l *slog.Logger) context.Context {
 	return context.WithValue(ctx, ctxKey{}, l)
 }
-
-// FromCtx extracts the task-scoped logger from ctx (previously stored by
-// WithCtx). If no logger is found, it falls back to the default logger tagged
-// with the provided task_id so the caller always gets a valid logger.
 func FromCtx(ctx context.Context, taskID string) *slog.Logger {
 	if l, ok := ctx.Value(ctxKey{}).(*slog.Logger); ok && l != nil {
 		return l
 	}
 	return L().With(slog.String("task_id", taskID))
 }
-
-// ── Top-level convenience functions ─────────────────────────────────────────
-// These mirror the log.Printf / log.Println surface so callers that do not
-// need task tagging can migrate with minimal churn.
-
-// Debug logs at DEBUG level on the default logger.
-func Debug(msg string, args ...any) { L().Debug(msg, args...) }
-
-// Info logs at INFO level on the default logger.
-func Info(msg string, args ...any) { L().Info(msg, args...) }
-
-// Warn logs at WARN level on the default logger.
-func Warn(msg string, args ...any) { L().Warn(msg, args...) }
-
-// Error logs at ERROR level on the default logger.
-func Error(msg string, args ...any) { L().Error(msg, args...) }
-
-// InfoCtx logs at INFO level using the logger embedded in ctx (if any).
-func InfoCtx(ctx context.Context, msg string, args ...any) {
-	L().InfoContext(ctx, msg, args...)
-}
-
-// WarnCtx logs at WARN level using the logger embedded in ctx (if any).
-func WarnCtx(ctx context.Context, msg string, args ...any) {
-	L().WarnContext(ctx, msg, args...)
-}
-
-// ErrorCtx logs at ERROR level using the logger embedded in ctx (if any).
-func ErrorCtx(ctx context.Context, msg string, args ...any) {
-	L().ErrorContext(ctx, msg, args...)
-}
+func Debug(msg string, args ...any)                         { L().Debug(msg, args...) }
+func Info(msg string, args ...any)                          { L().Info(msg, args...) }
+func Warn(msg string, args ...any)                          { L().Warn(msg, args...) }
+func Error(msg string, args ...any)                         { L().Error(msg, args...) }
+func InfoCtx(ctx context.Context, msg string, args ...any)  { L().InfoContext(ctx, msg, args...) }
+func WarnCtx(ctx context.Context, msg string, args ...any)  { L().WarnContext(ctx, msg, args...) }
+func ErrorCtx(ctx context.Context, msg string, args ...any) { L().ErrorContext(ctx, msg, args...) }
