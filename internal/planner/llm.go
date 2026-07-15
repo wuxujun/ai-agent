@@ -386,12 +386,22 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		attribute.Int("llm.usage.total_tokens", usage.TotalTokens),
 	)
 
-	log.Info("decision ready", "task_id", task.ID, "thought", decision.ThoughtSummary, "actions", actionNames, "stop", decision.Stop, "final_answer", decision.FinalAnswer, "num_actions", len(decision.Actions))
-
 	decision.TokenUsage = usage
 	decision.TokenUsage.PromptTokens += compressionUsage.PromptTokens
 	decision.TokenUsage.CompletionTokens += compressionUsage.CompletionTokens
 	decision.TokenUsage.TotalTokens += compressionUsage.TotalTokens
+	log.Info("planning completed",
+		"task_id", task.ID,
+		"step", task.StepCount+1,
+		"thought", decision.ThoughtSummary,
+		"planned_steps", plannedStepsForLog(task.StepCount+1, decision.Actions),
+		"stop", decision.Stop,
+		"final_answer", decision.FinalAnswer,
+		"num_actions", len(decision.Actions),
+		"prompt_tokens", decision.TokenUsage.PromptTokens,
+		"completion_tokens", decision.TokenUsage.CompletionTokens,
+		"total_tokens", decision.TokenUsage.TotalTokens,
+	)
 	return &decision, nil
 }
 

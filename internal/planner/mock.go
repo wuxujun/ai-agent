@@ -87,7 +87,7 @@ func (m *MockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fu
 		}
 	}
 
-	log.Info("decision ready", "task_id", task.ID, "thought", decision.ThoughtSummary, "num_actions", len(decision.Actions), "stop", decision.Stop, "final_answer", decision.FinalAnswer)
+	log.Info("planning completed", "task_id", task.ID, "step", task.StepCount+1, "thought", decision.ThoughtSummary, "planned_steps", plannedStepsForLog(task.StepCount+1, decision.Actions), "num_actions", len(decision.Actions), "stop", decision.Stop, "final_answer", decision.FinalAnswer)
 
 	return decision, nil
 }
