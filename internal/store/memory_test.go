@@ -74,6 +74,26 @@ func TestMemoryStoreDuplicateIndexing(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreDeduplicatesEquivalentCompletedTasks(t *testing.T) {
+	m := NewMemoryStore()
+	first := &types.Task{ID: "task-content-a", TenantID: "default", Goal: "最近有台风吗", Status: types.StatusCompleted, FinalAnswer: "有台风巴威"}
+	second := &types.Task{ID: "task-content-b", TenantID: "default", Goal: "最近有台风吗", Status: types.StatusCompleted, FinalAnswer: "有台风巴威"}
+	if err := m.SaveFullTask(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := m.SaveFullTask(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.memories) != 1 {
+		t.Fatalf("equivalent tasks created %d memories, want 1", len(m.memories))
+	}
+}
+
 func TestMemoryStoreTimeDecay(t *testing.T) {
 	// Ensure config is loaded and defaults are initialized
 	_ = config.Get()

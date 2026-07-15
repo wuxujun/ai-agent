@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -237,6 +238,105 @@ func TestCancelTask_Active(t *testing.T) {
 	updatedTask := waitForTaskStatus(t, st, "task-active", types.StatusFailed)
 	if updatedTask.Status != types.StatusFailed {
 		t.Errorf("expected status failed, got %s", updatedTask.Status)
+	}
+}
+
+func TestDeleteTask(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	task := &types.Task{ID: "task-delete", Status: types.StatusCompleted, FinalAnswer: "done"}
+	if err := st.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodDelete, "/api/tasks/task-delete", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if _, err := st.GetTask(context.Background(), task.ID); err != sql.ErrNoRows {
+		t.Fatalf("GetTask after delete error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestDeleteTaskRejectsRunningTask(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	if err := st.SaveFullTask(context.Background(), &types.Task{ID: "task-delete-running", Status: types.StatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodDelete, "/api/tasks/task-delete-running", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete running status = %d, want 409: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteAllTasksRequiresConfirmation(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	for _, id := range []string{"task-clear-a", "task-clear-b"} {
+		if err := st.SaveFullTask(context.Background(), &types.Task{ID: id, Status: types.StatusCompleted}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodDelete, "/api/tasks", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed clear status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodDelete, "/api/tasks?confirm=true", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"deleted":2`) {
+		t.Fatalf("clear status = %d, want 200/deleted=2: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMemoryManagement(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	for _, mem := range []*types.Memory{
+		{ID: "memory-manage-a", TenantID: "tenant-a", Goal: "a", Embedding: []float32{1, 2, 3}, Timestamp: time.Now()},
+		{ID: "memory-manage-b", TenantID: "tenant-b", Goal: "b", Timestamp: time.Now().Add(-time.Second)},
+	} {
+		if err := st.SaveMemory(context.Background(), mem); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/memories?tenant_id=tenant-a&limit=10", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"memory-manage-a"`) || strings.Contains(w.Body.String(), `"embedding":`) || !strings.Contains(w.Body.String(), `"embedding_dimensions":3`) {
+		t.Fatalf("memory list = %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodDelete, "/api/memories/memory-manage-a", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("memory delete = %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodDelete, "/api/memories", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed memory clear = %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodDelete, "/api/memories?confirm=true", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"deleted":1`) {
+		t.Fatalf("memory clear = %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -835,6 +935,35 @@ func TestTenantAuthenticationAndTaskIsolation(t *testing.T) {
 	}
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list.Tasks) != 1 || list.Tasks[0].TenantID != "tenant-a" {
 		t.Fatalf("tenant list = %d %s", w.Code, w.Body.String())
+	}
+	for _, mem := range []*types.Memory{
+		{ID: "tenant-a-memory", TenantID: "tenant-a", Timestamp: time.Now()},
+		{ID: "tenant-b-memory", TenantID: "tenant-b", Timestamp: time.Now()},
+	} {
+		if err := st.SaveMemory(context.Background(), mem); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/memories", nil)
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"tenant-a-memory"`) || strings.Contains(w.Body.String(), `"id":"tenant-b-memory"`) {
+		t.Fatalf("tenant memory list = %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodDelete, "/api/memories/tenant-b-memory", nil)
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant memory delete = %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodDelete, "/api/memories?confirm=true", nil)
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("tenant memory clear = %d %s", w.Code, w.Body.String())
 	}
 
 	w = httptest.NewRecorder()

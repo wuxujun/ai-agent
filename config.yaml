@@ -244,7 +244,9 @@ rag:
   # Env override: AI_AGENT_RAG_SEARCH_URL
   search_url: ""
   
-  # HTTP method used for RAG searches (e.g. "POST", "GET").
+  # RAG transport: "MCP" performs initialize + tools/call; "POST" and "GET"
+  # are for plain REST endpoints. URLs ending in /mcp are always treated as
+  # MCP Streamable HTTP endpoints even if an environment override says POST.
   # Env override: AI_AGENT_RAG_SEARCH_METHOD
   search_method: "MCP"
 

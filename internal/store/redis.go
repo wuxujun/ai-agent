@@ -54,6 +54,47 @@ var saveTaskScript = redis.NewScript(`
 	return 1
 `)
 
+var deleteTaskScript = redis.NewScript(`
+	local raw = redis.call('GET', KEYS[1])
+	if not raw then
+		return 0
+	end
+	local ok, task = pcall(cjson.decode, raw)
+	if ok then
+		local status = task["status"] or ""
+		local tenant = task["tenant_id"] or ""
+		redis.call('ZREM', ARGV[2] .. status, ARGV[1])
+		redis.call('ZREM', ARGV[3] .. tenant, ARGV[1])
+		redis.call('ZREM', ARGV[4] .. tenant .. ":" .. status, ARGV[1])
+		redis.call('ZREM', ARGV[6] .. tenant, ARGV[5])
+	end
+	redis.call('DEL', KEYS[1], KEYS[4], KEYS[5])
+	redis.call('ZREM', KEYS[2], ARGV[1])
+	redis.call('ZREM', KEYS[3], ARGV[1])
+	redis.call('ZREM', KEYS[6], ARGV[5])
+	return 1
+`)
+
+var deleteMemoryScript = redis.NewScript(`
+	local raw = redis.call('GET', KEYS[1])
+	if not raw then
+		return 0
+	end
+	local ok, memory = pcall(cjson.decode, raw)
+	if not ok then
+		return 0
+	end
+	local tenant = memory["tenant_id"] or ""
+	local scope = ARGV[2]
+	if scope ~= "" and tenant ~= scope and not (scope == "default" and tenant == "") then
+		return 0
+	end
+	redis.call('DEL', KEYS[1])
+	redis.call('ZREM', KEYS[2], ARGV[1])
+	redis.call('ZREM', ARGV[3] .. tenant, ARGV[1])
+	return 1
+`)
+
 var reserveTenantLLMCallScript = redis.NewScript(`
 	local calls = tonumber(redis.call('HGET', KEYS[1], 'calls') or '0')
 	local cost = tonumber(redis.call('HGET', KEYS[1], 'cost') or '0')
@@ -205,7 +246,7 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 
 	if task.Status == types.StatusCompleted {
 		// Check if memory already exists to prevent repeated embedding generation
-		exists, err := r.client.Exists(ctx, r.memoryKey("mem-"+task.ID)).Result()
+		exists, err := r.client.Exists(ctx, r.memoryKey(memory.TaskMemoryID(task))).Result()
 		if err == nil && exists == 0 {
 			taskSnap := *task
 			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
@@ -416,6 +457,43 @@ func (r *RedisStore) ExistsTask(ctx context.Context, id string) (bool, error) {
 	return n > 0, nil
 }
 
+func (r *RedisStore) DeleteTask(ctx context.Context, id string) (bool, error) {
+	memoryID := "mem-" + id
+	deleted, err := deleteTaskScript.Run(ctx, r.client, []string{
+		r.taskKey(id),
+		tasksIndexV2,
+		legacyTasksIndex,
+		r.memoryKey(memoryID),
+		"task:lease:" + id,
+		"memories:index",
+	}, id, taskStatusIndexBase, taskTenantIndexBase, taskTenantStatusIndexBase, memoryID, "memories:tenant:").Int64()
+	if err != nil {
+		return false, err
+	}
+	return deleted > 0, nil
+}
+
+func (r *RedisStore) DeleteAllTasks(ctx context.Context) (int64, error) {
+	if err := r.ensureTaskIndexes(ctx); err != nil {
+		return 0, err
+	}
+	ids, err := r.client.ZRange(ctx, tasksIndexV2, 0, -1).Result()
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, id := range ids {
+		deleted, err := r.DeleteTask(ctx, id)
+		if err != nil {
+			return count, err
+		}
+		if deleted {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // memoryKey formats the Redis key for a memory.
 func (r *RedisStore) memoryKey(id string) string {
 	return "memory:" + id
@@ -446,6 +524,77 @@ func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	}
 
 	return nil
+}
+
+func (r *RedisStore) ListMemories(ctx context.Context, filter ListMemoryFilter) ([]*types.Memory, error) {
+	ids, err := r.client.ZRevRange(ctx, "memories:index", 0, -1).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []*types.Memory{}, nil
+	}
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = r.memoryKey(id)
+	}
+	values, err := r.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]*types.Memory, 0, len(values))
+	for _, raw := range values {
+		text, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		var mem types.Memory
+		if err := json.Unmarshal([]byte(text), &mem); err != nil {
+			continue
+		}
+		if filter.TenantID != "" && !memoryTenantMatches(filter.TenantID, mem.TenantID) {
+			continue
+		}
+		items = append(items, &mem)
+	}
+	limit := resolveLimit(filter.Limit, 50, 500)
+	if filter.Offset >= len(items) {
+		return []*types.Memory{}, nil
+	}
+	items = items[filter.Offset:]
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (r *RedisStore) DeleteMemory(ctx context.Context, id, tenantID string) (bool, error) {
+	deleted, err := deleteMemoryScript.Run(ctx, r.client,
+		[]string{r.memoryKey(id), "memories:index"},
+		id, tenantID, "memories:tenant:",
+	).Int64()
+	if err != nil {
+		return false, err
+	}
+	return deleted > 0, nil
+}
+
+func (r *RedisStore) DeleteAllMemories(ctx context.Context, tenantID string) (int64, error) {
+	ids, err := r.client.ZRange(ctx, "memories:index", 0, -1).Result()
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, id := range ids {
+		deleted, err := r.DeleteMemory(ctx, id, tenantID)
+		if err != nil {
+			return count, err
+		}
+		if deleted {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match in Redis.

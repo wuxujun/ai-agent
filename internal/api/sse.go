@@ -121,6 +121,20 @@ func (b *EventBus) Publish(taskID string, event StepEvent) {
 	}
 }
 
+// Forget removes a cached terminal event after its task is deleted.
+func (b *EventBus) Forget(taskID string) {
+	b.mu.Lock()
+	delete(b.sticky, taskID)
+	b.mu.Unlock()
+}
+
+// ForgetAll removes all cached terminal events after the task store is cleared.
+func (b *EventBus) ForgetAll() {
+	b.mu.Lock()
+	b.sticky = make(map[string]stickyEvent)
+	b.mu.Unlock()
+}
+
 // streamTask handles GET /api/tasks/:id/stream — Server-Sent Events endpoint.
 // The client receives a StepEvent JSON object for every completed step and a
 // final event when the task reaches completed or failed status.

@@ -421,7 +421,7 @@ final_answer=excluded.final_answer
 	// 3. Asynchronously index memory if task is completed
 	if task.Status == types.StatusCompleted {
 		var exists int
-		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = ?`, "mem-"+task.ID).Scan(&exists)
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = ?`, memory.TaskMemoryID(task)).Scan(&exists)
 		if err == sql.ErrNoRows {
 			taskSnap := *task
 			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
@@ -602,6 +602,60 @@ func (s *SQLiteStore) ExistsTask(ctx context.Context, id string) (bool, error) {
 	return count > 0, nil
 }
 
+func (s *SQLiteStore) DeleteTask(ctx context.Context, id string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`DELETE FROM traces WHERE task_id = ?`,
+		`DELETE FROM memories WHERE task_id = ?`,
+		`DELETE FROM task_leases WHERE task_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+			return false, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *SQLiteStore) DeleteAllTasks(ctx context.Context) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, query := range []string{`DELETE FROM traces`, `DELETE FROM memories WHERE task_id IN (SELECT id FROM tasks)`, `DELETE FROM task_leases`} {
+		if _, err := tx.ExecContext(ctx, query); err != nil {
+			return 0, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM tasks`)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // SaveMemory persists a memory entry to SQLite.
 func (s *SQLiteStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	embJSON, err := json.Marshal(mem.Embedding)
@@ -624,6 +678,64 @@ embedding_json=excluded.embedding_json
 		mem.ID, mem.TenantID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON),
 	)
 	return err
+}
+
+func (s *SQLiteStore) ListMemories(ctx context.Context, filter ListMemoryFilter) ([]*types.Memory, error) {
+	query := `SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
+	args := []any{}
+	if filter.TenantID != "" {
+		query += ` WHERE tenant_id = ? OR (? = 'default' AND tenant_id = '')`
+		args = append(args, filter.TenantID, filter.TenantID)
+	}
+	query += ` ORDER BY timestamp DESC, id ASC LIMIT ? OFFSET ?`
+	args = append(args, resolveLimit(filter.Limit, 50, 500), filter.Offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*types.Memory
+	for rows.Next() {
+		var mem types.Memory
+		var embeddingJSON string
+		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embeddingJSON); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(embeddingJSON), &mem.Embedding); err != nil {
+			return nil, err
+		}
+		items = append(items, &mem)
+	}
+	return items, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteMemory(ctx context.Context, id, tenantID string) (bool, error) {
+	query := `DELETE FROM memories WHERE id = ?`
+	args := []any{id}
+	if tenantID != "" {
+		query += ` AND (tenant_id = ? OR (? = 'default' AND tenant_id = ''))`
+		args = append(args, tenantID, tenantID)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count > 0, err
+}
+
+func (s *SQLiteStore) DeleteAllMemories(ctx context.Context, tenantID string) (int64, error) {
+	query := `DELETE FROM memories`
+	args := []any{}
+	if tenantID != "" {
+		query += ` WHERE tenant_id = ? OR (? = 'default' AND tenant_id = '')`
+		args = append(args, tenantID, tenantID)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match.

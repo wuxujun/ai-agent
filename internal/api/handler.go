@@ -92,6 +92,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	tasks.Use(TaskTenantMiddleware(st))
 	{
 		tasks.POST("", h.createTask)
+		tasks.DELETE("", AdminMiddleware(), h.deleteAllTasks)
 		tasks.POST("/:id/run", h.runTaskStep)
 		tasks.POST("/:id/run-all", h.runAll)
 		tasks.GET("/:id", h.getTask)
@@ -100,6 +101,13 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.POST("/:id/approve", h.approveTask)
 		tasks.POST("/:id/reject", h.rejectTask)
 		tasks.DELETE("/:id/cancel", h.cancelTask)
+		tasks.DELETE("/:id", h.deleteTask)
+	}
+	memories := api.Group("/memories")
+	{
+		memories.GET("", h.listMemories)
+		memories.DELETE("", AdminMiddleware(), h.deleteAllMemories)
+		memories.DELETE("/:id", h.deleteMemory)
 	}
 	api.GET("/metrics", AdminMiddleware(), h.getMetrics)
 	api.GET("/usage", h.getTenantUsage)
@@ -670,6 +678,83 @@ func (h *Handler) getTask(c *gin.Context) {
 	c.JSON(http.StatusOK, task)
 }
 
+func (h *Handler) deleteTask(c *gin.Context) {
+	deleter, ok := h.store.(store.TaskDeletionStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "configured store does not support task deletion"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	taskID := c.Param("id")
+	task, err := h.store.GetTask(ctx, taskID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		c.Error(err)
+		return
+	}
+	if task.Status == types.StatusRunning || task.Status == types.StatusAwaitingApproval {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "task must be cancelled before deletion",
+			"task_id": taskID,
+			"status":  task.Status,
+		})
+		return
+	}
+	h.activeTasksMu.Lock()
+	_, active := h.activeTasks[taskID]
+	h.activeTasksMu.Unlock()
+	if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "task is still active", "task_id": taskID})
+		return
+	}
+	deleted, err := deleter.DeleteTask(ctx, taskID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	if !deleted {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+	GetBus().Forget(taskID)
+	c.JSON(http.StatusOK, gin.H{"message": "task deleted", "task_id": taskID})
+}
+
+func (h *Handler) deleteAllTasks(c *gin.Context) {
+	deleter, ok := h.store.(store.TaskDeletionStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "configured store does not support task deletion"})
+		return
+	}
+	if c.Query("confirm") != "true" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "confirm=true is required to delete all tasks"})
+		return
+	}
+	h.activeTasksMu.Lock()
+	activeCount := len(h.activeTasks)
+	h.activeTasksMu.Unlock()
+	if activeCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":        "all running tasks must be cancelled before clearing tasks",
+			"active_tasks": activeCount,
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	count, err := deleter.DeleteAllTasks(ctx)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	GetBus().ForgetAll()
+	c.JSON(http.StatusOK, gin.H{"message": "all tasks deleted", "deleted": count})
+}
+
 func (h *Handler) getMetrics(c *gin.Context) {
 	if h.metrics == nil {
 		c.JSON(http.StatusOK, gin.H{"message": "metrics disabled"})
@@ -846,6 +931,100 @@ func (h *Handler) listTasks(c *gin.Context) {
 		"limit":  f.Limit,
 		"offset": f.Offset,
 	})
+}
+
+type memoryListItem struct {
+	ID                  string    `json:"id"`
+	TenantID            string    `json:"tenant_id"`
+	TaskID              string    `json:"task_id"`
+	Goal                string    `json:"goal"`
+	FinalAnswer         string    `json:"final_answer"`
+	KeyFindings         string    `json:"key_findings"`
+	Timestamp           time.Time `json:"timestamp"`
+	EmbeddingDimensions int       `json:"embedding_dimensions"`
+}
+
+func (h *Handler) listMemories(c *gin.Context) {
+	manager, ok := h.store.(store.MemoryManagementStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "configured store does not support memory management"})
+		return
+	}
+	filter := store.ListMemoryFilter{}
+	principal := principalFromGin(c)
+	if principal.Admin {
+		filter.TenantID = c.Query("tenant_id")
+	} else {
+		filter.TenantID = principal.TenantID
+	}
+	if value, err := strconv.Atoi(c.Query("limit")); err == nil && value > 0 {
+		filter.Limit = value
+	}
+	if value, err := strconv.Atoi(c.Query("offset")); err == nil && value >= 0 {
+		filter.Offset = value
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	memories, err := manager.ListMemories(ctx, filter)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	items := make([]memoryListItem, 0, len(memories))
+	for _, mem := range memories {
+		items = append(items, memoryListItem{
+			ID: mem.ID, TenantID: mem.TenantID, TaskID: mem.TaskID,
+			Goal: mem.Goal, FinalAnswer: mem.FinalAnswer, KeyFindings: mem.KeyFindings,
+			Timestamp: mem.Timestamp, EmbeddingDimensions: len(mem.Embedding),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"memories": items, "count": len(items), "limit": filter.Limit, "offset": filter.Offset})
+}
+
+func (h *Handler) deleteMemory(c *gin.Context) {
+	manager, ok := h.store.(store.MemoryManagementStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "configured store does not support memory management"})
+		return
+	}
+	principal := principalFromGin(c)
+	tenantID := ""
+	if !principal.Admin {
+		tenantID = principal.TenantID
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	deleted, err := manager.DeleteMemory(ctx, c.Param("id"), tenantID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	if !deleted {
+		c.JSON(http.StatusNotFound, gin.H{"error": "memory not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "memory deleted", "memory_id": c.Param("id")})
+}
+
+func (h *Handler) deleteAllMemories(c *gin.Context) {
+	manager, ok := h.store.(store.MemoryManagementStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "configured store does not support memory management"})
+		return
+	}
+	if c.Query("confirm") != "true" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "confirm=true is required to delete memories"})
+		return
+	}
+	tenantID := c.Query("tenant_id")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	count, err := manager.DeleteAllMemories(ctx, tenantID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "memories deleted", "deleted": count, "tenant_id": tenantID})
 }
 
 // reloadConfig handles POST /api/config/reload.

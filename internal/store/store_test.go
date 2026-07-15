@@ -435,6 +435,65 @@ func TestStores(t *testing.T) {
 					t.Fatalf("tenant memory isolation failed: %+v", scopedMemories)
 				}
 			}
+
+			associatedMemory := &types.Memory{ID: "mem-" + task.ID, TaskID: task.ID, Goal: "owned memory", Timestamp: time.Now()}
+			if err := s.SaveMemory(ctx, associatedMemory); err != nil {
+				t.Fatal(err)
+			}
+			deleter, ok := s.(store.TaskDeletionStore)
+			if !ok {
+				t.Fatalf("%s does not implement TaskDeletionStore", name)
+			}
+			deleted, err := deleter.DeleteTask(ctx, task.ID)
+			if err != nil || !deleted {
+				t.Fatalf("DeleteTask = %v, %v; want true, nil", deleted, err)
+			}
+			if _, err := s.GetTask(ctx, task.ID); err != sql.ErrNoRows {
+				t.Fatalf("deleted task GetTask error = %v, want sql.ErrNoRows", err)
+			}
+			deleted, err = deleter.DeleteTask(ctx, task.ID)
+			if err != nil || deleted {
+				t.Fatalf("second DeleteTask = %v, %v; want false, nil", deleted, err)
+			}
+
+			for _, id := range []string{"clear-a-" + name, "clear-b-" + name} {
+				if err := s.SaveFullTask(ctx, &types.Task{ID: id, Status: types.StatusCreated}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			count, err := deleter.DeleteAllTasks(ctx)
+			if err != nil || count != 2 {
+				t.Fatalf("DeleteAllTasks = %d, %v; want 2, nil", count, err)
+			}
+
+			memoryManager, ok := s.(store.MemoryManagementStore)
+			if !ok {
+				t.Fatalf("%s does not implement MemoryManagementStore", name)
+			}
+			for _, mem := range []*types.Memory{
+				{ID: "managed-a-" + name, TenantID: "managed-a", Goal: "first", Timestamp: time.Now().Add(time.Second)},
+				{ID: "managed-b-" + name, TenantID: "managed-b", Goal: "second", Timestamp: time.Now()},
+			} {
+				if err := s.SaveMemory(ctx, mem); err != nil {
+					t.Fatal(err)
+				}
+			}
+			managedA, err := memoryManager.ListMemories(ctx, store.ListMemoryFilter{TenantID: "managed-a", Limit: 10})
+			if err != nil || len(managedA) != 1 || managedA[0].TenantID != "managed-a" {
+				t.Fatalf("managed-a list = %+v, err=%v", managedA, err)
+			}
+			deleted, err = memoryManager.DeleteMemory(ctx, "managed-b-"+name, "managed-a")
+			if err != nil || deleted {
+				t.Fatalf("cross-tenant DeleteMemory = %v, %v; want false, nil", deleted, err)
+			}
+			deleted, err = memoryManager.DeleteMemory(ctx, "managed-a-"+name, "managed-a")
+			if err != nil || !deleted {
+				t.Fatalf("DeleteMemory = %v, %v; want true, nil", deleted, err)
+			}
+			count, err = memoryManager.DeleteAllMemories(ctx, "managed-b")
+			if err != nil || count < 1 {
+				t.Fatalf("DeleteAllMemories(managed-b) = %d, %v; want >=1, nil", count, err)
+			}
 		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -302,6 +303,60 @@ func TestSearchThirdPartyRAG_MCP_JSONRPC(t *testing.T) {
 
 	if mems[0].ID != "mem-mcp-1" || mems[0].Goal != "test mcp" || mems[0].KeyFindings != "mcp verified" {
 		t.Errorf("unexpected memories: %+v", mems)
+	}
+}
+
+func TestSearchThirdPartyRAG_StreamableMCPInitializesBeforeToolCall(t *testing.T) {
+	ctx := context.Background()
+	var methods []string
+	withRAGHTTPClient(t, func(r *http.Request) (int, string) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("MCP Streamable HTTP method = %s, want POST", r.Method)
+		}
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if reqBody["jsonrpc"] != "2.0" {
+			t.Fatalf("jsonrpc = %v, want 2.0", reqBody["jsonrpc"])
+		}
+		method, _ := reqBody["method"].(string)
+		methods = append(methods, method)
+		switch method {
+		case "initialize":
+			return http.StatusOK, `{"jsonrpc":"2.0","result":{"protocolVersion":"2024-11-05"},"id":1}`
+		case "notifications/initialized":
+			return http.StatusAccepted, ""
+		case "tools/call":
+			return http.StatusOK, `{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"[{\"id\":\"mem-mcp-stream\",\"key_findings\":\"found\"}]"}]},"id":2}`
+		default:
+			return http.StatusBadRequest, "unexpected method"
+		}
+	})
+
+	cfg := config.Get()
+	originalURL := cfg.RAG.SearchURL
+	originalMethod := cfg.RAG.SearchMethod
+	originalToolName := cfg.RAG.ToolName
+	cfg.RAG.SearchURL = "https://api.example.test/mcp"
+	cfg.RAG.SearchMethod = "POST"
+	cfg.RAG.ToolName = "rag_search"
+	t.Cleanup(func() {
+		cfg.RAG.SearchURL = originalURL
+		cfg.RAG.SearchMethod = originalMethod
+		cfg.RAG.ToolName = originalToolName
+	})
+
+	mems, err := SearchThirdPartyRAG(ctx, "streamable-query")
+	if err != nil {
+		t.Fatalf("SearchThirdPartyRAG failed: %v", err)
+	}
+	wantMethods := []string{"initialize", "notifications/initialized", "tools/call"}
+	if !reflect.DeepEqual(methods, wantMethods) {
+		t.Fatalf("MCP methods = %v, want %v", methods, wantMethods)
+	}
+	if len(mems) != 1 || mems[0].ID != "mem-mcp-stream" {
+		t.Fatalf("unexpected memories: %+v", mems)
 	}
 }
 

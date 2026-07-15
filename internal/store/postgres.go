@@ -417,7 +417,7 @@ final_answer=EXCLUDED.final_answer`,
 	// 3. Asynchronously index memory if task is completed
 	if task.Status == types.StatusCompleted {
 		var exists int
-		err := p.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = $1`, "mem-"+task.ID).Scan(&exists)
+		err := p.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = $1`, memory.TaskMemoryID(task)).Scan(&exists)
 		if err == sql.ErrNoRows {
 			taskSnap := *task
 			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
@@ -581,6 +581,60 @@ func (p *PostgresStore) ExistsTask(ctx context.Context, id string) (bool, error)
 	return count > 0, nil
 }
 
+func (p *PostgresStore) DeleteTask(ctx context.Context, id string) (bool, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`DELETE FROM traces WHERE task_id = $1`,
+		`DELETE FROM memories WHERE task_id = $1`,
+		`DELETE FROM task_leases WHERE task_id = $1`,
+	} {
+		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+			return false, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE id = $1`, id)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (p *PostgresStore) DeleteAllTasks(ctx context.Context) (int64, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, query := range []string{`DELETE FROM traces`, `DELETE FROM memories WHERE task_id IN (SELECT id FROM tasks)`, `DELETE FROM task_leases`} {
+		if _, err := tx.ExecContext(ctx, query); err != nil {
+			return 0, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM tasks`)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // SaveMemory persists a memory entry to Postgres.
 func (p *PostgresStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	embJSON, err := json.Marshal(mem.Embedding)
@@ -629,6 +683,64 @@ embedding_json=EXCLUDED.embedding_json
 		mem.ID, mem.TenantID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON),
 	)
 	return err
+}
+
+func (p *PostgresStore) ListMemories(ctx context.Context, filter ListMemoryFilter) ([]*types.Memory, error) {
+	query := `SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
+	args := []any{}
+	if filter.TenantID != "" {
+		query += ` WHERE tenant_id = $1 OR ($1 = 'default' AND tenant_id = '')`
+		args = append(args, filter.TenantID)
+	}
+	args = append(args, resolveLimit(filter.Limit, 50, 500), filter.Offset)
+	query += fmt.Sprintf(` ORDER BY timestamp DESC, id ASC LIMIT $%d OFFSET $%d`, len(args)-1, len(args))
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*types.Memory
+	for rows.Next() {
+		var mem types.Memory
+		var embeddingJSON string
+		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embeddingJSON); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(embeddingJSON), &mem.Embedding); err != nil {
+			return nil, err
+		}
+		items = append(items, &mem)
+	}
+	return items, rows.Err()
+}
+
+func (p *PostgresStore) DeleteMemory(ctx context.Context, id, tenantID string) (bool, error) {
+	query := `DELETE FROM memories WHERE id = $1`
+	args := []any{id}
+	if tenantID != "" {
+		query += ` AND (tenant_id = $2 OR ($2 = 'default' AND tenant_id = ''))`
+		args = append(args, tenantID)
+	}
+	result, err := p.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count > 0, err
+}
+
+func (p *PostgresStore) DeleteAllMemories(ctx context.Context, tenantID string) (int64, error) {
+	query := `DELETE FROM memories`
+	args := []any{}
+	if tenantID != "" {
+		query += ` WHERE tenant_id = $1 OR ($1 = 'default' AND tenant_id = '')`
+		args = append(args, tenantID)
+	}
+	result, err := p.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (p *PostgresStore) ensurePGVector(ctx context.Context) error {

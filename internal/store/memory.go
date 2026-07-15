@@ -88,7 +88,7 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 	if m.indexing == nil {
 		m.indexing = make(map[string]bool)
 	}
-	_, alreadyIndexed := m.memories["mem-"+task.ID]
+	_, alreadyIndexed := m.memories[memory.TaskMemoryID(task)]
 	alreadyIndexing := m.indexing[task.ID]
 
 	// Clone to avoid concurrent mutation issues
@@ -219,6 +219,38 @@ func (m *MemoryStore) ExistsTask(ctx context.Context, id string) (bool, error) {
 	return exists, nil
 }
 
+func (m *MemoryStore) DeleteTask(_ context.Context, id string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.tasks[id]; !exists {
+		return false, nil
+	}
+	delete(m.tasks, id)
+	for memoryID, mem := range m.memories {
+		if mem.TaskID == id {
+			delete(m.memories, memoryID)
+		}
+	}
+	delete(m.leases, id)
+	delete(m.indexing, id)
+	return true, nil
+}
+
+func (m *MemoryStore) DeleteAllTasks(_ context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := int64(len(m.tasks))
+	for memoryID, mem := range m.memories {
+		if _, taskOwned := m.tasks[mem.TaskID]; taskOwned {
+			delete(m.memories, memoryID)
+		}
+	}
+	m.tasks = make(map[string]*types.Task)
+	m.leases = make(map[string]memoryLease)
+	m.indexing = make(map[string]bool)
+	return count, nil
+}
+
 // SaveMemory stores a memory.
 func (m *MemoryStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	m.mu.Lock()
@@ -231,6 +263,61 @@ func (m *MemoryStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	}
 	m.memories[mem.ID] = &cloned
 	return nil
+}
+
+func (m *MemoryStore) ListMemories(_ context.Context, filter ListMemoryFilter) ([]*types.Memory, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	items := make([]*types.Memory, 0, len(m.memories))
+	for _, mem := range m.memories {
+		if filter.TenantID != "" && !memoryTenantMatches(filter.TenantID, mem.TenantID) {
+			continue
+		}
+		cloned := *mem
+		if mem.Embedding != nil {
+			cloned.Embedding = append([]float32(nil), mem.Embedding...)
+		}
+		items = append(items, &cloned)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Timestamp.Equal(items[j].Timestamp) {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].Timestamp.After(items[j].Timestamp)
+	})
+	limit := resolveLimit(filter.Limit, 50, 500)
+	if filter.Offset >= len(items) {
+		return []*types.Memory{}, nil
+	}
+	items = items[filter.Offset:]
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (m *MemoryStore) DeleteMemory(_ context.Context, id, tenantID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mem, exists := m.memories[id]
+	if !exists || (tenantID != "" && !memoryTenantMatches(tenantID, mem.TenantID)) {
+		return false, nil
+	}
+	delete(m.memories, id)
+	return true, nil
+}
+
+func (m *MemoryStore) DeleteAllMemories(_ context.Context, tenantID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var count int64
+	for id, mem := range m.memories {
+		if tenantID == "" || memoryTenantMatches(tenantID, mem.TenantID) {
+			delete(m.memories, id)
+			count++
+		}
+	}
+	return count, nil
 }
 
 // QueryMemories searches for memories. If embedding is provided, it uses Cosine Similarity.

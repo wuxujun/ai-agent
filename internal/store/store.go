@@ -40,6 +40,12 @@ type ListFilter struct {
 	Offset int
 }
 
+type ListMemoryFilter struct {
+	TenantID string
+	Limit    int
+	Offset   int
+}
+
 // Store defines the interface for task, trace, and long-term memory storage.
 type Store interface {
 	// SaveFullTask persists a task and all its step traces atomically.
@@ -77,6 +83,22 @@ type Store interface {
 
 	// Close releases any resources held by the store.
 	Close() error
+}
+
+// TaskDeletionStore is implemented by stores that can remove persisted tasks.
+// Keeping deletion separate preserves compatibility with read/write Store
+// adapters that do not provide destructive administration operations.
+type TaskDeletionStore interface {
+	DeleteTask(ctx context.Context, id string) (bool, error)
+	DeleteAllTasks(ctx context.Context) (int64, error)
+}
+
+// MemoryManagementStore provides administrative listing and deletion without
+// expanding the core Store contract used by lightweight adapters.
+type MemoryManagementStore interface {
+	ListMemories(ctx context.Context, filter ListMemoryFilter) ([]*types.Memory, error)
+	DeleteMemory(ctx context.Context, id, tenantID string) (bool, error)
+	DeleteAllMemories(ctx context.Context, tenantID string) (int64, error)
 }
 
 // resolveLimit normalises the caller-supplied limit: 0 → defaultLimit,

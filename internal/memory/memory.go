@@ -2,12 +2,28 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+// TaskMemoryID is stable across tasks that produced the same answer for the
+// same normalized goal and tenant. This prevents repeated executions from
+// creating duplicate long-term memories merely because task IDs differ.
+func TaskMemoryID(task *types.Task) string {
+	if task == nil {
+		return ""
+	}
+	normalize := func(value string) string {
+		return strings.ToLower(strings.Join(strings.Fields(value), " "))
+	}
+	identity := strings.Join([]string{normalize(task.TenantID), normalize(task.Goal), normalize(task.FinalAnswer)}, "\x00")
+	digest := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("mem-content-%x", digest[:16])
+}
 
 // SummarizeTask extracts key findings from a completed task's traces.
 func SummarizeTask(task *types.Task) string {
@@ -48,7 +64,7 @@ func CreateMemoryFromTask(ctx context.Context, task *types.Task) (*types.Memory,
 	}
 
 	return &types.Memory{
-		ID:          "mem-" + task.ID,
+		ID:          TaskMemoryID(task),
 		TenantID:    task.TenantID,
 		TaskID:      task.ID,
 		Goal:        task.Goal,

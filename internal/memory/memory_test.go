@@ -111,8 +111,8 @@ func TestCreateMemoryFromTask(t *testing.T) {
 		t.Fatalf("failed to create memory from task: %v", err)
 	}
 
-	if mem.ID != "mem-task-xyz" {
-		t.Errorf("expected memory ID 'mem-task-xyz', got %q", mem.ID)
+	if mem.ID != memory.TaskMemoryID(task) || !strings.HasPrefix(mem.ID, "mem-content-") {
+		t.Errorf("unexpected content-addressed memory ID %q", mem.ID)
 	}
 	if mem.Goal != task.Goal {
 		t.Errorf("expected goal %q, got %q", task.Goal, mem.Goal)
@@ -125,6 +125,18 @@ func TestCreateMemoryFromTask(t *testing.T) {
 	}
 	if len(mem.Embedding) == 0 {
 		t.Errorf("expected embedding to be computed (non-empty), got length %d", len(mem.Embedding))
+	}
+}
+
+func TestTaskMemoryIDIsStableAcrossEquivalentTasks(t *testing.T) {
+	first := &types.Task{ID: "task-1", TenantID: "tenant-a", Goal: " 最近有台风吗 ", FinalAnswer: "有台风巴威"}
+	second := &types.Task{ID: "task-2", TenantID: "tenant-a", Goal: "最近有台风吗", FinalAnswer: "有台风巴威"}
+	if got, want := memory.TaskMemoryID(first), memory.TaskMemoryID(second); got != want {
+		t.Fatalf("equivalent task memory IDs differ: %q != %q", got, want)
+	}
+	second.FinalAnswer = "没有台风"
+	if memory.TaskMemoryID(first) == memory.TaskMemoryID(second) {
+		t.Fatal("different answers produced the same memory ID")
 	}
 }
 

@@ -141,10 +141,19 @@ export AI_AGENT_ORCHESTRATOR=adk     # 使用 Google ADK for Go 编排
 * **请求方式**：`DELETE /api/tasks/:id/cancel`
 * **说明**：取消运行中的任务。本进程内运行则触发 context 取消；否则在 DB 中将 `running` 任务标记为 `failed`。
 
-### 9. 获取本地监控指标
+### 9. 删除任务
+* **单个任务**：`DELETE /api/tasks/:id`，同时删除关联的执行 Trace、租约和该任务生成的长期记忆。运行中或等待审批的任务必须先取消，否则返回 `409 Conflict`。
+* **清空任务**：`DELETE /api/tasks?confirm=true`，仅管理员可调用；清空所有任务及关联数据并返回 `deleted` 数量。存在本实例正在执行的任务时返回 `409 Conflict`。
+
+### 10. Memory 管理
+* **查询列表**：`GET /api/memories?limit=50&offset=0`。普通租户只返回自己的数据；管理员可用 `tenant_id` 筛选。响应包含 `embedding_dimensions`，不返回完整向量。
+* **删除单条**：`DELETE /api/memories/:id`。普通租户只能删除自己的 Memory。
+* **清空全部**：`DELETE /api/memories?confirm=true`，仅管理员可调用；可增加 `tenant_id` 只清空指定租户。
+
+### 11. 获取本地监控指标
 * **请求方式**：`GET /api/metrics`
 
-### 10. 热重载配置
+### 12. 热重载配置
 * **请求方式**：`POST /api/config/reload`
 * **说明**：不重启进程即可重新读取配置文件与环境变量（用于 API Key 轮换、模型/超时调优）。返回脱敏后的变更 diff，API Key 以 `***` 显示。
 

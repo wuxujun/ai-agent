@@ -41,6 +41,10 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 	}
 
 	log.Info("Querying third-party RAG", "url", ragURL, "query", query, "method", method)
+	upperMethod := strings.ToUpper(strings.TrimSpace(method))
+	if upperMethod == "MCP" || upperMethod == "JSON-RPC" || isStreamableMCPURL(ragURL) {
+		return queryMCP(ctx, ragURL, cfg.RAG.Authorization, query)
+	}
 
 	// First attempt: try sending the request as configured
 	mems, err := doRAGRequest(ctx, ragURL, method, query, cfg.RAG.Authorization, false)
@@ -303,6 +307,11 @@ func getStringField(m map[string]any, keys ...string) (string, bool) {
 }
 
 func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, error) {
+	if isStreamableMCPURL(ragURL) {
+		log.Info("Running MCP Streamable HTTP initialization", "url", ragURL)
+		return doMCPHandshakeAndCall(ctx, ragURL, auth, query, nil)
+	}
+
 	log.Info("Attempting MCP SSE handshake", "url", ragURL)
 
 	// Create SSE GET request
@@ -394,6 +403,15 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 	// run the 3-step initialization flow directly on ragURL.
 	log.Info("Running direct MCP initialization on URL", "url", ragURL)
 	return doMCPHandshakeAndCall(ctx, ragURL, auth, query, initialHeaders)
+}
+
+func isStreamableMCPURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimSuffix(strings.ToLower(parsed.Path), "/")
+	return path == "/mcp" || strings.HasSuffix(path, "/mcp")
 }
 
 func doMCPHandshakeAndCall(ctx context.Context, postURL, auth, query string, initialHeaders map[string]string) ([]types.Memory, error) {
