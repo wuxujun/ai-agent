@@ -274,9 +274,13 @@ rag:
 
   # Per-task limits for uncached searches and detail fetches.
   # Env overrides: AI_AGENT_RAG_JIT_SEARCH_MAX_CALLS,
-  # AI_AGENT_RAG_JIT_FETCH_MAX_ITEMS
+  # AI_AGENT_RAG_JIT_FETCH_MAX_ITEMS,
+  # AI_AGENT_RAG_JIT_RAG_FETCH_MAX_BYTES,
+  # AI_AGENT_RAG_JIT_MEMORY_FETCH_MAX_BYTES
   jit_search_max_calls: 3
   jit_fetch_max_items: 3
+  jit_rag_fetch_max_bytes: 6000
+  jit_memory_fetch_max_bytes: 2000
 
   # Maximum number of reranked memories included in a planner prompt.
   # Env override: AI_AGENT_RAG_MAX_PROMPT_MEMORIES

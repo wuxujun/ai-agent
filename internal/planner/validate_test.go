@@ -118,8 +118,11 @@ func TestGenAISchemaUsesActionsArray(t *testing.T) {
 	if actions.Items == nil {
 		t.Fatal("genai schema \"actions\" must be an array with item schema")
 	}
-	if _, ok := actions.Items.Properties["action"]; !ok {
-		t.Error("genai actions item missing \"action\" property")
+	if actions.Items.Type != genai.TypeObject {
+		t.Fatalf("genai actions item type=%v, want object", actions.Items.Type)
+	}
+	if len(actions.Items.AnyOf) == 0 {
+		t.Error("genai actions item missing per-action anyOf variants")
 	}
 	if _, ok := schema.Properties["action"]; ok {
 		t.Error("genai schema still exposes singular \"action\" (drifted from PlanDecision.Actions)")
@@ -128,11 +131,35 @@ func TestGenAISchemaUsesActionsArray(t *testing.T) {
 
 func TestGenAISchemaPreservesArrayParameterItems(t *testing.T) {
 	schema := PlannerDecisionGenAISchema()
-	ids := schema.Properties["actions"].Items.Properties["parameters"].Properties["ids"]
+	variant := genaiVariantForAction(t, schema, "rag_fetch")
+	ids := variant.Properties["parameters"].Properties["ids"]
 	if ids == nil {
 		t.Fatal("genai schema missing retrieval ids parameter")
 	}
 	if ids.Type != genai.TypeArray || ids.Items == nil || ids.Items.Type != genai.TypeString {
 		t.Fatalf("ids schema = %#v, want array of strings", ids)
 	}
+}
+
+func TestGenAISchemaScopesParametersByAction(t *testing.T) {
+	schema := PlannerDecisionGenAISchema()
+	httpParams := genaiVariantForAction(t, schema, "http_fetch").Properties["parameters"].Properties
+	if httpParams["url"] == nil {
+		t.Fatal("http_fetch variant missing url")
+	}
+	if httpParams["ids"] != nil {
+		t.Fatal("http_fetch variant unexpectedly includes retrieval ids")
+	}
+}
+
+func genaiVariantForAction(t *testing.T, schema *genai.Schema, action string) *genai.Schema {
+	t.Helper()
+	for _, variant := range schema.Properties["actions"].Items.AnyOf {
+		actionSchema := variant.Properties["action"]
+		if actionSchema != nil && len(actionSchema.Enum) == 1 && actionSchema.Enum[0] == action {
+			return variant
+		}
+	}
+	t.Fatalf("genai action variant %q not found", action)
+	return nil
 }

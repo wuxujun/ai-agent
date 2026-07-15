@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -465,10 +465,9 @@ func extractStructuredText(raw map[string]any) (string, error) {
 func PlannerDecisionGenAISchema() *genai.Schema {
 	registered := tools.DefaultRegistry.List() // sorted by name
 
-	actions := make([]string, 0, len(registered)+1)
-	paramProps := map[string]*genai.Schema{}
+	variants := make([]*genai.Schema, 0, len(registered)+1)
 	for _, t := range registered {
-		actions = append(actions, t.Name())
+		paramProps := map[string]*genai.Schema{}
 		for name, spec := range t.Parameters() {
 			// Derive the genai parameter type from the tool's JSON-Schema spec
 			// instead of hardcoding TypeString. This keeps the Gemini schema
@@ -477,36 +476,16 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 			// reflected on both planner paths automatically.
 			paramProps[name] = genaiSchemaFromSpec(spec)
 		}
+		variants = append(variants, genaiActionVariant(t.Name(), paramProps))
 	}
-	actions = append(actions, "none")
-
-	paramKeys := make([]string, 0, len(paramProps))
-	for k := range paramProps {
-		paramKeys = append(paramKeys, k)
-	}
-	sort.Strings(paramKeys)
+	variants = append(variants, genaiActionVariant("none", map[string]*genai.Schema{}))
 
 	// Each element of the actions array mirrors ActionCall (action + parameters).
 	// This MUST stay structurally identical to the OpenAI PlannerDecisionSchema:
 	// PlanDecision unmarshals into Actions []ActionCall, so a singular
 	// action/parameters shape (the previous version) deserialised to zero
 	// actions and failed ValidateDecision on every Gemini turn.
-	actionItem := &genai.Schema{
-		Type: genai.TypeObject,
-		Properties: map[string]*genai.Schema{
-			"action": {
-				Type:        genai.TypeString,
-				Enum:        actions,
-				Description: "The single next action to execute. Use none only when stop is true.",
-			},
-			"parameters": {
-				Type:       genai.TypeObject,
-				Properties: paramProps,
-				Required:   paramKeys,
-			},
-		},
-		Required: []string{"action", "parameters"},
-	}
+	actionItem := &genai.Schema{Type: genai.TypeObject, AnyOf: variants}
 
 	return &genai.Schema{
 		Type: genai.TypeObject,
@@ -530,6 +509,30 @@ func PlannerDecisionGenAISchema() *genai.Schema {
 			},
 		},
 		Required: []string{"thought_summary", "stop", "final_answer", "actions"},
+	}
+}
+
+func genaiActionVariant(action string, parameters map[string]*genai.Schema) *genai.Schema {
+	required := make([]string, 0, len(parameters))
+	for name := range parameters {
+		required = append(required, name)
+	}
+	slices.Sort(required)
+	return &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"action": {
+				Type:        genai.TypeString,
+				Enum:        []string{action},
+				Description: "The single next action to execute. Use none only when stop is true.",
+			},
+			"parameters": {
+				Type:       genai.TypeObject,
+				Properties: parameters,
+				Required:   required,
+			},
+		},
+		Required: []string{"action", "parameters"},
 	}
 }
 

@@ -2,7 +2,7 @@ package planner
 
 import (
 	"context"
-	"sort"
+	"slices"
 
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -30,47 +30,19 @@ type Planner interface {
 // registry, so registering a new tool automatically makes it selectable by the
 // planner — no manual edits to this file are required.
 //
-// Note: OpenAI structured-output strict mode requires every property to appear
-// in "required", so the merged parameter set is listed there in full; unused
-// parameters are expected to be emitted as empty strings.
+// Each action is represented as its own anyOf branch. OpenAI strict mode still
+// requires every property within the selected branch, but an action no longer
+// has to emit unrelated parameters belonging to every other registered tool.
 func PlannerDecisionSchema() map[string]any {
 	registered := tools.DefaultRegistry.List() // sorted by name (deterministic)
 
-	actions := make([]string, 0, len(registered)+1)
-	paramProps := map[string]any{}
+	variants := make([]any, 0, len(registered)+1)
 	for _, t := range registered {
-		actions = append(actions, t.Name())
-		for name, spec := range t.Parameters() {
-			paramProps[name] = spec
-		}
+		variants = append(variants, strictActionVariant(t.Name(), t.Parameters()))
 	}
-	// "none" is the sentinel action used when the agent stops.
-	actions = append(actions, "none")
+	variants = append(variants, strictActionVariant("none", map[string]any{}))
 
-	paramKeys := make([]string, 0, len(paramProps))
-	for k := range paramProps {
-		paramKeys = append(paramKeys, k)
-	}
-	sort.Strings(paramKeys)
-
-	actionCallSchema := map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"action": map[string]any{
-				"type":        "string",
-				"enum":        actions,
-				"description": "The single next action to execute. Use none only when stop is true.",
-			},
-			"parameters": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties":           paramProps,
-				"required":             paramKeys,
-			},
-		},
-		"required": []string{"action", "parameters"},
-	}
+	actionCallSchema := map[string]any{"anyOf": variants}
 
 	return map[string]any{
 		"type":                 "object",
@@ -96,5 +68,33 @@ func PlannerDecisionSchema() map[string]any {
 			},
 		},
 		"required": []string{"thought_summary", "stop", "final_answer", "actions"},
+	}
+}
+
+func strictActionVariant(action string, parameters map[string]any) map[string]any {
+	required := make([]string, 0, len(parameters))
+	for name := range parameters {
+		required = append(required, name)
+	}
+	// Registry parameters are stable but maps are not; deterministic required
+	// ordering keeps request bodies and tests reproducible.
+	slices.Sort(required)
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"action": map[string]any{
+				"type":        "string",
+				"enum":        []string{action},
+				"description": "The single next action to execute. Use none only when stop is true.",
+			},
+			"parameters": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           parameters,
+				"required":             required,
+			},
+		},
+		"required": []string{"action", "parameters"},
 	}
 }

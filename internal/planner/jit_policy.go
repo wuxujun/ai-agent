@@ -16,8 +16,15 @@ func enforceJITRetrieval(task *types.Task, decision *PlanDecision) bool {
 	if task == nil || decision == nil || !decision.Stop || !strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") {
 		return false
 	}
-	if !goalLikelyNeedsRetrieval(task.Goal) || hasSuccessfulRetrieval(task.Trace) {
+	if !RequiresFactualEvidence(task) || HasSupportingEvidence(task.Trace) {
 		return false
+	}
+	if latestRetrievalDetailFailed(task.Trace) {
+		decision.Stop = true
+		decision.FinalAnswer = "检索详情未返回可用证据，暂时无法可靠回答该事实性问题。"
+		decision.ThoughtSummary = "Stop because retrieval details contained no usable evidence"
+		decision.Actions = []ActionCall{{Action: "none", Parameters: map[string]any{}}}
+		return true
 	}
 	if search, found := latestRetrievalSearch(task.Trace); found {
 		if len(search.IDs) == 0 {
@@ -48,6 +55,29 @@ func enforceJITRetrieval(task *types.Task, decision *PlanDecision) bool {
 	return true
 }
 
+// RequiresFactualEvidence identifies tasks whose answer is likely to depend on
+// externally verifiable facts. Intent routing is preferred when available;
+// lexical markers provide a deterministic fallback when that optional scene is
+// disabled.
+func RequiresFactualEvidence(task *types.Task) bool {
+	if task == nil {
+		return false
+	}
+	for i := len(task.Trace) - 1; i >= 0; i-- {
+		if task.Trace[i].Action != "intent_route" {
+			continue
+		}
+		switch task.Trace[i].Query {
+		case "research":
+			return true
+		case "coding", "writing", "data_analysis", "automation":
+			return false
+		}
+		break
+	}
+	return goalLikelyNeedsRetrieval(task.Goal)
+}
+
 func goalLikelyNeedsRetrieval(goal string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(goal))
 	if normalized == "" {
@@ -55,7 +85,9 @@ func goalLikelyNeedsRetrieval(goal string) bool {
 	}
 	markers := []string{
 		"查", "查询", "搜索", "检索", "信息", "资料", "汇总", "最近", "当前", "最新", "是谁", "有哪些",
+		"简介", "名单", "老师", "教师", "顾问", "天气", "台风", "新闻", "价格", "何时", "哪里",
 		"look up", "lookup", "search", "find information", "latest", "current", "who is", "summarize information",
+		"profile", "teacher", "advisor", "weather", "news", "price", "when is", "where is",
 	}
 	for _, marker := range markers {
 		if strings.Contains(normalized, marker) {
@@ -65,13 +97,17 @@ func goalLikelyNeedsRetrieval(goal string) bool {
 	return false
 }
 
-func hasSuccessfulRetrieval(traces []types.StepTrace) bool {
+func HasSupportingEvidence(traces []types.StepTrace) bool {
 	for _, trace := range traces {
 		if trace.Error != "" {
 			continue
 		}
 		switch trace.Action {
-		case "rag_fetch", "memory_get", "web_search", "http_fetch", "web_browser", "search_text", "read_file", "sql_query":
+		case "rag_fetch", "memory_get":
+			if len(trace.Evidence) > 0 {
+				return true
+			}
+		case "web_search", "http_fetch", "web_browser", "search_text", "read_file", "sql_query":
 			observation := strings.ToLower(strings.TrimSpace(trace.Observation))
 			if observation != "" && !strings.Contains(observation, `"count":0`) && !strings.Contains(observation, "found 0 evidence") && !strings.HasPrefix(observation, "error:") {
 				return true
@@ -79,6 +115,18 @@ func hasSuccessfulRetrieval(traces []types.StepTrace) bool {
 			if len(trace.Evidence) > 0 {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func latestRetrievalDetailFailed(traces []types.StepTrace) bool {
+	for i := len(traces) - 1; i >= 0; i-- {
+		switch traces[i].Action {
+		case "rag_fetch", "memory_get":
+			return traces[i].Error != "" || len(traces[i].Evidence) == 0
+		case "rag_search", "memory_search":
+			return false
 		}
 	}
 	return false

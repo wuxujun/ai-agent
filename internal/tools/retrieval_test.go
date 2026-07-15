@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -83,6 +85,78 @@ func TestRetrievalSearchEnforcesUniqueQueryCallLimit(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("provider calls=%d, want 2", calls)
+	}
+}
+
+func TestRetrievalSearchCoalescesConcurrentIdenticalQueries(t *testing.T) {
+	taskID := "retrieval-singleflight-test"
+	ClearRetrievalContext(taskID)
+	t.Cleanup(func() { ClearRetrievalContext(taskID) })
+
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce sync.Once
+	search := &retrievalSearchTool{kind: "rag", deps: RetrievalDependencies{
+		SearchRAG: func(_ context.Context, query string) ([]types.Memory, error) {
+			calls.Add(1)
+			startOnce.Do(func() { close(started) })
+			<-release
+			return []types.Memory{{Goal: query, FinalAnswer: "one provider response"}}, nil
+		},
+	}}
+	ctx := WithRetrievalExecutionContext(context.Background(), taskID, "default")
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := search.Execute(ctx, "", map[string]any{"query": "same query"})
+			results <- err
+		}()
+	}
+	<-started
+	close(release)
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("concurrent search: %v", err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("provider calls=%d, want one coalesced call", got)
+	}
+}
+
+func TestRetrievalFetchUsesConfiguredIndependentByteBudgets(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.JITRAGFetchMaxBytes = 80
+		cfg.RAG.JITMemoryFetchMaxBytes = 40
+	}))
+	for _, tc := range []struct {
+		kind  string
+		limit int
+	}{
+		{kind: "rag", limit: 80},
+		{kind: "memory", limit: 40},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			taskID := "retrieval-budget-" + tc.kind
+			ClearRetrievalContext(taskID)
+			t.Cleanup(func() { ClearRetrievalContext(taskID) })
+			candidate := retrievalCandidate{ID: tc.kind + "-candidate", Kind: tc.kind, Memory: types.Memory{KeyFindings: strings.Repeat("资料", 100)}}
+			defaultRetrievalCache.completeSearch(taskID, tc.kind+":query", &retrievalSearchFlight{done: make(chan struct{})}, []retrievalCandidate{candidate}, nil)
+			ctx := WithRetrievalExecutionContext(context.Background(), taskID, "default")
+			result, err := (&retrievalFetchTool{kind: tc.kind}).Execute(ctx, "", map[string]any{"ids": []string{candidate.ID}})
+			if err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			if len(result.Evidence) != 1 || len(result.Evidence[0].Lines[0]) > tc.limit {
+				t.Fatalf("evidence bytes=%d, limit=%d", len(result.Evidence[0].Lines[0]), tc.limit)
+			}
+		})
 	}
 }
 

@@ -2,7 +2,9 @@ package multiagent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +86,7 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 //  2. Research – ResearcherAgent executes each step (budget-gated)
 //  3. Write  – WriterAgent synthesises all evidence into a final answer
 func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
+	ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
 	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	ctx, span := tracer.Start(ctx, "multiagent.coordinator.run")
@@ -347,6 +350,12 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		}
 
 		allEvidence = append(allEvidence, batchEvidence...)
+		if followups := retrievalFetchSteps(batchEvidence); len(followups) > 0 {
+			// Search candidates are intentionally compact. Fetch selected details
+			// before unrelated remaining work so the Writer receives real evidence,
+			// not just candidate snippets.
+			currentSteps = append(followups, currentSteps...)
+		}
 
 		// Trigger re-planning if any step in the batch failed
 		if anyFailed && replansCount < maxReplans {
@@ -399,10 +408,54 @@ func isReadOnlyAction(action string) bool {
 		return false
 	}
 	switch action {
-	case "find_files", "search_text", "read_file", "git_diff", "http_fetch", "web_search":
+	case "find_files", "search_text", "read_file", "git_diff", "http_fetch", "web_search", "rag_search", "rag_fetch", "memory_search", "memory_get":
 		return true
 	}
 	return false
+}
+
+func retrievalFetchSteps(evidence []StepEvidence) []ResearchStep {
+	limit := config.Get().RAG.JITFetchMaxItems
+	if limit <= 0 {
+		limit = 3
+	}
+	steps := make([]ResearchStep, 0, len(evidence))
+	for _, item := range evidence {
+		if item.Failed || (item.Action != "rag_search" && item.Action != "memory_search") {
+			continue
+		}
+		var payload struct {
+			Results []struct {
+				ID string `json:"id"`
+			} `json:"results"`
+		}
+		if json.Unmarshal([]byte(item.Observation), &payload) != nil {
+			continue
+		}
+		ids := make([]string, 0, min(limit, len(payload.Results)))
+		for _, candidate := range payload.Results {
+			if candidate.ID != "" {
+				ids = append(ids, candidate.ID)
+			}
+			if len(ids) >= limit {
+				break
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		action := "rag_fetch"
+		if item.Action == "memory_search" {
+			action = "memory_get"
+		}
+		steps = append(steps, ResearchStep{
+			ID:                 item.StepID + "-fetch",
+			Description:        "Fetch selected evidence from " + item.Action,
+			Action:             action,
+			RepairedParameters: map[string]any{"ids": ids},
+		})
+	}
+	return steps
 }
 
 // partitionBatch returns the largest safe batch from the front of steps.
@@ -674,6 +727,11 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 			output.TokenUsage.TotalTokens += verification.TokenUsage.TotalTokens
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") && planner.RequiresFactualEvidence(task) && !planner.HasSupportingEvidence(task.Trace) {
+		output.FinalAnswer = "未检索到足够证据，暂时无法可靠回答该事实性问题。"
+		output.Confidence = "low"
+		output.EvidenceSummary = "No successful retrieval or tool evidence supports a factual answer."
+	}
 
 	task.Trace = append(task.Trace, types.StepTrace{
 		Step:        task.StepCount,
@@ -761,6 +819,13 @@ func buildStepQuery(step ResearchStep) string {
 		return fmt.Sprintf("url=%q", step.URL)
 	case "web_search":
 		return fmt.Sprintf("query=%q", step.SearchQuery)
+	case "rag_search", "memory_search":
+		return fmt.Sprintf("query=%q", step.SearchQuery)
+	case "rag_fetch", "memory_get":
+		if ids, ok := step.RepairedParameters["ids"]; ok {
+			return fmt.Sprintf("ids=%v", ids)
+		}
+		return "ids=[]"
 	case "analyze_image":
 		return fmt.Sprintf("path=%q prompt=%q", step.FilePath, step.Prompt)
 	default:

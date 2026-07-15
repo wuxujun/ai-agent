@@ -22,22 +22,21 @@ func TestSchemaActionEnumCoversRegisteredTools(t *testing.T) {
 	if !ok {
 		t.Fatal("actions missing items")
 	}
-	itemProps, ok := items["properties"].(map[string]any)
+	variants, ok := items["anyOf"].([]any)
 	if !ok {
-		t.Fatal("items missing properties")
-	}
-	action, ok := itemProps["action"].(map[string]any)
-	if !ok {
-		t.Fatal("item missing action property")
-	}
-	enum, ok := action["enum"].([]string)
-	if !ok {
-		t.Fatalf("action.enum is not []string, got %T", action["enum"])
+		t.Fatalf("items.anyOf is not []any, got %T", items["anyOf"])
 	}
 
 	got := map[string]bool{}
-	for _, a := range enum {
-		got[a] = true
+	for _, raw := range variants {
+		variant := raw.(map[string]any)
+		props := variant["properties"].(map[string]any)
+		action := props["action"].(map[string]any)
+		enum := action["enum"].([]string)
+		if len(enum) != 1 {
+			t.Fatalf("action variant enum=%v, want exactly one action", enum)
+		}
+		got[enum[0]] = true
 	}
 
 	for _, name := range []string{
@@ -50,15 +49,12 @@ func TestSchemaActionEnumCoversRegisteredTools(t *testing.T) {
 	}
 }
 
-// TestSchemaParametersIncludeURL ensures http_fetch's url parameter made it into
-// the merged parameters object (previously absent, so url could not be passed).
-func TestSchemaParametersIncludeURL(t *testing.T) {
+// TestSchemaParametersAreScopedByAction ensures strict structured output does
+// not require every tool call to emit parameters belonging to unrelated tools.
+func TestSchemaParametersAreScopedByAction(t *testing.T) {
 	schema := PlannerDecisionSchema()
-	props := schema["properties"].(map[string]any)
-	actionsArray := props["actions"].(map[string]any)
-	items := actionsArray["items"].(map[string]any)
-	itemProps := items["properties"].(map[string]any)
-	params := itemProps["parameters"].(map[string]any)
+	httpVariant := openAIActionVariant(t, schema, "http_fetch")
+	params := httpVariant["properties"].(map[string]any)["parameters"].(map[string]any)
 
 	paramProps, ok := params["properties"].(map[string]any)
 	if !ok {
@@ -66,6 +62,9 @@ func TestSchemaParametersIncludeURL(t *testing.T) {
 	}
 	if _, ok := paramProps["url"]; !ok {
 		t.Error("parameters.properties missing \"url\" (http_fetch cannot receive a url)")
+	}
+	if _, ok := paramProps["ids"]; ok {
+		t.Error("http_fetch parameters unexpectedly include retrieval-only ids")
 	}
 
 	// Strict mode invariant: every property must also appear in required.
@@ -82,4 +81,23 @@ func TestSchemaParametersIncludeURL(t *testing.T) {
 			t.Errorf("param %q present in properties but missing from required (violates strict mode)", name)
 		}
 	}
+}
+
+func openAIActionVariant(t *testing.T, schema map[string]any, name string) map[string]any {
+	t.Helper()
+	props := schema["properties"].(map[string]any)
+	actionsArray := props["actions"].(map[string]any)
+	items := actionsArray["items"].(map[string]any)
+	variants := items["anyOf"].([]any)
+	for _, raw := range variants {
+		variant := raw.(map[string]any)
+		variantProps := variant["properties"].(map[string]any)
+		action := variantProps["action"].(map[string]any)
+		enum := action["enum"].([]string)
+		if len(enum) == 1 && enum[0] == name {
+			return variant
+		}
+	}
+	t.Fatalf("action variant %q not found", name)
+	return nil
 }

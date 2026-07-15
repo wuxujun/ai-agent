@@ -94,17 +94,19 @@ type Config struct {
 	} `mapstructure:"embedding"`
 
 	RAG struct {
-		SearchURL            string `mapstructure:"search_url"`
-		SearchMethod         string `mapstructure:"search_method"`
-		Authorization        string `mapstructure:"authorization"`
-		ToolName             string `mapstructure:"tool_name"`
-		ContextMode          string `mapstructure:"context_mode"`
-		JITSearchMaxCalls    int    `mapstructure:"jit_search_max_calls"`
-		JITFetchMaxItems     int    `mapstructure:"jit_fetch_max_items"`
-		MaxPromptMemories    int    `mapstructure:"max_prompt_memories"`
-		MaxMemoryBytes       int    `mapstructure:"max_memory_bytes"`
-		MaxMemoryPromptBytes int    `mapstructure:"max_memory_prompt_bytes"`
-		MaxRawFallbackBytes  int    `mapstructure:"max_raw_fallback_bytes"`
+		SearchURL              string `mapstructure:"search_url"`
+		SearchMethod           string `mapstructure:"search_method"`
+		Authorization          string `mapstructure:"authorization"`
+		ToolName               string `mapstructure:"tool_name"`
+		ContextMode            string `mapstructure:"context_mode"`
+		JITSearchMaxCalls      int    `mapstructure:"jit_search_max_calls"`
+		JITFetchMaxItems       int    `mapstructure:"jit_fetch_max_items"`
+		JITRAGFetchMaxBytes    int    `mapstructure:"jit_rag_fetch_max_bytes"`
+		JITMemoryFetchMaxBytes int    `mapstructure:"jit_memory_fetch_max_bytes"`
+		MaxPromptMemories      int    `mapstructure:"max_prompt_memories"`
+		MaxMemoryBytes         int    `mapstructure:"max_memory_bytes"`
+		MaxMemoryPromptBytes   int    `mapstructure:"max_memory_prompt_bytes"`
+		MaxRawFallbackBytes    int    `mapstructure:"max_raw_fallback_bytes"`
 	} `mapstructure:"rag"`
 
 	Search struct {
@@ -337,6 +339,8 @@ func setupViper() {
 	viper.SetDefault("rag.context_mode", "jit")
 	viper.SetDefault("rag.jit_search_max_calls", 3)
 	viper.SetDefault("rag.jit_fetch_max_items", 3)
+	viper.SetDefault("rag.jit_rag_fetch_max_bytes", 6000)
+	viper.SetDefault("rag.jit_memory_fetch_max_bytes", 2000)
 	viper.SetDefault("rag.max_prompt_memories", 3)
 	viper.SetDefault("rag.max_memory_bytes", 2500)
 	viper.SetDefault("rag.max_memory_prompt_bytes", 8000)
@@ -693,6 +697,8 @@ func diffConfigs(old, new *Config) []string {
 	addIf("rag.context_mode", old.RAG.ContextMode, new.RAG.ContextMode)
 	addIfInt("rag.jit_search_max_calls", old.RAG.JITSearchMaxCalls, new.RAG.JITSearchMaxCalls)
 	addIfInt("rag.jit_fetch_max_items", old.RAG.JITFetchMaxItems, new.RAG.JITFetchMaxItems)
+	addIfInt("rag.jit_rag_fetch_max_bytes", old.RAG.JITRAGFetchMaxBytes, new.RAG.JITRAGFetchMaxBytes)
+	addIfInt("rag.jit_memory_fetch_max_bytes", old.RAG.JITMemoryFetchMaxBytes, new.RAG.JITMemoryFetchMaxBytes)
 	addIfInt("rag.max_prompt_memories", old.RAG.MaxPromptMemories, new.RAG.MaxPromptMemories)
 	addIfInt("rag.max_memory_bytes", old.RAG.MaxMemoryBytes, new.RAG.MaxMemoryBytes)
 	addIfInt("rag.max_memory_prompt_bytes", old.RAG.MaxMemoryPromptBytes, new.RAG.MaxMemoryPromptBytes)
@@ -992,7 +998,7 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("rag.context_mode must be one of jit or prefetch")
 	}
-	if c.RAG.JITSearchMaxCalls < 0 || c.RAG.JITFetchMaxItems < 0 {
+	if c.RAG.JITSearchMaxCalls < 0 || c.RAG.JITFetchMaxItems < 0 || c.RAG.JITRAGFetchMaxBytes < 0 || c.RAG.JITMemoryFetchMaxBytes < 0 {
 		return fmt.Errorf("rag JIT limits must be >= 0")
 	}
 	if c.LLM.PlannerTraceMaxItems < 0 || c.LLM.PlannerObservationMaxChars < 0 || c.LLM.PlannerEvidenceMaxItems < 0 || c.LLM.PlannerEvidenceLineMaxChars < 0 || c.LLM.PlannerTraceMaxChars < 0 {

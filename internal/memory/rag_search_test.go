@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 )
@@ -17,6 +18,20 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestRAGResponsePreviewAlwaysProducesValidUTF8(t *testing.T) {
+	body := append([]byte(strings.Repeat("中文资料", 100)), 0xff, 0xfe)
+	preview, truncated := ragResponsePreview(body, 301)
+	if !truncated {
+		t.Fatal("expected large response preview to be truncated")
+	}
+	if len(preview) > 301 {
+		t.Fatalf("preview bytes=%d, limit=301", len(preview))
+	}
+	if !utf8.ValidString(preview) {
+		t.Fatalf("preview contains invalid UTF-8: %q", preview)
+	}
 }
 
 func withRAGHTTPClient(t *testing.T, fn func(*http.Request) (int, string)) {

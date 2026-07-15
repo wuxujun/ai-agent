@@ -60,7 +60,13 @@ type retrievalTaskCache struct {
 	Candidates map[string]retrievalCandidate
 	Searches   map[string][]string
 	Calls      map[string]int
+	Inflight   map[string]*retrievalSearchFlight
 	UpdatedAt  time.Time
+}
+
+type retrievalSearchFlight struct {
+	done chan struct{}
+	err  error
 }
 
 type retrievalCache struct {
@@ -79,7 +85,7 @@ func (c *retrievalCache) task(taskID string) *retrievalTaskCache {
 	}
 	item := c.tasks[taskID]
 	if item == nil {
-		item = &retrievalTaskCache{Candidates: make(map[string]retrievalCandidate), Searches: make(map[string][]string), Calls: make(map[string]int)}
+		item = &retrievalTaskCache{Candidates: make(map[string]retrievalCandidate), Searches: make(map[string][]string), Calls: make(map[string]int), Inflight: make(map[string]*retrievalSearchFlight)}
 		c.tasks[taskID] = item
 	}
 	item.UpdatedAt = now
@@ -103,27 +109,48 @@ func (c *retrievalCache) cachedSearch(taskID, key string) ([]retrievalCandidate,
 	return result, true
 }
 
-func (c *retrievalCache) reserveSearch(taskID, kind string, limit int) error {
+func (c *retrievalCache) beginSearch(taskID, key, kind string, limit int) ([]retrievalCandidate, bool, *retrievalSearchFlight, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	item := c.task(taskID)
+	if ids, ok := item.Searches[key]; ok {
+		result := make([]retrievalCandidate, 0, len(ids))
+		for _, id := range ids {
+			if candidate, exists := item.Candidates[id]; exists {
+				result = append(result, candidate)
+			}
+		}
+		return result, true, nil, false, nil
+	}
+	if flight := item.Inflight[key]; flight != nil {
+		return nil, false, flight, false, nil
+	}
 	if item.Calls[kind] >= limit {
-		return fmt.Errorf("%s search call limit reached (%d)", kind, limit)
+		return nil, false, nil, false, fmt.Errorf("%s search call limit reached (%d)", kind, limit)
 	}
 	item.Calls[kind]++
-	return nil
+	flight := &retrievalSearchFlight{done: make(chan struct{})}
+	item.Inflight[key] = flight
+	return nil, false, flight, true, nil
 }
 
-func (c *retrievalCache) storeSearch(taskID, key string, candidates []retrievalCandidate) {
+func (c *retrievalCache) completeSearch(taskID, key string, flight *retrievalSearchFlight, candidates []retrievalCandidate, searchErr error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	item := c.task(taskID)
-	ids := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		item.Candidates[candidate.ID] = candidate
-		ids = append(ids, candidate.ID)
+	if searchErr == nil {
+		ids := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			item.Candidates[candidate.ID] = candidate
+			ids = append(ids, candidate.ID)
+		}
+		item.Searches[key] = ids
 	}
-	item.Searches[key] = ids
+	if item.Inflight[key] == flight {
+		delete(item.Inflight, key)
+	}
+	flight.err = searchErr
+	close(flight.done)
 }
 
 func (c *retrievalCache) fetch(taskID, kind string, ids []string) ([]retrievalCandidate, error) {
@@ -188,26 +215,46 @@ func (t *retrievalSearchTool) Execute(ctx context.Context, _ string, params map[
 		topK = 5
 	}
 	key := t.kind + ":" + strings.ToLower(strings.Join(strings.Fields(query), " "))
-	if candidates, ok := defaultRetrievalCache.cachedSearch(exec.TaskID, key); ok {
-		return searchCandidatesResult(query, candidates, true)
-	}
 	maxCalls := config.Get().RAG.JITSearchMaxCalls
 	if maxCalls <= 0 {
 		maxCalls = 3
 	}
-	if err := defaultRetrievalCache.reserveSearch(exec.TaskID, t.kind, maxCalls); err != nil {
+	candidates, cached, flight, leader, err := defaultRetrievalCache.beginSearch(exec.TaskID, key, t.kind, maxCalls)
+	if err != nil {
 		return nil, err
+	}
+	if cached {
+		return searchCandidatesResult(query, candidates, true)
+	}
+	if !leader {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-flight.done:
+		}
+		if flight.err != nil {
+			return nil, flight.err
+		}
+		candidates, ok := defaultRetrievalCache.cachedSearch(exec.TaskID, key)
+		if !ok {
+			return nil, fmt.Errorf("%s concurrent search completed without cached results", t.kind)
+		}
+		return searchCandidatesResult(query, candidates, true)
 	}
 
 	var memories []types.Memory
 	if t.kind == "rag" {
 		if t.deps.SearchRAG == nil {
-			return nil, fmt.Errorf("rag_search is not configured")
+			err = fmt.Errorf("rag_search is not configured")
+			defaultRetrievalCache.completeSearch(exec.TaskID, key, flight, nil, err)
+			return nil, err
 		}
 		memories, err = t.deps.SearchRAG(ctx, query)
 	} else {
 		if t.deps.MemoryStore == nil || t.deps.GetEmbedding == nil {
-			return nil, fmt.Errorf("memory_search is not configured")
+			err = fmt.Errorf("memory_search is not configured")
+			defaultRetrievalCache.completeSearch(exec.TaskID, key, flight, nil, err)
+			return nil, err
 		}
 		var embedding []float32
 		embedding, err = t.deps.GetEmbedding(ctx, query)
@@ -222,12 +269,13 @@ func (t *retrievalSearchTool) Execute(ctx context.Context, _ string, params map[
 		}
 	}
 	if err != nil {
+		defaultRetrievalCache.completeSearch(exec.TaskID, key, flight, nil, err)
 		return nil, err
 	}
 	if len(memories) > topK {
 		memories = memories[:topK]
 	}
-	candidates := make([]retrievalCandidate, 0, len(memories))
+	candidates = make([]retrievalCandidate, 0, len(memories))
 	queryHash := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))[:10]
 	for i, item := range memories {
 		title := strings.TrimSpace(item.Goal)
@@ -249,7 +297,7 @@ func (t *retrievalSearchTool) Execute(ctx context.Context, _ string, params map[
 		}
 		candidates = append(candidates, retrievalCandidate{ID: fmt.Sprintf("%s-%s-%d", t.kind, queryHash, i+1), Kind: t.kind, Title: title, Snippet: snippet, Source: source, Timestamp: timestamp, Memory: item})
 	}
-	defaultRetrievalCache.storeSearch(exec.TaskID, key, candidates)
+	defaultRetrievalCache.completeSearch(exec.TaskID, key, flight, candidates, nil)
 	return searchCandidatesResult(query, candidates, false)
 }
 
@@ -308,9 +356,15 @@ func (t *retrievalFetchTool) Execute(ctx context.Context, _ string, params map[s
 	if err != nil {
 		return nil, err
 	}
-	totalBudget := 6000
+	totalBudget := config.Get().RAG.JITRAGFetchMaxBytes
+	if totalBudget <= 0 {
+		totalBudget = 6000
+	}
 	if t.kind == "memory" {
-		totalBudget = 2000
+		totalBudget = config.Get().RAG.JITMemoryFetchMaxBytes
+		if totalBudget <= 0 {
+			totalBudget = 2000
+		}
 	}
 	remaining := totalBudget
 	evidence := make([]types.Evidence, 0, len(candidates))

@@ -26,6 +26,8 @@ Available actions:
   git_diff     – show git diff of the workspace   (optionally set file_path for a single file)
   http_fetch   – fetch content from a public URL  (set url; private/loopback addresses are blocked)
   web_search   – search the web for keywords      (set search_query)
+  rag_search   – search current external RAG      (set search_query; details are fetched automatically)
+  memory_search – search historical task memory   (set search_query; details are fetched automatically)
   analyze_image – analyze a workspace image       (set file_path and prompt)
 
 Rules:
@@ -51,7 +53,7 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 		"properties": map[string]any{
 			"id":           map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
 			"description":  map[string]any{"type": "string", "description": "What this step investigates"},
-			"action":       map[string]any{"type": "string", "enum": tools.Names()},
+			"action":       map[string]any{"type": "string", "enum": plannerResearchActions()},
 			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search)"},
 			"file_glob":    map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
 			"file_path":    map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
@@ -83,6 +85,19 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 		"required":             []string{"thought_summary", "steps"},
 		"additionalProperties": false,
 	}
+}
+
+func plannerResearchActions() []string {
+	names := tools.Names()
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		// Detail tools require candidate IDs that do not exist until their search
+		// step has executed. Coordinator inserts these steps deterministically.
+		if name != "rag_fetch" && name != "memory_get" {
+			result = append(result, name)
+		}
+	}
+	return result
 }
 
 // Plan calls the LLM to produce a ResearchPlan for the given goal.
@@ -150,6 +165,8 @@ Available actions:
   git_diff     – show git diff of the workspace   (optionally set file_path for a single file)
   http_fetch   – fetch content from a public URL  (set url; private/loopback addresses are blocked)
   web_search   – search the web for keywords      (set search_query)
+  rag_search   – search current external RAG      (set search_query; details are fetched automatically)
+  memory_search – search historical task memory   (set search_query; details are fetched automatically)
   analyze_image – analyze a workspace image       (set file_path and prompt)
 
 Rules:

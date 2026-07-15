@@ -724,12 +724,7 @@ func logRAGResponse(kind, method, targetURL string, statusCode int, body []byte)
 		)
 		return
 	}
-	bodyText := string(body)
-	truncated := false
-	if len(bodyText) > maxResponsePreview {
-		bodyText = bodyText[:maxResponsePreview]
-		truncated = true
-	}
+	bodyText, truncated := ragResponsePreview(body, maxResponsePreview)
 	log.Info("RAG response",
 		"kind", kind,
 		"method", method,
@@ -739,6 +734,13 @@ func logRAGResponse(kind, method, targetURL string, statusCode int, body []byte)
 		"body_preview", bodyText,
 		"body_truncated", truncated,
 	)
+}
+
+func ragResponsePreview(body []byte, limit int) (string, bool) {
+	// HTTP bodies are untrusted bytes. Normalize malformed sequences first, then
+	// truncate only at rune boundaries so slog/OTel never receives invalid UTF-8.
+	valid := strings.ToValidUTF8(string(body), "�")
+	return truncateUTF8Bytes(valid, limit, "")
 }
 
 func buildSearchArguments(query string) map[string]any {

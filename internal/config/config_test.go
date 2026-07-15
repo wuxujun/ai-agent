@@ -67,7 +67,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RAG.MaxPromptMemories != 3 || cfg.RAG.MaxMemoryBytes != 2500 || cfg.RAG.MaxMemoryPromptBytes != 8000 || cfg.RAG.MaxRawFallbackBytes != 4000 {
 		t.Errorf("unexpected RAG prompt budget defaults: %+v", cfg.RAG)
 	}
-	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 3 || cfg.RAG.JITFetchMaxItems != 3 {
+	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 3 || cfg.RAG.JITFetchMaxItems != 3 || cfg.RAG.JITRAGFetchMaxBytes != 6000 || cfg.RAG.JITMemoryFetchMaxBytes != 2000 {
 		t.Errorf("unexpected RAG JIT defaults: %+v", cfg.RAG)
 	}
 	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
@@ -498,6 +498,16 @@ func TestValidateRAGContextModeAndLimits(t *testing.T) {
 	cfg.RAG.JITFetchMaxItems = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected negative JIT fetch limit error")
+	}
+	cfg.RAG.JITFetchMaxItems = 1
+	cfg.RAG.JITRAGFetchMaxBytes = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative JIT RAG byte limit error")
+	}
+	cfg.RAG.JITRAGFetchMaxBytes = 1
+	cfg.RAG.JITMemoryFetchMaxBytes = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative JIT memory byte limit error")
 	}
 }
 

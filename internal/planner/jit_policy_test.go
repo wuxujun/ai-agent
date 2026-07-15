@@ -70,6 +70,32 @@ func TestEnforceJITRetrievalStopsTruthfullyAfterEmptySearch(t *testing.T) {
 	}
 }
 
+func TestEnforceJITRetrievalStopsAfterEmptyDetailFetch(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
+	task := &types.Task{Goal: "教师陈园青简介", Trace: []types.StepTrace{
+		{Action: "rag_search", Observation: `{"count":1,"results":[{"id":"rag-a"}]}`},
+		{Action: "rag_fetch", Observation: "fetched 0 rag item(s)"},
+	}}
+	decision := &PlanDecision{Stop: true, FinalAnswer: "invented", Actions: []ActionCall{{Action: "none"}}}
+	if !enforceJITRetrieval(task, decision) || !decision.Stop || decision.FinalAnswer == "invented" {
+		t.Fatalf("empty detail fetch was not handled truthfully: %+v", decision)
+	}
+}
+
+func TestRequiresFactualEvidenceUsesResearchIntent(t *testing.T) {
+	task := &types.Task{Goal: "Provide a briefing", Trace: []types.StepTrace{{Action: "intent_route", Query: "research"}}}
+	if !RequiresFactualEvidence(task) {
+		t.Fatal("research intent should require supporting evidence")
+	}
+}
+
+func TestRequiresFactualEvidenceLetsCodingIntentOverrideLexicalMarker(t *testing.T) {
+	task := &types.Task{Goal: "修改教师信息页面代码", Trace: []types.StepTrace{{Action: "intent_route", Query: "coding"}}}
+	if RequiresFactualEvidence(task) {
+		t.Fatal("coding intent should not be forced into external fact retrieval")
+	}
+}
+
 func TestEnforceJITRetrievalDoesNotAffectReasoningTask(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
 	task := &types.Task{Goal: "计算 12 * 8"}
