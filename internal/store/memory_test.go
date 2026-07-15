@@ -11,6 +11,22 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+func TestMemoryRelevanceScoreFallsBackForMismatchedDimensions(t *testing.T) {
+	queryEmbedding := make([]float32, 3072)
+	mem := &types.Memory{
+		Goal:      "inspect postgres configuration",
+		Embedding: make([]float32, 128),
+	}
+
+	score, mismatch := memoryRelevanceScore("postgres", queryEmbedding, mem)
+	if !mismatch {
+		t.Fatal("expected embedding dimension mismatch")
+	}
+	if score <= 0 {
+		t.Fatalf("keyword fallback score = %v, want > 0", score)
+	}
+}
+
 // TestMemoryStoreDuplicateIndexing verifies that when SaveFullTask is called
 // multiple times in parallel for a completed task, only one goroutine is
 // spawned to generate the memory.

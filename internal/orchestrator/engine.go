@@ -1062,7 +1062,11 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 		if e.StepCallback != nil {
 			for i := traceStart; i < len(task.Trace); i++ {
 				step := task.Trace[i]
-				e.StepCallback(task.ID, task.Status, &step)
+				// A step callback reports execution progress. Task completion is
+				// published separately with the authoritative final answer after
+				// persistence; marking the last trace terminal can make SSE clients
+				// close before they receive that final event.
+				e.StepCallback(task.ID, types.StatusRunning, &step)
 			}
 		}
 	}

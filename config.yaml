@@ -114,7 +114,9 @@ llm:
   # scene counts as another call, while retries within one scene do not.
   max_calls_per_task: 0
   # Default per-task estimated USD limit; 0 disables the limit. Cost requires
-  # input/output pricing on the selected gateway or scene.
+  # input/output pricing on every selected generation scene. Configure shared
+  # prices under llm.gateway or scene-specific prices under llm.scenes; task
+  # requests must leave llm_cost_budget_usd at 0 when pricing is unavailable.
   max_estimated_cost_usd_per_task: 0
   context_compression_trace_threshold: 8
   # Optional: also trigger context compression when accumulated trace tokens exceed
@@ -230,7 +232,9 @@ llm:
 
 # Embedding configuration
 embedding:
-  # Embedding model name. If empty, uses provider default.
+  # Embedding model name. If empty, uses the provider's embedding default
+  # (for example gemini-embedding-001 or text-embedding-3-small), not its
+  # text-generation default.
   # Env override: AI_AGENT_EMBEDDING_MODEL
   model: ""
 

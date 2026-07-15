@@ -949,6 +949,13 @@ func TestRunAll_Streaming(t *testing.T) {
 			Token:  chunk,
 		})
 	}
+	engine.StepCallback = func(taskID string, status types.TaskStatus, step *types.StepTrace) {
+		api.GetBus().Publish(taskID, api.StepEvent{
+			TaskID: taskID,
+			Status: status,
+			Step:   step,
+		})
+	}
 	r := setupTestRouter(t, st, engine)
 
 	task := &types.Task{
@@ -974,5 +981,8 @@ func TestRunAll_Streaming(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, "token-all") {
 		t.Errorf("expected body to contain streamed events, got %q", body)
+	}
+	if !strings.Contains(body, `"final_answer":"Mock final answer"`) {
+		t.Errorf("expected terminal event to contain final answer, got %q", body)
 	}
 }

@@ -59,6 +59,23 @@ func TestNonTerminalPublishIsNotSticky(t *testing.T) {
 	}
 }
 
+func TestTerminalStatusOnStepEventIsNotSticky(t *testing.T) {
+	bus := newTestBus(time.Now)
+	step := &types.StepTrace{Action: "prompt_injection_detect"}
+
+	bus.Publish("task-terminal-step", StepEvent{
+		TaskID: "task-terminal-step",
+		Status: types.StatusCompleted,
+		Step:   step,
+	})
+
+	ch, sticky := bus.Subscribe("task-terminal-step")
+	defer bus.Unsubscribe("task-terminal-step", ch)
+	if sticky != nil {
+		t.Fatalf("step progress event was cached as terminal: %+v", sticky)
+	}
+}
+
 // TestStickyExpiresAfterTTL ensures the cache does not grow unbounded for
 // long-lived processes: an entry older than stickyTerminalTTL is dropped on
 // the next Subscribe and not replayed.

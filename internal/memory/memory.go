@@ -102,7 +102,7 @@ func DeduplicateMemories(memories []types.Memory) []types.Memory {
 		isSemanticDuplicate := false
 		if len(mem.Embedding) > 0 {
 			for _, other := range deduped {
-				if len(other.Embedding) > 0 {
+				if EmbeddingsCompatible(mem.Embedding, other.Embedding) {
 					sim := CosineSimilarity(mem.Embedding, other.Embedding)
 					if sim >= semanticThreshold {
 						log.Debug("deduplicating semantically similar memory", "id", mem.ID, "other_id", other.ID, "similarity", sim)

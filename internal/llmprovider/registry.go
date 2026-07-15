@@ -43,14 +43,15 @@ const (
 )
 
 type Specification struct {
-	Name             string
-	DefaultModel     string
-	DefaultBaseURL   string
-	Protocol         Protocol
-	CredentialFamily CredentialFamily
-	Capabilities     Capability
-	RequiresAPIKey   bool
-	RequiresBaseURL  bool
+	Name                  string
+	DefaultModel          string
+	DefaultEmbeddingModel string
+	DefaultBaseURL        string
+	Protocol              Protocol
+	CredentialFamily      CredentialFamily
+	Capabilities          Capability
+	RequiresAPIKey        bool
+	RequiresBaseURL       bool
 }
 
 func (s Specification) Supports(capability Capability) bool {
@@ -63,11 +64,11 @@ var registry = struct {
 }{providers: make(map[string]Specification)}
 
 func init() {
-	MustRegister(Specification{Name: OpenAIResponses, DefaultModel: "gpt-4.1-mini", DefaultBaseURL: "https://api.openai.com/v1/responses", Protocol: ProtocolOpenAIResponses, CredentialFamily: CredentialOpenAI, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision, RequiresAPIKey: true, RequiresBaseURL: true})
-	MustRegister(Specification{Name: OpenAI, DefaultModel: "gpt-4.1-mini", DefaultBaseURL: "https://api.openai.com/v1/chat/completions", Protocol: ProtocolOpenAIChat, CredentialFamily: CredentialOpenAI, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision, RequiresAPIKey: true, RequiresBaseURL: true})
-	MustRegister(Specification{Name: Gemini, DefaultModel: "gemini-2.5-flash", Protocol: ProtocolGemini, CredentialFamily: CredentialGemini, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision, RequiresAPIKey: true})
-	MustRegister(Specification{Name: Ollama, DefaultModel: "llama3", DefaultBaseURL: "http://localhost:11434/api/chat", Protocol: ProtocolOllama, CredentialFamily: CredentialGeneric, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision, RequiresBaseURL: true})
-	MustRegister(Specification{Name: LiteLLM, DefaultModel: "gpt-4.1-mini", Protocol: ProtocolOpenAIChat, CredentialFamily: CredentialGeneric, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision | CapabilityGatewayModelDiscovery, RequiresBaseURL: true})
+	MustRegister(Specification{Name: OpenAIResponses, DefaultModel: "gpt-4.1-mini", DefaultEmbeddingModel: "text-embedding-3-small", DefaultBaseURL: "https://api.openai.com/v1/responses", Protocol: ProtocolOpenAIResponses, CredentialFamily: CredentialOpenAI, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision, RequiresAPIKey: true, RequiresBaseURL: true})
+	MustRegister(Specification{Name: OpenAI, DefaultModel: "gpt-4.1-mini", DefaultEmbeddingModel: "text-embedding-3-small", DefaultBaseURL: "https://api.openai.com/v1/chat/completions", Protocol: ProtocolOpenAIChat, CredentialFamily: CredentialOpenAI, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision, RequiresAPIKey: true, RequiresBaseURL: true})
+	MustRegister(Specification{Name: Gemini, DefaultModel: "gemini-2.5-flash", DefaultEmbeddingModel: "gemini-embedding-001", Protocol: ProtocolGemini, CredentialFamily: CredentialGemini, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision, RequiresAPIKey: true})
+	MustRegister(Specification{Name: Ollama, DefaultModel: "llama3", DefaultEmbeddingModel: "nomic-embed-text", DefaultBaseURL: "http://localhost:11434/api/chat", Protocol: ProtocolOllama, CredentialFamily: CredentialGeneric, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision, RequiresBaseURL: true})
+	MustRegister(Specification{Name: LiteLLM, DefaultModel: "gpt-4.1-mini", DefaultEmbeddingModel: "text-embedding-3-small", Protocol: ProtocolOpenAIChat, CredentialFamily: CredentialGeneric, Capabilities: CapabilityStructuredOutput | CapabilityStreaming | CapabilityEmbedding | CapabilityVision | CapabilityGatewayModelDiscovery, RequiresBaseURL: true})
 }
 
 func Register(spec Specification) error {

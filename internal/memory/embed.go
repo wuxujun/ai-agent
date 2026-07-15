@@ -51,6 +51,13 @@ func CosineSimilarity(v1, v2 []float32) float32 {
 	return dotProduct / float32(math.Sqrt(float64(norm1)*float64(norm2)))
 }
 
+// EmbeddingsCompatible reports whether two non-empty vectors can be compared.
+// Equal dimensions are necessary (though model identity must also be kept
+// stable by configuration when rebuilding an index).
+func EmbeddingsCompatible(v1, v2 []float32) bool {
+	return len(v1) > 0 && len(v1) == len(v2)
+}
+
 // GetEmbedding calculates the vector embedding for the given text.
 // If the LLM provider has an API key, it calls the provider's API.
 // Otherwise, or if the API call fails, it falls back to a deterministic local embedding.

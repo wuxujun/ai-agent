@@ -639,7 +639,7 @@ func (h *Handler) runAll(c *gin.Context) {
 				}
 				writeSSEEvent(c, event)
 				c.Writer.Flush()
-				if event.Status == types.StatusCompleted || event.Status == types.StatusFailed {
+				if event.isTerminal() {
 					return
 				}
 			}

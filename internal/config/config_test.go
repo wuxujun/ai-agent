@@ -254,6 +254,28 @@ func TestResolveLLMScene(t *testing.T) {
 	}
 }
 
+func TestResolveEmbeddingSceneUsesProviderEmbeddingDefault(t *testing.T) {
+	tests := []struct {
+		provider string
+		want     string
+	}{
+		{provider: llmprovider.Gemini, want: "gemini-embedding-001"},
+		{provider: llmprovider.OpenAI, want: "text-embedding-3-small"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.LLM.Provider = tt.provider
+			cfg.LLM.TimeoutSeconds = 30
+
+			resolved := cfg.ResolveLLMScene(LLMSceneEmbedding)
+			if resolved.Model != tt.want {
+				t.Fatalf("embedding model = %q, want %q", resolved.Model, tt.want)
+			}
+		})
+	}
+}
+
 func TestOverrideForTestingUsesIsolatedSnapshot(t *testing.T) {
 	original := Get()
 	retryCount := 2
@@ -525,7 +547,7 @@ func TestValidateLLMCostBudgetRequiresPricing(t *testing.T) {
 	cfg.LLM.Provider = "openai"
 	cfg.LLM.TimeoutSeconds = 30
 	cfg.LLM.MaxEstimatedCostUSDPerTask = 1
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "requires input or output pricing") {
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "requires input or output pricing") || !strings.Contains(err.Error(), "llm.gateway") || !strings.Contains(err.Error(), "llm_cost_budget_usd to 0") {
 		t.Fatalf("missing pricing validation error = %v", err)
 	}
 	cfg.LLM.Gateway.InputCostPerMillionUSD = testPtr(1.0)

@@ -835,8 +835,14 @@ func (c *Config) ResolveLLMScene(scene string) ResolvedLLMConfig {
 	if v, ok := c.LLM.Scenes[scene]; ok {
 		apply(v)
 	}
-	if scene == LLMSceneEmbedding && c.Embedding.Model != "" {
-		model = c.Embedding.Model
+	if scene == LLMSceneEmbedding {
+		if c.Embedding.Model != "" {
+			model = c.Embedding.Model
+		} else if endpoint, configured := c.LLM.Scenes[scene]; !configured || endpoint.Model == "" {
+			if spec, ok := llmprovider.Lookup(provider); ok && spec.DefaultEmbeddingModel != "" {
+				model = spec.DefaultEmbeddingModel
+			}
+		}
 	}
 	if timeout <= 0 {
 		timeout = 30
@@ -880,7 +886,7 @@ func (c *Config) ValidateLLMCostBudgetCoverage() error {
 	for scene := range scenes {
 		resolved := c.ResolveLLMScene(scene)
 		if resolved.InputCostPerMillionUSD == 0 && resolved.OutputCostPerMillionUSD == 0 {
-			return fmt.Errorf("llm scene %q requires input or output pricing when a task cost budget is enabled", scene)
+			return fmt.Errorf("llm scene %q requires input or output pricing when a task cost budget is enabled; configure llm.gateway or llm.scenes.%s pricing, or set llm_cost_budget_usd to 0", scene, scene)
 		}
 	}
 	return nil

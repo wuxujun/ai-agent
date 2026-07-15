@@ -92,6 +92,7 @@ func InitOTel(serviceName, env, endpoint string) (ShutdownFunc, error) {
 			return nil, fmt.Errorf("create otlp trace exporter: %w", err)
 		}
 	}
+	traceExp = newUTF8SanitizingExporter(traceExp)
 
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExp),

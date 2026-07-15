@@ -24,6 +24,10 @@ type StepEvent struct {
 	Approval   *types.ApprovalRequest `json:"approval,omitempty"`
 }
 
+func (e StepEvent) isTerminal() bool {
+	return e.Step == nil && (e.Status == types.StatusCompleted || e.Status == types.StatusFailed)
+}
+
 // stickyTerminalTTL bounds how long the EventBus replays a task's terminal
 // event to late subscribers. The 15s store-poll backstop in streamTask already
 // catches anything older than this; the sticky cache exists purely to close the
@@ -97,7 +101,7 @@ func (b *EventBus) Unsubscribe(taskID string, ch chan StepEvent) {
 // just after the publish can still receive them.
 func (b *EventBus) Publish(taskID string, event StepEvent) {
 	b.mu.Lock()
-	if event.Status == types.StatusCompleted || event.Status == types.StatusFailed {
+	if event.isTerminal() {
 		b.sticky[taskID] = stickyEvent{
 			event:     event,
 			expiresAt: b.nowFunc().Add(stickyTerminalTTL),
@@ -184,7 +188,7 @@ func (h *Handler) streamTask(c *gin.Context) {
 			writeSSEEvent(c, event)
 			c.Writer.Flush()
 			// Stop streaming once task is terminal
-			if event.Status == types.StatusCompleted || event.Status == types.StatusFailed {
+			if event.isTerminal() {
 				return
 			}
 		case <-pollTicker.C:

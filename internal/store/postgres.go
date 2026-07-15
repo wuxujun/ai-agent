@@ -915,6 +915,7 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 		score float32
 	}
 	var ranked []rankResult
+	mismatchedEmbeddings := 0
 
 	for rows.Next() {
 		var mem types.Memory
@@ -929,23 +930,9 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 			continue
 		}
 
-		var score float32
-		if len(embedding) > 0 && len(mem.Embedding) > 0 {
-			score = memory.CosineSimilarity(embedding, mem.Embedding)
-		} else {
-			// Fallback: simple case-insensitive term-match score
-			qWords := strings.Fields(strings.ToLower(query))
-			tWords := strings.ToLower(mem.Goal + " " + mem.KeyFindings + " " + mem.FinalAnswer)
-			if len(qWords) > 0 {
-				var matches float32
-				for _, qw := range qWords {
-					qw = strings.Trim(qw, ".,!?;:()[]{}'\"-")
-					if len(qw) > 2 && strings.Contains(tWords, qw) {
-						matches += 1.0
-					}
-				}
-				score = matches / float32(len(qWords))
-			}
+		score, mismatch := memoryRelevanceScore(query, embedding, &mem)
+		if mismatch {
+			mismatchedEmbeddings++
 		}
 		score = memory.ApplyTimeDecay(score, mem.Timestamp, now, decayRate)
 		ranked = append(ranked, rankResult{mem: &mem, score: score})
@@ -954,6 +941,7 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 	if len(ranked) >= candidateLimit {
 		warnMemoryCandidateLimitReached("postgres", candidateLimit)
 	}
+	span.SetAttributes(attribute.Int("agent.store.embedding_dimension_mismatch_count", mismatchedEmbeddings))
 
 	sort.Slice(ranked, func(i, j int) bool {
 		return ranked[i].score > ranked[j].score

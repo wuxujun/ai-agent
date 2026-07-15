@@ -258,18 +258,15 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 		score float32
 	}
 	var list []result
+	mismatchedEmbeddings := 0
 
 	for _, mem := range m.memories {
 		if scopedTenant, scoped := tenantScope(ctx); scoped && !memoryTenantMatches(scopedTenant, mem.TenantID) {
 			continue
 		}
-		var score float32
-		if len(embedding) > 0 && len(mem.Embedding) > 0 {
-			// Cosine Similarity
-			score = memory.CosineSimilarity(embedding, mem.Embedding)
-		} else {
-			// Keyword match score as fallback
-			score = keywordOverlap(query, mem.Goal+" "+mem.KeyFindings+" "+mem.FinalAnswer)
+		score, mismatch := memoryRelevanceScore(query, embedding, mem)
+		if mismatch {
+			mismatchedEmbeddings++
 		}
 		score = memory.ApplyTimeDecay(score, mem.Timestamp, now, decayRate)
 		list = append(list, result{mem: mem, score: score})
@@ -297,6 +294,7 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 	span.SetAttributes(
 		attribute.Int("agent.store.memory_candidate_count", len(list)),
 		attribute.Int("agent.store.memory_count", len(res)),
+		attribute.Int("agent.store.embedding_dimension_mismatch_count", mismatchedEmbeddings),
 	)
 	return res, nil
 }
@@ -315,6 +313,21 @@ func keywordOverlap(query, text string) float32 {
 		}
 	}
 	return matches / float32(len(qWords))
+}
+
+// memoryRelevanceScore uses vector similarity only for compatible embeddings.
+// Historical local fallback vectors (128 dimensions) can coexist with remote
+// provider vectors; keyword scoring keeps those memories retrievable without
+// treating an invalid cosine comparison as a real zero score.
+func memoryRelevanceScore(query string, queryEmbedding []float32, mem *types.Memory) (float32, bool) {
+	if mem != nil && memory.EmbeddingsCompatible(queryEmbedding, mem.Embedding) {
+		return memory.CosineSimilarity(queryEmbedding, mem.Embedding), false
+	}
+	mismatch := mem != nil && len(queryEmbedding) > 0 && len(mem.Embedding) > 0
+	if mem == nil {
+		return 0, mismatch
+	}
+	return keywordOverlap(query, mem.Goal+" "+mem.KeyFindings+" "+mem.FinalAnswer), mismatch
 }
 
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
