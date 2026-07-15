@@ -98,6 +98,9 @@ type Config struct {
 		SearchMethod         string `mapstructure:"search_method"`
 		Authorization        string `mapstructure:"authorization"`
 		ToolName             string `mapstructure:"tool_name"`
+		ContextMode          string `mapstructure:"context_mode"`
+		JITSearchMaxCalls    int    `mapstructure:"jit_search_max_calls"`
+		JITFetchMaxItems     int    `mapstructure:"jit_fetch_max_items"`
 		MaxPromptMemories    int    `mapstructure:"max_prompt_memories"`
 		MaxMemoryBytes       int    `mapstructure:"max_memory_bytes"`
 		MaxMemoryPromptBytes int    `mapstructure:"max_memory_prompt_bytes"`
@@ -331,6 +334,9 @@ func setupViper() {
 	viper.SetDefault("skill.root", "skills")
 	viper.SetDefault("rag.authorization", "")
 	viper.SetDefault("rag.tool_name", "search")
+	viper.SetDefault("rag.context_mode", "jit")
+	viper.SetDefault("rag.jit_search_max_calls", 3)
+	viper.SetDefault("rag.jit_fetch_max_items", 3)
 	viper.SetDefault("rag.max_prompt_memories", 3)
 	viper.SetDefault("rag.max_memory_bytes", 2500)
 	viper.SetDefault("rag.max_memory_prompt_bytes", 8000)
@@ -684,6 +690,9 @@ func diffConfigs(old, new *Config) []string {
 	addIf("rag.search_method", old.RAG.SearchMethod, new.RAG.SearchMethod)
 	addIf("rag.authorization", old.RAG.Authorization, new.RAG.Authorization)
 	addIf("rag.tool_name", old.RAG.ToolName, new.RAG.ToolName)
+	addIf("rag.context_mode", old.RAG.ContextMode, new.RAG.ContextMode)
+	addIfInt("rag.jit_search_max_calls", old.RAG.JITSearchMaxCalls, new.RAG.JITSearchMaxCalls)
+	addIfInt("rag.jit_fetch_max_items", old.RAG.JITFetchMaxItems, new.RAG.JITFetchMaxItems)
 	addIfInt("rag.max_prompt_memories", old.RAG.MaxPromptMemories, new.RAG.MaxPromptMemories)
 	addIfInt("rag.max_memory_bytes", old.RAG.MaxMemoryBytes, new.RAG.MaxMemoryBytes)
 	addIfInt("rag.max_memory_prompt_bytes", old.RAG.MaxMemoryPromptBytes, new.RAG.MaxMemoryPromptBytes)
@@ -977,6 +986,14 @@ func (c *Config) Validate() error {
 	}
 	if c.RAG.MaxPromptMemories < 0 || c.RAG.MaxMemoryBytes < 0 || c.RAG.MaxMemoryPromptBytes < 0 || c.RAG.MaxRawFallbackBytes < 0 {
 		return fmt.Errorf("rag prompt budget values must be >= 0")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.RAG.ContextMode)) {
+	case "", "jit", "prefetch":
+	default:
+		return fmt.Errorf("rag.context_mode must be one of jit or prefetch")
+	}
+	if c.RAG.JITSearchMaxCalls < 0 || c.RAG.JITFetchMaxItems < 0 {
+		return fmt.Errorf("rag JIT limits must be >= 0")
 	}
 	if c.LLM.PlannerTraceMaxItems < 0 || c.LLM.PlannerObservationMaxChars < 0 || c.LLM.PlannerEvidenceMaxItems < 0 || c.LLM.PlannerEvidenceLineMaxChars < 0 || c.LLM.PlannerTraceMaxChars < 0 {
 		return fmt.Errorf("planner trace budget values must be >= 0")

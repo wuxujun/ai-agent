@@ -67,6 +67,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RAG.MaxPromptMemories != 3 || cfg.RAG.MaxMemoryBytes != 2500 || cfg.RAG.MaxMemoryPromptBytes != 8000 || cfg.RAG.MaxRawFallbackBytes != 4000 {
 		t.Errorf("unexpected RAG prompt budget defaults: %+v", cfg.RAG)
 	}
+	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 3 || cfg.RAG.JITFetchMaxItems != 3 {
+		t.Errorf("unexpected RAG JIT defaults: %+v", cfg.RAG)
+	}
 	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
 		t.Errorf("unexpected planner trace budget defaults: %+v", cfg.LLM)
 	}
@@ -469,6 +472,32 @@ func TestValidateLLMScenes(t *testing.T) {
 	cfg.LLM.Gateway.InputCostPerMillionUSD = testPtr(-1.0)
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected negative gateway cost validation error")
+	}
+}
+
+func TestValidateRAGContextModeAndLimits(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai-responses"
+	cfg.LLM.TimeoutSeconds = 30
+	for _, mode := range []string{"", "jit", "prefetch", " JIT "} {
+		cfg.RAG.ContextMode = mode
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("valid context mode %q rejected: %v", mode, err)
+		}
+	}
+	cfg.RAG.ContextMode = "automatic"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid context mode error")
+	}
+	cfg.RAG.ContextMode = "jit"
+	cfg.RAG.JITSearchMaxCalls = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative JIT search limit error")
+	}
+	cfg.RAG.JITSearchMaxCalls = 1
+	cfg.RAG.JITFetchMaxItems = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative JIT fetch limit error")
 	}
 }
 

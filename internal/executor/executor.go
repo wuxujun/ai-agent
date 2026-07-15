@@ -22,6 +22,7 @@ type DefaultExecutor struct{}
 var tracer = otel.Tracer("agent-runtime/executor")
 
 func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *planner.PlanDecision) ([]types.StepTrace, error) {
+	ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
 	ctx, span := tracer.Start(ctx, "executor.execute")
 	defer span.End()
 

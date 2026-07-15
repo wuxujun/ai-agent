@@ -11,6 +11,7 @@ import (
 
 func TestBuildUserPromptAppliesMemoryBudgetsWithoutMutatingTask(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "prefetch"
 		cfg.RAG.MaxPromptMemories = 3
 		cfg.RAG.MaxMemoryBytes = 2500
 		cfg.RAG.MaxMemoryPromptBytes = 8000
@@ -40,6 +41,34 @@ func TestBuildUserPromptAppliesMemoryBudgetsWithoutMutatingTask(t *testing.T) {
 	}
 	if task.Memories[0].KeyFindings != large {
 		t.Fatal("prompt budgeting mutated the persisted task memory")
+	}
+}
+
+func TestBuildUserPromptOmitsPrefetchedMemoriesInJITMode(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+	}))
+	task := &types.Task{
+		Goal:       "查询教师信息",
+		MaxSteps:   5,
+		ToolBudget: 10,
+		Memories:   []types.Memory{{Goal: "legacy memory", FinalAnswer: "must not be injected"}},
+	}
+	prompt, stats := buildUserPromptWithStats(task)
+	if strings.Contains(prompt, "must not be injected") || stats.MemoryIncluded != 0 {
+		t.Fatalf("JIT prompt included prefetched memory: stats=%+v prompt=%s", stats, prompt)
+	}
+}
+
+func TestBuildSystemPromptMatchesContextMode(t *testing.T) {
+	restore := config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" })
+	if prompt := BuildSystemPrompt(); !strings.Contains(prompt, "Context retrieval is just-in-time") || !strings.Contains(prompt, "rag_search") {
+		t.Fatalf("JIT system prompt missing retrieval rules: %s", prompt)
+	}
+	restore()
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "prefetch" }))
+	if prompt := BuildSystemPrompt(); strings.Contains(prompt, "do not assume RAG") || !strings.Contains(prompt, "may be prefetched") {
+		t.Fatalf("prefetch system prompt contains contradictory rules: %s", prompt)
 	}
 }
 

@@ -146,6 +146,11 @@ func main() {
 		}
 	}
 	defer st.Close()
+	tools.RegisterRetrievalTools(tools.RetrievalDependencies{
+		SearchRAG:    memory.SearchThirdPartyRAG,
+		GetEmbedding: memory.GetEmbedding,
+		MemoryStore:  st,
+	})
 
 	mode := orchestrator.Mode(cfg.Orchestrator.Mode)
 

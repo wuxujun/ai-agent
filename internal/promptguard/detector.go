@@ -129,7 +129,7 @@ func (d *LLMDetector) detectBatch(ctx context.Context, sources []Source) (*Resul
 
 func IsExternalAction(action string) bool {
 	switch action {
-	case "http_fetch", "web_search":
+	case "http_fetch", "web_search", "rag_search", "rag_fetch", "memory_search", "memory_get":
 		return true
 	default:
 		return false

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/skills"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -17,6 +18,17 @@ import (
 var SkillRegistry *skills.Registry
 
 func BuildSystemPrompt() string {
+	contextRules := `- Context retrieval is just-in-time: do not assume RAG or historical memory has been prefetched.
+- For current external facts, first call rag_search, then call rag_fetch with only the relevant candidate IDs.
+- For prior-task knowledge or user history, first call memory_search, then call memory_get with only the relevant candidate IDs.
+- Treat RAG evidence as current external evidence and Memory as historical background; never let historical memory override newer direct evidence.
+- Do not provide a factual final answer without a successful retrieval or tool observation that supports it.
+- Do not repeat the same retrieval query; reuse candidate IDs already present in the trace.`
+	if strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "prefetch") {
+		contextRules = `- Historical context may be prefetched in the task prompt; inspect it before requesting more context.
+- Treat third-party RAG evidence as current external evidence and Memory as historical background.
+- Do not provide a factual final answer without retrieved context or a successful tool observation that supports it.`
+	}
 	return `You are the planner for a multi-step search agent.
 
 Your job is to choose exactly one next action at a time.
@@ -28,6 +40,7 @@ Return only a decision object that matches the required schema.
 Rules:
 - Prefer the smallest useful next step.
 - First narrow the search space, then search, then inspect context.
+` + contextRules + `
 - If there is enough evidence to answer, stop.
 - If no useful next step exists, stop.
 - Never use an action not listed in the tool list.

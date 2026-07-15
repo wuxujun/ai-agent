@@ -594,6 +594,11 @@ const (
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(e.Mode))
+	defer func() {
+		if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
+			tools.ClearRetrievalContext(task.ID)
+		}
+	}()
 	wasCompleted := task.Status == types.StatusCompleted
 	ctx = store.WithTenantScope(ctx, task.TenantID)
 	if e.Store != nil {
@@ -631,7 +636,8 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	}
 
-	if task.StepCount == 0 && len(task.Memories) == 0 {
+	prefetchContext := strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "prefetch")
+	if prefetchContext && task.StepCount == 0 && len(task.Memories) == 0 {
 		var retrievedMems []types.Memory
 		retrievalQuery := task.Goal
 		var ragUsage types.TokenUsage
@@ -686,7 +692,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			}
 		}
 	}
-	if !wasCompleted {
+	if !wasCompleted && prefetchContext {
 		e.ResolveMemoryConflicts(ctx, task)
 		ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	}

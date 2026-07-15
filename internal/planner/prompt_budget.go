@@ -29,6 +29,10 @@ func buildMemoryPromptSection(task *types.Task) (string, promptBuildStats) {
 	if len(task.Memories) == 0 {
 		return "", stats
 	}
+	if !strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "prefetch") {
+		stats.MemoryTruncated = true
+		return "", stats
+	}
 
 	cfg := config.Get().RAG
 	maxMemories := cfg.MaxPromptMemories
@@ -67,7 +71,7 @@ func buildMemoryPromptSection(task *types.Task) (string, promptBuildStats) {
 	if len(items) == 0 {
 		return "", stats
 	}
-	return "\n\nRelated Historical Memories (RAG - Cross-task Knowledge Sharing):\n" + strings.Join(items, "\n\n"), stats
+	return "\n\nRelated Historical Memories (Cross-task Knowledge Sharing):\n" + strings.Join(items, "\n\n"), stats
 }
 
 func effectiveMemoryPromptBudget(task *types.Task, configured int) int {

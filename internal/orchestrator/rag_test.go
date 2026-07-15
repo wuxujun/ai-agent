@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -35,7 +36,47 @@ func (s *staticMockPlanner) PlanNext(ctx context.Context, task *types.Task, onCh
 	return s.decision, nil
 }
 
+type countingMemoryStore struct {
+	*store.MemoryStore
+	queries int
+}
+
+func (s *countingMemoryStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
+	s.queries++
+	return s.MemoryStore.QueryMemories(ctx, query, embedding, limit)
+}
+
+func TestJITModeSkipsPlanningPrefetch(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = ""
+	}))
+	ctx := context.Background()
+	st := &countingMemoryStore{MemoryStore: store.NewMemoryStore()}
+	if err := st.SaveMemory(ctx, &types.Memory{ID: "existing", TaskID: "old-task", Goal: "教师信息", FinalAnswer: "historical answer"}); err != nil {
+		t.Fatalf("save memory: %v", err)
+	}
+	engine := &orchestrator.Engine{
+		Mode:  orchestrator.ModeLegacy,
+		Store: st,
+		Planner: &staticMockPlanner{decision: &planner.PlanDecision{
+			Stop: true, FinalAnswer: "done", Actions: []planner.ActionCall{{Action: "none", Parameters: map[string]any{}}},
+		}},
+		Executor: &mockExecutor{},
+	}
+	task := &types.Task{ID: "jit-no-prefetch", Goal: "查询教师信息", Status: types.StatusCreated, MaxSteps: 3, ToolBudget: 3}
+	if err := engine.Next(ctx, task); err != nil {
+		t.Fatalf("engine next: %v", err)
+	}
+	if st.queries != 0 || len(task.Memories) != 0 {
+		t.Fatalf("JIT mode prefetched context: queries=%d memories=%d", st.queries, len(task.Memories))
+	}
+}
+
 func TestRagMemoryCrossTaskKnowledgeSharing(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "prefetch"
+	}))
 	ctx := context.Background()
 
 	// 1. Initialize store and engine
@@ -151,7 +192,7 @@ func TestRagMemoryCrossTaskKnowledgeSharing(t *testing.T) {
 
 	t.Logf("Captured User Prompt:\n%s", capturedUserPrompt)
 
-	if !strings.Contains(capturedUserPrompt, "Related Historical Memories (RAG - Cross-task Knowledge Sharing)") {
+	if !strings.Contains(capturedUserPrompt, "Related Historical Memories (Cross-task Knowledge Sharing)") {
 		t.Errorf("expected captured user prompt to contain historical memories header")
 	}
 	if !strings.Contains(capturedUserPrompt, "standard-username/standard-password") {

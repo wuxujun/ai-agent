@@ -267,6 +267,17 @@ rag:
   # Env override: AI_AGENT_RAG_AUTHORIZATION
   authorization: ""
 
+  # Context retrieval mode. "jit" lets the Planner call retrieval tools on
+  # demand; "prefetch" preserves the legacy retrieval-before-planning flow.
+  # Env override: AI_AGENT_RAG_CONTEXT_MODE
+  context_mode: "jit"
+
+  # Per-task limits for uncached searches and detail fetches.
+  # Env overrides: AI_AGENT_RAG_JIT_SEARCH_MAX_CALLS,
+  # AI_AGENT_RAG_JIT_FETCH_MAX_ITEMS
+  jit_search_max_calls: 3
+  jit_fetch_max_items: 3
+
   # Maximum number of reranked memories included in a planner prompt.
   # Env override: AI_AGENT_RAG_MAX_PROMPT_MEMORIES
   max_prompt_memories: 3

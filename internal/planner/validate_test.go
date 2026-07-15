@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/tools"
+	"google.golang.org/genai"
 )
 
 // TestValidateDecisionAcceptsRegisteredTools is the regression test for the bug
@@ -122,5 +123,16 @@ func TestGenAISchemaUsesActionsArray(t *testing.T) {
 	}
 	if _, ok := schema.Properties["action"]; ok {
 		t.Error("genai schema still exposes singular \"action\" (drifted from PlanDecision.Actions)")
+	}
+}
+
+func TestGenAISchemaPreservesArrayParameterItems(t *testing.T) {
+	schema := PlannerDecisionGenAISchema()
+	ids := schema.Properties["actions"].Items.Properties["parameters"].Properties["ids"]
+	if ids == nil {
+		t.Fatal("genai schema missing retrieval ids parameter")
+	}
+	if ids.Type != genai.TypeArray || ids.Items == nil || ids.Items.Type != genai.TypeString {
+		t.Fatalf("ids schema = %#v, want array of strings", ids)
 	}
 }
