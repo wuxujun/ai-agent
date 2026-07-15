@@ -1,5 +1,5 @@
-// Package logger provides structured JSON logging to the console and to
-// level-specific, daily-rotated files.
+// Package logger provides structured JSON logging to the console, to
+// level-specific daily files, and to an isolated task-report daily file.
 package logger
 
 import (
@@ -28,9 +28,10 @@ type Options struct {
 }
 
 type handlerState struct {
-	mu      sync.RWMutex
-	handler slog.Handler
-	closer  io.Closer
+	mu            sync.RWMutex
+	handler       slog.Handler
+	reportHandler slog.Handler
+	closer        io.Closer
 }
 
 // dynamicHandler keeps package-level component loggers hot-reloadable. A
@@ -38,6 +39,7 @@ type handlerState struct {
 // latest configured output handler.
 type dynamicHandler struct {
 	state      *atomic.Pointer[handlerState]
+	report     bool
 	operations []handlerOperation
 }
 
@@ -50,6 +52,9 @@ func (h *dynamicHandler) current() *handlerState { return h.state.Load() }
 
 func (h *dynamicHandler) resolved(s *handlerState) slog.Handler {
 	target := s.handler
+	if h.report {
+		target = s.reportHandler
+	}
 	for _, operation := range h.operations {
 		if operation.group != "" {
 			target = target.WithGroup(operation.group)
@@ -255,11 +260,16 @@ func (g closeGroup) Close() error {
 
 var state atomic.Pointer[handlerState]
 var defaultLogger *slog.Logger
+var reportLogger *slog.Logger
 
 func init() {
-	initial := &handlerState{handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelFromEnv()})}
+	initial := &handlerState{
+		handler:       slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelFromEnv()}),
+		reportHandler: slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	}
 	state.Store(initial)
 	defaultLogger = slog.New(&dynamicHandler{state: &state})
+	reportLogger = slog.New(&dynamicHandler{state: &state, report: true})
 	slog.SetDefault(defaultLogger)
 }
 
@@ -273,6 +283,7 @@ func Configure(options Options) error {
 	handlerOptions := &slog.HandlerOptions{Level: level}
 	var handlers multiHandler
 	var closers closeGroup
+	reportHandler := slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
 	if options.Console {
 		handlers = append(handlers, slog.NewJSONHandler(os.Stdout, handlerOptions))
 	}
@@ -302,11 +313,22 @@ func Configure(options Options) error {
 			jsonHandler := slog.NewJSONHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug})
 			handlers = append(handlers, exactLevelHandler{level: spec.level, minimum: level, handler: jsonHandler})
 		}
+
+		reportWriter := &dailyWriter{directory: directory, levelName: "task-report", retentionDays: options.RetentionDays, now: time.Now}
+		reportWriter.mu.Lock()
+		err := reportWriter.rotate(time.Now().Format(time.DateOnly))
+		reportWriter.mu.Unlock()
+		if err != nil {
+			_ = closeGroup(closers).Close()
+			return err
+		}
+		closers = append(closers, reportWriter)
+		reportHandler = slog.NewJSONHandler(reportWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
 	}
 	if len(handlers) == 0 {
 		return fmt.Errorf("at least one log output must be enabled")
 	}
-	newState := &handlerState{handler: handlers, closer: closers}
+	newState := &handlerState{handler: handlers, reportHandler: reportHandler, closer: closers}
 	old := state.Swap(newState)
 	if old != nil {
 		old.mu.Lock()
@@ -320,7 +342,10 @@ func Configure(options Options) error {
 
 // Reinit preserves the existing API for callers that only change log level.
 func Reinit(level string) {
-	newState := &handlerState{handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(level)})}
+	newState := &handlerState{
+		handler:       slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(level)}),
+		reportHandler: slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	}
 	old := state.Swap(newState)
 	if old != nil {
 		old.mu.Lock()
@@ -361,7 +386,14 @@ func parseLevel(value string) slog.Level {
 
 func L() *slog.Logger                    { return defaultLogger }
 func Component(name string) *slog.Logger { return L().With(slog.String("component", name)) }
-func With(args ...any) *slog.Logger      { return L().With(args...) }
+
+// ReportComponent returns a logger isolated from console and level-specific
+// outputs. When file logging is enabled, records are written only to the
+// daily task-report file.
+func ReportComponent(name string) *slog.Logger {
+	return reportLogger.With(slog.String("component", name))
+}
+func With(args ...any) *slog.Logger { return L().With(args...) }
 func TaskLogger(component, taskID string) *slog.Logger {
 	return L().With(slog.String("component", component), slog.String("task_id", taskID))
 }

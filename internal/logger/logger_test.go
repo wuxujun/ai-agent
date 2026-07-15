@@ -91,6 +91,42 @@ func TestConfigureHonorsMinimumLevel(t *testing.T) {
 	}
 }
 
+func TestReportComponentWritesOnlyTaskReportFile(t *testing.T) {
+	directory := t.TempDir()
+	if err := Configure(Options{Level: "debug", FileEnabled: true, Directory: directory}); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = Close()
+		Reinit("info")
+	})
+
+	Component("normal").Info("normal record")
+	ReportComponent("api").Info("task report record", "task_id", "task-1")
+
+	date := time.Now().Format(time.DateOnly)
+	reportContent, err := os.ReadFile(filepath.Join(directory, "task-report-"+date+".log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportText := string(reportContent); !strings.Contains(reportText, "task report record") || !strings.Contains(reportText, `"component":"api"`) {
+		t.Fatalf("task report file missing report record: %s", reportText)
+	}
+
+	for _, level := range []string{"debug", "info", "warn", "error"} {
+		content, err := os.ReadFile(filepath.Join(directory, level+"-"+date+".log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(content), "task report record") {
+			t.Fatalf("task report leaked into %s log: %s", level, content)
+		}
+	}
+	if strings.Contains(string(reportContent), "normal record") {
+		t.Fatalf("normal log leaked into task report: %s", reportContent)
+	}
+}
+
 func TestDailyWriterRotatesAndRemovesExpiredFiles(t *testing.T) {
 	directory := t.TempDir()
 	current := time.Date(2026, time.July, 15, 10, 0, 0, 0, time.Local)
