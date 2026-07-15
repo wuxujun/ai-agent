@@ -153,7 +153,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		attribute.Int("agent.task.step_count", task.StepCount),
 	)
 
-	log.Info("starting planning", "task_id", task.ID, "step_count", task.StepCount, "provider", provider, "model", model)
+	log.Info("starting LLM planning", "task_id", task.ID, "step", task.StepCount+1, "step_count", task.StepCount, "scene", activeScene, "provider", provider, "model", model)
 	promptTask := task
 	var compressionUsage types.TokenUsage
 	threshold := config.Get().LLM.ContextCompressionTraceThreshold
@@ -213,7 +213,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		UserPrompt:   BuildUserPrompt(promptTask),
 	}
 
-	log.Info("sending request to provider", "provider", provider, "base_url", baseURL, "model", model)
+	log.Info("sending planning request to provider", "task_id", task.ID, "step", task.StepCount+1, "scene", activeScene, "provider", provider, "base_url", baseURL, "model", model)
 	maxRetries, fallbackScene := 0, ""
 	if activeScene != "" {
 		policy := config.Get().ResolveLLMScene(activeScene)

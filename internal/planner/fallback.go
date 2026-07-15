@@ -24,16 +24,18 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task, onChun
 
 	span.SetAttributes(attribute.String("agent.task.id", task.ID))
 
-	log.Info("executing PlanNext", "task_id", task.ID)
+	log.Info("dispatching planner request", "task_id", task.ID, "step", task.StepCount+1)
 
+	var primaryErr error
 	if f.Primary != nil {
-		log.Info("trying primary planner", "task_id", task.ID)
+		log.Info("attempting primary planner", "task_id", task.ID, "step", task.StepCount+1)
 		decision, err := f.Primary.PlanNext(ctx, task, onChunk)
 		if err == nil {
 			span.SetAttributes(attribute.Bool("agent.fallback.used", false))
 			log.Info("primary planner succeeded", "task_id", task.ID)
 			return decision, nil
 		}
+		primaryErr = err
 		span.RecordError(err)
 		log.Warn("primary planner failed", "task_id", task.ID, "error", err)
 	}
@@ -51,6 +53,10 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task, onChun
 		}
 		log.Info("secondary planner succeeded", "task_id", task.ID)
 		return decision, nil
+	}
+	if primaryErr != nil {
+		log.Error("primary planner failed and no secondary planner is configured", "task_id", task.ID, "error", primaryErr)
+		return nil, primaryErr
 	}
 
 	log.Error("no planner available", "task_id", task.ID)

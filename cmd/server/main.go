@@ -208,12 +208,9 @@ func main() {
 	plannerClient.Compressor = planner.NewLLMContextCompressor(config.LLMSceneContextCompressor)
 	plannerClient.ArgumentRepairer = planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)
 
-	fallbackPlanner := &planner.MockPlanner{}
-
 	combinedPlanner := &planner.FallbackPlanner{
-		Primary:   plannerClient,
-		Secondary: fallbackPlanner,
-		Metrics:   mc,
+		Primary: plannerClient,
+		Metrics: mc,
 	}
 
 	eng := &orchestrator.Engine{
