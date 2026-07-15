@@ -167,6 +167,30 @@ func TestLLMPlannerProviders(t *testing.T) {
 	})
 }
 
+func TestLLMPlannerRoutesJITRetrievalBeforeProviderCall(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+	}))
+	providerCalls := 0
+	planner := NewLLMPlannerWithProvider(ProviderOpenAIResponses, "test-key", "model", "https://llm.test/responses")
+	planner.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		providerCalls++
+		return nil, io.ErrUnexpectedEOF
+	})}
+	task := &types.Task{ID: "jit-pre-route", Goal: "数学科学术顾问有哪个人？", MaxSteps: 5, ToolBudget: 5, LLMCallBudget: 5}
+	decision, err := planner.PlanNext(context.Background(), task, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls != 0 || task.LLMCalls != 0 {
+		t.Fatalf("provider_calls=%d llm_calls=%d, want zero before deterministic retrieval", providerCalls, task.LLMCalls)
+	}
+	if len(decision.Actions) != 1 || decision.Actions[0].Action != "rag_search" || decision.TokenUsage.TotalTokens != 0 {
+		t.Fatalf("unexpected pre-routed decision: %+v", decision)
+	}
+}
+
 type stubCompressor struct{ calls *int }
 
 func (s stubCompressor) Compress(context.Context, *types.Task) (string, types.TokenUsage, error) {

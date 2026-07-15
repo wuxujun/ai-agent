@@ -34,6 +34,7 @@ func TestPlannerResearchActionsExposeSearchButNotDetailTools(t *testing.T) {
 func TestCoordinatorAutomaticallyFetchesJITCandidates(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
 		cfg.RAG.JITFetchMaxItems = 2
 	}))
 	researcher := &jitResearcher{}
@@ -64,6 +65,27 @@ func TestCoordinatorAutomaticallyFetchesJITCandidates(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRewritesDriftingFactualPlanToRAG(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+		cfg.RAG.JITFetchMaxItems = 2
+	}))
+	researcher := &jitResearcher{}
+	plannerCalls := 0
+	coordinator := &Coordinator{Planner: driftingJITPlanner{calls: &plannerCalls}, Researcher: researcher, Writer: jitWriter{}}
+	task := &types.Task{ID: "multiagent-jit-drift", Goal: "数学科学术顾问有哪个人？", Status: types.StatusCreated, MaxSteps: 10, ToolBudget: 10, Workspace: "."}
+	if err := coordinator.Run(context.Background(), task); err != nil {
+		t.Fatalf("coordinator run: %v", err)
+	}
+	if !reflect.DeepEqual(researcher.actions, []string{"rag_search", "rag_fetch"}) {
+		t.Fatalf("executed actions=%v, want deterministic RAG route", researcher.actions)
+	}
+	if plannerCalls != 0 {
+		t.Fatalf("planner calls=%d, want zero before deterministic retrieval", plannerCalls)
+	}
+}
+
 func TestCoordinatorRejectsUnsupportedFactualWriterAnswer(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
 	coordinator := &Coordinator{Planner: jitPlanner{}, Researcher: emptyJITResearcher{}, Writer: fabricatedJITWriter{}}
@@ -80,6 +102,23 @@ type jitPlanner struct{}
 
 func (jitPlanner) Plan(context.Context, string, string, []types.Memory) (*ResearchPlan, error) {
 	return &ResearchPlan{ThoughtSummary: "search RAG", Steps: []ResearchStep{{ID: "step-1", Action: "rag_search", SearchQuery: "teacher"}}}, nil
+}
+
+type driftingJITPlanner struct{ calls *int }
+
+func (p driftingJITPlanner) Plan(context.Context, string, string, []types.Memory) (*ResearchPlan, error) {
+	if p.calls != nil {
+		*p.calls++
+	}
+	return &ResearchPlan{ThoughtSummary: "search workspace", Steps: []ResearchStep{
+		{ID: "step-1", Action: "find_files", FileGlob: "*.*"},
+		{ID: "step-2", Action: "search_text", SearchQuery: "学术顾问"},
+		{ID: "step-3", Action: "execute_code", Command: "python3", Args: "parse.py"},
+	}}, nil
+}
+
+func (driftingJITPlanner) Replan(context.Context, string, string, []types.StepTrace, []types.Memory) (*ResearchPlan, error) {
+	return &ResearchPlan{}, nil
 }
 
 func (jitPlanner) Replan(context.Context, string, string, []types.StepTrace, []types.Memory) (*ResearchPlan, error) {

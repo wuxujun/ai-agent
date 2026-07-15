@@ -125,6 +125,21 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	ctx, span := tracer.Start(ctx, "planner.plan_next")
 	defer span.End()
+	if decision, ok := NextJITRetrievalDecision(task); ok {
+		action := decision.Actions[0].Action
+		span.SetAttributes(
+			attribute.String("agent.task.id", task.ID),
+			attribute.String("agent.planner.route", "jit_deterministic"),
+			attribute.String("agent.planner.action", action),
+		)
+		log.Info("planning resolved by JIT retrieval router",
+			"task_id", task.ID,
+			"step", task.StepCount+1,
+			"action", action,
+			"rag_configured", strings.TrimSpace(config.Get().RAG.SearchURL) != "",
+		)
+		return decision, nil
+	}
 	activeScene := p.Scene
 	if p.Provider == "" && p.APIKey == "" && p.Model == "" && p.BaseURL == "" {
 		activeScene = llmcore.ResolveRoutedScene(ctx, p.Scene)

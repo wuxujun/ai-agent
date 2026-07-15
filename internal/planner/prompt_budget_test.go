@@ -60,6 +60,24 @@ func TestBuildUserPromptOmitsPrefetchedMemoriesInJITMode(t *testing.T) {
 	}
 }
 
+func TestBuildUserPromptHidesWorkspaceToolsForExternalFact(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+	}))
+	prompt := BuildUserPrompt(&types.Task{Goal: "数学科学术顾问有哪个人？", MaxSteps: 5, ToolBudget: 5})
+	for _, hidden := range []string{"find_files:", "search_text:", "execute_code:", "write_file:"} {
+		if strings.Contains(prompt, hidden) {
+			t.Fatalf("external factual prompt exposed workspace tool %q: %s", hidden, prompt)
+		}
+	}
+	for _, visible := range []string{"rag_search:", "rag_fetch:"} {
+		if !strings.Contains(prompt, visible) {
+			t.Fatalf("external factual prompt omitted retrieval tool %q: %s", visible, prompt)
+		}
+	}
+}
+
 func TestBuildSystemPromptMatchesContextMode(t *testing.T) {
 	restore := config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" })
 	if prompt := BuildSystemPrompt(); !strings.Contains(prompt, "Context retrieval is just-in-time") || !strings.Contains(prompt, "rag_search") {
@@ -69,6 +87,16 @@ func TestBuildSystemPromptMatchesContextMode(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "prefetch" }))
 	if prompt := BuildSystemPrompt(); strings.Contains(prompt, "do not assume RAG") || !strings.Contains(prompt, "may be prefetched") {
 		t.Fatalf("prefetch system prompt contains contradictory rules: %s", prompt)
+	}
+}
+
+func TestBuildSystemPromptRestrictsWorkspaceAndExecuteTools(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
+	prompt := BuildSystemPrompt()
+	for _, required := range []string{"only when the goal explicitly concerns local files", "Never use execute_code merely"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("system prompt missing source-routing rule %q: %s", required, prompt)
+		}
 	}
 }
 

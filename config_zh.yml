@@ -1,0 +1,363 @@
+# ai-agent 配置文件
+# 应用启动后会自动监听并重新加载此文件。
+# 以“AI_AGENT_”开头的环境变量可以覆盖这里的配置值。
+# 例如，AI_AGENT_API_ADDR 会覆盖 api.addr。
+
+# API 服务配置
+api:
+  # HTTP 服务监听的 host:port 地址。
+  # 环境变量覆盖：AI_AGENT_API_ADDR
+  addr: "127.0.0.1:8088"
+  
+  # 可选的 API 鉴权密钥。
+  # 必须通过环境变量设置——不要在本文件中保存密钥。
+  # 环境变量覆盖：AI_AGENT_API_KEY
+  api_key: ""
+
+  # 可选的受信任租户身份。API Key 应由密钥管理系统注入运行时配置，
+  # 不得提交到代码仓库。
+  # 上面的旧版 api_key 仍作为“default”管理员身份。
+  # tenants:
+  #   project_a:
+  #     api_key: "<secret>"
+  #     admin: false
+  #     daily_llm_call_budget: 100
+  #     daily_llm_cost_budget_usd: 10
+
+# 存储配置
+store:
+  # 存储后端。支持：“sqlite”、“postgres”、“redis”、“memory”。
+  # 环境变量覆盖：AI_AGENT_STORE_TYPE
+  type: "sqlite"
+  
+  # 数据源连接字符串。
+  # sqlite：SQLite 数据库路径（例如“data/agent.db”）。
+  # postgres：PostgreSQL DSN（例如“postgresql://user:pass@host:port/dbname”）。
+  # redis：Redis URL（例如“redis://host:port/db”）。
+  # 环境变量覆盖：AI_AGENT_STORE_DSN
+  dsn: "data/agent.db"
+
+  # 向量搜索模式。支持：“in_process”、“pgvector”。
+  # “pgvector”仅在 store.type 为“postgres”时生效，其他后端会忽略该配置。
+  # 环境变量覆盖：AI_AGENT_STORE_VECTOR_SEARCH
+  vector_search: "in_process"
+
+  # 可选的 pgvector HNSW 索引维度，例如：本地备用向量为128，
+  # OpenAI text-embedding-3-small 为1536，Gemini gemini-embedding-001 为3072。
+  # 设置为0时，pgvector 使用精确扫描模式，不创建 ANN 索引。
+  # 环境变量覆盖：AI_AGENT_STORE_PGVECTOR_DIMENSIONS
+  pgvector_dimensions: 0
+  
+  # 进程内执行余弦/关键词排序前，从磁盘加载的最近 Memory 最大行数。
+  # 设置为0时使用默认值200。
+  # 环境变量覆盖：AI_AGENT_STORE_MEMORY_CANDIDATE_LIMIT
+  memory_candidate_limit: 200
+
+# Orchestrator 编排执行配置
+orchestrator:
+  # 执行模式。支持：“eino”、“legacy”、“step”、“adk”、“multiagent”。
+  # 环境变量覆盖：AI_AGENT_ORCHESTRATOR_MODE
+  mode: "eino"
+  
+  # 允许同时运行的最大任务协程数。
+  # 环境变量覆盖：AI_AGENT_ORCHESTRATOR_MAX_CONCURRENT_TASKS
+  max_concurrent_tasks: 10
+  
+  # run-all 任务循环的总运行时间上限，单位为秒。
+  # 设置为0时使用默认值600秒。
+  # 环境变量覆盖：AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
+  run_all_timeout_seconds: 600
+
+# LLM 提供商配置
+llm:
+  # 目标 LLM 提供商。支持：“openai-responses”、“openai”、“gemini”、“ollama”、“litellm”。
+  # 环境变量覆盖：AI_AGENT_LLM_PROVIDER
+  provider: "openai-responses"
+  
+  # 通用备用 LLM API Key。
+  # 环境变量覆盖：AI_AGENT_LLM_API_KEY
+  api_key: ""
+  
+  # 各提供商专用的 LLM API Key（优先级高于 llm.api_key）。
+  # 环境变量覆盖（无 AI_AGENT_ 前缀）：OPENAI_API_KEY、GEMINI_API_KEY、GOOGLE_API_KEY
+  openai_api_key: ""
+  gemini_api_key: ""
+  google_api_key: ""
+  
+  # LLM 模型名称。留空时使用提供商默认模型。
+  # 例如：“gpt-4o-mini”、“gemini-2.5-flash”。
+  # 环境变量覆盖：AI_AGENT_LLM_MODEL
+  model: ""
+  
+  # 使用本地代理或自托管 API 端点时，可设置自定义 API 基础 URL。
+  # 环境变量覆盖：AI_AGENT_LLM_BASE_URL
+  base_url: ""
+  
+  # 请求超时时间，单位为秒。
+  # 环境变量覆盖：AI_AGENT_LLM_TIMEOUT_SECONDS
+  timeout_seconds: 30
+  # 就绪探测级别：config_only、gateway 或 inference。
+  # gateway 保持默认行为：检查 LiteLLM 存活状态和模型访问能力，
+  # 直接提供商仅确认已配置，不执行真实验证。
+  # inference 会为每个已配置场景发送最小结构化生成请求，可能产生费用。
+  # 环境变量覆盖：AI_AGENT_LLM_READINESS_MODE
+  readiness_mode: "gateway"
+  # 缓存就绪探测结果，以减少探测流量和推理费用。
+  # readiness_mode 为 inference 时建议增大此值。
+  # 环境变量覆盖：AI_AGENT_LLM_READINESS_CACHE_TTL_SECONDS
+  readiness_cache_ttl_seconds: 10
+  # 运行时韧性配置。任一值设为0可禁用对应保护机制。
+  circuit_breaker_failure_threshold: 5
+  circuit_breaker_cooldown_seconds: 30
+  retry_budget_per_minute: 60
+  # 每个任务默认的逻辑 LLM 调用上限；设置为0表示不限制。
+  # fallback 场景计为另一次调用，同一场景内的重试不重复计数。
+  max_calls_per_task: 0
+  # 每个任务默认的预估美元费用上限；设置为0表示不限制。启用费用限制时，
+  # 所有被选中的生成场景都必须配置输入/输出价格。共享价格配置在 llm.gateway，
+  # 场景专属价格配置在 llm.scenes；无法提供价格时，任务请求中的
+  # llm_cost_budget_usd 必须保持为0。
+  max_estimated_cost_usd_per_task: 0
+  context_compression_trace_threshold: 8
+  # 可选：累计 Trace Token 超过此总量时也触发上下文压缩。
+  # 默认值0表示禁用基于 Token 的触发方式；适用于步骤不多但 Observation 很大的任务
+  #（例如代码执行输出）。
+  # 环境变量覆盖：AI_AGENT_LLM_CONTEXT_COMPRESSION_TOKEN_THRESHOLD
+  # context_compression_token_threshold: 40000
+
+  # Planner Trace 上下文限制。即使可选的 LLM 上下文压缩器被禁用或尚未触发，
+  # 这些限制仍会保护每次 Planning 调用。
+  planner_trace_max_items: 4
+  planner_observation_max_chars: 800
+  planner_evidence_max_items: 8
+  planner_evidence_line_max_chars: 300
+  planner_trace_max_chars: 5000
+
+
+  # 可选的共享网关默认配置。LiteLLM 提供兼容 OpenAI 的
+  # /v1/chat/completions 端点，以及在 LiteLLM 中配置的模型别名。
+  # gateway:
+  #   provider: "litellm"
+  #   api_key: ""
+  #   base_url: "http://127.0.0.1:4000/v1/chat/completions"
+  #   timeout_seconds: 30
+  #   # 可选价格，仅用于预估费用指标。
+  #   input_cost_per_million_usd: 2.0
+  #   output_cost_per_million_usd: 8.0
+
+  # 按调用场景配置。省略的字段先继承 gateway，再继承旧版全局配置。
+  # 动态路由适用于生成场景；embedding 和 adk 不支持路由。
+  # 可设置 fallback_scene: ""、max_retries: 0 或 min_remaining_tokens: 0，
+  # 为单个场景显式清除对应的网关策略。
+  # scenes:
+  #   task_planner:
+  #     model: "agent-planner"
+  #     input_cost_per_million_usd: 2.0
+  #     output_cost_per_million_usd: 8.0
+  #     fallback_scene: "task_planner_fallback"
+  #     max_retries: 1
+  #     min_remaining_tokens: 2000
+  #     # 按顺序匹配的路由规则，命中第一条即停止。目标是另一个场景，
+  #     # 并继承该场景的提供商、模型、价格、重试与 fallback 配置。
+  #     routes:
+  #       - target_scene: "task_planner_economy"
+  #         max_remaining_tokens: 4000
+  #         min_step_count: 2
+  #       - target_scene: "task_planner_quality"
+  #         intents: ["coding", "research"]
+  #         complexities: ["high"]
+  #         cost_tiers: ["unconstrained"]
+  #         latency_tiers: ["flexible"]
+  #         quality_tiers: ["quality"]
+  #   task_planner_economy:
+  #     model: "agent-planner-fast"
+  #   task_planner_quality:
+  #     model: "agent-planner-strong"
+  #   task_planner_fallback:
+  #     model: "agent-planner-backup"
+  #   task_finalizer:
+  #     model: "agent-writer"
+  #   citation_verifier:
+  #     model: "agent-verifier"
+  #   safety_guard:
+  #     model: "agent-safety"
+  #   tool_argument_repair:
+  #     model: "agent-fast"
+  #   intent_router:
+  #     model: "agent-fast"
+  #   memory_conflict_resolver:
+  #     model: "agent-verifier"
+  #   vision_analyzer:
+  #     # 所选模型必须支持图像输入。LiteLLM 可将该别名路由到任意
+  #     # 兼容 OpenAI 的多模态后端。
+  #     model: "agent-vision"
+  #   code_reviewer:
+  #     model: "agent-reviewer"
+  #   test_generator:
+  #     model: "agent-coder"
+  #   failure_diagnoser:
+  #     model: "agent-diagnoser"
+  #   plan_critic:
+  #     model: "agent-reviewer"
+  #   prompt_injection_detector:
+  #     model: "agent-safety"
+  #   evidence_relevance_filter:
+  #     model: "agent-reranker"
+  #   evidence_conflict_resolver:
+  #     model: "agent-verifier"
+  #   source_credibility_scorer:
+  #     model: "agent-verifier"
+  #   fact_freshness_checker:
+  #     model: "agent-verifier"
+  #   numeric_consistency_checker:
+  #     model: "agent-verifier"
+  #   answer_uncertainty_calibrator:
+  #     model: "agent-verifier"
+  #   context_compressor:
+  #     model: "agent-fast"
+  #   answer_verifier:
+  #     model: "agent-verifier"
+  #   memory_summarizer:
+  #     model: "agent-fast"
+  #   rag_query_rewriter:
+  #     model: "agent-fast"
+  #   rag_reranker:
+  #     model: "agent-reranker"
+  #   multiagent_planner:
+  #     model: "agent-planner"
+  #   multiagent_replanner:
+  #     model: "agent-planner-strong"
+  #     timeout_seconds: 60
+  #   multiagent_writer:
+  #     model: "agent-writer"
+  #     timeout_seconds: 60
+  #   embedding:
+  #     model: "agent-embedding"
+  #     base_url: "http://127.0.0.1:4000/v1/embeddings"
+  #   adk:
+  #     provider: "gemini"
+  #     model: "gemini-2.5-flash"
+
+# Embedding 配置
+embedding:
+  # Embedding 模型名称。留空时使用提供商默认的 Embedding 模型
+  #（例如 gemini-embedding-001 或 text-embedding-3-small），
+  # 而不是默认的文本生成模型。
+  # 环境变量覆盖：AI_AGENT_EMBEDDING_MODEL
+  model: ""
+
+# 检索增强生成（RAG）配置
+rag:
+  # 可选的外部搜索/RAG API 端点 URL。
+  # 环境变量覆盖：AI_AGENT_RAG_SEARCH_URL
+  search_url: ""
+  
+  # RAG 传输方式：“MCP”执行 initialize + tools/call；“POST”和“GET”
+  # 用于普通 REST 端点。以 /mcp 结尾的 URL 始终按 MCP Streamable HTTP
+  # 端点处理，即使环境变量将其覆盖为 POST。
+  # 环境变量覆盖：AI_AGENT_RAG_SEARCH_METHOD
+  search_method: "MCP"
+
+  # MCP 服务端暴露的搜索工具名称。
+  # 环境变量覆盖：AI_AGENT_RAG_TOOL_NAME
+  tool_name: "rag_search"
+
+  # RAG 搜索端点的 Authorization Token/Header。
+  # 必须通过环境变量设置——不要在本文件中保存密钥。
+  # 环境变量覆盖：AI_AGENT_RAG_AUTHORIZATION
+  authorization: ""
+
+  # 上下文检索模式。“jit”允许 Planner 按需调用检索工具；
+  # “prefetch”保留旧版 Planning 前预取流程。
+  # 环境变量覆盖：AI_AGENT_RAG_CONTEXT_MODE
+  context_mode: "jit"
+
+  # 每个任务对未缓存搜索和详情读取的限制。
+  # 环境变量覆盖：AI_AGENT_RAG_JIT_SEARCH_MAX_CALLS、
+  # AI_AGENT_RAG_JIT_FETCH_MAX_ITEMS,
+  # AI_AGENT_RAG_JIT_RAG_FETCH_MAX_BYTES,
+  # AI_AGENT_RAG_JIT_MEMORY_FETCH_MAX_BYTES
+  jit_search_max_calls: 3
+  jit_fetch_max_items: 3
+  jit_rag_fetch_max_bytes: 6000
+  jit_memory_fetch_max_bytes: 2000
+
+  # Planner Prompt 中最多包含的重排后 Memory 数量。
+  # 环境变量覆盖：AI_AGENT_RAG_MAX_PROMPT_MEMORIES
+  max_prompt_memories: 3
+
+  # 单条 Memory 合并 Goal、Findings 和 Answer 后的 UTF-8 字节预算。
+  # 环境变量覆盖：AI_AGENT_RAG_MAX_MEMORY_BYTES
+  max_memory_bytes: 2500
+
+  # 单个 Planner Prompt 中所有 Memory 共享的 UTF-8 字节预算。
+  # 环境变量覆盖：AI_AGENT_RAG_MAX_MEMORY_PROMPT_BYTES
+  max_memory_prompt_bytes: 8000
+
+  # 结构化解析失败时，最多保留的第三方原始文本字节数。
+  # 环境变量覆盖：AI_AGENT_RAG_MAX_RAW_FALLBACK_BYTES
+  max_raw_fallback_bytes: 4000
+
+# 日志配置
+log:
+  # 日志详细级别。支持：“debug”、“info”、“warn”、“error”。
+  # 环境变量覆盖：AI_AGENT_LOG_LEVEL
+  level: "info"
+
+  # 是否持续将 JSON 日志写入标准输出。
+  # 环境变量覆盖：AI_AGENT_LOG_CONSOLE
+  console: true
+
+  # 是否按级别写入各自的每日轮转文件，例如
+  # logs/info-2026-07-15.log 和 logs/error-2026-07-15.log。
+  # 环境变量覆盖：AI_AGENT_LOG_FILE_ENABLED
+  file_enabled: true
+
+  # 轮转日志文件目录。
+  # 环境变量覆盖：AI_AGENT_LOG_DIRECTORY
+  directory: "logs"
+
+  # 删除超过指定天数的轮转文件。设置为0表示永久保留。
+  # 环境变量覆盖：AI_AGENT_LOG_RETENTION_DAYS
+  retention_days: 30
+
+# OpenTelemetry 配置
+telemetry:
+  # 是否启用 OTLP Trace 和 Metrics 导出。关闭后，埋点保持空操作。
+  # 环境变量覆盖：AI_AGENT_TELEMETRY_ENABLED
+  enabled: true
+
+  # OTLP HTTP 端点。支持“host:port”或完整 URL，例如“http://127.0.0.1:4318”。
+  # 环境变量覆盖：AI_AGENT_TELEMETRY_ENDPOINT
+  endpoint: "127.0.0.1:4318"
+
+  # 部署环境的资源属性。
+  # 环境变量覆盖：AI_AGENT_TELEMETRY_ENVIRONMENT
+  environment: "dev"
+
+  # Exporter 模式。支持：“otlp”、“stdout”。
+  # 环境变量覆盖：AI_AGENT_TELEMETRY_EXPORTER
+  exporter: "otlp"
+
+# Tool 执行配置
+tool:
+  # 自定义 Tool 的执行超时时间，单位为秒。
+  # 环境变量覆盖：AI_AGENT_TOOL_TIMEOUT_SECONDS
+  timeout_seconds: 120
+
+# Skill 发现配置
+skill:
+  # 扫描 Skill 的根目录（其中包含 <name>/SKILL.md）。
+  # 环境变量覆盖：AI_AGENT_SKILL_ROOT
+  root: "skills"
+
+# Web 搜索配置
+search:
+  # 默认 Web 搜索 API URL（例如 Firecrawl、DuckDuckGo）。
+  # 默认使用 Firecrawl 搜索端点：https://api.firecrawl.dev/v1/search
+  # 环境变量覆盖：AI_AGENT_SEARCH_URL
+  url: "https://api.firecrawl.dev/v1/search"
+
+  # 搜索提供商的 API Key 或 Authorization Token。
+  # 环境变量覆盖：FIRECRAWL_API_KEY 或 AI_AGENT_SEARCH_API_KEY
+  api_key: ""

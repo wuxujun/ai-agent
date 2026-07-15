@@ -21,6 +21,8 @@ func BuildSystemPrompt() string {
 	contextRules := `- Context retrieval is just-in-time: do not assume RAG or historical memory has been prefetched.
 - For current external facts, first call rag_search, then call rag_fetch with only the relevant candidate IDs.
 - For prior-task knowledge or user history, first call memory_search, then call memory_get with only the relevant candidate IDs.
+- Use workspace tools (find_files, search_text, read_file, execute_code) only when the goal explicitly concerns local files, source code, a repository, or the workspace.
+- Never use execute_code merely to parse, rank, or summarize retrieval results.
 - Treat RAG evidence as current external evidence and Memory as historical background; never let historical memory override newer direct evidence.
 - Do not provide a factual final answer without a successful retrieval or tool observation that supports it.
 - Do not repeat the same retrieval query; reuse candidate IDs already present in the trace.`
@@ -39,7 +41,7 @@ Return only a decision object that matches the required schema.
 
 Rules:
 - Prefer the smallest useful next step.
-- First narrow the search space, then search, then inspect context.
+- For workspace tasks, first narrow the local search space, then search, then inspect context.
 ` + contextRules + `
 - If there is enough evidence to answer, stop.
 - If no useful next step exists, stop.
@@ -58,8 +60,11 @@ func buildUserPromptWithStats(task *types.Task) (string, promptBuildStats) {
 	memorySection, stats := buildMemoryPromptSection(task)
 
 	var toolsList []string
-	for i, t := range tools.DefaultRegistry.List() {
-		toolsList = append(toolsList, fmt.Sprintf("%d. %s: %s", i+1, t.Name(), t.Description()))
+	for _, t := range tools.DefaultRegistry.List() {
+		if !toolRelevantToTask(task, t.Name()) {
+			continue
+		}
+		toolsList = append(toolsList, fmt.Sprintf("%d. %s: %s", len(toolsList)+1, t.Name(), t.Description()))
 	}
 	toolsString := strings.Join(toolsList, "\n")
 
@@ -107,6 +112,18 @@ Decision requirements:
 	)
 	stats.UserPromptBytes = len(prompt)
 	return prompt, stats
+}
+
+func toolRelevantToTask(task *types.Task, name string) bool {
+	if task == nil || !strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") || !RequiresFactualEvidence(task) {
+		return true
+	}
+	switch name {
+	case "rag_search", "rag_fetch", "memory_search", "memory_get", "web_search", "http_fetch", "web_browser":
+		return true
+	default:
+		return false
+	}
 }
 
 func indentText(text, indent string) string {

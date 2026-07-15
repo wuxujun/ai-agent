@@ -168,6 +168,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 				log.Error("Adaptive replan failed or returned empty steps — stopping loop")
 				break
 			}
+			enforceJITResearchPlan(task, newPlan)
 
 			if c.Metrics != nil {
 				c.Metrics.ObserveTokens(newPlan.TokenUsage.PromptTokens, newPlan.TokenUsage.CompletionTokens, newPlan.TokenUsage.TotalTokens, "replanner")
@@ -218,7 +219,14 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	log.Info("Phase 1 — Planning", "task_id", task.ID)
 
 	start := time.Now()
-	plan, err := c.Planner.Plan(ctx, task.Goal, task.Workspace, task.Memories)
+	var plan *ResearchPlan
+	var err error
+	if decision, ok := planner.NextJITRetrievalDecision(task); ok && !decision.Stop {
+		plan = researchPlanFromJITDecision(task, decision)
+		log.Info("Planning resolved by JIT retrieval router", "task_id", task.ID, "action", plan.Steps[0].Action, "rag_configured", strings.TrimSpace(config.Get().RAG.SearchURL) != "")
+	} else {
+		plan, err = c.Planner.Plan(ctx, task.Goal, task.Workspace, task.Memories)
+	}
 	elapsed := time.Since(start)
 
 	if c.Metrics != nil {
@@ -226,6 +234,9 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	}
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent: %w", err)
+	}
+	if enforceJITResearchPlan(task, plan) {
+		log.Info("Adjusted research plan to JIT retrieval route", "task_id", task.ID, "action", plan.Steps[0].Action)
 	}
 
 	if c.Metrics != nil {
@@ -248,6 +259,24 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 
 	log.Info("Phase 1 done", "steps_planned", len(plan.Steps), "elapsed", elapsed)
 	return plan, nil
+}
+
+func researchPlanFromJITDecision(task *types.Task, decision *planner.PlanDecision) *ResearchPlan {
+	action := decision.Actions[0]
+	query, _ := action.Parameters["query"].(string)
+	if query == "" {
+		query = task.Goal
+	}
+	return &ResearchPlan{
+		ThoughtSummary: decision.ThoughtSummary,
+		Steps: []ResearchStep{{
+			ID:                 "step-1",
+			Description:        "Retrieve authoritative evidence before factual synthesis",
+			Action:             action.Action,
+			SearchQuery:        query,
+			RepairedParameters: action.Parameters,
+		}},
+	}
 }
 
 func (c *Coordinator) critiqueResearchPlan(ctx context.Context, task *types.Task, plan *ResearchPlan) {
@@ -366,6 +395,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			if replanErr != nil {
 				log.Error("Replanner failed — continuing with remaining steps", "error", replanErr)
 			} else if len(newPlan.Steps) > 0 {
+				enforceJITResearchPlan(task, newPlan)
 				log.Info("Replanner generated revised steps", "count", len(newPlan.Steps))
 				if c.Metrics != nil {
 					c.Metrics.ObserveTokens(newPlan.TokenUsage.PromptTokens, newPlan.TokenUsage.CompletionTokens, newPlan.TokenUsage.TotalTokens, "replanner")
@@ -412,6 +442,30 @@ func isReadOnlyAction(action string) bool {
 		return true
 	}
 	return false
+}
+
+// enforceJITResearchPlan prevents a multi-agent plan for an external factual
+// lookup from drifting into workspace or execution tools before retrieval.
+// Candidate detail steps are inserted later by retrievalFetchSteps.
+func enforceJITResearchPlan(task *types.Task, plan *ResearchPlan) bool {
+	if task == nil || plan == nil || planner.HasSupportingEvidence(task.Trace) {
+		return false
+	}
+	action, ok := planner.PreferredJITSearchAction(task)
+	if !ok {
+		return false
+	}
+	if len(plan.Steps) == 1 && plan.Steps[0].Action == action {
+		return false
+	}
+	plan.ThoughtSummary = "Retrieve authoritative evidence before factual synthesis"
+	plan.Steps = []ResearchStep{{
+		ID:          "step-1",
+		Description: "Search the configured retrieval source for evidence",
+		Action:      action,
+		SearchQuery: task.Goal,
+	}}
+	return true
 }
 
 func retrievalFetchSteps(evidence []StepEvidence) []ResearchStep {

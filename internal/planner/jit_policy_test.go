@@ -22,6 +22,36 @@ func TestEnforceJITRetrievalOverridesUnsupportedFactualAnswer(t *testing.T) {
 	}
 }
 
+func TestEnforceJITRetrievalOverridesWorkspaceToolForExternalFact(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+	}))
+	task := &types.Task{Goal: "数学科学术顾问有哪个人？"}
+	decision := &PlanDecision{Actions: []ActionCall{{Action: "find_files", Parameters: map[string]any{"pattern": "*.*"}}}}
+	if !enforceJITRetrieval(task, decision) {
+		t.Fatal("expected workspace action for external fact to be overridden")
+	}
+	if decision.Stop || len(decision.Actions) != 1 || decision.Actions[0].Action != "rag_search" {
+		t.Fatalf("unexpected rewritten decision: %#v", decision)
+	}
+}
+
+func TestEnforceJITRetrievalOverridesNextActionWithCandidateFetch(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.JITFetchMaxItems = 1
+	}))
+	task := &types.Task{Goal: "查询教师信息", Trace: []types.StepTrace{{
+		Action:      "rag_search",
+		Observation: `{"count":1,"results":[{"id":"rag-a"}]}`,
+	}}}
+	decision := &PlanDecision{Actions: []ActionCall{{Action: "search_text", Parameters: map[string]any{"query": "教师"}}}}
+	if !enforceJITRetrieval(task, decision) || decision.Actions[0].Action != "rag_fetch" {
+		t.Fatalf("candidate details were not forced before another action: %#v", decision)
+	}
+}
+
 func TestEnforceJITRetrievalAllowsAnswerAfterEvidence(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
 	task := &types.Task{Goal: "查询教师信息", Trace: []types.StepTrace{{Action: "rag_fetch", Observation: "fetched 1 rag item(s)", Evidence: []types.Evidence{{Lines: []string{"fact"}}}}}}
@@ -93,6 +123,20 @@ func TestRequiresFactualEvidenceLetsCodingIntentOverrideLexicalMarker(t *testing
 	task := &types.Task{Goal: "修改教师信息页面代码", Trace: []types.StepTrace{{Action: "intent_route", Query: "coding"}}}
 	if RequiresFactualEvidence(task) {
 		t.Fatal("coding intent should not be forced into external fact retrieval")
+	}
+}
+
+func TestRequiresFactualEvidenceExcludesExplicitWorkspaceLookup(t *testing.T) {
+	task := &types.Task{Goal: "在项目中查找教师信息页面"}
+	if RequiresFactualEvidence(task) {
+		t.Fatal("explicit workspace lookup should use workspace tools")
+	}
+}
+
+func TestWorkspaceSearchDoesNotSupportExternalFact(t *testing.T) {
+	traces := []types.StepTrace{{Action: "search_text", Observation: "found 8 evidence items", Evidence: []types.Evidence{{Path: "a.md", Lines: []string{"顾问"}}}}}
+	if HasSupportingEvidence(traces) {
+		t.Fatal("workspace search must not count as external factual evidence")
 	}
 }
 

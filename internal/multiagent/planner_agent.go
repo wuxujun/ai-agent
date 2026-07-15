@@ -32,11 +32,12 @@ Available actions:
 
 Rules:
 1. Produce between 2 and 8 steps — prefer fewer, higher-quality steps.
-2. Start broad (find_files or search_text) then narrow down or execute (read_file, write_file, execute_code).
-3. Each step builds on previous findings.
-4. Step IDs must be "step-1", "step-2", etc.
-5. Set every unused field to an empty string "".
-6. Never include steps that cannot be executed with the actions above.`
+2. For external factual lookups, start with rag_search. Do not use workspace tools unless the goal explicitly concerns local files, source code, a repository, or the workspace.
+3. For workspace tasks, start broad with find_files or search_text, then narrow with read_file. Use execute_code only when execution is required by the goal, never merely to summarize search results.
+4. Each step builds on previous findings.
+5. Step IDs must be "step-1", "step-2", etc.
+6. Set every unused field to an empty string "".
+7. Never include steps that cannot be executed with the actions above.`
 
 // PlannerAgent decomposes a user goal into a structured ResearchPlan using an LLM.
 type PlannerAgent struct {
@@ -108,7 +109,7 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 
 	userPrompt := fmt.Sprintf(
 		"Goal: %s%s\n\nWorkspace root: %s\n\n"+
-			"Produce a research plan with concrete steps to achieve the goal using the available file tools.",
+			"Produce a research plan with concrete steps using tools appropriate to the goal's information source.",
 		goal, memorySection, workspace,
 	)
 
