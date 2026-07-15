@@ -125,6 +125,14 @@ llm:
   # Env override: AI_AGENT_LLM_CONTEXT_COMPRESSION_TOKEN_THRESHOLD
   # context_compression_token_threshold: 40000
 
+  # Planner trace context limits. These protect every planning call even when
+  # the optional LLM context compressor is disabled or has not triggered yet.
+  planner_trace_max_items: 4
+  planner_observation_max_chars: 800
+  planner_evidence_max_items: 8
+  planner_evidence_line_max_chars: 300
+  planner_trace_max_chars: 5000
+
 
   # Optional shared gateway defaults. LiteLLM exposes an OpenAI-compatible
   # /v1/chat/completions endpoint and model aliases configured in LiteLLM.
@@ -258,6 +266,22 @@ rag:
   # MUST be set via environment variable — do NOT store secrets in this file.
   # Env override: AI_AGENT_RAG_AUTHORIZATION
   authorization: ""
+
+  # Maximum number of reranked memories included in a planner prompt.
+  # Env override: AI_AGENT_RAG_MAX_PROMPT_MEMORIES
+  max_prompt_memories: 3
+
+  # UTF-8 byte budget for one memory after combining goal, findings and answer.
+  # Env override: AI_AGENT_RAG_MAX_MEMORY_BYTES
+  max_memory_bytes: 2500
+
+  # UTF-8 byte budget shared by all memories in one planner prompt.
+  # Env override: AI_AGENT_RAG_MAX_MEMORY_PROMPT_BYTES
+  max_memory_prompt_bytes: 8000
+
+  # Maximum raw third-party text retained when structured parsing fails.
+  # Env override: AI_AGENT_RAG_MAX_RAW_FALLBACK_BYTES
+  max_raw_fallback_bytes: 4000
 
 # Logging configuration
 log:

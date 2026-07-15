@@ -80,6 +80,11 @@ type Config struct {
 		// all TotalTokens across task.Trace exceeds this value, regardless of
 		// step count. 0 disables the token-based trigger.
 		ContextCompressionTokenThreshold int                          `mapstructure:"context_compression_token_threshold"`
+		PlannerTraceMaxItems             int                          `mapstructure:"planner_trace_max_items"`
+		PlannerObservationMaxChars       int                          `mapstructure:"planner_observation_max_chars"`
+		PlannerEvidenceMaxItems          int                          `mapstructure:"planner_evidence_max_items"`
+		PlannerEvidenceLineMaxChars      int                          `mapstructure:"planner_evidence_line_max_chars"`
+		PlannerTraceMaxChars             int                          `mapstructure:"planner_trace_max_chars"`
 		Gateway                          LLMEndpointConfig            `mapstructure:"gateway"`
 		Scenes                           map[string]LLMEndpointConfig `mapstructure:"scenes"`
 	} `mapstructure:"llm"`
@@ -89,10 +94,14 @@ type Config struct {
 	} `mapstructure:"embedding"`
 
 	RAG struct {
-		SearchURL     string `mapstructure:"search_url"`
-		SearchMethod  string `mapstructure:"search_method"`
-		Authorization string `mapstructure:"authorization"`
-		ToolName      string `mapstructure:"tool_name"`
+		SearchURL            string `mapstructure:"search_url"`
+		SearchMethod         string `mapstructure:"search_method"`
+		Authorization        string `mapstructure:"authorization"`
+		ToolName             string `mapstructure:"tool_name"`
+		MaxPromptMemories    int    `mapstructure:"max_prompt_memories"`
+		MaxMemoryBytes       int    `mapstructure:"max_memory_bytes"`
+		MaxMemoryPromptBytes int    `mapstructure:"max_memory_prompt_bytes"`
+		MaxRawFallbackBytes  int    `mapstructure:"max_raw_fallback_bytes"`
 	} `mapstructure:"rag"`
 
 	Search struct {
@@ -304,6 +313,11 @@ func setupViper() {
 	viper.SetDefault("llm.context_compression_trace_threshold", 8)
 	// context_compression_token_threshold: 0 = disabled by default
 	viper.SetDefault("llm.context_compression_token_threshold", 0)
+	viper.SetDefault("llm.planner_trace_max_items", 4)
+	viper.SetDefault("llm.planner_observation_max_chars", 800)
+	viper.SetDefault("llm.planner_evidence_max_items", 8)
+	viper.SetDefault("llm.planner_evidence_line_max_chars", 300)
+	viper.SetDefault("llm.planner_trace_max_chars", 5000)
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("log.console", true)
 	viper.SetDefault("log.file_enabled", true)
@@ -317,6 +331,10 @@ func setupViper() {
 	viper.SetDefault("skill.root", "skills")
 	viper.SetDefault("rag.authorization", "")
 	viper.SetDefault("rag.tool_name", "search")
+	viper.SetDefault("rag.max_prompt_memories", 3)
+	viper.SetDefault("rag.max_memory_bytes", 2500)
+	viper.SetDefault("rag.max_memory_prompt_bytes", 8000)
+	viper.SetDefault("rag.max_raw_fallback_bytes", 4000)
 	viper.SetDefault("search.url", "https://api.firecrawl.dev/v1/search")
 	viper.SetDefault("search.api_key", "")
 
@@ -629,6 +647,11 @@ func diffConfigs(old, new *Config) []string {
 	}
 	addIfInt("llm.context_compression_trace_threshold", old.LLM.ContextCompressionTraceThreshold, new.LLM.ContextCompressionTraceThreshold)
 	addIfInt("llm.context_compression_token_threshold", old.LLM.ContextCompressionTokenThreshold, new.LLM.ContextCompressionTokenThreshold)
+	addIfInt("llm.planner_trace_max_items", old.LLM.PlannerTraceMaxItems, new.LLM.PlannerTraceMaxItems)
+	addIfInt("llm.planner_observation_max_chars", old.LLM.PlannerObservationMaxChars, new.LLM.PlannerObservationMaxChars)
+	addIfInt("llm.planner_evidence_max_items", old.LLM.PlannerEvidenceMaxItems, new.LLM.PlannerEvidenceMaxItems)
+	addIfInt("llm.planner_evidence_line_max_chars", old.LLM.PlannerEvidenceLineMaxChars, new.LLM.PlannerEvidenceLineMaxChars)
+	addIfInt("llm.planner_trace_max_chars", old.LLM.PlannerTraceMaxChars, new.LLM.PlannerTraceMaxChars)
 	addIf("llm.gateway.provider", old.LLM.Gateway.Provider, new.LLM.Gateway.Provider)
 	addIf("llm.gateway.api_key", old.LLM.Gateway.APIKey, new.LLM.Gateway.APIKey)
 	addIf("llm.gateway.model", old.LLM.Gateway.Model, new.LLM.Gateway.Model)
@@ -661,6 +684,10 @@ func diffConfigs(old, new *Config) []string {
 	addIf("rag.search_method", old.RAG.SearchMethod, new.RAG.SearchMethod)
 	addIf("rag.authorization", old.RAG.Authorization, new.RAG.Authorization)
 	addIf("rag.tool_name", old.RAG.ToolName, new.RAG.ToolName)
+	addIfInt("rag.max_prompt_memories", old.RAG.MaxPromptMemories, new.RAG.MaxPromptMemories)
+	addIfInt("rag.max_memory_bytes", old.RAG.MaxMemoryBytes, new.RAG.MaxMemoryBytes)
+	addIfInt("rag.max_memory_prompt_bytes", old.RAG.MaxMemoryPromptBytes, new.RAG.MaxMemoryPromptBytes)
+	addIfInt("rag.max_raw_fallback_bytes", old.RAG.MaxRawFallbackBytes, new.RAG.MaxRawFallbackBytes)
 
 	// Search
 	addIf("search.url", old.Search.URL, new.Search.URL)
@@ -947,6 +974,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Log.RetentionDays < 0 {
 		return fmt.Errorf("log.retention_days must be >= 0")
+	}
+	if c.RAG.MaxPromptMemories < 0 || c.RAG.MaxMemoryBytes < 0 || c.RAG.MaxMemoryPromptBytes < 0 || c.RAG.MaxRawFallbackBytes < 0 {
+		return fmt.Errorf("rag prompt budget values must be >= 0")
+	}
+	if c.LLM.PlannerTraceMaxItems < 0 || c.LLM.PlannerObservationMaxChars < 0 || c.LLM.PlannerEvidenceMaxItems < 0 || c.LLM.PlannerEvidenceLineMaxChars < 0 || c.LLM.PlannerTraceMaxChars < 0 {
+		return fmt.Errorf("planner trace budget values must be >= 0")
 	}
 	seenTenantKeys := make(map[string]string, len(c.API.Tenants))
 	for tenantID, tenant := range c.API.Tenants {

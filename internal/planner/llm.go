@@ -204,15 +204,30 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		return nil, err
 	}
 
+	userPrompt, promptStats := buildUserPromptWithStats(promptTask)
 	req := PlanRequest{
 		Client:       client,
 		Model:        model,
 		APIKey:       apiKey,
 		BaseURL:      baseURL,
 		SystemPrompt: BuildSystemPrompt(),
-		UserPrompt:   BuildUserPrompt(promptTask),
+		UserPrompt:   userPrompt,
 	}
 
+	log.Info("planner prompt prepared",
+		"task_id", task.ID,
+		"step", task.StepCount+1,
+		"user_prompt_bytes", promptStats.UserPromptBytes,
+		"memory_count_available", promptStats.MemoryAvailable,
+		"memory_count_included", promptStats.MemoryIncluded,
+		"memory_bytes_original", promptStats.MemoryOriginalBytes,
+		"memory_bytes_included", promptStats.MemoryIncludedBytes,
+		"memory_budget_bytes", promptStats.MemoryBudgetBytes,
+		"memory_truncated", promptStats.MemoryTruncated,
+		"trace_bytes_original", promptStats.TraceOriginalBytes,
+		"trace_bytes_included", promptStats.TraceIncludedBytes,
+		"trace_truncated", promptStats.TraceTruncated,
+	)
 	log.Info("sending planning request to provider", "task_id", task.ID, "step", task.StepCount+1, "scene", activeScene, "provider", provider, "base_url", baseURL, "model", model)
 	maxRetries, fallbackScene := 0, ""
 	if activeScene != "" {

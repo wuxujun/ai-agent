@@ -37,15 +37,12 @@ Rules:
 }
 
 func BuildUserPrompt(task *types.Task) string {
-	var memorySection string
-	if len(task.Memories) > 0 {
-		var ms []string
-		for i, mem := range task.Memories {
-			ms = append(ms, fmt.Sprintf("- Memory %d:\n  * Goal: %s\n  * Key Findings:\n%s\n  * Final Answer: %s",
-				i+1, mem.Goal, indentText(mem.KeyFindings, "    "), mem.FinalAnswer))
-		}
-		memorySection = "\n\nRelated Historical Memories (RAG - Cross-task Knowledge Sharing):\n" + strings.Join(ms, "\n\n")
-	}
+	prompt, _ := buildUserPromptWithStats(task)
+	return prompt
+}
+
+func buildUserPromptWithStats(task *types.Task) (string, promptBuildStats) {
+	memorySection, stats := buildMemoryPromptSection(task)
 
 	var toolsList []string
 	for i, t := range tools.DefaultRegistry.List() {
@@ -57,7 +54,12 @@ func BuildUserPrompt(task *types.Task) string {
 	// the full SKILL.md body is loaded on demand via the use_skill tool.
 	skillsString := skills.PromptSection(SkillRegistry)
 
-	return fmt.Sprintf(`Task goal:
+	traceSection, traceOriginal, traceIncluded, traceTruncated := summarizeTraceWithStats(task.Trace)
+	stats.TraceOriginalBytes = traceOriginal
+	stats.TraceIncludedBytes = traceIncluded
+	stats.TraceTruncated = traceTruncated
+
+	prompt := fmt.Sprintf(`Task goal:
 %s%s
 
 Current status:
@@ -88,8 +90,10 @@ Decision requirements:
 		toolsString,
 		skillsString,
 		formatUnresolved(task.Unresolved),
-		summarizeTrace(task.Trace),
+		traceSection,
 	)
+	stats.UserPromptBytes = len(prompt)
+	return prompt, stats
 }
 
 func indentText(text, indent string) string {
@@ -114,28 +118,6 @@ func formatUnresolved(items []string) string {
 }
 
 func summarizeTrace(traces []types.StepTrace) string {
-	if len(traces) == 0 {
-		return "No prior steps."
-	}
-
-	start := 0
-	if len(traces) > 4 {
-		start = len(traces) - 4
-	}
-
-	var lines []string
-	for _, tr := range traces[start:] {
-		lines = append(lines,
-			fmt.Sprintf("Step %d: action=%s, query=%s, observation=%s",
-				tr.Step, tr.Action, tr.Query, tr.Observation,
-			),
-		)
-		for _, ev := range tr.Evidence {
-			for _, line := range ev.Lines {
-				lines = append(lines, fmt.Sprintf("Evidence: %s :: %s", ev.Path, line))
-			}
-		}
-	}
-
-	return strings.Join(lines, "\n")
+	result, _, _, _ := summarizeTraceWithStats(traces)
+	return result
 }

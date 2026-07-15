@@ -213,16 +213,7 @@ func parseRAGResponse(data []byte) ([]types.Memory, error) {
 		var allMemories []types.Memory
 		for _, content := range rpcResp.Result.Content {
 			if content.Type == "text" && content.Text != "" {
-				// Try to parse the text as memories JSON
-				if mems, parseErr := parseRAGResponse([]byte(content.Text)); parseErr == nil && len(mems) > 0 {
-					allMemories = append(allMemories, mems...)
-				} else {
-					// Fallback: treat the raw text as key findings of a single memory
-					allMemories = append(allMemories, types.Memory{
-						ID:          fmt.Sprintf("mem-ext-%d", len(allMemories)+1),
-						KeyFindings: content.Text,
-					})
-				}
+				allMemories = append(allMemories, memoriesFromMCPText(content.Text, len(allMemories)+1)...)
 			}
 		}
 		if len(allMemories) > 0 {
@@ -256,6 +247,117 @@ func parseRAGResponse(data []byte) ([]types.Memory, error) {
 	}
 
 	return nil, fmt.Errorf("unable to parse third-party RAG response")
+}
+
+func memoriesFromMCPText(text string, startID int) []types.Memory {
+	if mems, err := parseRAGResponse([]byte(text)); err == nil && len(mems) > 0 {
+		return mems
+	}
+	if mems := parseRAGTextFragments(text, startID); len(mems) > 0 {
+		return mems
+	}
+
+	limit := config.Get().RAG.MaxRawFallbackBytes
+	if limit <= 0 {
+		limit = 4000
+	}
+	trimmed, truncated := truncateUTF8Bytes(strings.TrimSpace(text), limit, "\n[truncated raw RAG response]")
+	if truncated {
+		log.Warn("truncated unstructured third-party RAG response", "original_bytes", len(text), "included_bytes", len(trimmed), "limit_bytes", limit)
+	}
+	return []types.Memory{{ID: fmt.Sprintf("mem-ext-%d", startID), KeyFindings: trimmed}}
+}
+
+// parseRAGTextFragments handles the common human-readable MCP response format:
+// "## 片段N", followed by optional 标题/内容/来源 fields. Splitting before
+// reranking prevents one multi-document response from becoming a huge memory.
+func parseRAGTextFragments(text string, startID int) []types.Memory {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	var memories []types.Memory
+	var title string
+	var body []string
+	started := false
+	flush := func() {
+		if !started {
+			return
+		}
+		findings := strings.TrimSpace(strings.Join(body, "\n"))
+		if title == "" && findings == "" {
+			return
+		}
+		memories = append(memories, types.Memory{
+			ID:          fmt.Sprintf("mem-ext-fragment-%d", startID+len(memories)),
+			Goal:        title,
+			KeyFindings: findings,
+		})
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		compact := strings.ReplaceAll(trimmed, " ", "")
+		if strings.HasPrefix(compact, "##片段") {
+			flush()
+			started = true
+			title = ""
+			body = nil
+			continue
+		}
+		if !started {
+			continue
+		}
+		if value, ok := trimFieldPrefix(trimmed, "标题"); ok {
+			title = value
+			continue
+		}
+		if value, ok := trimFieldPrefix(trimmed, "内容"); ok {
+			if value != "" {
+				body = append(body, value)
+			}
+			continue
+		}
+		body = append(body, line)
+	}
+	flush()
+	return memories
+}
+
+func trimFieldPrefix(line, field string) (string, bool) {
+	for _, separator := range []string{":", "："} {
+		prefix := field + separator
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix)), true
+		}
+	}
+	return "", false
+}
+
+func truncateUTF8Bytes(value string, limit int, suffix string) (string, bool) {
+	if limit <= 0 || len(value) <= limit {
+		return value, false
+	}
+	allowed := limit - len(suffix)
+	if allowed < 0 {
+		allowed = limit
+		suffix = ""
+	}
+	cut := 0
+	for index := range value {
+		if index > allowed {
+			break
+		}
+		cut = index
+	}
+	if cut == 0 && allowed > 0 {
+		for _, r := range value {
+			encoded := string(r)
+			if len(encoded) > allowed {
+				break
+			}
+			cut = len(encoded)
+			break
+		}
+	}
+	return value[:cut] + suffix, true
 }
 
 func parseSliceToMemories(slice []any) []types.Memory {
@@ -516,14 +618,7 @@ func doMCPHandshakeAndCall(ctx context.Context, postURL, auth, query string, ini
 	var allMemories []types.Memory
 	for _, content := range rpcResp.Result.Content {
 		if content.Type == "text" && content.Text != "" {
-			if mems, parseErr := parseRAGResponse([]byte(content.Text)); parseErr == nil && len(mems) > 0 {
-				allMemories = append(allMemories, mems...)
-			} else {
-				allMemories = append(allMemories, types.Memory{
-					ID:          fmt.Sprintf("mem-ext-%d", len(allMemories)+1),
-					KeyFindings: content.Text,
-				})
-			}
+			allMemories = append(allMemories, memoriesFromMCPText(content.Text, len(allMemories)+1)...)
 		}
 	}
 

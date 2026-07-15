@@ -165,6 +165,33 @@ func TestSearchThirdPartyRAG_POST_Object(t *testing.T) {
 	}
 }
 
+func TestParseRAGTextFragments(t *testing.T) {
+	text := "## 片段1\n标题: 数学顾问甲\n内容: 擅长竞赛数学\n来源: handbook\n\n##片段2\n标题：数学顾问乙\n内容：擅长应用数学"
+	memories := parseRAGTextFragments(text, 1)
+	if len(memories) != 2 {
+		t.Fatalf("expected 2 memories, got %d: %#v", len(memories), memories)
+	}
+	if memories[0].Goal != "数学顾问甲" || !strings.Contains(memories[0].KeyFindings, "竞赛数学") {
+		t.Fatalf("unexpected first fragment: %#v", memories[0])
+	}
+	if memories[1].ID != "mem-ext-fragment-2" || memories[1].Goal != "数学顾问乙" {
+		t.Fatalf("unexpected second fragment: %#v", memories[1])
+	}
+}
+
+func TestMemoriesFromMCPTextCapsUnstructuredFallback(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.MaxRawFallbackBytes = 80
+	}))
+	memories := memoriesFromMCPText(strings.Repeat("数学顾问资料", 100), 1)
+	if len(memories) != 1 || len(memories[0].KeyFindings) > 80 {
+		t.Fatalf("raw fallback was not capped: %#v", memories)
+	}
+	if !strings.Contains(memories[0].KeyFindings, "[truncated raw RAG response]") {
+		t.Fatalf("raw fallback missing truncation marker: %q", memories[0].KeyFindings)
+	}
+}
+
 func TestSearchThirdPartyRAG_HttpErrors(t *testing.T) {
 	ctx := context.Background()
 

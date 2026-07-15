@@ -64,6 +64,12 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Log.Console || !cfg.Log.FileEnabled || cfg.Log.Directory != "logs" || cfg.Log.RetentionDays != 30 {
 		t.Errorf("unexpected log defaults: %+v", cfg.Log)
 	}
+	if cfg.RAG.MaxPromptMemories != 3 || cfg.RAG.MaxMemoryBytes != 2500 || cfg.RAG.MaxMemoryPromptBytes != 8000 || cfg.RAG.MaxRawFallbackBytes != 4000 {
+		t.Errorf("unexpected RAG prompt budget defaults: %+v", cfg.RAG)
+	}
+	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
+		t.Errorf("unexpected planner trace budget defaults: %+v", cfg.LLM)
+	}
 }
 
 func TestConfigEnvOverrides(t *testing.T) {
@@ -697,15 +703,19 @@ func TestDiffConfigs_IncludesNewFields(t *testing.T) {
 
 	newCfg.Embedding.Model = "new-embedding-model"
 	newCfg.LLM.ContextCompressionTokenThreshold = 50000
+	newCfg.RAG.MaxMemoryPromptBytes = 8000
 
 	changes := diffConfigs(oldCfg, newCfg)
-	var foundEmbeddingModel, foundTokenThreshold bool
+	var foundEmbeddingModel, foundTokenThreshold, foundMemoryBudget bool
 	for _, change := range changes {
 		if change == "embedding.model: \"\" → \"new-embedding-model\"" {
 			foundEmbeddingModel = true
 		}
 		if change == "llm.context_compression_token_threshold: 0 → 50000" {
 			foundTokenThreshold = true
+		}
+		if change == "rag.max_memory_prompt_bytes: 0 → 8000" {
+			foundMemoryBudget = true
 		}
 	}
 
@@ -714,5 +724,8 @@ func TestDiffConfigs_IncludesNewFields(t *testing.T) {
 	}
 	if !foundTokenThreshold {
 		t.Errorf("diffConfigs did not report change in llm.context_compression_token_threshold; changes: %v", changes)
+	}
+	if !foundMemoryBudget {
+		t.Errorf("diffConfigs did not report change in rag.max_memory_prompt_bytes; changes: %v", changes)
 	}
 }
