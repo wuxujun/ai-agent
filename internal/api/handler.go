@@ -376,7 +376,7 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 				errChan <- saveErr
 				return
 			}
-			if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
+			if types.IsTerminalTaskStatus(task.Status) {
 				GetBus().Publish(task.ID, terminalStepEvent(task.ID, task))
 			}
 			errChan <- execErr
@@ -438,7 +438,7 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
-	if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
+	if types.IsTerminalTaskStatus(task.Status) {
 		c.JSON(http.StatusOK, task)
 		return
 	}

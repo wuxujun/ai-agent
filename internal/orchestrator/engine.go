@@ -593,13 +593,20 @@ const (
 )
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
-	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(e.Mode))
+	effectiveMode := e.Mode
+	if effectiveMode == "" {
+		effectiveMode = ModeEino
+	}
+	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(effectiveMode))
 	defer func() {
-		if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
+		if types.IsTerminalTaskStatus(task.Status) {
 			tools.ClearRetrievalContext(task.ID)
 		}
 	}()
 	wasCompleted := task.Status == types.StatusCompleted
+	if types.IsTerminalTaskStatus(task.Status) {
+		return nil
+	}
 	ctx = store.WithTenantScope(ctx, task.TenantID)
 	if e.Store != nil {
 		if ledger, ok := e.Store.(types.TenantUsageLedger); ok {
@@ -613,7 +620,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			var budgetErr *llmcore.TaskBudgetError
 			if errors.As(err, &budgetErr) {
 				engineLog.Info("task reached LLM budget", "task_id", task.ID, "kind", budgetErr.Kind, "current", budgetErr.Current, "limit", budgetErr.Limit)
-				_ = SetTaskCompleted(task, finalAnswerForLimit(task, limitReasonLLMBudget))
+				_ = SetTaskPartial(task, finalAnswerForLimit(task, limitReasonLLMBudget), limitReasonLLMBudget)
 				if e.Metrics != nil {
 					e.Metrics.IncCompleted()
 				}
@@ -744,15 +751,11 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 
 	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 || (task.TokenBudget > 0 && totalTokens >= task.TokenBudget) {
 		engineLog.Info("task reached limit", "task_id", task.ID, "step", task.StepCount, "max_steps", task.MaxSteps, "budget", task.ToolBudget, "tokens", totalTokens, "token_budget", task.TokenBudget)
-		finalAnswer := task.FinalAnswer
-		if finalAnswer == "" {
-			reason := limitReasonStepOrToolBudget
-			if task.TokenBudget > 0 && totalTokens >= task.TokenBudget {
-				reason = limitReasonTokenBudget
-			}
-			finalAnswer = finalAnswerForLimit(task, reason)
+		if task.TokenBudget > 0 && totalTokens >= task.TokenBudget {
+			_ = SetTaskPartial(task, finalAnswerForLimit(task, limitReasonTokenBudget), limitReasonTokenBudget)
+		} else {
+			e.completeAtExecutionLimit(ctx, task)
 		}
-		_ = SetTaskCompleted(task, finalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
@@ -774,6 +777,9 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "planner failure")
 		return err
+	}
+	if e.finalizeBeforeRetrievalExpansion(ctx, task, decision) {
+		return nil
 	}
 	e.critiqueDecision(ctx, task, decision)
 
@@ -1037,7 +1043,7 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 		e.Metrics.IncRunAll()
 	}
 
-	for task.Status != types.StatusCompleted && task.Status != types.StatusFailed {
+	for !types.IsTerminalTaskStatus(task.Status) {
 		select {
 		case <-ctx.Done():
 			engineLog.Warn("task canceled", "task_id", task.ID, "error", ctx.Err())

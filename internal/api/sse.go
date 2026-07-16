@@ -25,7 +25,7 @@ type StepEvent struct {
 }
 
 func (e StepEvent) isTerminal() bool {
-	return e.Step == nil && (e.Status == types.StatusCompleted || e.Status == types.StatusFailed)
+	return e.Step == nil && types.IsTerminalTaskStatus(e.Status)
 }
 
 // stickyTerminalTTL bounds how long the EventBus replays a task's terminal
@@ -151,7 +151,7 @@ func (h *Handler) streamTask(c *gin.Context) {
 	}
 
 	// If task is already terminal, return its final state immediately as a single event
-	if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
+	if types.IsTerminalTaskStatus(task.Status) {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("X-Accel-Buffering", "no")
@@ -216,7 +216,7 @@ func (h *Handler) streamTask(c *gin.Context) {
 				c.Writer.Flush()
 				continue
 			}
-			if latest.Status == types.StatusCompleted || latest.Status == types.StatusFailed {
+			if types.IsTerminalTaskStatus(latest.Status) {
 				writeSSEEvent(c, terminalStepEvent(taskID, latest))
 				c.Writer.Flush()
 				return

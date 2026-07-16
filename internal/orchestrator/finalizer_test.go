@@ -36,6 +36,40 @@ func TestFinalizeAnswer(t *testing.T) {
 	}
 }
 
+func TestFinalizeBeforeRetrievalExpansionReservesAnswerCapacity(t *testing.T) {
+	engine := &Engine{
+		Finalizer:       stubFinalizer{answer: "基于现有证据的顾问名单"},
+		LLMSceneEnabled: func(string) bool { return true },
+	}
+	task := &types.Task{
+		ID:         "budget-aware-finalize",
+		Goal:       "数学科学术顾问有哪些",
+		Status:     types.StatusRunning,
+		MaxSteps:   6,
+		StepCount:  4,
+		ToolBudget: 2,
+		Trace: []types.StepTrace{{
+			Action:      "rag_fetch",
+			Observation: "fetched 2 rag item(s)",
+			Evidence:    []types.Evidence{{Path: "rag-a", Lines: []string{"顾问甲"}}},
+		}},
+	}
+	decision := &planner.PlanDecision{
+		Actions:    []planner.ActionCall{{Action: "rag_search", Parameters: map[string]any{"query": "另一个相似查询"}}},
+		TokenUsage: types.TokenUsage{PromptTokens: 8, CompletionTokens: 2, TotalTokens: 10},
+	}
+	if !engine.finalizeBeforeRetrievalExpansion(context.Background(), task, decision) {
+		t.Fatal("expected retrieval expansion to be replaced by finalization")
+	}
+	if task.Status != types.StatusCompleted || task.FinalAnswer != "基于现有证据的顾问名单" {
+		t.Fatalf("status=%s answer=%q", task.Status, task.FinalAnswer)
+	}
+	last := task.Trace[len(task.Trace)-1]
+	if last.Action != "budget_finalize" || last.TokenUsage.TotalTokens != 10 {
+		t.Fatalf("finalization trace=%+v", last)
+	}
+}
+
 type usageFinalizer struct {
 	answer string
 	usage  types.TokenUsage

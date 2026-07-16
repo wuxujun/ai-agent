@@ -52,6 +52,26 @@ func TestEnforceJITRetrievalOverridesNextActionWithCandidateFetch(t *testing.T) 
 	}
 }
 
+func TestNextJITRetrievalDecisionFetchesLatestSearchAfterOlderEvidence(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.JITFetchMaxItems = 2
+	}))
+	task := &types.Task{Goal: "查询教师信息", Trace: []types.StepTrace{
+		{Action: "rag_search", Observation: `{"count":1,"results":[{"id":"rag-old"}]}`},
+		{Action: "rag_fetch", Observation: "fetched 1 rag item(s)", Evidence: []types.Evidence{{Lines: []string{"older evidence"}}}},
+		{Action: "rag_search", Observation: `{"count":2,"results":[{"id":"rag-new-1"},{"id":"rag-new-2"}]}`},
+	}}
+	decision, ok := NextJITRetrievalDecision(task)
+	if !ok || len(decision.Actions) != 1 || decision.Actions[0].Action != "rag_fetch" {
+		t.Fatalf("latest pending search was not routed to fetch: %+v ok=%v", decision, ok)
+	}
+	ids, _ := decision.Actions[0].Parameters["ids"].([]string)
+	if len(ids) != 2 || ids[0] != "rag-new-1" || ids[1] != "rag-new-2" {
+		t.Fatalf("fetch ids=%v, want latest search candidates", ids)
+	}
+}
+
 func TestEnforceJITRetrievalAllowsAnswerAfterEvidence(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
 	task := &types.Task{Goal: "查询教师信息", Trace: []types.StepTrace{{Action: "rag_fetch", Observation: "fetched 1 rag item(s)", Evidence: []types.Evidence{{Lines: []string{"fact"}}}}}}

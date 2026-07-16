@@ -19,6 +19,7 @@ type PlanDecision struct {
 	FinalAnswer    string           `json:"final_answer"`
 	Actions        []ActionCall     `json:"actions"`
 	TokenUsage     types.TokenUsage `json:"token_usage,omitempty"`
+	DecisionSource string           `json:"-"`
 }
 
 type Planner interface {

@@ -15,10 +15,10 @@ func TransitionTask(task *types.Task, target types.TaskStatus) error {
 	valid := false
 	switch task.Status {
 	case types.StatusCreated:
-		valid = (target == types.StatusRunning || target == types.StatusCompleted || target == types.StatusFailed)
+		valid = (target == types.StatusRunning || target == types.StatusCompleted || target == types.StatusPartial || target == types.StatusFailed)
 	case types.StatusRunning:
-		valid = (target == types.StatusCompleted || target == types.StatusFailed)
-	case types.StatusCompleted, types.StatusFailed:
+		valid = (target == types.StatusCompleted || target == types.StatusPartial || target == types.StatusFailed)
+	case types.StatusCompleted, types.StatusPartial, types.StatusFailed:
 		valid = false
 	default:
 		// If status is empty or unknown, allow transitioning to created/running/failed
@@ -33,6 +33,26 @@ func TransitionTask(task *types.Task, target types.TaskStatus) error {
 
 	log.Info("task transitioning", "task_id", task.ID, "from", string(task.Status), "to", string(target))
 	task.Status = target
+	return nil
+}
+
+// SetTaskPartial records a terminal best-effort result that did not satisfy the
+// task's completion criteria (for example, evidence collected but finalization
+// unavailable at the execution budget boundary).
+func SetTaskPartial(task *types.Task, finalAnswer, completionReason string) error {
+	if err := TransitionTask(task, types.StatusPartial); err != nil {
+		return err
+	}
+	usage := aggregateTaskTokenUsage(task)
+	log.Info("task marked as partial",
+		"task_id", task.ID,
+		"final_answer", finalAnswer,
+		"completion_reason", completionReason,
+		"prompt_tokens", usage.PromptTokens,
+		"completion_tokens", usage.CompletionTokens,
+		"total_tokens", usage.TotalTokens,
+	)
+	task.FinalAnswer = finalAnswer
 	return nil
 }
 

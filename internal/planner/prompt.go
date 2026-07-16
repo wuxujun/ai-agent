@@ -84,6 +84,7 @@ Current status:
 - step_count: %d
 - max_steps: %d
 - tool_budget: %d
+- remaining_action_capacity: %d
 - status: %s
 
 Available tools:
@@ -97,6 +98,7 @@ Recent trace:
 
 Decision requirements:
 - Choose exactly one next action.
+- Reserve capacity for the final answer. When supporting evidence exists and remaining_action_capacity is 2 or less, do not start another retrieval cycle; stop and answer from the best available evidence, stating uncertainty if needed.
 - If enough evidence exists, stop and provide final_answer.
 - If stopping, set action to "none".`,
 		task.Goal,
@@ -104,6 +106,7 @@ Decision requirements:
 		task.StepCount,
 		task.MaxSteps,
 		task.ToolBudget,
+		remainingActionCapacity(task),
 		task.Status,
 		toolsString,
 		skillsString,
@@ -112,6 +115,20 @@ Decision requirements:
 	)
 	stats.UserPromptBytes = len(prompt)
 	return prompt, stats
+}
+
+func remainingActionCapacity(task *types.Task) int {
+	if task == nil {
+		return 0
+	}
+	steps := task.MaxSteps - task.StepCount
+	if steps < 0 {
+		steps = 0
+	}
+	if task.ToolBudget < steps {
+		steps = task.ToolBudget
+	}
+	return steps
 }
 
 func toolRelevantToTask(task *types.Task, name string) bool {

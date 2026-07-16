@@ -21,7 +21,7 @@ func TestEngineCompletesTaskWhenLLMBudgetIsExhausted(t *testing.T) {
 	if err := engine.Next(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	if task.Status != types.StatusCompleted || task.FinalAnswer == "" {
+	if task.Status != types.StatusPartial || task.FinalAnswer == "" {
 		t.Fatalf("task = %+v", task)
 	}
 }

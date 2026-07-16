@@ -337,7 +337,7 @@ func setupViper() {
 	viper.SetDefault("rag.authorization", "")
 	viper.SetDefault("rag.tool_name", "search")
 	viper.SetDefault("rag.context_mode", "jit")
-	viper.SetDefault("rag.jit_search_max_calls", 3)
+	viper.SetDefault("rag.jit_search_max_calls", 2)
 	viper.SetDefault("rag.jit_fetch_max_items", 3)
 	viper.SetDefault("rag.jit_rag_fetch_max_bytes", 6000)
 	viper.SetDefault("rag.jit_memory_fetch_max_bytes", 2000)

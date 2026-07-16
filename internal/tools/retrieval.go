@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -122,6 +123,18 @@ func (c *retrievalCache) beginSearch(taskID, key, kind string, limit int) ([]ret
 		}
 		return result, true, nil, false, nil
 	}
+	for previousKey, ids := range item.Searches {
+		if retrievalKeysEquivalent(previousKey, key, kind) {
+			result := make([]retrievalCandidate, 0, len(ids))
+			for _, id := range ids {
+				if candidate, exists := item.Candidates[id]; exists {
+					result = append(result, candidate)
+				}
+			}
+			item.Searches[key] = append([]string(nil), ids...)
+			return result, true, nil, false, nil
+		}
+	}
 	if flight := item.Inflight[key]; flight != nil {
 		return nil, false, flight, false, nil
 	}
@@ -132,6 +145,63 @@ func (c *retrievalCache) beginSearch(taskID, key, kind string, limit int) ([]ret
 	flight := &retrievalSearchFlight{done: make(chan struct{})}
 	item.Inflight[key] = flight
 	return nil, false, flight, true, nil
+}
+
+func retrievalKeysEquivalent(left, right, kind string) bool {
+	prefix := kind + ":"
+	if !strings.HasPrefix(left, prefix) || !strings.HasPrefix(right, prefix) {
+		return false
+	}
+	a := normalizeRetrievalQuery(strings.TrimPrefix(left, prefix))
+	b := normalizeRetrievalQuery(strings.TrimPrefix(right, prefix))
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b || (utf8RuneLen(a) >= 4 && utf8RuneLen(b) >= 4 && (strings.Contains(a, b) || strings.Contains(b, a))) {
+		return true
+	}
+	return runeBigramJaccard(a, b) >= 0.65
+}
+
+func normalizeRetrievalQuery(value string) string {
+	value = strings.ToLower(value)
+	for _, filler := range []string{"有哪些", "有哪个人", "哪些人", "名单", "成员", "老师", "请问", "查询", "搜索", "find", "search", "list"} {
+		value = strings.ReplaceAll(value, filler, "")
+	}
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			return r
+		}
+		return -1
+	}, value)
+}
+
+func utf8RuneLen(value string) int { return len([]rune(value)) }
+
+func runeBigramJaccard(left, right string) float64 {
+	bigrams := func(value string) map[string]struct{} {
+		runes := []rune(value)
+		result := make(map[string]struct{})
+		if len(runes) == 1 {
+			result[string(runes)] = struct{}{}
+		}
+		for i := 0; i+1 < len(runes); i++ {
+			result[string(runes[i:i+2])] = struct{}{}
+		}
+		return result
+	}
+	a, b := bigrams(left), bigrams(right)
+	intersection := 0
+	for item := range a {
+		if _, ok := b[item]; ok {
+			intersection++
+		}
+	}
+	union := len(a) + len(b) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
 }
 
 func (c *retrievalCache) completeSearch(taskID, key string, flight *retrievalSearchFlight, candidates []retrievalCandidate, searchErr error) {
@@ -217,7 +287,7 @@ func (t *retrievalSearchTool) Execute(ctx context.Context, _ string, params map[
 	key := t.kind + ":" + strings.ToLower(strings.Join(strings.Fields(query), " "))
 	maxCalls := config.Get().RAG.JITSearchMaxCalls
 	if maxCalls <= 0 {
-		maxCalls = 3
+		maxCalls = 2
 	}
 	candidates, cached, flight, leader, err := defaultRetrievalCache.beginSearch(exec.TaskID, key, t.kind, maxCalls)
 	if err != nil {

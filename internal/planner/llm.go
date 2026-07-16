@@ -126,6 +126,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	ctx, span := tracer.Start(ctx, "planner.plan_next")
 	defer span.End()
 	if decision, ok := NextJITRetrievalDecision(task); ok {
+		decision.DecisionSource = "jit_router"
 		action := decision.Actions[0].Action
 		span.SetAttributes(
 			attribute.String("agent.task.id", task.ID),
@@ -380,6 +381,7 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 		log.Error("failed to unmarshal decision JSON", "task_id", task.ID, "raw", textValue, "error", err)
 		return nil, fmt.Errorf("invalid planner decision: %w", err)
 	}
+	decision.DecisionSource = "llm"
 	if enforceJITRetrieval(task, &decision) {
 		log.Warn("planner factual stop adjusted by JIT evidence policy", "task_id", task.ID, "step", task.StepCount+1, "action", decision.Actions[0].Action, "stop", decision.Stop)
 	}

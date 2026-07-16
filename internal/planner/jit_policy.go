@@ -30,19 +30,14 @@ func enforceJITRetrieval(task *types.Task, decision *PlanDecision) bool {
 // factual lookup still needs evidence. Callers can use it before invoking an
 // LLM, avoiding a planning round-trip whose only valid outcome is retrieval.
 func NextJITRetrievalDecision(task *types.Task) (*PlanDecision, bool) {
-	if task == nil || !strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") || !RequiresFactualEvidence(task) || HasSupportingEvidence(task.Trace) {
+	if task == nil || !strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") || !RequiresFactualEvidence(task) {
 		return nil, false
 	}
-	if latestRetrievalDetailFailed(task.Trace) {
-		return &PlanDecision{
-			Stop:           true,
-			FinalAnswer:    "检索详情未返回可用证据，暂时无法可靠回答该事实性问题。",
-			ThoughtSummary: "Stop because retrieval details contained no usable evidence",
-			Actions:        []ActionCall{{Action: "none", Parameters: map[string]any{}}},
-		}, true
-	}
-	if search, found := latestRetrievalSearch(task.Trace); found {
+	if search, found := latestPendingRetrievalSearch(task.Trace); found {
 		if len(search.IDs) == 0 {
+			if HasSupportingEvidence(task.Trace) {
+				return nil, false
+			}
 			return &PlanDecision{
 				Stop:           true,
 				FinalAnswer:    "未检索到足够证据，暂时无法可靠回答该事实性问题。",
@@ -59,6 +54,17 @@ func NextJITRetrievalDecision(task *types.Task) (*PlanDecision, bool) {
 			Actions:        []ActionCall{{Action: fetchAction, Parameters: map[string]any{"ids": search.IDs}}},
 		}, true
 	}
+	if HasSupportingEvidence(task.Trace) {
+		return nil, false
+	}
+	if latestRetrievalDetailFailed(task.Trace) {
+		return &PlanDecision{
+			Stop:           true,
+			FinalAnswer:    "检索详情未返回可用证据，暂时无法可靠回答该事实性问题。",
+			ThoughtSummary: "Stop because retrieval details contained no usable evidence",
+			Actions:        []ActionCall{{Action: "none", Parameters: map[string]any{}}},
+		}, true
+	}
 	action, ok := PreferredJITSearchAction(task)
 	if !ok {
 		return nil, false
@@ -67,6 +73,18 @@ func NextJITRetrievalDecision(task *types.Task) (*PlanDecision, bool) {
 		ThoughtSummary: "Retrieve evidence before answering the factual lookup request",
 		Actions:        []ActionCall{{Action: action, Parameters: map[string]any{"query": task.Goal, "top_k": 5}}},
 	}, true
+}
+
+func latestPendingRetrievalSearch(traces []types.StepTrace) (retrievalSearchState, bool) {
+	for i := len(traces) - 1; i >= 0; i-- {
+		switch traces[i].Action {
+		case "rag_fetch", "memory_get":
+			return retrievalSearchState{}, false
+		case "rag_search", "memory_search":
+			return retrievalSearchFromTrace(traces[i]), true
+		}
+	}
+	return retrievalSearchState{}, false
 }
 
 func samePlanDecision(left, right *PlanDecision) bool {
@@ -199,30 +217,34 @@ func latestRetrievalSearch(traces []types.StepTrace) (retrievalSearchState, bool
 		if trace.Action != "rag_search" && trace.Action != "memory_search" {
 			continue
 		}
-		state := retrievalSearchState{Action: trace.Action}
-		if trace.Error != "" {
-			return state, true
-		}
-		var payload struct {
-			Results []struct {
-				ID string `json:"id"`
-			} `json:"results"`
-		}
-		if json.Unmarshal([]byte(trace.Observation), &payload) == nil {
-			limit := config.Get().RAG.JITFetchMaxItems
-			if limit <= 0 {
-				limit = 3
-			}
-			for _, result := range payload.Results {
-				if strings.TrimSpace(result.ID) != "" {
-					state.IDs = append(state.IDs, result.ID)
-				}
-				if len(state.IDs) >= limit {
-					break
-				}
-			}
-		}
-		return state, true
+		return retrievalSearchFromTrace(trace), true
 	}
 	return retrievalSearchState{}, false
+}
+
+func retrievalSearchFromTrace(trace types.StepTrace) retrievalSearchState {
+	state := retrievalSearchState{Action: trace.Action}
+	if trace.Error != "" {
+		return state
+	}
+	var payload struct {
+		Results []struct {
+			ID string `json:"id"`
+		} `json:"results"`
+	}
+	if json.Unmarshal([]byte(trace.Observation), &payload) == nil {
+		limit := config.Get().RAG.JITFetchMaxItems
+		if limit <= 0 {
+			limit = 3
+		}
+		for _, result := range payload.Results {
+			if strings.TrimSpace(result.ID) != "" {
+				state.IDs = append(state.IDs, result.ID)
+			}
+			if len(state.IDs) >= limit {
+				break
+			}
+		}
+	}
+	return state
 }

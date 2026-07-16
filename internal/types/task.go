@@ -52,8 +52,13 @@ const (
 	StatusAwaitingApproval TaskStatus = "awaiting_approval"
 	StatusPaused           TaskStatus = "paused" // interrupted by graceful shutdown; resumable
 	StatusCompleted        TaskStatus = "completed"
+	StatusPartial          TaskStatus = "partial"
 	StatusFailed           TaskStatus = "failed"
 )
+
+func IsTerminalTaskStatus(status TaskStatus) bool {
+	return status == StatusCompleted || status == StatusPartial || status == StatusFailed
+}
 
 type RiskLevel string
 

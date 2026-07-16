@@ -156,3 +156,10 @@ func TestTerminalStepEventIncludesAggregatedTokenUsage(t *testing.T) {
 		t.Fatalf("token usage = %+v, want prompt=17 completion=8 total=25", event.TokenUsage)
 	}
 }
+
+func TestPartialEventIsTerminal(t *testing.T) {
+	event := StepEvent{TaskID: "partial-task", Status: types.StatusPartial, Final: "partial result"}
+	if !event.isTerminal() {
+		t.Fatal("partial task event must terminate SSE streams")
+	}
+}

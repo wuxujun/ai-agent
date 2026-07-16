@@ -35,7 +35,7 @@ func TestTenantDailyBudgetIsSharedAcrossTasks(t *testing.T) {
 	if err := engine.Next(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
-	if plannerStub.successfulCalls != 1 || first.FinalAnswer != "done" || second.Status != types.StatusCompleted || second.FinalAnswer == "done" {
+	if plannerStub.successfulCalls != 1 || first.FinalAnswer != "done" || second.Status != types.StatusPartial || second.FinalAnswer == "done" {
 		t.Fatalf("calls=%d first=%+v second=%+v", plannerStub.successfulCalls, first, second)
 	}
 }

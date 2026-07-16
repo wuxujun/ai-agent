@@ -269,16 +269,16 @@ func TestRunAllPublishesStepProgressAndPersistsEachTurn(t *testing.T) {
 			t.Fatalf("event %d action = %q, want search_text", i, event.Action)
 		}
 	}
-	if task.Status != types.StatusCompleted {
-		t.Fatalf("task status = %q, want completed", task.Status)
+	if task.Status != types.StatusPartial {
+		t.Fatalf("task status = %q, want partial", task.Status)
 	}
 
 	persisted, err := st.GetTask(context.Background(), task.ID)
 	if err != nil {
 		t.Fatalf("GetTask returned error: %v", err)
 	}
-	if persisted.Status != types.StatusCompleted {
-		t.Fatalf("persisted status = %q, want completed", persisted.Status)
+	if persisted.Status != types.StatusPartial {
+		t.Fatalf("persisted status = %q, want partial", persisted.Status)
 	}
 	if len(persisted.Trace) != 2 {
 		t.Fatalf("persisted trace len = %d, want 2", len(persisted.Trace))
@@ -343,8 +343,8 @@ func TestEinoNextStopsWhenBudgetExhausted(t *testing.T) {
 	if x.calls != 0 {
 		t.Fatalf("executor calls = %d, want 0", x.calls)
 	}
-	if task.Status != types.StatusCompleted {
-		t.Fatalf("task status = %q, want completed", task.Status)
+	if task.Status != types.StatusPartial {
+		t.Fatalf("task status = %q, want partial", task.Status)
 	}
 	if !strings.Contains(task.FinalAnswer, "step or tool budget limit") {
 		t.Fatalf("final answer = %q, want budget stop explanation", task.FinalAnswer)
@@ -381,8 +381,8 @@ func TestEinoNextStopsWhenTokenBudgetExhausted(t *testing.T) {
 	if x.calls != 0 {
 		t.Fatalf("executor calls = %d, want 0", x.calls)
 	}
-	if task.Status != types.StatusCompleted {
-		t.Fatalf("task status = %q, want completed", task.Status)
+	if task.Status != types.StatusPartial {
+		t.Fatalf("task status = %q, want partial", task.Status)
 	}
 	if !strings.Contains(task.FinalAnswer, "token budget") {
 		t.Fatalf("final answer = %q, want token budget stop explanation", task.FinalAnswer)

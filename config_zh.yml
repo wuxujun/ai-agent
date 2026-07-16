@@ -277,7 +277,7 @@ rag:
   # AI_AGENT_RAG_JIT_FETCH_MAX_ITEMS,
   # AI_AGENT_RAG_JIT_RAG_FETCH_MAX_BYTES,
   # AI_AGENT_RAG_JIT_MEMORY_FETCH_MAX_BYTES
-  jit_search_max_calls: 3
+  jit_search_max_calls: 2
   jit_fetch_max_items: 3
   jit_rag_fetch_max_bytes: 6000
   jit_memory_fetch_max_bytes: 2000

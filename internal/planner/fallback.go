@@ -24,15 +24,15 @@ func (f *FallbackPlanner) PlanNext(ctx context.Context, task *types.Task, onChun
 
 	span.SetAttributes(attribute.String("agent.task.id", task.ID))
 
-	log.Info("dispatching planner request", "task_id", task.ID, "step", task.StepCount+1)
+	log.Info("dispatching planning decision", "task_id", task.ID, "step", task.StepCount+1)
 
 	var primaryErr error
 	if f.Primary != nil {
-		log.Info("attempting primary planner", "task_id", task.ID, "step", task.StepCount+1)
+		log.Info("attempting primary planning strategy", "task_id", task.ID, "step", task.StepCount+1)
 		decision, err := f.Primary.PlanNext(ctx, task, onChunk)
 		if err == nil {
 			span.SetAttributes(attribute.Bool("agent.fallback.used", false))
-			log.Info("primary planner succeeded", "task_id", task.ID)
+			log.Info("primary planning strategy succeeded", "task_id", task.ID, "decision_source", decision.DecisionSource)
 			return decision, nil
 		}
 		primaryErr = err

@@ -59,6 +59,23 @@ func TestRAGSearchCachesQueriesAndFetchesStableCandidates(t *testing.T) {
 	}
 }
 
+func TestRetrievalKeysEquivalentDetectsSemanticQueryVariants(t *testing.T) {
+	tests := []struct {
+		left, right string
+		want        bool
+	}{
+		{"rag:数学科学术顾问有哪些", "rag:数学 学术顾问", false},
+		{"rag:数学科学术顾问有哪些", "rag:数学科学术顾问 数学 成员 老师 顾问名单", true},
+		{"rag:数学科学术顾问有哪些", "rag:最近台风路径", false},
+		{"memory:数学科学术顾问", "rag:数学科学术顾问", false},
+	}
+	for _, tc := range tests {
+		if got := retrievalKeysEquivalent(tc.left, tc.right, "rag"); got != tc.want {
+			t.Errorf("retrievalKeysEquivalent(%q, %q)=%v, want %v", tc.left, tc.right, got, tc.want)
+		}
+	}
+}
+
 func TestRetrievalSearchEnforcesUniqueQueryCallLimit(t *testing.T) {
 	taskID := "retrieval-limit-test"
 	ClearRetrievalContext(taskID)

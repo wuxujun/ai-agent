@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/compose"
@@ -29,7 +30,11 @@ func (e *Engine) runEinoNext(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next")
 	defer span.End()
 
-	olog.Info("running step", "step", task.StepCount+1, "max_steps", task.MaxSteps, "budget", task.ToolBudget, "task_id", task.ID)
+	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
+		olog.Info("checking execution limits", "completed_steps", task.StepCount, "max_steps", task.MaxSteps, "remaining_budget", task.ToolBudget, "task_id", task.ID)
+	} else {
+		olog.Info("running step", "step", task.StepCount+1, "max_steps", task.MaxSteps, "budget", task.ToolBudget, "task_id", task.ID)
+	}
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
@@ -149,7 +154,7 @@ func (e *Engine) checkBudget(ctx context.Context, state *einoStepState) (*einoSt
 			if finalAnswer == "" {
 				finalAnswer = finalAnswerForLimit(task, limitReasonTokenBudget)
 			}
-			_ = SetTaskCompleted(task, finalAnswer)
+			_ = SetTaskPartial(task, finalAnswer, limitReasonTokenBudget)
 			if e.Metrics != nil {
 				e.Metrics.IncCompleted()
 			}
@@ -162,20 +167,37 @@ func (e *Engine) checkBudget(ctx context.Context, state *einoStepState) (*einoSt
 	}
 
 	olog.Info("task reached step or budget limit", "task_id", task.ID, "step", task.StepCount, "max_steps", task.MaxSteps, "budget", task.ToolBudget)
-	finalAnswer := task.FinalAnswer
-	if finalAnswer == "" {
-		finalAnswer = finalAnswerForLimit(task, limitReasonStepOrToolBudget)
-	}
-	_ = SetTaskCompleted(task, finalAnswer)
+	e.completeAtExecutionLimit(ctx, task)
 	if e.Metrics != nil {
 		e.Metrics.IncCompleted()
 	}
 	return state, nil
 }
 
+func (e *Engine) completeAtExecutionLimit(ctx context.Context, task *types.Task) {
+	fallback := finalAnswerForLimit(task, limitReasonStepOrToolBudget)
+	if planner.HasSupportingEvidence(task.Trace) {
+		answer, usage := e.finalizeAnswer(ctx, task, fallback)
+		if strings.TrimSpace(answer) != "" && answer != fallback {
+			task.Trace = append(task.Trace, types.StepTrace{
+				Step:        task.StepCount + 1,
+				Goal:        task.Goal,
+				Action:      "budget_finalize",
+				Query:       limitReasonStepOrToolBudget,
+				Observation: answer,
+				TokenUsage:  usage,
+			})
+			olog.Info("synthesized final answer at execution budget boundary", "task_id", task.ID, "evidence_available", true)
+			_ = SetTaskCompleted(task, answer)
+			return
+		}
+	}
+	_ = SetTaskPartial(task, fallback, limitReasonStepOrToolBudget)
+}
+
 func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepState, error) {
 	task := state.Task
-	if task.Status == types.StatusCompleted {
+	if types.IsTerminalTaskStatus(task.Status) {
 		return state, nil
 	}
 
@@ -191,6 +213,10 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 	if err != nil {
 		olog.Error("planner failed", "task_id", task.ID, "error", err)
 		return state, err
+	}
+	if e.finalizeBeforeRetrievalExpansion(ctx, task, decision) {
+		state.Decision = nil
+		return state, nil
 	}
 	e.critiqueDecision(ctx, task, decision)
 
@@ -225,10 +251,55 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 	return state, nil
 }
 
+func (e *Engine) finalizeBeforeRetrievalExpansion(ctx context.Context, task *types.Task, decision *planner.PlanDecision) bool {
+	if decision == nil || decision.Stop || !planner.HasSupportingEvidence(task.Trace) || remainingExecutionCapacity(task) > 2 {
+		return false
+	}
+	for _, action := range decision.Actions {
+		if action.Action != "rag_search" && action.Action != "memory_search" {
+			continue
+		}
+		fallback := finalAnswerForLimit(task, limitReasonStepOrToolBudget)
+		answer, usage := e.finalizeAnswer(ctx, task, fallback)
+		if strings.TrimSpace(answer) == "" || answer == fallback {
+			return false
+		}
+		usage.PromptTokens += decision.TokenUsage.PromptTokens
+		usage.CompletionTokens += decision.TokenUsage.CompletionTokens
+		usage.TotalTokens += decision.TokenUsage.TotalTokens
+		task.Trace = append(task.Trace, types.StepTrace{
+			Step:        task.StepCount + 1,
+			Goal:        task.Goal,
+			Action:      "budget_finalize",
+			Query:       "retrieval_capacity_reserved",
+			Observation: answer,
+			TokenUsage:  usage,
+		})
+		olog.Info("stopped retrieval expansion and synthesized final answer", "task_id", task.ID, "remaining_action_capacity", remainingExecutionCapacity(task))
+		_ = SetTaskCompleted(task, answer)
+		if e.Metrics != nil {
+			e.Metrics.IncCompleted()
+		}
+		return true
+	}
+	return false
+}
+
+func remainingExecutionCapacity(task *types.Task) int {
+	remaining := task.MaxSteps - task.StepCount
+	if task.ToolBudget < remaining {
+		remaining = task.ToolBudget
+	}
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
 func (e *Engine) executeDecision(ctx context.Context, state *einoStepState) (*einoStepState, error) {
 	task := state.Task
 	decision := state.Decision
-	if task.Status == types.StatusCompleted || decision == nil {
+	if types.IsTerminalTaskStatus(task.Status) || decision == nil {
 		return state, nil
 	}
 

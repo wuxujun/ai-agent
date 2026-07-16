@@ -29,7 +29,7 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 		return err
 	}
 
-	if task.Status == types.StatusCompleted || task.Status == types.StatusFailed {
+	if types.IsTerminalTaskStatus(task.Status) {
 		log.Info("task already finished, skipping", "task_id", task.ID, "status", string(task.Status))
 		return nil
 	}
