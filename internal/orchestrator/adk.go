@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -62,6 +63,20 @@ type ReadFileResult struct {
 	Content string `json:"content"`
 }
 
+// RAGSearchArgs defines the arguments for the ADK knowledge retrieval tool.
+// Unlike the Eino planner's two-stage rag_search/rag_fetch protocol, the ADK
+// tool returns fetched evidence in one call because ADK does not need to expose
+// internal candidate-cache IDs to the model.
+type RAGSearchArgs struct {
+	Query string `json:"query"`
+	TopK  int    `json:"top_k,omitempty"`
+}
+
+type RAGSearchResult struct {
+	Observation string           `json:"observation"`
+	Evidence    []types.Evidence `json:"evidence"`
+}
+
 func findFilesHandler(ctx tool.Context, args FindFilesArgs) (FindFilesResult, error) {
 	log.Debug("find_files called", "pattern", args.Pattern)
 	workspace, _ := ctx.Value(workspaceKey).(string)
@@ -113,6 +128,67 @@ func readFileHandler(ctx tool.Context, args ReadFileArgs) (ReadFileResult, error
 	return ReadFileResult{Content: content}, nil
 }
 
+func ragSearchHandler(ctx tool.Context, args RAGSearchArgs) (RAGSearchResult, error) {
+	task, _ := ctx.Value(taskKey).(*types.Task)
+	if task == nil {
+		return RAGSearchResult{}, fmt.Errorf("task not found in context")
+	}
+	query := strings.TrimSpace(args.Query)
+	if query == "" {
+		return RAGSearchResult{}, fmt.Errorf("rag_search requires a non-empty query")
+	}
+	topK := args.TopK
+	if topK <= 0 || topK > 5 {
+		topK = 5
+	}
+	searchTool, ok := tools.Get("rag_search")
+	if !ok {
+		return RAGSearchResult{}, fmt.Errorf("rag_search is not registered")
+	}
+	workspace, _ := ctx.Value(workspaceKey).(string)
+	execCtx := tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
+	searchResult, err := searchTool.Execute(execCtx, workspace, map[string]any{"query": query, "top_k": topK})
+	if err != nil {
+		return RAGSearchResult{}, err
+	}
+	var candidates struct {
+		Results []struct {
+			ID string `json:"id"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(searchResult.Observation), &candidates); err != nil {
+		return RAGSearchResult{}, fmt.Errorf("decode rag_search candidates: %w", err)
+	}
+	limit := config.Get().RAG.JITFetchMaxItems
+	if limit <= 0 {
+		limit = 3
+	}
+	ids := make([]string, 0, len(candidates.Results))
+	for _, candidate := range candidates.Results {
+		if strings.TrimSpace(candidate.ID) != "" {
+			ids = append(ids, candidate.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return RAGSearchResult{Observation: "rag_search returned no candidates"}, nil
+	}
+	fetchTool, ok := tools.Get("rag_fetch")
+	if !ok {
+		return RAGSearchResult{}, fmt.Errorf("rag_fetch is not registered")
+	}
+	combined := RAGSearchResult{}
+	for start := 0; start < len(ids); start += limit {
+		end := min(start+limit, len(ids))
+		fetched, err := fetchTool.Execute(execCtx, workspace, map[string]any{"ids": ids[start:end]})
+		if err != nil {
+			return RAGSearchResult{}, err
+		}
+		combined.Evidence = append(combined.Evidence, fetched.Evidence...)
+	}
+	combined.Observation = fmt.Sprintf("fetched %d rag item(s)", len(combined.Evidence))
+	return combined, nil
+}
+
 func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next_adk")
 	defer span.End()
@@ -131,11 +207,7 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 			"max_steps", task.MaxSteps,
 			"budget", task.ToolBudget,
 		)
-		finalAnswer := task.FinalAnswer
-		if finalAnswer == "" {
-			finalAnswer = finalAnswerForLimit(task, limitReasonStepOrToolBudget)
-		}
-		_ = SetTaskCompleted(task, finalAnswer)
+		_ = SetTaskPartial(task, finalAnswerForLimit(task, limitReasonStepOrToolBudget), limitReasonStepOrToolBudget)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
@@ -157,10 +229,17 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 
 	log.Info("starting ADK execution session", "task_id", task.ID)
 	var finalAnswer string
+	var adkUsage types.TokenUsage
 	for event, err := range r.Run(runCtx, "user", task.ID, userMsg, agent.RunConfig{}) {
 		if err != nil {
 			log.Error("ADK runner error", "task_id", task.ID, "error", err)
 			return err
+		}
+		if event.UsageMetadata != nil && !event.Partial {
+			metadata := event.UsageMetadata
+			adkUsage.PromptTokens += int(metadata.PromptTokenCount)
+			adkUsage.CompletionTokens += int(metadata.CandidatesTokenCount) + int(metadata.ThoughtsTokenCount)
+			adkUsage.TotalTokens += int(metadata.TotalTokenCount)
 		}
 		if event.IsFinalResponse() {
 			if event.LLMResponse.Content != nil {
@@ -175,25 +254,50 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 		}
 	}
 
-	log.Info("ADK execution session ended", "task_id", task.ID, "final_answer_len", len(finalAnswer))
+	log.Info("ADK execution session ended", "task_id", task.ID, "final_answer_len", len(finalAnswer), "prompt_tokens", adkUsage.PromptTokens, "completion_tokens", adkUsage.CompletionTokens, "total_tokens", adkUsage.TotalTokens)
+	if adkUsage.TotalTokens > 0 {
+		task.Trace = append(task.Trace, types.StepTrace{
+			Step: task.StepCount + 1, Goal: task.Goal, Action: "adk_finalize",
+			Observation: finalAnswer, TokenUsage: adkUsage,
+		})
+	}
 
-	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
-		ans := task.FinalAnswer
-		if ans == "" {
-			ans = finalAnswerForLimit(task, limitReasonStepOrToolBudget)
-		}
-		_ = SetTaskCompleted(task, ans)
+	if finalAnswer != "" && !adkUnableToAnswer(finalAnswer) {
+		_ = SetTaskCompleted(task, finalAnswer)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
-	} else if finalAnswer != "" {
-		_ = SetTaskCompleted(task, finalAnswer)
+	} else if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 {
+		_ = SetTaskPartial(task, finalAnswerForLimit(task, limitReasonStepOrToolBudget), limitReasonStepOrToolBudget)
+		if e.Metrics != nil {
+			e.Metrics.IncCompleted()
+		}
+	} else {
+		if strings.TrimSpace(finalAnswer) == "" {
+			finalAnswer = "ADK execution ended without a final answer."
+		}
+		_ = SetTaskPartial(task, finalAnswer, "adk_insufficient_evidence")
+		log.Warn("ADK did not produce a supported answer; marking task partial", "task_id", task.ID, "has_tool_evidence", planner.HasSupportingEvidence(task.Trace))
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
 	}
 
 	return nil
+}
+
+func adkUnableToAnswer(answer string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(answer), " "))
+	for _, marker := range []string{
+		"unable to retrieve", "unable to answer", "cannot answer", "can't answer",
+		"could not find", "no information", "无法检索", "无法回答", "无法找到",
+		"未检索到", "没有找到", "暂无足够证据",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) getAdkRunner(ctx context.Context) (*runner.Runner, error) {
@@ -277,8 +381,16 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 		return nil, fmt.Errorf("failed to create read_file tool: %w", err)
 	}
 
+	ragSearchTool, err := functiontool.New(functiontool.Config{
+		Name:        "rag_search",
+		Description: "Search the configured knowledge base for factual or organizational information and return full evidence. Use this before answering knowledge lookup questions.",
+	}, ragSearchHandler)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rag_search tool: %w", err)
+	}
+
 	// Interceptor callbacks to update trace and step count
-	toolStartTime := make(map[string]time.Time)
+	var toolStartTime sync.Map
 
 	beforeToolCallback := func(toolCtx tool.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 		task, _ := toolCtx.Value(taskKey).(*types.Task)
@@ -297,8 +409,11 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 			)
 			return nil, err
 		}
-		toolStartTime[t.Name()] = time.Now()
-		return args, nil
+		toolStartTime.Store(task.ID+"|"+t.Name()+"|"+toolCtx.FunctionCallID(), time.Now())
+		// In ADK, a non-nil result from a BeforeToolCallback means "skip the
+		// actual tool and use this map as its result". Returning args here used
+		// to make every ADK tool a no-op that merely echoed its parameters.
+		return nil, nil
 	}
 
 	afterToolCallback := func(toolCtx tool.Context, t tool.Tool, args, result map[string]any, err error) (map[string]any, error) {
@@ -307,9 +422,10 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 			return nil, fmt.Errorf("task not found in context")
 		}
 		var elapsed time.Duration
-		if start, ok := toolStartTime[t.Name()]; ok {
+		key := task.ID + "|" + t.Name() + "|" + toolCtx.FunctionCallID()
+		if value, ok := toolStartTime.LoadAndDelete(key); ok {
+			start := value.(time.Time)
 			elapsed = time.Since(start)
-			delete(toolStartTime, t.Name())
 		}
 		log.Debug("tool invocation completed",
 			"tool", t.Name(),
@@ -325,6 +441,7 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 
 		if err != nil {
 			stepTrace.Observation = fmt.Sprintf("Error: %v", err)
+			stepTrace.Error = err.Error()
 		} else {
 			switch t.Name() {
 			case "find_files":
@@ -363,6 +480,19 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 				stepTrace.Query = path
 				stepTrace.Observation = "read file content: " + content
 
+			case "rag_search":
+				query, _ := args["query"].(string)
+				stepTrace.Query = query
+				var payload any = result
+				if nested, ok := result["result"]; ok {
+					payload = nested
+				}
+				encoded, _ := json.Marshal(payload)
+				var decoded RAGSearchResult
+				_ = json.Unmarshal(encoded, &decoded)
+				stepTrace.Observation = decoded.Observation
+				stepTrace.Evidence = decoded.Evidence
+
 			default:
 				stepTrace.Observation = fmt.Sprintf("Completed action %s with result: %+v", t.Name(), result)
 			}
@@ -377,7 +507,7 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 			e.Metrics.ObserveExecutor(elapsed, err, t.Name())
 		}
 
-		return result, nil
+		return result, err
 	}
 
 	adkAgent, err := llmagent.New(llmagent.Config{
@@ -386,9 +516,12 @@ func (e *Engine) compileAdkRunner(ctx context.Context) (*runner.Runner, error) {
 		Description: "Orchestration agent to search files and retrieve information to solve the user task.",
 		Instruction: `You are an autonomous search and retrieval agent.
 Your goal is to solve the task using the provided tools.
-Analyze the steps, look for candidate files, search for key text, read files, and stop when you have found the answer.
+For factual, organizational, competition, people, product, or policy questions, call rag_search before answering.
+Use find_files, search_text, and read_file only when the user asks about files in the local workspace.
+Base factual claims on evidence returned by tools and answer in the user's language.
 If you have found the answer, output the answer clearly. If the answer cannot be found after searching, say so.`,
 		Tools: []tool.Tool{
+			ragSearchTool,
 			findFilesTool,
 			searchTextTool,
 			readFileTool,
