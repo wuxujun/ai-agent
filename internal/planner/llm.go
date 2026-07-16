@@ -385,6 +385,17 @@ func (p *LLMPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk fun
 	if enforceJITRetrieval(task, &decision) {
 		log.Warn("planner factual stop adjusted by JIT evidence policy", "task_id", task.ID, "step", task.StepCount+1, "action", decision.Actions[0].Action, "stop", decision.Stop)
 	}
+	for _, normalized := range normalizeRetrievalActionParameters(task, &decision) {
+		log.Info("normalized retrieval action parameters",
+			"task_id", task.ID,
+			"step", task.StepCount+1,
+			"action", normalized.Action,
+			"original_id_count", normalized.OriginalCount,
+			"pending_id_count", normalized.PendingCount,
+			"included_id_count", normalized.IncludedCount,
+			"all_already_fetched", normalized.AllAlreadyFetched,
+		)
+	}
 
 	if validationErr := ValidateDecision(&decision); validationErr != nil {
 		var argumentErr *ToolArgumentValidationError

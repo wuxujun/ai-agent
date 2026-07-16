@@ -137,7 +137,7 @@ func (e *Engine) finalizeAnswerDetailed(ctx context.Context, task *types.Task, f
 	}
 	answer, usage, err := e.Finalizer.Finalize(ctx, task)
 	if err != nil {
-		engineLog.Warn("task finalizer failed; using planner answer", "task_id", task.ID, "reason", "provider_error", "error", err)
+		engineLog.Warn("task finalizer failed; using fallback result", "task_id", task.ID, "reason", "provider_error", "error", err)
 		return fallback, types.TokenUsage{}, "provider_error"
 	}
 	if e.Metrics != nil {
@@ -814,11 +814,6 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	)
 
 	if decision.Stop {
-		var finalizerUsage types.TokenUsage
-		decision.FinalAnswer, finalizerUsage = e.finalizeAnswer(ctx, task, decision.FinalAnswer)
-		decision.TokenUsage.PromptTokens += finalizerUsage.PromptTokens
-		decision.TokenUsage.CompletionTokens += finalizerUsage.CompletionTokens
-		decision.TokenUsage.TotalTokens += finalizerUsage.TotalTokens
 		engineLog.Info("planner decided to stop", "task_id", task.ID, "final_answer", decision.FinalAnswer)
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount + 1,

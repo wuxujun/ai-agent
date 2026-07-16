@@ -37,7 +37,11 @@ func finalAnswerForLimit(task *types.Task, reason string) string {
 
 	progress := taskProgressSummary(task, 5)
 	if len(progress) == 0 {
-		b.WriteString("\n\nNo tool observations were recorded before the limit was reached. Increase the applicable task budget and run the task again.")
+		if reason == limitReasonFinalizerUnavailable {
+			b.WriteString("\n\nNo usable tool observations were available. Check the task_finalizer provider response and retry the task.")
+		} else {
+			b.WriteString("\n\nNo tool observations were recorded before the limit was reached. Increase the applicable task budget and run the task again.")
+		}
 		return b.String()
 	}
 
@@ -46,7 +50,11 @@ func finalAnswerForLimit(task *types.Task, reason string) string {
 		b.WriteString("\n- ")
 		b.WriteString(item)
 	}
-	b.WriteString("\n\nIncrease the applicable task budget to continue from this partial result.")
+	if reason == limitReasonFinalizerUnavailable {
+		b.WriteString("\n\nThe evidence was retained. Check the task_finalizer provider response and retry synthesis.")
+	} else {
+		b.WriteString("\n\nIncrease the applicable task budget to continue from this partial result.")
+	}
 	return b.String()
 }
 

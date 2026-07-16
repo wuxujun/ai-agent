@@ -57,3 +57,17 @@ func TestFinalAnswerForLLMBudget(t *testing.T) {
 		t.Fatalf("expected LLM budget reason, got %q", got)
 	}
 }
+
+func TestFinalAnswerForUnavailableFinalizerDoesNotRecommendMoreBudget(t *testing.T) {
+	task := &types.Task{
+		Goal:  "summarize evidence",
+		Trace: []types.StepTrace{{Action: "rag_fetch", Observation: "fetched evidence"}},
+	}
+	got := finalAnswerForLimit(task, limitReasonFinalizerUnavailable)
+	if strings.Contains(got, "Increase the applicable task budget") {
+		t.Fatalf("finalizer failure incorrectly recommends more budget: %q", got)
+	}
+	if !strings.Contains(got, "Check the task_finalizer provider response") {
+		t.Fatalf("missing finalizer remediation: %q", got)
+	}
+}

@@ -20,7 +20,8 @@ import (
 
 // RedisStore implements Store using a Redis database.
 type RedisStore struct {
-	client *redis.Client
+	client          *redis.Client
+	memoryIndexGate memoryIndexGate
 }
 
 const (
@@ -245,8 +246,12 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 	}
 
 	if task.Status == types.StatusCompleted {
+		memoryID := memory.TaskMemoryID(task)
+		if !r.memoryIndexGate.tryStart(memoryID) {
+			return nil
+		}
 		// Check if memory already exists to prevent repeated embedding generation
-		exists, err := r.client.Exists(ctx, r.memoryKey(memory.TaskMemoryID(task))).Result()
+		exists, err := r.client.Exists(ctx, r.memoryKey(memoryID)).Result()
 		if err == nil && exists == 0 {
 			taskSnap := *task
 			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
@@ -257,6 +262,7 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 			copy(taskSnap.Unresolved, task.Unresolved)
 
 			go func() {
+				defer r.memoryIndexGate.done(memoryID)
 				asyncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 				defer cancel()
 				mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
@@ -266,6 +272,8 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 				}
 				_ = r.SaveMemory(asyncCtx, mem)
 			}()
+		} else {
+			r.memoryIndexGate.done(memoryID)
 		}
 	}
 

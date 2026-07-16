@@ -160,6 +160,14 @@ func TestRetrievalFetchReturnsOnlyPreviouslyUnfetchedCandidates(t *testing.T) {
 	}
 }
 
+func TestRetrievalFetchSchemaAdvertisesConfiguredIDLimit(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.JITFetchMaxItems = 3 }))
+	ids, _ := (&retrievalFetchTool{kind: "rag"}).Parameters()["ids"].(map[string]any)
+	if ids["maxItems"] != 3 || ids["minItems"] != 1 || ids["uniqueItems"] != true {
+		t.Fatalf("unexpected rag_fetch ids schema: %+v", ids)
+	}
+}
+
 func TestRetrievalSearchCoalescesConcurrentIdenticalQueries(t *testing.T) {
 	taskID := "retrieval-singleflight-test"
 	ClearRetrievalContext(taskID)

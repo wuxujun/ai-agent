@@ -516,7 +516,11 @@ func (t *retrievalFetchTool) Description() string {
 	return "Read selected current RAG evidence by IDs returned from rag_search"
 }
 func (t *retrievalFetchTool) Parameters() map[string]any {
-	return map[string]any{"ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Candidate IDs returned by the matching search tool"}}
+	limit := config.Get().RAG.JITFetchMaxItems
+	if limit <= 0 {
+		limit = 3
+	}
+	return map[string]any{"ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": limit, "uniqueItems": true, "description": "Candidate IDs returned by the matching search tool"}}
 }
 func (t *retrievalFetchTool) RiskLevel() types.RiskLevel { return types.RiskLevelLow }
 func (t *retrievalFetchTool) Validate(params map[string]any) error {

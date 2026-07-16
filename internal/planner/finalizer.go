@@ -55,14 +55,14 @@ func (f *LLMTaskFinalizer) Finalize(ctx context.Context, task *types.Task) (stri
 	schema := map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
-			"final_answer":     map[string]any{"type": "string"},
+			"final_answer":     map[string]any{"type": "string", "minLength": 1},
 			"evidence_summary": map[string]any{"type": "string", "maxLength": 2000},
 			"confidence":       map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}},
 		},
 		"required": []string{"final_answer", "evidence_summary", "confidence"},
 	}
 	prompt := fmt.Sprintf("Original goal: %s\n\nEvidence:\n%s", task.Goal, truncateRunes(buildFinalizerEvidence(task), 64000))
-	usage, err := llmcore.CallJSON(ctx, llmcore.ConfigForScene(f.Scene), "Synthesize a self-contained final answer using only the supplied evidence. State uncertainty when evidence is incomplete. Return JSON only.", prompt, schema, &output)
+	usage, err := llmcore.CallJSON(ctx, llmcore.ConfigForScene(f.Scene), "Synthesize a self-contained final answer using only the supplied evidence. State uncertainty when evidence is incomplete. Return exactly one JSON object with non-empty final_answer, evidence_summary, and confidence fields. Never return an empty final_answer.", prompt, schema, &output)
 	if err != nil {
 		return "", types.TokenUsage{}, err
 	}

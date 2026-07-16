@@ -25,7 +25,8 @@ var tracer = otel.Tracer("ai-agent/store")
 var log = logger.Component("store")
 
 type SQLiteStore struct {
-	db *sql.DB
+	db              *sql.DB
+	memoryIndexGate memoryIndexGate
 }
 
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
@@ -420,8 +421,12 @@ final_answer=excluded.final_answer
 
 	// 3. Asynchronously index memory if task is completed
 	if task.Status == types.StatusCompleted {
+		memoryID := memory.TaskMemoryID(task)
+		if !s.memoryIndexGate.tryStart(memoryID) {
+			return nil
+		}
 		var exists int
-		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = ?`, memory.TaskMemoryID(task)).Scan(&exists)
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = ?`, memoryID).Scan(&exists)
 		if err == sql.ErrNoRows {
 			taskSnap := *task
 			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
@@ -432,6 +437,7 @@ final_answer=excluded.final_answer
 			copy(taskSnap.Unresolved, task.Unresolved)
 
 			go func() {
+				defer s.memoryIndexGate.done(memoryID)
 				asyncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 				defer cancel()
 				mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
@@ -443,6 +449,8 @@ final_answer=excluded.final_answer
 					log.Warn("failed to save memory for task", "task_id", taskSnap.ID, "error", err)
 				}
 			}()
+		} else {
+			s.memoryIndexGate.done(memoryID)
 		}
 	}
 

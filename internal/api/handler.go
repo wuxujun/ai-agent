@@ -612,12 +612,17 @@ func (h *Handler) runAll(c *gin.Context) {
 		}
 		taskReportLog.Info("----------------------------------------------")
 
-		saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer saveCancel()
-		if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
-			log.Error("failed to save task after run-all", "task_id", task.ID, "error", saveErr)
-		}
 		if execErr != nil {
+			// RunAll persists every successful execution step, including the
+			// terminal one. A second unconditional save here used to race with
+			// asynchronous memory indexing and could issue duplicate embedding
+			// requests. Retain only this compensation save for failure paths,
+			// where RunAll may return before persisting the failed status.
+			saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
+				log.Error("failed to save task after run-all failure", "task_id", task.ID, "error", saveErr)
+			}
+			saveCancel()
 			log.Error("run-all failed for task", "task_id", task.ID, "error", execErr)
 		}
 		// Publish terminal event to SSE subscribers

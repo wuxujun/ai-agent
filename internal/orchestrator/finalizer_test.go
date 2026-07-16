@@ -171,6 +171,28 @@ func (stopPlanner) PlanNext(context.Context, *types.Task, func(string)) (*planne
 	return &planner.PlanDecision{Stop: true, FinalAnswer: "original"}, nil
 }
 
+type countingFinalizer struct{ calls int }
+
+func (f *countingFinalizer) Finalize(context.Context, *types.Task) (string, types.TokenUsage, error) {
+	f.calls++
+	return "rewritten", types.TokenUsage{TotalTokens: 10}, nil
+}
+
+func TestPlannerStopWithAnswerSkipsFinalizer(t *testing.T) {
+	finalizer := &countingFinalizer{}
+	engine := &Engine{
+		Planner: stopPlanner{}, Finalizer: finalizer,
+		Mode: ModeLegacy, LLMSceneEnabled: func(string) bool { return true },
+	}
+	task := &types.Task{ID: "planner-answer", Status: types.StatusRunning, MaxSteps: 3, ToolBudget: 3}
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if finalizer.calls != 0 || task.FinalAnswer != "original" || task.Status != types.StatusCompleted {
+		t.Fatalf("calls=%d status=%s answer=%q", finalizer.calls, task.Status, task.FinalAnswer)
+	}
+}
+
 func TestNextVerifiesCitationsAtSharedCompletionBoundary(t *testing.T) {
 	verifier := &stubCitationVerifier{
 		result: &planner.CitationVerification{Supported: true, VerifiedAnswer: "verified [E1]"},

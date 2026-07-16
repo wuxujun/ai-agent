@@ -22,10 +22,11 @@ import (
 
 // PostgresStore implements Store using a PostgreSQL database.
 type PostgresStore struct {
-	db             *sql.DB
-	pgvectorMu     sync.Mutex
-	pgvectorReady  bool
-	pgvectorIdxDim int
+	db              *sql.DB
+	pgvectorMu      sync.Mutex
+	pgvectorReady   bool
+	pgvectorIdxDim  int
+	memoryIndexGate memoryIndexGate
 }
 
 // NewPostgresStore creates and initializes a PostgresStore.
@@ -416,8 +417,12 @@ final_answer=EXCLUDED.final_answer`,
 
 	// 3. Asynchronously index memory if task is completed
 	if task.Status == types.StatusCompleted {
+		memoryID := memory.TaskMemoryID(task)
+		if !p.memoryIndexGate.tryStart(memoryID) {
+			return nil
+		}
 		var exists int
-		err := p.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = $1`, memory.TaskMemoryID(task)).Scan(&exists)
+		err := p.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = $1`, memoryID).Scan(&exists)
 		if err == sql.ErrNoRows {
 			taskSnap := *task
 			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
@@ -428,6 +433,7 @@ final_answer=EXCLUDED.final_answer`,
 			copy(taskSnap.Unresolved, task.Unresolved)
 
 			go func() {
+				defer p.memoryIndexGate.done(memoryID)
 				asyncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 				defer cancel()
 				mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
@@ -439,6 +445,8 @@ final_answer=EXCLUDED.final_answer`,
 					log.Warn("failed to save memory for task in postgres store", "task_id", taskSnap.ID, "error", err)
 				}
 			}()
+		} else {
+			p.memoryIndexGate.done(memoryID)
 		}
 	}
 

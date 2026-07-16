@@ -232,11 +232,6 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 	state.Decision = decision
 
 	if decision.Stop {
-		var finalizerUsage types.TokenUsage
-		decision.FinalAnswer, finalizerUsage = e.finalizeAnswer(ctx, task, decision.FinalAnswer)
-		decision.TokenUsage.PromptTokens += finalizerUsage.PromptTokens
-		decision.TokenUsage.CompletionTokens += finalizerUsage.CompletionTokens
-		decision.TokenUsage.TotalTokens += finalizerUsage.TotalTokens
 		olog.Info("planner decided to stop", "task_id", task.ID, "final_answer", decision.FinalAnswer)
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount + 1,
