@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -32,6 +33,34 @@ func enforceJITRetrieval(task *types.Task, decision *PlanDecision) bool {
 func NextJITRetrievalDecision(task *types.Task) (*PlanDecision, bool) {
 	if task == nil || !strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") || !RequiresFactualEvidence(task) {
 		return nil, false
+	}
+	if state := tools.RetrievalStateForTask(task.ID); len(state.Searches) > 0 {
+		latest := state.Searches[len(state.Searches)-1]
+		if len(latest.PendingIDs) > 0 {
+			fetchAction := "rag_fetch"
+			if latest.Kind == "memory" {
+				fetchAction = "memory_get"
+			}
+			limit := config.Get().RAG.JITFetchMaxItems
+			if limit <= 0 {
+				limit = 3
+			}
+			ids := append([]string(nil), latest.PendingIDs...)
+			if len(ids) > limit {
+				ids = ids[:limit]
+			}
+			return &PlanDecision{
+				ThoughtSummary: "Fetch only retrieval candidates not fetched yet",
+				Actions:        []ActionCall{{Action: fetchAction, Parameters: map[string]any{"ids": ids}}},
+			}, true
+		}
+		if len(latest.CandidateIDs) == 0 && !HasSupportingEvidence(task.Trace) {
+			return &PlanDecision{
+				Stop: true, FinalAnswer: "未检索到足够证据，暂时无法可靠回答该事实性问题。",
+				ThoughtSummary: "Stop because retrieval returned no usable evidence",
+				Actions:        []ActionCall{{Action: "none", Parameters: map[string]any{}}},
+			}, true
+		}
 	}
 	if search, found := latestPendingRetrievalSearch(task.Trace); found {
 		if len(search.IDs) == 0 {

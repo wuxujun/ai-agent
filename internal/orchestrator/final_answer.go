@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	limitReasonStepOrToolBudget = "step_or_tool_budget"
-	limitReasonTokenBudget      = "token_budget"
-	limitReasonLLMBudget        = "llm_budget"
+	limitReasonStepOrToolBudget     = "step_or_tool_budget"
+	limitReasonTokenBudget          = "token_budget"
+	limitReasonLLMBudget            = "llm_budget"
+	limitReasonFinalizerUnavailable = "finalizer_unavailable"
 )
 
 func finalAnswerForLimit(task *types.Task, reason string) string {
@@ -24,6 +25,8 @@ func finalAnswerForLimit(task *types.Task, reason string) string {
 		b.WriteString("Stopped before a final answer could be produced because the token budget was reached.")
 	case limitReasonLLMBudget:
 		b.WriteString("Stopped before a final answer could be produced because the LLM call or estimated cost budget was reached.")
+	case limitReasonFinalizerUnavailable:
+		b.WriteString("Stopped with retrieved evidence because the final answer synthesizer was unavailable.")
 	default:
 		b.WriteString("Stopped before a final answer could be produced because the step or tool budget limit was reached.")
 	}

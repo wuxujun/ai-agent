@@ -58,11 +58,31 @@ type retrievalCandidate struct {
 }
 
 type retrievalTaskCache struct {
-	Candidates map[string]retrievalCandidate
-	Searches   map[string][]string
-	Calls      map[string]int
-	Inflight   map[string]*retrievalSearchFlight
-	UpdatedAt  time.Time
+	Candidates  map[string]retrievalCandidate
+	Searches    map[string][]string
+	SearchOrder []string
+	Fetched     map[string]bool
+	Calls       map[string]int
+	Cycles      map[string]int
+	Inflight    map[string]*retrievalSearchFlight
+	UpdatedAt   time.Time
+}
+
+// RetrievalStateSnapshot is task-local retrieval state kept independently of
+// the planner trace. It remains complete even when old trace entries are
+// truncated from a planner prompt.
+type RetrievalStateSnapshot struct {
+	NetworkSearchCalls map[string]int
+	RetrievalCycles    map[string]int
+	Searches           []RetrievalSearchSnapshot
+}
+
+type RetrievalSearchSnapshot struct {
+	Kind         string
+	Query        string
+	CandidateIDs []string
+	FetchedIDs   []string
+	PendingIDs   []string
 }
 
 type retrievalSearchFlight struct {
@@ -86,7 +106,14 @@ func (c *retrievalCache) task(taskID string) *retrievalTaskCache {
 	}
 	item := c.tasks[taskID]
 	if item == nil {
-		item = &retrievalTaskCache{Candidates: make(map[string]retrievalCandidate), Searches: make(map[string][]string), Calls: make(map[string]int), Inflight: make(map[string]*retrievalSearchFlight)}
+		item = &retrievalTaskCache{
+			Candidates: make(map[string]retrievalCandidate),
+			Searches:   make(map[string][]string),
+			Fetched:    make(map[string]bool),
+			Calls:      make(map[string]int),
+			Cycles:     make(map[string]int),
+			Inflight:   make(map[string]*retrievalSearchFlight),
+		}
 		c.tasks[taskID] = item
 	}
 	item.UpdatedAt = now
@@ -110,7 +137,7 @@ func (c *retrievalCache) cachedSearch(taskID, key string) ([]retrievalCandidate,
 	return result, true
 }
 
-func (c *retrievalCache) beginSearch(taskID, key, kind string, limit int) ([]retrievalCandidate, bool, *retrievalSearchFlight, bool, error) {
+func (c *retrievalCache) beginSearch(taskID, key, kind string, networkLimit, cycleLimit int) ([]retrievalCandidate, bool, *retrievalSearchFlight, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	item := c.task(taskID)
@@ -138,8 +165,12 @@ func (c *retrievalCache) beginSearch(taskID, key, kind string, limit int) ([]ret
 	if flight := item.Inflight[key]; flight != nil {
 		return nil, false, flight, false, nil
 	}
-	if item.Calls[kind] >= limit {
-		return nil, false, nil, false, fmt.Errorf("%s search call limit reached (%d)", kind, limit)
+	if item.Cycles[kind] >= cycleLimit {
+		return nil, false, nil, false, fmt.Errorf("%s retrieval cycle limit reached (%d)", kind, cycleLimit)
+	}
+	item.Cycles[kind]++
+	if item.Calls[kind] >= networkLimit {
+		return nil, false, nil, false, fmt.Errorf("%s network search call limit reached (%d)", kind, networkLimit)
 	}
 	item.Calls[kind]++
 	flight := &retrievalSearchFlight{done: make(chan struct{})}
@@ -157,15 +188,18 @@ func retrievalKeysEquivalent(left, right, kind string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	if a == b || (utf8RuneLen(a) >= 4 && utf8RuneLen(b) >= 4 && (strings.Contains(a, b) || strings.Contains(b, a))) {
+	if a == b {
 		return true
 	}
-	return runeBigramJaccard(a, b) >= 0.65
+	// Keep this threshold deliberately strict. A query that adds qualifiers
+	// such as names, team, responsibilities, dates, or contact details is a
+	// refinement and must be allowed to start a distinct retrieval cycle.
+	return runeBigramJaccard(a, b) >= 0.85
 }
 
 func normalizeRetrievalQuery(value string) string {
 	value = strings.ToLower(value)
-	for _, filler := range []string{"有哪些", "有哪个人", "哪些人", "名单", "成员", "老师", "请问", "查询", "搜索", "find", "search", "list"} {
+	for _, filler := range []string{"有哪些", "有哪个人", "哪些人", "请问", "查询", "搜索", "find", "search", "list"} {
 		value = strings.ReplaceAll(value, filler, "")
 	}
 	return strings.Map(func(r rune) rune {
@@ -175,8 +209,6 @@ func normalizeRetrievalQuery(value string) string {
 		return -1
 	}, value)
 }
-
-func utf8RuneLen(value string) int { return len([]rune(value)) }
 
 func runeBigramJaccard(left, right string) float64 {
 	bigrams := func(value string) map[string]struct{} {
@@ -214,6 +246,9 @@ func (c *retrievalCache) completeSearch(taskID, key string, flight *retrievalSea
 			item.Candidates[candidate.ID] = candidate
 			ids = append(ids, candidate.ID)
 		}
+		if _, exists := item.Searches[key]; !exists {
+			item.SearchOrder = append(item.SearchOrder, key)
+		}
 		item.Searches[key] = ids
 	}
 	if item.Inflight[key] == flight {
@@ -233,9 +268,90 @@ func (c *retrievalCache) fetch(taskID, kind string, ids []string) ([]retrievalCa
 		if !ok || candidate.Kind != kind {
 			return nil, fmt.Errorf("%s candidate %q not found; call %s_search first", kind, id, kind)
 		}
+		if item.Fetched[id] {
+			continue
+		}
 		result = append(result, candidate)
 	}
 	return result, nil
+}
+
+func (c *retrievalCache) markFetched(taskID string, ids []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	item := c.task(taskID)
+	for _, id := range ids {
+		item.Fetched[id] = true
+	}
+}
+
+func (c *retrievalCache) snapshot(taskID string) RetrievalStateSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	item := c.task(taskID)
+	result := RetrievalStateSnapshot{
+		NetworkSearchCalls: make(map[string]int, len(item.Calls)),
+		RetrievalCycles:    make(map[string]int, len(item.Cycles)),
+	}
+	for kind, count := range item.Calls {
+		result.NetworkSearchCalls[kind] = count
+	}
+	for kind, count := range item.Cycles {
+		result.RetrievalCycles[kind] = count
+	}
+	for _, key := range item.SearchOrder {
+		kind, query, _ := strings.Cut(key, ":")
+		search := RetrievalSearchSnapshot{Kind: kind, Query: query}
+		for _, id := range item.Searches[key] {
+			search.CandidateIDs = append(search.CandidateIDs, id)
+			if item.Fetched[id] {
+				search.FetchedIDs = append(search.FetchedIDs, id)
+			} else {
+				search.PendingIDs = append(search.PendingIDs, id)
+			}
+		}
+		result.Searches = append(result.Searches, search)
+	}
+	return result
+}
+
+// RetrievalStateForTask exposes a read-only task snapshot to the planner and
+// orchestrator without relying on trace retention.
+func RetrievalStateForTask(taskID string) RetrievalStateSnapshot {
+	if strings.TrimSpace(taskID) == "" {
+		return RetrievalStateSnapshot{}
+	}
+	return defaultRetrievalCache.snapshot(taskID)
+}
+
+// RetrievalQueryKnown reports whether an equivalent query already completed.
+func RetrievalQueryKnown(taskID, kind, query string) bool {
+	key := kind + ":" + strings.ToLower(strings.Join(strings.Fields(query), " "))
+	defaultRetrievalCache.mu.Lock()
+	defer defaultRetrievalCache.mu.Unlock()
+	item := defaultRetrievalCache.task(taskID)
+	for previousKey := range item.Searches {
+		if previousKey == key || retrievalKeysEquivalent(previousKey, key, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+// UnfetchedRetrievalIDs filters candidate IDs against the independent task
+// state. Unknown IDs are retained so the tool can return its normal validation
+// error instead of silently hiding a bad planner decision.
+func UnfetchedRetrievalIDs(taskID string, ids []string) []string {
+	defaultRetrievalCache.mu.Lock()
+	defer defaultRetrievalCache.mu.Unlock()
+	item := defaultRetrievalCache.task(taskID)
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !item.Fetched[id] {
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 func ClearRetrievalContext(taskID string) {
@@ -289,7 +405,11 @@ func (t *retrievalSearchTool) Execute(ctx context.Context, _ string, params map[
 	if maxCalls <= 0 {
 		maxCalls = 2
 	}
-	candidates, cached, flight, leader, err := defaultRetrievalCache.beginSearch(exec.TaskID, key, t.kind, maxCalls)
+	maxCycles := config.Get().RAG.JITRetrievalMaxCycles
+	if maxCycles <= 0 {
+		maxCycles = 2
+	}
+	candidates, cached, flight, leader, err := defaultRetrievalCache.beginSearch(exec.TaskID, key, t.kind, maxCalls, maxCycles)
 	if err != nil {
 		return nil, err
 	}
@@ -438,18 +558,21 @@ func (t *retrievalFetchTool) Execute(ctx context.Context, _ string, params map[s
 	}
 	remaining := totalBudget
 	evidence := make([]types.Evidence, 0, len(candidates))
+	processedIDs := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
+		if remaining <= 0 {
+			break
+		}
 		content := strings.TrimSpace(strings.Join([]string{candidate.Memory.KeyFindings, candidate.Memory.FinalAnswer}, "\n"))
 		content, _ = truncateRetrievalBytes(content, remaining)
+		processedIDs = append(processedIDs, candidate.ID)
 		if content == "" {
 			continue
 		}
 		evidence = append(evidence, types.Evidence{Path: candidate.ID, Query: candidate.Title, Lines: []string{content}})
 		remaining -= len(content)
-		if remaining <= 0 {
-			break
-		}
 	}
+	defaultRetrievalCache.markFetched(exec.TaskID, processedIDs)
 	return &ToolResult{Query: strings.Join(ids, ","), Observation: fmt.Sprintf("fetched %d %s item(s)", len(evidence), t.kind), Evidence: evidence}, nil
 }
 

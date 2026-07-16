@@ -67,11 +67,29 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RAG.MaxPromptMemories != 3 || cfg.RAG.MaxMemoryBytes != 2500 || cfg.RAG.MaxMemoryPromptBytes != 8000 || cfg.RAG.MaxRawFallbackBytes != 4000 {
 		t.Errorf("unexpected RAG prompt budget defaults: %+v", cfg.RAG)
 	}
-	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 2 || cfg.RAG.JITFetchMaxItems != 3 || cfg.RAG.JITRAGFetchMaxBytes != 6000 || cfg.RAG.JITMemoryFetchMaxBytes != 2000 {
+	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 2 || cfg.RAG.JITRetrievalMaxCycles != 2 || cfg.RAG.JITFetchMaxItems != 3 || cfg.RAG.JITRAGFetchMaxBytes != 6000 || cfg.RAG.JITMemoryFetchMaxBytes != 2000 {
 		t.Errorf("unexpected RAG JIT defaults: %+v", cfg.RAG)
 	}
 	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
 		t.Errorf("unexpected planner trace budget defaults: %+v", cfg.LLM)
+	}
+}
+
+func TestConcreteTaskFinalizerSceneIsLoaded(t *testing.T) {
+	resetConfig()
+	defer resetConfig()
+	setupViper()
+	viper.SetConfigType("yaml")
+	if err := viper.ReadConfig(strings.NewReader("llm:\n  scenes:\n    task_finalizer:\n      timeout_seconds: 30\n")); err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	cfg, err := unmarshalConfig()
+	if err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	scene, ok := cfg.LLM.Scenes[LLMSceneTaskFinalizer]
+	if !ok || scene.TimeoutSeconds != 30 {
+		t.Fatalf("task_finalizer scene not loaded: %+v", cfg.LLM.Scenes)
 	}
 }
 
@@ -495,6 +513,11 @@ func TestValidateRAGContextModeAndLimits(t *testing.T) {
 		t.Fatal("expected negative JIT search limit error")
 	}
 	cfg.RAG.JITSearchMaxCalls = 1
+	cfg.RAG.JITRetrievalMaxCycles = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative JIT retrieval cycle limit error")
+	}
+	cfg.RAG.JITRetrievalMaxCycles = 1
 	cfg.RAG.JITFetchMaxItems = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected negative JIT fetch limit error")

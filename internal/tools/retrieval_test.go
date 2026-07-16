@@ -41,6 +41,10 @@ func TestRAGSearchCachesQueriesAndFetchesStableCandidates(t *testing.T) {
 	if calls != 1 || !strings.Contains(repeated.Observation, `"cached":true`) {
 		t.Fatalf("repeated query calls=%d observation=%s", calls, repeated.Observation)
 	}
+	state := RetrievalStateForTask(taskID)
+	if state.NetworkSearchCalls["rag"] != 1 || state.RetrievalCycles["rag"] != 1 || len(state.Searches) != 1 {
+		t.Fatalf("equivalent query created another retrieval cycle: %+v", state)
+	}
 
 	second, err := search.Execute(ctx, "", map[string]any{"query": "beta", "top_k": 1})
 	if err != nil {
@@ -65,7 +69,9 @@ func TestRetrievalKeysEquivalentDetectsSemanticQueryVariants(t *testing.T) {
 		want        bool
 	}{
 		{"rag:数学科学术顾问有哪些", "rag:数学 学术顾问", false},
-		{"rag:数学科学术顾问有哪些", "rag:数学科学术顾问 数学 成员 老师 顾问名单", true},
+		{"rag:数学学术顾问有哪些?", "rag:数学 学术顾问", true},
+		{"rag:学术顾问有哪些?", "rag:学术顾问 成员 姓名 老师 团队", false},
+		{"rag:数学科学术顾问有哪些", "rag:数学科学术顾问 数学 成员 老师 顾问名单", false},
 		{"rag:数学科学术顾问有哪些", "rag:最近台风路径", false},
 		{"memory:数学科学术顾问", "rag:数学科学术顾问", false},
 	}
@@ -82,6 +88,7 @@ func TestRetrievalSearchEnforcesUniqueQueryCallLimit(t *testing.T) {
 	t.Cleanup(func() { ClearRetrievalContext(taskID) })
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.JITSearchMaxCalls = 2
+		cfg.RAG.JITRetrievalMaxCycles = 10
 	}))
 
 	calls := 0
@@ -102,6 +109,54 @@ func TestRetrievalSearchEnforcesUniqueQueryCallLimit(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("provider calls=%d, want 2", calls)
+	}
+}
+
+func TestRetrievalSearchEnforcesCycleLimitSeparatelyFromNetworkLimit(t *testing.T) {
+	taskID := "retrieval-cycle-limit-test"
+	ClearRetrievalContext(taskID)
+	t.Cleanup(func() { ClearRetrievalContext(taskID) })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.JITSearchMaxCalls = 10
+		cfg.RAG.JITRetrievalMaxCycles = 2
+	}))
+	search := &retrievalSearchTool{kind: "rag", deps: RetrievalDependencies{SearchRAG: func(_ context.Context, query string) ([]types.Memory, error) {
+		return []types.Memory{{Goal: query, FinalAnswer: query}}, nil
+	}}}
+	ctx := WithRetrievalExecutionContext(context.Background(), taskID, "default")
+	for _, query := range []string{"alpha", "beta"} {
+		if _, err := search.Execute(ctx, "", map[string]any{"query": query}); err != nil {
+			t.Fatalf("search %q: %v", query, err)
+		}
+	}
+	if _, err := search.Execute(ctx, "", map[string]any{"query": "gamma"}); err == nil || !strings.Contains(err.Error(), "cycle limit") {
+		t.Fatalf("third cycle error=%v, want cycle limit", err)
+	}
+	state := RetrievalStateForTask(taskID)
+	if state.NetworkSearchCalls["rag"] != 2 || state.RetrievalCycles["rag"] != 2 {
+		t.Fatalf("unexpected separate counters: %+v", state)
+	}
+}
+
+func TestRetrievalFetchReturnsOnlyPreviouslyUnfetchedCandidates(t *testing.T) {
+	taskID := "retrieval-fetch-once-test"
+	ClearRetrievalContext(taskID)
+	t.Cleanup(func() { ClearRetrievalContext(taskID) })
+	candidate := retrievalCandidate{ID: "rag-once", Kind: "rag", Memory: types.Memory{KeyFindings: "evidence"}}
+	defaultRetrievalCache.completeSearch(taskID, "rag:query", &retrievalSearchFlight{done: make(chan struct{})}, []retrievalCandidate{candidate}, nil)
+	ctx := WithRetrievalExecutionContext(context.Background(), taskID, "default")
+	tool := &retrievalFetchTool{kind: "rag"}
+	first, err := tool.Execute(ctx, "", map[string]any{"ids": []string{candidate.ID}})
+	if err != nil || len(first.Evidence) != 1 {
+		t.Fatalf("first fetch result=%+v err=%v", first, err)
+	}
+	second, err := tool.Execute(ctx, "", map[string]any{"ids": []string{candidate.ID}})
+	if err != nil || len(second.Evidence) != 0 {
+		t.Fatalf("duplicate fetch result=%+v err=%v", second, err)
+	}
+	state := RetrievalStateForTask(taskID)
+	if len(state.Searches) != 1 || len(state.Searches[0].FetchedIDs) != 1 || len(state.Searches[0].PendingIDs) != 0 {
+		t.Fatalf("unexpected fetch state: %+v", state)
 	}
 }
 

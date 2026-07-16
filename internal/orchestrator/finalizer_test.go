@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -20,18 +21,25 @@ func (s stubFinalizer) Finalize(context.Context, *types.Task) (string, types.Tok
 
 func TestFinalizeAnswer(t *testing.T) {
 	task := &types.Task{ID: "task-finalize"}
+	if _, _, reason := (&Engine{}).finalizeAnswerDetailed(context.Background(), task, "fallback"); reason != "not_initialized" {
+		t.Fatalf("nil finalizer reason = %q", reason)
+	}
 	if got, _ := (&Engine{}).finalizeAnswer(context.Background(), task, "fallback"); got != "fallback" {
 		t.Fatalf("nil finalizer result = %q", got)
 	}
-	if got, _ := (&Engine{Finalizer: stubFinalizer{answer: "synthesized"}}).finalizeAnswer(context.Background(), task, "fallback"); got != "fallback" {
+	disabled := &Engine{Finalizer: stubFinalizer{answer: "synthesized"}, LLMSceneEnabled: func(string) bool { return false }}
+	if got, _ := disabled.finalizeAnswer(context.Background(), task, "fallback"); got != "fallback" {
 		t.Fatalf("disabled finalizer result = %q", got)
+	}
+	if _, _, reason := disabled.finalizeAnswerDetailed(context.Background(), task, "fallback"); reason != "scene_disabled" {
+		t.Fatalf("disabled finalizer reason = %q", reason)
 	}
 	engine := &Engine{Finalizer: usageFinalizer{answer: "synthesized", usage: types.TokenUsage{TotalTokens: 12}}, LLMSceneEnabled: func(string) bool { return true }}
 	if got, usage := engine.finalizeAnswer(context.Background(), task, "fallback"); got != "synthesized" || usage.TotalTokens != 12 {
 		t.Fatalf("enabled finalizer = %q, usage=%+v", got, usage)
 	}
 	engine.Finalizer = usageFinalizer{err: errors.New("failed")}
-	if got, _ := engine.finalizeAnswer(context.Background(), task, "fallback"); got != "fallback" {
+	if got, _, reason := engine.finalizeAnswerDetailed(context.Background(), task, "fallback"); got != "fallback" || reason != "provider_error" {
 		t.Fatalf("failed finalizer result = %q", got)
 	}
 }
@@ -67,6 +75,71 @@ func TestFinalizeBeforeRetrievalExpansionReservesAnswerCapacity(t *testing.T) {
 	last := task.Trace[len(task.Trace)-1]
 	if last.Action != "budget_finalize" || last.TokenUsage.TotalTokens != 10 {
 		t.Fatalf("finalization trace=%+v", last)
+	}
+}
+
+func TestFinalizeBeforeRetrievalExpansionMarksPartialWhenFinalizerUnavailable(t *testing.T) {
+	engine := &Engine{LLMSceneEnabled: func(string) bool { return true }}
+	task := &types.Task{
+		ID: "finalizer-unavailable", Goal: "数学学术顾问有哪些", Status: types.StatusRunning,
+		MaxSteps: 8, StepCount: 6, ToolBudget: 2,
+		Trace: []types.StepTrace{{Action: "rag_fetch", Evidence: []types.Evidence{{Path: "rag-a", Lines: []string{"顾问甲"}}}}},
+	}
+	decision := &planner.PlanDecision{Actions: []planner.ActionCall{{Action: "rag_fetch", Parameters: map[string]any{"ids": []string{"rag-b"}}}}}
+	if !engine.finalizeBeforeRetrievalExpansion(context.Background(), task, decision) {
+		t.Fatal("capacity guard did not stop retrieval")
+	}
+	if task.Status != types.StatusPartial {
+		t.Fatalf("status=%s, want partial", task.Status)
+	}
+	if last := task.Trace[len(task.Trace)-1]; last.Action != "retrieval_guard" {
+		t.Fatalf("last trace=%+v", last)
+	}
+}
+
+func TestFinalizeBeforeRetrievalExpansionBlocksEquivalentCachedSearch(t *testing.T) {
+	taskID := "equivalent-search-guard"
+	tools.ClearRetrievalContext(taskID)
+	t.Cleanup(func() { tools.ClearRetrievalContext(taskID) })
+	oldTools := make(map[string]tools.Tool)
+	for _, name := range []string{"rag_search", "rag_fetch", "memory_search", "memory_get"} {
+		oldTools[name], _ = tools.Get(name)
+	}
+	tools.RegisterRetrievalTools(tools.RetrievalDependencies{SearchRAG: func(context.Context, string) ([]types.Memory, error) {
+		return []types.Memory{{Goal: "数学学术顾问", KeyFindings: "顾问甲"}}, nil
+	}})
+	t.Cleanup(func() {
+		for _, tool := range oldTools {
+			if tool != nil {
+				tools.Register(tool)
+			}
+		}
+	})
+	search, _ := tools.Get("rag_search")
+	ctx := tools.WithRetrievalExecutionContext(context.Background(), taskID, "default")
+	if _, err := search.Execute(ctx, "", map[string]any{"query": "数学学术顾问有哪些", "top_k": 1}); err != nil {
+		t.Fatalf("seed retrieval state: %v", err)
+	}
+
+	engine := &Engine{Finalizer: stubFinalizer{answer: "顾问甲"}, LLMSceneEnabled: func(string) bool { return true }}
+	task := &types.Task{
+		ID: taskID, Goal: "数学学术顾问有哪些", Status: types.StatusRunning, MaxSteps: 8, ToolBudget: 6,
+		Trace: []types.StepTrace{{Action: "rag_fetch", Evidence: []types.Evidence{{Path: "rag-a", Lines: []string{"顾问甲"}}}}},
+	}
+	refinement := &planner.PlanDecision{Actions: []planner.ActionCall{{Action: "rag_search", Parameters: map[string]any{"query": "数学学术顾问 成员 姓名 老师 团队"}}}}
+	if engine.finalizeBeforeRetrievalExpansion(context.Background(), task, refinement) {
+		t.Fatal("refinement query must be allowed while execution capacity remains")
+	}
+	decision := &planner.PlanDecision{Actions: []planner.ActionCall{{Action: "rag_search", Parameters: map[string]any{"query": "数学 学术顾问"}}}}
+	if !engine.finalizeBeforeRetrievalExpansion(context.Background(), task, decision) {
+		t.Fatal("equivalent cached search was not blocked")
+	}
+	if task.Status != types.StatusCompleted || task.FinalAnswer != "顾问甲" {
+		t.Fatalf("status=%s answer=%q", task.Status, task.FinalAnswer)
+	}
+	state := tools.RetrievalStateForTask(taskID)
+	if state.NetworkSearchCalls["rag"] != 1 || state.RetrievalCycles["rag"] != 1 {
+		t.Fatalf("equivalent query consumed another retrieval cycle: %+v", state)
 	}
 }
 

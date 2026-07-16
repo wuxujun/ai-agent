@@ -118,24 +118,32 @@ func (e *Engine) llmSceneEnabled(scene string) bool {
 }
 
 func (e *Engine) finalizeAnswer(ctx context.Context, task *types.Task, fallback string) (string, types.TokenUsage) {
+	answer, usage, _ := e.finalizeAnswerDetailed(ctx, task, fallback)
+	return answer, usage
+}
+
+func (e *Engine) finalizeAnswerDetailed(ctx context.Context, task *types.Task, fallback string) (string, types.TokenUsage, string) {
 	if e.Finalizer == nil {
-		return fallback, types.TokenUsage{}
+		engineLog.Warn("task finalizer unavailable", "task_id", task.ID, "reason", "not_initialized")
+		return fallback, types.TokenUsage{}, "not_initialized"
 	}
 	if !e.llmSceneEnabled(config.LLMSceneTaskFinalizer) {
-		return fallback, types.TokenUsage{}
+		engineLog.Warn("task finalizer unavailable", "task_id", task.ID, "reason", "scene_disabled", "scene", config.LLMSceneTaskFinalizer)
+		return fallback, types.TokenUsage{}, "scene_disabled"
 	}
 	if !llmcore.AllowedForTask(config.LLMSceneTaskFinalizer, task) {
-		return fallback, types.TokenUsage{}
+		engineLog.Warn("task finalizer unavailable", "task_id", task.ID, "reason", "token_reserve", "scene", config.LLMSceneTaskFinalizer, "token_budget", task.TokenBudget)
+		return fallback, types.TokenUsage{}, "token_reserve"
 	}
 	answer, usage, err := e.Finalizer.Finalize(ctx, task)
 	if err != nil {
-		engineLog.Warn("task finalizer failed; using planner answer", "task_id", task.ID, "error", err)
-		return fallback, types.TokenUsage{}
+		engineLog.Warn("task finalizer failed; using planner answer", "task_id", task.ID, "reason", "provider_error", "error", err)
+		return fallback, types.TokenUsage{}, "provider_error"
 	}
 	if e.Metrics != nil {
 		e.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "finalizer")
 	}
-	return answer, usage
+	return answer, usage, ""
 }
 
 func (e *Engine) verifyCitations(ctx context.Context, task *types.Task) {

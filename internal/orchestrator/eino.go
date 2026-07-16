@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/compose"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -252,37 +254,95 @@ func (e *Engine) planNext(ctx context.Context, state *einoStepState) (*einoStepS
 }
 
 func (e *Engine) finalizeBeforeRetrievalExpansion(ctx context.Context, task *types.Task, decision *planner.PlanDecision) bool {
-	if decision == nil || decision.Stop || !planner.HasSupportingEvidence(task.Trace) || remainingExecutionCapacity(task) > 2 {
+	if decision == nil || decision.Stop {
 		return false
 	}
+	hasEvidence := planner.HasSupportingEvidence(task.Trace)
+	hardCapacityGuard := hasEvidence && remainingExecutionCapacity(task) <= 2
+	mustFinalize := false
+	guardReason := ""
 	for _, action := range decision.Actions {
-		if action.Action != "rag_search" && action.Action != "memory_search" {
-			continue
+		switch action.Action {
+		case "rag_search", "memory_search":
+			kind := strings.TrimSuffix(action.Action, "_search")
+			query, _ := action.Parameters["query"].(string)
+			state := tools.RetrievalStateForTask(task.ID)
+			maxCycles := config.Get().RAG.JITRetrievalMaxCycles
+			if maxCycles <= 0 {
+				maxCycles = 2
+			}
+			if hardCapacityGuard {
+				mustFinalize = true
+				guardReason = "retrieval_capacity_reserved"
+			} else if tools.RetrievalQueryKnown(task.ID, kind, query) {
+				mustFinalize = true
+				guardReason = "equivalent_query_already_retrieved"
+			} else if state.RetrievalCycles[kind] >= maxCycles {
+				mustFinalize = true
+				guardReason = "retrieval_cycle_limit_reached"
+			}
+		case "rag_fetch", "memory_get":
+			ids := retrievalActionIDs(action.Parameters["ids"])
+			pending := tools.UnfetchedRetrievalIDs(task.ID, ids)
+			if len(pending) < len(ids) {
+				action.Parameters["ids"] = pending
+			}
+			if hardCapacityGuard {
+				mustFinalize = true
+				guardReason = "retrieval_capacity_reserved"
+			} else if len(ids) > 0 && len(pending) == 0 {
+				mustFinalize = true
+				guardReason = "retrieval_candidates_already_fetched"
+			}
 		}
-		fallback := finalAnswerForLimit(task, limitReasonStepOrToolBudget)
-		answer, usage := e.finalizeAnswer(ctx, task, fallback)
-		if strings.TrimSpace(answer) == "" || answer == fallback {
-			return false
-		}
-		usage.PromptTokens += decision.TokenUsage.PromptTokens
-		usage.CompletionTokens += decision.TokenUsage.CompletionTokens
-		usage.TotalTokens += decision.TokenUsage.TotalTokens
+	}
+	if !mustFinalize {
+		return false
+	}
+	fallback := finalAnswerForLimit(task, limitReasonFinalizerUnavailable)
+	answer, usage, finalizerReason := e.finalizeAnswerDetailed(ctx, task, fallback)
+	usage.PromptTokens += decision.TokenUsage.PromptTokens
+	usage.CompletionTokens += decision.TokenUsage.CompletionTokens
+	usage.TotalTokens += decision.TokenUsage.TotalTokens
+	if strings.TrimSpace(answer) == "" || answer == fallback {
 		task.Trace = append(task.Trace, types.StepTrace{
-			Step:        task.StepCount + 1,
-			Goal:        task.Goal,
-			Action:      "budget_finalize",
-			Query:       "retrieval_capacity_reserved",
-			Observation: answer,
-			TokenUsage:  usage,
+			Step: task.StepCount + 1, Goal: task.Goal, Action: "retrieval_guard",
+			Query: guardReason, Observation: "finalizer unavailable; retrieval action was not executed", TokenUsage: decision.TokenUsage,
 		})
-		olog.Info("stopped retrieval expansion and synthesized final answer", "task_id", task.ID, "remaining_action_capacity", remainingExecutionCapacity(task))
-		_ = SetTaskCompleted(task, answer)
+		olog.Warn("retrieval blocked but finalizer unavailable; marking task partial", "task_id", task.ID, "reason", guardReason, "finalizer_reason", finalizerReason, "remaining_action_capacity", remainingExecutionCapacity(task))
+		_ = SetTaskPartial(task, fallback, limitReasonFinalizerUnavailable)
 		if e.Metrics != nil {
 			e.Metrics.IncCompleted()
 		}
 		return true
 	}
-	return false
+	task.Trace = append(task.Trace, types.StepTrace{
+		Step: task.StepCount + 1, Goal: task.Goal, Action: "budget_finalize",
+		Query: guardReason, Observation: answer, TokenUsage: usage,
+	})
+	olog.Info("stopped retrieval expansion and synthesized final answer", "task_id", task.ID, "reason", guardReason, "remaining_action_capacity", remainingExecutionCapacity(task))
+	_ = SetTaskCompleted(task, answer)
+	if e.Metrics != nil {
+		e.Metrics.IncCompleted()
+	}
+	return true
+}
+
+func retrievalActionIDs(value any) []string {
+	switch ids := value.(type) {
+	case []string:
+		return append([]string(nil), ids...)
+	case []any:
+		result := make([]string, 0, len(ids))
+		for _, item := range ids {
+			if id, ok := item.(string); ok {
+				result = append(result, id)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
 }
 
 func remainingExecutionCapacity(task *types.Task) int {

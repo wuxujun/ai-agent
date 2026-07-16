@@ -100,6 +100,7 @@ type Config struct {
 		ToolName               string `mapstructure:"tool_name"`
 		ContextMode            string `mapstructure:"context_mode"`
 		JITSearchMaxCalls      int    `mapstructure:"jit_search_max_calls"`
+		JITRetrievalMaxCycles  int    `mapstructure:"jit_retrieval_max_cycles"`
 		JITFetchMaxItems       int    `mapstructure:"jit_fetch_max_items"`
 		JITRAGFetchMaxBytes    int    `mapstructure:"jit_rag_fetch_max_bytes"`
 		JITMemoryFetchMaxBytes int    `mapstructure:"jit_memory_fetch_max_bytes"`
@@ -338,6 +339,7 @@ func setupViper() {
 	viper.SetDefault("rag.tool_name", "search")
 	viper.SetDefault("rag.context_mode", "jit")
 	viper.SetDefault("rag.jit_search_max_calls", 2)
+	viper.SetDefault("rag.jit_retrieval_max_cycles", 2)
 	viper.SetDefault("rag.jit_fetch_max_items", 3)
 	viper.SetDefault("rag.jit_rag_fetch_max_bytes", 6000)
 	viper.SetDefault("rag.jit_memory_fetch_max_bytes", 2000)
@@ -696,6 +698,7 @@ func diffConfigs(old, new *Config) []string {
 	addIf("rag.tool_name", old.RAG.ToolName, new.RAG.ToolName)
 	addIf("rag.context_mode", old.RAG.ContextMode, new.RAG.ContextMode)
 	addIfInt("rag.jit_search_max_calls", old.RAG.JITSearchMaxCalls, new.RAG.JITSearchMaxCalls)
+	addIfInt("rag.jit_retrieval_max_cycles", old.RAG.JITRetrievalMaxCycles, new.RAG.JITRetrievalMaxCycles)
 	addIfInt("rag.jit_fetch_max_items", old.RAG.JITFetchMaxItems, new.RAG.JITFetchMaxItems)
 	addIfInt("rag.jit_rag_fetch_max_bytes", old.RAG.JITRAGFetchMaxBytes, new.RAG.JITRAGFetchMaxBytes)
 	addIfInt("rag.jit_memory_fetch_max_bytes", old.RAG.JITMemoryFetchMaxBytes, new.RAG.JITMemoryFetchMaxBytes)
@@ -998,7 +1001,7 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("rag.context_mode must be one of jit or prefetch")
 	}
-	if c.RAG.JITSearchMaxCalls < 0 || c.RAG.JITFetchMaxItems < 0 || c.RAG.JITRAGFetchMaxBytes < 0 || c.RAG.JITMemoryFetchMaxBytes < 0 {
+	if c.RAG.JITSearchMaxCalls < 0 || c.RAG.JITRetrievalMaxCycles < 0 || c.RAG.JITFetchMaxItems < 0 || c.RAG.JITRAGFetchMaxBytes < 0 || c.RAG.JITMemoryFetchMaxBytes < 0 {
 		return fmt.Errorf("rag JIT limits must be >= 0")
 	}
 	if c.LLM.PlannerTraceMaxItems < 0 || c.LLM.PlannerObservationMaxChars < 0 || c.LLM.PlannerEvidenceMaxItems < 0 || c.LLM.PlannerEvidenceLineMaxChars < 0 || c.LLM.PlannerTraceMaxChars < 0 {

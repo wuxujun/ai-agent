@@ -133,6 +133,12 @@ llm:
   planner_evidence_line_max_chars: 300
   planner_trace_max_chars: 5000
 
+  # Finalizer 继承全局提供商和模型。保持该场景启用，以便检索任务在耗尽
+  # 工具步骤前合成答案。启用任务费用预算时，请在此处或 llm.gateway 配置真实价格。
+  scenes:
+    task_finalizer:
+      timeout_seconds: 30
+
 
   # 可选的共享网关默认配置。LiteLLM 提供兼容 OpenAI 的
   # /v1/chat/completions 端点，以及在 LiteLLM 中配置的模型别名。
@@ -272,12 +278,15 @@ rag:
   # 环境变量覆盖：AI_AGENT_RAG_CONTEXT_MODE
   context_mode: "jit"
 
-  # 每个任务对未缓存搜索和详情读取的限制。
+  # 每个任务的限制。网络调用数统计真实外部搜索；检索循环数统计不同的
+  # 搜索尝试；等价的缓存命中会直接复用，不创建新循环。
   # 环境变量覆盖：AI_AGENT_RAG_JIT_SEARCH_MAX_CALLS、
+  # AI_AGENT_RAG_JIT_RETRIEVAL_MAX_CYCLES、
   # AI_AGENT_RAG_JIT_FETCH_MAX_ITEMS,
   # AI_AGENT_RAG_JIT_RAG_FETCH_MAX_BYTES,
   # AI_AGENT_RAG_JIT_MEMORY_FETCH_MAX_BYTES
   jit_search_max_calls: 2
+  jit_retrieval_max_cycles: 2
   jit_fetch_max_items: 3
   jit_rag_fetch_max_bytes: 6000
   jit_memory_fetch_max_bytes: 2000

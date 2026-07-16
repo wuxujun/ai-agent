@@ -76,6 +76,7 @@ func buildUserPromptWithStats(task *types.Task) (string, promptBuildStats) {
 	stats.TraceOriginalBytes = traceOriginal
 	stats.TraceIncludedBytes = traceIncluded
 	stats.TraceTruncated = traceTruncated
+	retrievalSection := formatRetrievalState(task.ID)
 
 	prompt := fmt.Sprintf(`Task goal:
 %s%s
@@ -96,6 +97,9 @@ Unresolved questions:
 Recent trace:
 %s
 
+Retrieval state (authoritative; independent of truncated trace):
+%s
+
 Decision requirements:
 - Choose exactly one next action.
 - Reserve capacity for the final answer. When supporting evidence exists and remaining_action_capacity is 2 or less, do not start another retrieval cycle; stop and answer from the best available evidence, stating uncertainty if needed.
@@ -112,9 +116,24 @@ Decision requirements:
 		skillsString,
 		formatUnresolved(task.Unresolved),
 		traceSection,
+		retrievalSection,
 	)
 	stats.UserPromptBytes = len(prompt)
 	return prompt, stats
+}
+
+func formatRetrievalState(taskID string) string {
+	state := tools.RetrievalStateForTask(taskID)
+	if len(state.Searches) == 0 {
+		return "- no retrieval cycle recorded"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "- rag_network_searches: %d\n- rag_retrieval_cycles: %d\n", state.NetworkSearchCalls["rag"], state.RetrievalCycles["rag"])
+	fmt.Fprintf(&b, "- memory_network_searches: %d\n- memory_retrieval_cycles: %d\n", state.NetworkSearchCalls["memory"], state.RetrievalCycles["memory"])
+	for i, search := range state.Searches {
+		fmt.Fprintf(&b, "- search_%d: kind=%s query=%q candidates=%v fetched=%v pending=%v\n", i+1, search.Kind, search.Query, search.CandidateIDs, search.FetchedIDs, search.PendingIDs)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func remainingActionCapacity(task *types.Task) int {
