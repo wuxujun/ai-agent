@@ -641,6 +641,28 @@ func TestValidateAPITenants(t *testing.T) {
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "budgets must be") {
 		t.Fatalf("negative tenant budget error = %v", err)
 	}
+	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", AnswerPipelineEnforcement: "blocking"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "answer_pipeline_enforcement") {
+		t.Fatalf("invalid tenant enforcement error = %v", err)
+	}
+	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", AnswerPipelineRequiredStages: []string{"unknown"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unknown answer pipeline stage") {
+		t.Fatalf("invalid tenant stage error = %v", err)
+	}
+}
+
+func TestCloneConfigDetachesTenantPipelineStages(t *testing.T) {
+	source := &Config{}
+	source.API.Tenants = map[string]APITenantConfig{
+		"tenant-a": {APIKey: "key", AnswerPipelineRequiredStages: []string{"safety_guard_output"}},
+	}
+	cloned := cloneConfig(source)
+	tenant := cloned.API.Tenants["tenant-a"]
+	tenant.AnswerPipelineRequiredStages[0] = "fact_freshness_check"
+	cloned.API.Tenants["tenant-a"] = tenant
+	if got := source.API.Tenants["tenant-a"].AnswerPipelineRequiredStages[0]; got != "safety_guard_output" {
+		t.Fatalf("tenant pipeline stages share backing array: %q", got)
+	}
 }
 
 func TestValidateLLMReadinessSettings(t *testing.T) {

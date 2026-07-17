@@ -248,6 +248,30 @@ func TestStrictRequiredStageFailureBlocksPublishing(t *testing.T) {
 	}
 }
 
+func TestTenantPipelinePolicyOverridesGlobalEnforcement(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.AnswerPipeline.Enabled = true
+		cfg.AnswerPipeline.Enforcement = "observe"
+		cfg.AnswerPipeline.RequiredStages = nil
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"strict-tenant": {
+				AnswerPipelineEnforcement:    "strict",
+				AnswerPipelineRequiredStages: []string{safetyStage},
+			},
+		}
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{}
+	}))
+	task := auditTask("answer")
+	task.TenantID = "strict-tenant"
+	report, err := (&DefaultPipeline{}).Process(context.Background(), task, "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Enforcement != "strict" || report.Publishable || task.Status != types.StatusPartial {
+		t.Fatalf("task=%+v report=%+v", task, report)
+	}
+}
+
 func TestStagePanicIsIsolatedAndAdvisoryFailureIsPartial(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.AnswerPipeline.Enabled = true

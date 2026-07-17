@@ -36,9 +36,18 @@ func (p *DefaultPipeline) processV2(ctx context.Context, task *types.Task, mode 
 	if task == nil {
 		return nil, fmt.Errorf("answer pipeline requires task")
 	}
-	cfg := config.Get().AnswerPipeline
+	runtimeConfig := config.Get()
+	cfg := runtimeConfig.AnswerPipeline
 	if !cfg.Enabled {
 		return nil, nil
+	}
+	if tenant, ok := runtimeConfig.API.Tenants[task.TenantID]; ok {
+		if enforcement := strings.TrimSpace(tenant.AnswerPipelineEnforcement); enforcement != "" {
+			cfg.Enforcement = enforcement
+		}
+		if len(tenant.AnswerPipelineRequiredStages) > 0 {
+			cfg.RequiredStages = append([]string(nil), tenant.AnswerPipelineRequiredStages...)
+		}
 	}
 	now := time.Now().UTC()
 	if p.Now != nil {

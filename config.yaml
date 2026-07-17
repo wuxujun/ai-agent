@@ -23,6 +23,12 @@ api:
   #     admin: false
   #     daily_llm_call_budget: 100
   #     daily_llm_cost_budget_usd: 10
+  #     answer_pipeline_enforcement: strict
+  #     answer_pipeline_required_stages:
+  #       - fact_freshness_check
+  #       - numeric_consistency_check
+  #       - answer_uncertainty_calibrate
+  #       - safety_guard_output
 
 # Storage configuration
 store:

@@ -153,10 +153,12 @@ type Config struct {
 }
 
 type APITenantConfig struct {
-	APIKey                string  `mapstructure:"api_key"`
-	Admin                 bool    `mapstructure:"admin"`
-	DailyLLMCallBudget    int     `mapstructure:"daily_llm_call_budget"`
-	DailyLLMCostBudgetUSD float64 `mapstructure:"daily_llm_cost_budget_usd"`
+	APIKey                       string   `mapstructure:"api_key"`
+	Admin                        bool     `mapstructure:"admin"`
+	DailyLLMCallBudget           int      `mapstructure:"daily_llm_call_budget"`
+	DailyLLMCostBudgetUSD        float64  `mapstructure:"daily_llm_cost_budget_usd"`
+	AnswerPipelineEnforcement    string   `mapstructure:"answer_pipeline_enforcement"`
+	AnswerPipelineRequiredStages []string `mapstructure:"answer_pipeline_required_stages"`
 }
 
 // LLMEndpointConfig is a provider/model profile used by a specific LLM scene.
@@ -500,6 +502,7 @@ func cloneConfig(source *Config) *Config {
 	cloned := *source
 	cloned.API.Tenants = make(map[string]APITenantConfig, len(source.API.Tenants))
 	for tenantID, tenant := range source.API.Tenants {
+		tenant.AnswerPipelineRequiredStages = append([]string(nil), tenant.AnswerPipelineRequiredStages...)
 		cloned.API.Tenants[tenantID] = tenant
 	}
 	cloned.LLM.Gateway = cloneLLMEndpoint(source.LLM.Gateway)
@@ -1084,6 +1087,21 @@ func (c *Config) Validate() error {
 			if err := c.ValidateLLMCostBudgetCoverage(); err != nil {
 				return err
 			}
+		}
+		switch strings.ToLower(strings.TrimSpace(tenant.AnswerPipelineEnforcement)) {
+		case "", "observe", "advisory", "strict":
+		default:
+			return fmt.Errorf("api tenant %q answer_pipeline_enforcement must be observe, advisory, or strict", tenantID)
+		}
+		seenStages := make(map[string]bool, len(tenant.AnswerPipelineRequiredStages))
+		for _, stage := range tenant.AnswerPipelineRequiredStages {
+			if !knownAnswerPipelineStage(stage) {
+				return fmt.Errorf("api tenant %q contains unknown answer pipeline stage %q", tenantID, stage)
+			}
+			if seenStages[stage] {
+				return fmt.Errorf("api tenant %q contains duplicate answer pipeline stage %q", tenantID, stage)
+			}
+			seenStages[stage] = true
 		}
 	}
 	switch c.ResolveLLMReadinessMode() {

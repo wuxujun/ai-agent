@@ -106,3 +106,23 @@ func TestMultiAgentDraftFlowsThroughUnifiedPipeline(t *testing.T) {
 		t.Fatalf("finding = %+v", finding)
 	}
 }
+
+func TestReauditBypassesTerminalShortCircuitAndSupportsForce(t *testing.T) {
+	pipeline := &pipelineCapture{}
+	engine := &Engine{Mode: ModeLegacy, AnswerPipeline: pipeline}
+	task := &types.Task{
+		ID: "reaudit", Status: types.StatusCompleted, FinalAnswer: "answer",
+		AnswerAudit: &types.AnswerAuditReport{PipelineVersion: "old"},
+	}
+	report, err := engine.Reaudit(context.Background(), task, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pipeline.calls != 1 || report == nil || task.AnswerAudit != report {
+		t.Fatalf("pipeline=%+v task=%+v report=%+v", pipeline, task, report)
+	}
+	nonTerminal := &types.Task{Status: types.StatusRunning, FinalAnswer: "draft"}
+	if _, err := engine.Reaudit(context.Background(), nonTerminal, false); err == nil {
+		t.Fatal("expected non-terminal re-audit rejection")
+	}
+}

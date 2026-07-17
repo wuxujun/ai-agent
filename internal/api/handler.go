@@ -104,6 +104,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.DELETE("", AdminMiddleware(), h.deleteAllTasks)
 		tasks.POST("/:id/run", h.runTaskStep)
 		tasks.POST("/:id/run-all", h.runAll)
+		tasks.POST("/:id/re-audit", h.reauditTask)
 		tasks.GET("/:id", h.getTask)
 		tasks.GET("", h.listTasks)
 		tasks.GET("/:id/stream", h.streamTask)
@@ -111,6 +112,11 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.POST("/:id/reject", h.rejectTask)
 		tasks.DELETE("/:id/cancel", h.cancelTask)
 		tasks.DELETE("/:id", h.deleteTask)
+	}
+	audits := api.Group("/audits")
+	{
+		audits.GET("", h.listAudits)
+		audits.GET("/summary", h.getAuditSummary)
 	}
 	memories := api.Group("/memories")
 	{
