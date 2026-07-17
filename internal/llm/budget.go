@@ -23,6 +23,7 @@ type taskBudgetState struct {
 	tenantBudget types.TenantLLMBudget
 	ledger       types.TenantUsageLedger
 	ledgerErr    error
+	auditReserve int
 }
 
 type TaskBudgetError struct {
@@ -77,8 +78,39 @@ func AllowedForTaskContext(ctx context.Context, scene string) bool {
 	}
 	state.mu.Lock()
 	task := state.task
+	reserve := state.auditReserve
 	state.mu.Unlock()
-	return AllowedForTask(scene, task)
+	return allowedForTaskWithReserve(scene, task, reserve)
+}
+
+// WithAnswerAuditReserve activates generation/audit phase separation without
+// changing the persisted total TokenBudget on the task.
+func WithAnswerAuditReserve(ctx context.Context, reserve int) context.Context {
+	if ctx == nil || reserve <= 0 {
+		return ctx
+	}
+	state, _ := ctx.Value(taskBudgetContextKey{}).(*taskBudgetState)
+	if state == nil {
+		return ctx
+	}
+	state.mu.Lock()
+	state.auditReserve = reserve
+	state.mu.Unlock()
+	return ctx
+}
+
+func generationTokenReserve(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	state, _ := ctx.Value(taskBudgetContextKey{}).(*taskBudgetState)
+	if state == nil {
+		return 0
+	}
+	state.mu.Lock()
+	reserve := state.auditReserve
+	state.mu.Unlock()
+	return reserve
 }
 
 type tenantLedgerContextKey struct{}
@@ -111,6 +143,9 @@ func reserveTaskLLMCall(ctx context.Context, cfg *Config) error {
 	if state.ledgerErr != nil {
 		return &TaskBudgetError{Kind: "tenant_ledger", Current: state.task.LLMEstimatedCostUSD}
 	}
+	if cfg != nil && !allowedForTaskWithReserve(cfg.Scene, state.task, state.auditReserve) {
+		return &TaskBudgetError{Kind: "token", Limit: float64(state.task.TokenBudget), Current: float64(taskTokenUsage(state.task))}
+	}
 	if state.maxCost > 0 && cfg != nil && cfg.InputCostPerMillionUSD == 0 && cfg.OutputCostPerMillionUSD == 0 {
 		return &TaskBudgetError{Kind: "pricing", Limit: state.maxCost, Current: state.task.LLMEstimatedCostUSD}
 	}
@@ -139,6 +174,17 @@ func reserveTaskLLMCall(ctx context.Context, cfg *Config) error {
 	}
 	state.task.LLMCalls++
 	return nil
+}
+
+func taskTokenUsage(task *types.Task) int {
+	if task == nil {
+		return 0
+	}
+	total := 0
+	for _, trace := range task.Trace {
+		total += trace.TokenUsage.TotalTokens
+	}
+	return total
 }
 
 func TaskCostBudgetEnabled(ctx context.Context) bool {

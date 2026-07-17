@@ -380,16 +380,40 @@ func (r *Runtime) callStructured(ctx context.Context, cfg Config, visited map[st
 }
 
 func AllowedForTask(scene string, task *types.Task) bool {
+	return allowedForTaskWithReserve(scene, task, 0)
+}
+
+func allowedForTaskWithReserve(scene string, task *types.Task, auditReserve int) bool {
 	if task == nil || task.TokenBudget <= 0 {
 		return true
 	}
-	minimum := ConfigForScene(scene).MinRemainingTokens
-	if minimum <= 0 {
-		return true
+	limit := task.TokenBudget
+	if !IsAnswerAuditScene(scene) {
+		if auditReserve > limit {
+			auditReserve = limit
+		}
+		limit -= auditReserve
 	}
+	minimum := ConfigForScene(scene).MinRemainingTokens
 	used := 0
 	for _, trace := range task.Trace {
 		used += trace.TokenUsage.TotalTokens
 	}
-	return task.TokenBudget-used >= minimum
+	if used >= limit {
+		return false
+	}
+	return limit-used >= minimum
+}
+
+func IsAnswerAuditScene(scene string) bool {
+	switch scene {
+	case config.LLMSceneCitationVerifier,
+		config.LLMSceneFactFreshnessChecker,
+		config.LLMSceneNumericConsistencyChecker,
+		config.LLMSceneAnswerUncertaintyCalibrator,
+		config.LLMSceneSafetyGuard:
+		return true
+	default:
+		return false
+	}
 }

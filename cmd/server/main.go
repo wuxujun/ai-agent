@@ -252,6 +252,7 @@ func main() {
 		ObserveTokens: func(usage types.TokenUsage, operation string) {
 			mc.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, operation)
 		},
+		ObserveReport: mc.ObserveAnswerPipeline,
 	}
 
 	// Inject a Coordinator when running in multi-agent mode.

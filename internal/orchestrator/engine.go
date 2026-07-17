@@ -624,6 +624,9 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		}
 	}
 	ctx = llmcore.WithTaskBudget(ctx, task)
+	if pipelineCfg := config.Get().AnswerPipeline; e.AnswerPipeline != nil && pipelineCfg.Enabled {
+		ctx = llmcore.WithAnswerAuditReserve(ctx, pipelineCfg.AuditTokenReserve)
+	}
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	defer func() {
 		if e.AnswerPipeline == nil || strings.TrimSpace(task.FinalAnswer) == "" || !types.IsTerminalTaskStatus(task.Status) {

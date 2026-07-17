@@ -322,8 +322,10 @@ func setupViper() {
 	viper.SetDefault("answer_pipeline.enforcement", "observe")
 	viper.SetDefault("answer_pipeline.audit_token_reserve", 4000)
 	viper.SetDefault("answer_pipeline.stage_timeout_seconds", 20)
-	viper.SetDefault("answer_pipeline.parallel_audits", false)
+	viper.SetDefault("answer_pipeline.parallel_audits", true)
 	viper.SetDefault("answer_pipeline.on_required_stage_failure", "partial")
+	viper.SetDefault("answer_pipeline.required_stages", []string{"fact_freshness_check", "numeric_consistency_check", "answer_uncertainty_calibrate", "safety_guard_output"})
+	viper.SetDefault("answer_pipeline.stage_token_budgets", map[string]int{"citation_verify": 600, "fact_freshness_check": 900, "numeric_consistency_check": 900, "answer_uncertainty_calibrate": 1000, "safety_guard_output": 600})
 	viper.SetDefault("llm.provider", llmprovider.OpenAIResponses)
 	viper.SetDefault("llm.timeout_seconds", 30)
 	viper.SetDefault("llm.readiness_mode", LLMReadinessGateway)
@@ -1013,6 +1015,24 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(stage) == "" || budget < 0 {
 			return fmt.Errorf("answer_pipeline stage token budgets must use non-empty names and non-negative values")
 		}
+		if !knownAnswerPipelineStage(stage) {
+			return fmt.Errorf("answer_pipeline.stage_token_budgets contains unknown stage %q", stage)
+		}
+	}
+	seenRequiredStages := make(map[string]bool, len(c.AnswerPipeline.RequiredStages))
+	for _, stage := range c.AnswerPipeline.RequiredStages {
+		if !knownAnswerPipelineStage(stage) {
+			return fmt.Errorf("answer_pipeline.required_stages contains unknown stage %q", stage)
+		}
+		if seenRequiredStages[stage] {
+			return fmt.Errorf("answer_pipeline.required_stages contains duplicate stage %q", stage)
+		}
+		seenRequiredStages[stage] = true
+	}
+	switch strings.ToLower(strings.TrimSpace(c.AnswerPipeline.OnRequiredStageFailure)) {
+	case "", "partial", "failed":
+	default:
+		return fmt.Errorf("answer_pipeline.on_required_stage_failure must be partial or failed")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Log.Level)) {
 	case "", "debug", "info", "warn", "warning", "error":
@@ -1202,6 +1222,15 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func knownAnswerPipelineStage(stage string) bool {
+	switch strings.TrimSpace(stage) {
+	case "citation_verify", "fact_freshness_check", "numeric_consistency_check", "answer_uncertainty_calibrate", "safety_guard_output":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Config) validateLLMRoute(scene string, index int, route LLMRouteRule) error {

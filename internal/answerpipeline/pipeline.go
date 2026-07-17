@@ -11,7 +11,6 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/factfreshness"
-	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/numericconsistency"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/policy"
@@ -20,9 +19,10 @@ import (
 	"github.com/wuxujun/ai-agent/internal/uncertainty"
 )
 
-const Version = "p1-v1"
+const Version = "p2-v1"
 
 type TokenObserver func(types.TokenUsage, string)
+type ReportObserver func(string, *types.AnswerAuditReport)
 
 type Pipeline interface {
 	Process(context.Context, *types.Task, string) (*types.AnswerAuditReport, error)
@@ -36,6 +36,8 @@ type DefaultPipeline struct {
 	SafetyGuard           policy.SafetyGuard
 	SceneEnabled          func(string) bool
 	ObserveTokens         TokenObserver
+	ObserveReport         ReportObserver
+	Now                   func() time.Time
 }
 
 func (p *DefaultPipeline) enabled(scene string) bool {
@@ -47,39 +49,7 @@ func (p *DefaultPipeline) enabled(scene string) bool {
 }
 
 func (p *DefaultPipeline) Process(ctx context.Context, task *types.Task, mode string) (*types.AnswerAuditReport, error) {
-	if task == nil {
-		return nil, fmt.Errorf("answer pipeline requires task")
-	}
-	cfg := config.Get().AnswerPipeline
-	if !cfg.Enabled {
-		return nil, nil
-	}
-	started := time.Now().UTC()
-	report := &types.AnswerAuditReport{PipelineVersion: Version, DraftHash: digest(task.FinalAnswer), EvidenceHash: evidenceDigest(task), StartedAt: started, Enforcement: normalizedEnforcement(cfg.Enforcement), Publishable: strings.TrimSpace(task.FinalAnswer) != ""}
-
-	inputRefusal := hasBlockedInput(task)
-	if inputRefusal {
-		report.Stages = append(report.Stages,
-			stage("citation_verify", "not_applicable", "covered_by_input_guard", types.TokenUsage{}, nil, 0),
-			stage(factfreshness.TraceAction, "not_applicable", "covered_by_input_guard", types.TokenUsage{}, nil, 0),
-			stage(numericconsistency.TraceAction, "not_applicable", "covered_by_input_guard", types.TokenUsage{}, nil, 0),
-			stage(uncertainty.TraceAction, "not_applicable", "covered_by_input_guard", types.TokenUsage{}, nil, 0),
-			stage("safety_guard_output", "passed", "covered_by_input_guard", types.TokenUsage{}, nil, 0),
-		)
-		finalizeReport(report, task)
-		task.AnswerAudit = report
-		return report, nil
-	}
-
-	p.importVerifierFindings(task, report)
-	p.runCitation(ctx, task, report)
-	p.runFreshness(ctx, task, report)
-	p.runNumeric(ctx, task, report)
-	p.runUncertainty(ctx, task, report)
-	p.runSafety(ctx, task, report)
-	finalizeReport(report, task)
-	task.AnswerAudit = report
-	return report, nil
+	return p.processV2(ctx, task, mode)
 }
 
 // importVerifierFindings promotes draft-phase verifier output into the common
@@ -90,138 +60,8 @@ func (p *DefaultPipeline) importVerifierFindings(task *types.Task, report *types
 	if len(findings) == 0 {
 		return
 	}
-	report.Stages = append(report.Stages, stage("answer_verify", "warned", "draft verifier findings", types.TokenUsage{}, findings, time.Now()))
-}
-
-func (p *DefaultPipeline) runCitation(ctx context.Context, task *types.Task, report *types.AnswerAuditReport) {
-	started := time.Now()
-	if p.CitationVerifier == nil || !p.enabled(config.LLMSceneCitationVerifier) {
-		report.Stages = append(report.Stages, stage("citation_verify", "disabled", "verifier unavailable or scene disabled", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !planner.HasCitationEvidence(task) {
-		report.Stages = append(report.Stages, stage("citation_verify", "not_applicable", "no citation evidence", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !llmcore.AllowedForTask(config.LLMSceneCitationVerifier, task) {
-		report.Stages = append(report.Stages, stage("citation_verify", "budget_insufficient", "token gate", types.TokenUsage{}, nil, started))
-		return
-	}
-	result, usage, err := p.CitationVerifier.Verify(ctx, types.CloneTask(task), task.FinalAnswer)
-	p.observe(usage, "citation_verifier")
-	if err != nil || result == nil || strings.TrimSpace(result.VerifiedAnswer) == "" {
-		report.Stages = append(report.Stages, stage("citation_verify", "failed", errorReason(err), usage, nil, started))
-		return
-	}
-	task.FinalAnswer = result.VerifiedAnswer
-	task.Trace = append(task.Trace, types.StepTrace{Step: task.StepCount, Action: "citation_verify", Observation: fmt.Sprintf("supported=%t unsupported_claims=%d citation_issues=%d", result.Supported, len(result.UnsupportedClaims), len(result.CitationIssues)), TokenUsage: usage})
-	status := "passed"
-	if !result.Supported {
-		status = "warned"
-	}
-	report.Stages = append(report.Stages, stage("citation_verify", status, "", usage, nil, started))
-}
-
-func (p *DefaultPipeline) runFreshness(ctx context.Context, task *types.Task, report *types.AnswerAuditReport) {
-	started := time.Now()
-	if p.FreshnessChecker == nil || !p.enabled(config.LLMSceneFactFreshnessChecker) {
-		report.Stages = append(report.Stages, stage(factfreshness.TraceAction, "disabled", "checker unavailable or scene disabled", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !factfreshness.ShouldCheck(task) {
-		report.Stages = append(report.Stages, stage(factfreshness.TraceAction, "not_applicable", "eligibility", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !llmcore.AllowedForTask(config.LLMSceneFactFreshnessChecker, task) {
-		report.Stages = append(report.Stages, stage(factfreshness.TraceAction, "budget_insufficient", "token gate", types.TokenUsage{}, nil, started))
-		return
-	}
-	result, usage, err := p.FreshnessChecker.Check(ctx, types.CloneTask(task), task.FinalAnswer)
-	factfreshness.Apply(task, result, usage, err)
-	p.observe(usage, "fact_freshness_checker")
-	status := "passed"
-	if err != nil {
-		status = "failed"
-	} else if result != nil && result.TimeSensitive && result.Status != "current" {
-		status = "warned"
-	}
-	report.Stages = append(report.Stages, stage(factfreshness.TraceAction, status, errorReason(err), usage, nil, started))
-}
-
-func (p *DefaultPipeline) runNumeric(ctx context.Context, task *types.Task, report *types.AnswerAuditReport) {
-	started := time.Now()
-	if p.NumericChecker == nil || !p.enabled(config.LLMSceneNumericConsistencyChecker) {
-		report.Stages = append(report.Stages, stage(numericconsistency.TraceAction, "disabled", "checker unavailable or scene disabled", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !numericconsistency.ShouldCheck(task) {
-		report.Stages = append(report.Stages, stage(numericconsistency.TraceAction, "not_applicable", "eligibility", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !llmcore.AllowedForTask(config.LLMSceneNumericConsistencyChecker, task) {
-		report.Stages = append(report.Stages, stage(numericconsistency.TraceAction, "budget_insufficient", "token gate", types.TokenUsage{}, nil, started))
-		return
-	}
-	result, usage, err := p.NumericChecker.Check(ctx, types.CloneTask(task), task.FinalAnswer)
-	numericconsistency.Apply(task, result, usage, err)
-	p.observe(usage, "numeric_consistency_checker")
-	status := "passed"
-	if err != nil {
-		status = "failed"
-	} else if result != nil && result.HasNumericClaims && result.Status != "consistent" {
-		status = "warned"
-	}
-	report.Stages = append(report.Stages, stage(numericconsistency.TraceAction, status, errorReason(err), usage, nil, started))
-}
-
-func (p *DefaultPipeline) runUncertainty(ctx context.Context, task *types.Task, report *types.AnswerAuditReport) {
-	started := time.Now()
-	if p.UncertaintyCalibrator == nil || !p.enabled(config.LLMSceneAnswerUncertaintyCalibrator) {
-		report.Stages = append(report.Stages, stage(uncertainty.TraceAction, "disabled", "calibrator unavailable or scene disabled", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !uncertainty.ShouldCalibrate(task) {
-		report.Stages = append(report.Stages, stage(uncertainty.TraceAction, "not_applicable", "eligibility", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !llmcore.AllowedForTask(config.LLMSceneAnswerUncertaintyCalibrator, task) {
-		report.Stages = append(report.Stages, stage(uncertainty.TraceAction, "budget_insufficient", "token gate", types.TokenUsage{}, nil, started))
-		return
-	}
-	result, usage, err := p.UncertaintyCalibrator.Calibrate(ctx, types.CloneTask(task), task.FinalAnswer)
-	uncertainty.Apply(task, result, usage, err)
-	p.observe(usage, "answer_uncertainty_calibrator")
-	status := "passed"
-	if err != nil {
-		status = "failed"
-	} else if result != nil {
-		report.FinalConfidence = result.Confidence
-		if result.NeedsQualification {
-			status = "warned"
-		}
-	}
-	report.Stages = append(report.Stages, stage(uncertainty.TraceAction, status, errorReason(err), usage, nil, started))
-}
-
-func (p *DefaultPipeline) runSafety(ctx context.Context, task *types.Task, report *types.AnswerAuditReport) {
-	started := time.Now()
-	if p.SafetyGuard == nil || !p.enabled(config.LLMSceneSafetyGuard) {
-		report.Stages = append(report.Stages, stage("safety_guard_output", "disabled", "guard unavailable or scene disabled", types.TokenUsage{}, nil, started))
-		return
-	}
-	if !llmcore.AllowedForTask(config.LLMSceneSafetyGuard, task) {
-		report.Stages = append(report.Stages, stage("safety_guard_output", "budget_insufficient", "token gate", types.TokenUsage{}, nil, started))
-		return
-	}
-	decision, usage, err := p.SafetyGuard.Evaluate(ctx, policy.SafetyStageOutput, types.CloneTask(task), task.FinalAnswer)
-	p.observe(usage, "safety_guard_output")
-	if err != nil || decision == nil || strings.TrimSpace(decision.SafeText) == "" {
-		report.Stages = append(report.Stages, stage("safety_guard_output", "failed", errorReason(err), usage, nil, started))
-		return
-	}
-	task.Trace = append(task.Trace, types.StepTrace{Step: task.StepCount, Action: "safety_guard_output", Observation: fmt.Sprintf("allowed=%t categories=%s", decision.Allowed, strings.Join(decision.Categories, ",")), TokenUsage: usage})
-	task.FinalAnswer = decision.SafeText
-	report.Stages = append(report.Stages, stage("safety_guard_output", "passed", "", usage, nil, started))
+	fingerprint := stageFingerprint("answer_verify", task.FinalAnswer, report.EvidenceHash, "")
+	report.Stages = append(report.Stages, v2Stage("answer_verify", "warned", "draft verifier findings", types.TokenUsage{}, findings, time.Now(), fingerprint))
 }
 
 func (p *DefaultPipeline) observe(usage types.TokenUsage, operation string) {
@@ -230,13 +70,6 @@ func (p *DefaultPipeline) observe(usage types.TokenUsage, operation string) {
 	}
 }
 
-func stage(name, status, reason string, usage types.TokenUsage, findings []types.AnswerAuditFinding, started any) types.AnswerAuditStage {
-	duration := int64(0)
-	if t, ok := started.(time.Time); ok {
-		duration = time.Since(t).Milliseconds()
-	}
-	return types.AnswerAuditStage{Name: name, Status: status, Reason: reason, TokenUsage: usage, Findings: findings, DurationMS: duration}
-}
 func errorReason(err error) string {
 	if err == nil {
 		return ""
@@ -258,15 +91,40 @@ func digest(v string) string { sum := sha256.Sum256([]byte(v)); return hex.Encod
 func evidenceDigest(task *types.Task) string {
 	var items []string
 	for _, tr := range task.Trace {
+		if isPipelineAuditAction(tr.Action) {
+			continue
+		}
+		if observation := boundedAuditValue(tr.Observation, 1200); observation != "" {
+			items = append(items, boundedAuditValue(tr.Action, 200)+"\x00observation\x00"+boundedAuditValue(tr.Query, 200)+"\x00"+digest(observation))
+		}
 		for _, ev := range tr.Evidence {
-			items = append(items, tr.Action+"\x00"+ev.Path+"\x00"+ev.Query+"\x00"+digest(strings.Join(ev.Lines, "\n")))
+			content := boundedAuditValue(strings.Join(ev.Lines, "\n"), 1200)
+			items = append(items, boundedAuditValue(tr.Action, 200)+"\x00"+boundedAuditValue(ev.Path, 500)+"\x00"+boundedAuditValue(ev.Query, 200)+"\x00"+digest(content))
 		}
 	}
 	for _, mem := range task.Memories {
-		items = append(items, "memory\x00"+mem.ID+"\x00"+digest(mem.Goal+"\n"+mem.KeyFindings+"\n"+mem.FinalAnswer))
+		items = append(items, "memory\x00"+boundedAuditValue(mem.ID, 200)+"\x00"+digest(boundedAuditValue(mem.Goal+"\n"+mem.KeyFindings+"\n"+mem.FinalAnswer, 1200)))
 	}
 	sort.Strings(items)
 	return digest(strings.Join(items, "\n"))
+}
+
+func boundedAuditValue(value string, limit int) string {
+	value = sanitize.Secrets(strings.TrimSpace(value))
+	runes := []rune(value)
+	if len(runes) > limit {
+		value = string(runes[:limit])
+	}
+	return value
+}
+
+func isPipelineAuditAction(action string) bool {
+	switch action {
+	case "citation_verify", factfreshness.TraceAction, numericconsistency.TraceAction, uncertainty.TraceAction, "safety_guard_output":
+		return true
+	default:
+		return false
+	}
 }
 func hasBlockedInput(task *types.Task) bool {
 	for _, tr := range task.Trace {
@@ -308,14 +166,4 @@ func verifierFindings(task *types.Task) []types.AnswerAuditFinding {
 		}
 	}
 	return findings
-}
-
-func finalizeReport(report *types.AnswerAuditReport, task *types.Task) {
-	report.CompletedAt = time.Now().UTC()
-	report.Publishable = strings.TrimSpace(task.FinalAnswer) != ""
-	for i := range report.Stages {
-		if report.Stages[i].Fingerprint == "" {
-			report.Stages[i].Fingerprint = digest(Version + "\x00" + report.Stages[i].Name + "\x00" + task.FinalAnswer + "\x00" + report.EvidenceHash)
-		}
-	}
 }

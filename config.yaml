@@ -73,7 +73,7 @@ answer_pipeline:
   enforcement: observe
   audit_token_reserve: 4000
   stage_timeout_seconds: 20
-  parallel_audits: false
+  parallel_audits: true
   on_required_stage_failure: partial
   required_stages:
     - fact_freshness_check
@@ -81,9 +81,11 @@ answer_pipeline:
     - answer_uncertainty_calibrate
     - safety_guard_output
   stage_token_budgets:
+    citation_verify: 600
     fact_freshness_check: 900
     numeric_consistency_check: 900
     answer_uncertainty_calibrate: 1000
+    safety_guard_output: 600
 
 # LLM provider configuration
 llm:

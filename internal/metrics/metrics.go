@@ -6,6 +6,7 @@ import (
 	"time"
 
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	api "go.opentelemetry.io/otel/metric"
@@ -39,6 +40,9 @@ type Snapshot struct {
 	LLMTaskBudgetRejected   int64         `json:"llm_task_budget_rejected"`
 	LLMFallbackSucceeded    int64         `json:"llm_fallback_succeeded"`
 	LLMFallbackFailed       int64         `json:"llm_fallback_failed"`
+	AnswerPipelineRuns      int64         `json:"answer_pipeline_runs"`
+	AnswerPipelineStages    int64         `json:"answer_pipeline_stages"`
+	AnswerPipelineWarnings  int64         `json:"answer_pipeline_warnings"`
 }
 
 type Collector struct {
@@ -77,6 +81,12 @@ type Collector struct {
 	llmTaskBudgetRejected    api.Int64Counter
 	llmFallbackSucceeded     api.Int64Counter
 	llmFallbackFailed        api.Int64Counter
+	answerPipelineRuns       api.Int64Counter
+	answerPipelineStages     api.Int64Counter
+	answerPipelineDuration   api.Float64Histogram
+	answerPipelineTokens     api.Int64Counter
+	answerPipelineWarnings   api.Int64Counter
+	answerPipelineConfidence api.Int64Counter
 }
 
 func NewCollector() *Collector {
@@ -114,6 +124,12 @@ func NewCollector() *Collector {
 	llmTaskBudgetRejected, _ := meter.Int64Counter("agent.llm.task_budget.rejected")
 	llmFallbackSucceeded, _ := meter.Int64Counter("agent.llm.fallback.succeeded")
 	llmFallbackFailed, _ := meter.Int64Counter("agent.llm.fallback.failed")
+	answerPipelineRuns, _ := meter.Int64Counter("answer_pipeline.runs")
+	answerPipelineStages, _ := meter.Int64Counter("answer_pipeline.stage.runs")
+	answerPipelineDuration, _ := meter.Float64Histogram("answer_pipeline.stage.duration_ms")
+	answerPipelineTokens, _ := meter.Int64Counter("answer_pipeline.stage.tokens")
+	answerPipelineWarnings, _ := meter.Int64Counter("answer_pipeline.warnings")
+	answerPipelineConfidence, _ := meter.Int64Counter("answer_pipeline.confidence")
 
 	return &Collector{
 		plannerCalls:             plannerCalls,
@@ -144,6 +160,45 @@ func NewCollector() *Collector {
 		llmTaskBudgetRejected:    llmTaskBudgetRejected,
 		llmFallbackSucceeded:     llmFallbackSucceeded,
 		llmFallbackFailed:        llmFallbackFailed,
+		answerPipelineRuns:       answerPipelineRuns,
+		answerPipelineStages:     answerPipelineStages,
+		answerPipelineDuration:   answerPipelineDuration,
+		answerPipelineTokens:     answerPipelineTokens,
+		answerPipelineWarnings:   answerPipelineWarnings,
+		answerPipelineConfidence: answerPipelineConfidence,
+	}
+}
+
+func (c *Collector) ObserveAnswerPipeline(mode string, report *types.AnswerAuditReport) {
+	if report == nil {
+		return
+	}
+	status := "completed"
+	if !report.Publishable {
+		status = "not_publishable"
+	}
+	c.mu.Lock()
+	c.s.AnswerPipelineRuns++
+	c.s.AnswerPipelineStages += int64(len(report.Stages))
+	c.mu.Unlock()
+	ctx := context.Background()
+	c.answerPipelineRuns.Add(ctx, 1, api.WithAttributes(attribute.String("mode", mode), attribute.String("status", status), attribute.String("enforcement", report.Enforcement)))
+	for _, stage := range report.Stages {
+		attrs := api.WithAttributes(attribute.String("stage", stage.Name), attribute.String("status", stage.Status), attribute.String("reason", stage.Reason))
+		c.answerPipelineStages.Add(ctx, 1, attrs)
+		c.answerPipelineDuration.Record(ctx, float64(stage.DurationMS), attrs)
+		c.answerPipelineTokens.Add(ctx, int64(stage.TokenUsage.TotalTokens), attrs)
+		if stage.Status == "warned" {
+			c.mu.Lock()
+			c.s.AnswerPipelineWarnings++
+			c.mu.Unlock()
+		}
+		for _, finding := range stage.Findings {
+			c.answerPipelineWarnings.Add(ctx, 1, api.WithAttributes(attribute.String("kind", finding.Kind), attribute.String("stage", stage.Name)))
+		}
+	}
+	if report.FinalConfidence != "" {
+		c.answerPipelineConfidence.Add(ctx, 1, api.WithAttributes(attribute.String("level", report.FinalConfidence), attribute.String("mode", mode)))
 	}
 }
 

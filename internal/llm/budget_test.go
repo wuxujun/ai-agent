@@ -82,6 +82,29 @@ func TestRuntimeStopsAfterEstimatedCostBudgetOverrun(t *testing.T) {
 	}
 }
 
+func TestAnswerAuditReserveSeparatesGenerationAndAuditScenes(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"generation":                        {},
+			config.LLMSceneFactFreshnessChecker: {},
+		}
+	}))
+	task := &types.Task{TokenBudget: 100, Trace: []types.StepTrace{{TokenUsage: types.TokenUsage{TotalTokens: 60}}}}
+	ctx := WithAnswerAuditReserve(WithTaskBudget(context.Background(), task), 40)
+	if AllowedForTaskContext(ctx, "generation") {
+		t.Fatal("generation must stop at the audit reserve boundary")
+	}
+	if !AllowedForTaskContext(ctx, config.LLMSceneFactFreshnessChecker) {
+		t.Fatal("audit scene must retain access to the reserved budget")
+	}
+	if err := ReserveTaskLLMCallForConfig(ctx, Config{Scene: "generation"}); err == nil {
+		t.Fatal("runtime call reservation must enforce the generation boundary")
+	}
+	if err := ReserveTaskLLMCallForConfig(ctx, Config{Scene: config.LLMSceneFactFreshnessChecker}); err != nil {
+		t.Fatalf("audit runtime reservation was rejected: %v", err)
+	}
+}
+
 func TestRuntimeRejectsUnpricedSceneUnderCostBudget(t *testing.T) {
 	caller := &budgetCaller{}
 	runtime := NewRuntime(caller, nil)

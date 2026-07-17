@@ -47,8 +47,14 @@ func WithTaskRoutingHints(ctx context.Context, task *types.Task) context.Context
 		break
 	}
 	if task.TokenBudget > 0 {
+		limit := task.TokenBudget
+		reserve := generationTokenReserve(ctx)
+		if reserve > limit {
+			reserve = limit
+		}
+		limit -= reserve
 		hints.HasRemainingTokens = true
-		hints.RemainingTokens = max(task.TokenBudget-usedTokens, 0)
+		hints.RemainingTokens = max(limit-usedTokens, 0)
 	}
 	return WithRoutingHints(ctx, hints)
 }
