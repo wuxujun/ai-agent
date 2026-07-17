@@ -68,6 +68,23 @@ orchestrator:
   # Env override: AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
   run_all_timeout_seconds: 600
 
+answer_pipeline:
+  enabled: true
+  enforcement: observe
+  audit_token_reserve: 4000
+  stage_timeout_seconds: 20
+  parallel_audits: false
+  on_required_stage_failure: partial
+  required_stages:
+    - fact_freshness_check
+    - numeric_consistency_check
+    - answer_uncertainty_calibrate
+    - safety_guard_output
+  stage_token_budgets:
+    fact_freshness_check: 900
+    numeric_consistency_check: 900
+    answer_uncertainty_calibrate: 1000
+
 # LLM provider configuration
 llm:
   # The target LLM provider. Supported: "openai-responses", "openai", "gemini", "ollama", "litellm"

@@ -125,6 +125,7 @@ func TestStores(t *testing.T) {
 					},
 				},
 				FinalAnswer: "Done!",
+				AnswerAudit: &types.AnswerAuditReport{PipelineVersion: "test", Publishable: true, Stages: []types.AnswerAuditStage{{Name: "freshness", Status: "passed", Findings: []types.AnswerAuditFinding{{Kind: "test", Detail: "kept"}}}}},
 			}
 
 			err = s.SaveFullTask(ctx, task)
@@ -182,6 +183,9 @@ func TestStores(t *testing.T) {
 			}
 			if retrieved.FinalAnswer != task.FinalAnswer {
 				t.Errorf("expected FinalAnswer %q, got %q", task.FinalAnswer, retrieved.FinalAnswer)
+			}
+			if retrieved.AnswerAudit == nil || retrieved.AnswerAudit.PipelineVersion != "test" || len(retrieved.AnswerAudit.Stages) != 1 {
+				t.Fatalf("answer audit did not round-trip: %+v", retrieved.AnswerAudit)
 			}
 			tenantTasks, err := s.ListTasks(ctx, store.ListFilter{TenantID: "tenant-a"})
 			if err != nil || len(tenantTasks) != 1 {

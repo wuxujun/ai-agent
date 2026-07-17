@@ -91,18 +91,9 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 	_, alreadyIndexed := m.memories[memory.TaskMemoryID(task)]
 	alreadyIndexing := m.indexing[task.ID]
 
-	// Clone to avoid concurrent mutation issues
-	cloned := *task
-	if task.Unresolved != nil {
-		cloned.Unresolved = make([]string, len(task.Unresolved))
-		copy(cloned.Unresolved, task.Unresolved)
-	}
-	if task.Trace != nil {
-		cloned.Trace = make([]types.StepTrace, len(task.Trace))
-		copy(cloned.Trace, task.Trace)
-	}
+	cloned := types.CloneTask(task)
 
-	m.tasks[task.ID] = &cloned
+	m.tasks[task.ID] = cloned
 
 	shouldIndex := task.Status == types.StatusCompleted && !alreadyIndexed && !alreadyIndexing
 	if shouldIndex {
@@ -124,7 +115,7 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 
-			mem, err := memory.CreateMemoryFromTask(bgCtx, &cloned)
+			mem, err := memory.CreateMemoryFromTask(bgCtx, cloned)
 			if err != nil {
 				log.Warn("failed to create memory from completed task in memory store", "task_id", cloned.ID, "error", err)
 				return
@@ -154,18 +145,7 @@ func (m *MemoryStore) GetTask(ctx context.Context, id string) (*types.Task, erro
 		return nil, sql.ErrNoRows
 	}
 
-	// Return a clone
-	cloned := *task
-	if task.Unresolved != nil {
-		cloned.Unresolved = make([]string, len(task.Unresolved))
-		copy(cloned.Unresolved, task.Unresolved)
-	}
-	if task.Trace != nil {
-		cloned.Trace = make([]types.StepTrace, len(task.Trace))
-		copy(cloned.Trace, task.Trace)
-	}
-
-	return &cloned, nil
+	return types.CloneTask(task), nil
 }
 
 // Close is a no-op for MemoryStore.
@@ -186,16 +166,7 @@ func (m *MemoryStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Tas
 		if f.Status != "" && t.Status != f.Status {
 			continue
 		}
-		cloned := *t
-		if t.Unresolved != nil {
-			cloned.Unresolved = make([]string, len(t.Unresolved))
-			copy(cloned.Unresolved, t.Unresolved)
-		}
-		if t.Trace != nil {
-			cloned.Trace = make([]types.StepTrace, len(t.Trace))
-			copy(cloned.Trace, t.Trace)
-		}
-		tasks = append(tasks, &cloned)
+		tasks = append(tasks, types.CloneTask(t))
 	}
 
 	// Apply pagination

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/answerpipeline"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
 	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
@@ -41,6 +42,7 @@ import (
 )
 
 type Engine struct {
+	AnswerPipeline              answerpipeline.Pipeline
 	Planner                     planner.Planner
 	Finalizer                   planner.TaskFinalizer
 	CitationVerifier            planner.CitationVerifier
@@ -624,6 +626,17 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	defer func() {
+		if e.AnswerPipeline == nil || strings.TrimSpace(task.FinalAnswer) == "" || !types.IsTerminalTaskStatus(task.Status) {
+			return
+		}
+		if task.Status == types.StatusCompleted {
+			e.runCodeQualityGates(ctx, task)
+		}
+		if _, pipelineErr := e.AnswerPipeline.Process(ctx, task, string(effectiveMode)); pipelineErr != nil {
+			engineLog.Warn("answer pipeline failed; execution outcome preserved", "task_id", task.ID, "error", pipelineErr)
+		}
+	}()
+	defer func() {
 		if err != nil {
 			var budgetErr *llmcore.TaskBudgetError
 			if errors.As(err, &budgetErr) {
@@ -726,7 +739,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	default:
 		err = fmt.Errorf("unsupported orchestrator mode: %s", e.Mode)
 	}
-	if err == nil && !wasCompleted && task.Status == types.StatusCompleted && strings.TrimSpace(task.FinalAnswer) != "" {
+	if e.AnswerPipeline == nil && err == nil && !wasCompleted && task.Status == types.StatusCompleted && strings.TrimSpace(task.FinalAnswer) != "" {
 		e.verifyCitations(ctx, task)
 		e.runCodeQualityGates(ctx, task)
 		e.checkFactFreshness(ctx, task)

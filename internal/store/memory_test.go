@@ -11,6 +11,30 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+func TestMemoryStoreTaskSnapshotsAreDeepCloned(t *testing.T) {
+	store := NewMemoryStore()
+	task := &types.Task{ID: "clone", Trace: []types.StepTrace{{Evidence: []types.Evidence{{Lines: []string{"line"}}}}}, AnswerAudit: &types.AnswerAuditReport{Stages: []types.AnswerAuditStage{{Findings: []types.AnswerAuditFinding{{Detail: "detail"}}}}}}
+	if err := store.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	task.Trace[0].Evidence[0].Lines[0] = "caller mutation"
+	first, err := store.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Trace[0].Evidence[0].Lines[0] != "line" {
+		t.Fatalf("save snapshot aliased caller: %+v", first.Trace)
+	}
+	first.AnswerAudit.Stages[0].Findings[0].Detail = "read mutation"
+	second, err := store.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.AnswerAudit.Stages[0].Findings[0].Detail != "detail" {
+		t.Fatalf("read snapshot aliased store: %+v", second.AnswerAudit)
+	}
+}
+
 func TestMemoryRelevanceScoreFallsBackForMismatchedDimensions(t *testing.T) {
 	queryEmbedding := make([]float32, 3072)
 	mem := &types.Memory{

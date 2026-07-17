@@ -102,13 +102,14 @@ type Task struct {
 	TokenBudget int        `json:"token_budget"`
 	// LLMCallBudget and LLMCostBudgetUSD override process defaults when positive.
 	// Accumulated values are persisted so resumed tasks retain their quota state.
-	LLMCallBudget       int         `json:"llm_call_budget"`
-	LLMCostBudgetUSD    float64     `json:"llm_cost_budget_usd"`
-	LLMCalls            int         `json:"llm_calls"`
-	LLMEstimatedCostUSD float64     `json:"llm_estimated_cost_usd"`
-	Trace               []StepTrace `json:"trace"`
-	FinalAnswer         string      `json:"final_answer"`
-	Memories            []Memory    `json:"memories,omitempty"`
+	LLMCallBudget       int                `json:"llm_call_budget"`
+	LLMCostBudgetUSD    float64            `json:"llm_cost_budget_usd"`
+	LLMCalls            int                `json:"llm_calls"`
+	LLMEstimatedCostUSD float64            `json:"llm_estimated_cost_usd"`
+	Trace               []StepTrace        `json:"trace"`
+	FinalAnswer         string             `json:"final_answer"`
+	Memories            []Memory           `json:"memories,omitempty"`
+	AnswerAudit         *AnswerAuditReport `json:"answer_audit,omitempty"`
 }
 
 type TenantLLMUsage struct {

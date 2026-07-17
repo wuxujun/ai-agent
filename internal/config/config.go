@@ -59,6 +59,17 @@ type Config struct {
 		RunAllTimeoutSeconds int `mapstructure:"run_all_timeout_seconds"`
 	} `mapstructure:"orchestrator"`
 
+	AnswerPipeline struct {
+		Enabled                bool           `mapstructure:"enabled"`
+		Enforcement            string         `mapstructure:"enforcement"`
+		RequiredStages         []string       `mapstructure:"required_stages"`
+		AuditTokenReserve      int            `mapstructure:"audit_token_reserve"`
+		StageTimeoutSeconds    int            `mapstructure:"stage_timeout_seconds"`
+		ParallelAudits         bool           `mapstructure:"parallel_audits"`
+		OnRequiredStageFailure string         `mapstructure:"on_required_stage_failure"`
+		StageTokenBudgets      map[string]int `mapstructure:"stage_token_budgets"`
+	} `mapstructure:"answer_pipeline"`
+
 	LLM struct {
 		Provider                         string  `mapstructure:"provider"`
 		APIKey                           string  `mapstructure:"api_key"`
@@ -307,6 +318,12 @@ func setupViper() {
 	viper.SetDefault("orchestrator.mode", "eino")
 	viper.SetDefault("orchestrator.max_concurrent_tasks", 10)
 	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
+	viper.SetDefault("answer_pipeline.enabled", true)
+	viper.SetDefault("answer_pipeline.enforcement", "observe")
+	viper.SetDefault("answer_pipeline.audit_token_reserve", 4000)
+	viper.SetDefault("answer_pipeline.stage_timeout_seconds", 20)
+	viper.SetDefault("answer_pipeline.parallel_audits", false)
+	viper.SetDefault("answer_pipeline.on_required_stage_failure", "partial")
 	viper.SetDefault("llm.provider", llmprovider.OpenAIResponses)
 	viper.SetDefault("llm.timeout_seconds", 30)
 	viper.SetDefault("llm.readiness_mode", LLMReadinessGateway)
@@ -484,6 +501,11 @@ func cloneConfig(source *Config) *Config {
 		cloned.API.Tenants[tenantID] = tenant
 	}
 	cloned.LLM.Gateway = cloneLLMEndpoint(source.LLM.Gateway)
+	cloned.AnswerPipeline.RequiredStages = append([]string(nil), source.AnswerPipeline.RequiredStages...)
+	cloned.AnswerPipeline.StageTokenBudgets = make(map[string]int, len(source.AnswerPipeline.StageTokenBudgets))
+	for stage, budget := range source.AnswerPipeline.StageTokenBudgets {
+		cloned.AnswerPipeline.StageTokenBudgets[stage] = budget
+	}
 	cloned.LLM.Scenes = make(map[string]LLMEndpointConfig, len(source.LLM.Scenes))
 	for scene, endpoint := range source.LLM.Scenes {
 		cloned.LLM.Scenes[scene] = cloneLLMEndpoint(endpoint)
@@ -690,6 +712,9 @@ func diffConfigs(old, new *Config) []string {
 	addIf("orchestrator.mode", old.Orchestrator.Mode, new.Orchestrator.Mode)
 	addIfInt("orchestrator.max_concurrent_tasks", old.Orchestrator.MaxConcurrentTasks, new.Orchestrator.MaxConcurrentTasks)
 	addIfInt("orchestrator.run_all_timeout_seconds", old.Orchestrator.RunAllTimeoutSeconds, new.Orchestrator.RunAllTimeoutSeconds)
+	if !reflect.DeepEqual(old.AnswerPipeline, new.AnswerPipeline) {
+		changes = append(changes, "answer_pipeline: changed")
+	}
 
 	// RAG
 	addIf("rag.search_url", old.RAG.SearchURL, new.RAG.SearchURL)
@@ -976,6 +1001,19 @@ func routeStringMatches(allowed []string, actual string) bool {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.AnswerPipeline.Enforcement)) {
+	case "", "observe", "advisory", "strict":
+	default:
+		return fmt.Errorf("answer_pipeline.enforcement must be one of observe, advisory, or strict")
+	}
+	if c.AnswerPipeline.AuditTokenReserve < 0 || c.AnswerPipeline.StageTimeoutSeconds < 0 {
+		return fmt.Errorf("answer_pipeline budgets and timeout must be >= 0")
+	}
+	for stage, budget := range c.AnswerPipeline.StageTokenBudgets {
+		if strings.TrimSpace(stage) == "" || budget < 0 {
+			return fmt.Errorf("answer_pipeline stage token budgets must use non-empty names and non-negative values")
+		}
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Log.Level)) {
 	case "", "debug", "info", "warn", "warning", "error":
 	default:

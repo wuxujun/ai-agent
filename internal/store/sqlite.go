@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 	llm_calls INTEGER NOT NULL DEFAULT 0,
 	llm_estimated_cost_usd REAL NOT NULL DEFAULT 0,
 	memories_json TEXT NOT NULL DEFAULT '[]',
+	answer_audit_json TEXT NOT NULL DEFAULT '{}',
 	final_answer TEXT NOT NULL
 );
 
@@ -137,6 +138,7 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_calls INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_estimated_cost_usd REAL NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN memories_json TEXT NOT NULL DEFAULT '[]'`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN answer_audit_json TEXT NOT NULL DEFAULT '{}'`)
 	_, _ = s.db.Exec(`ALTER TABLE memories ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
 	// Index for time-bounded memory retrieval (QueryMemories uses ORDER BY timestamp DESC)
@@ -205,10 +207,14 @@ func (s *SQLiteStore) SaveTask(ctx context.Context, task *types.Task) error {
 	if err != nil {
 		return err
 	}
+	auditJSON, err := json.Marshal(task.AnswerAudit)
+	if err != nil {
+		return err
+	}
 
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, final_answer)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 goal=excluded.goal,
 tenant_id=excluded.tenant_id,
@@ -225,10 +231,11 @@ llm_cost_budget_usd=excluded.llm_cost_budget_usd,
 llm_calls=excluded.llm_calls,
 llm_estimated_cost_usd=excluded.llm_estimated_cost_usd,
 memories_json=excluded.memories_json,
+answer_audit_json=excluded.answer_audit_json,
 final_answer=excluded.final_answer
 `,
 		task.ID, task.TenantID, task.Goal, task.Status, task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), task.FinalAnswer,
+		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer,
 	)
 	return err
 }
@@ -334,10 +341,15 @@ func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 		span.RecordError(err)
 		return err
 	}
+	auditJSON, err := json.Marshal(task.AnswerAudit)
+	if err != nil {
+		span.RecordError(err)
+		return err
+	}
 
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, final_answer)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 goal=excluded.goal,
 tenant_id=excluded.tenant_id,
@@ -354,10 +366,11 @@ llm_cost_budget_usd=excluded.llm_cost_budget_usd,
 llm_calls=excluded.llm_calls,
 llm_estimated_cost_usd=excluded.llm_estimated_cost_usd,
 memories_json=excluded.memories_json,
+answer_audit_json=excluded.answer_audit_json,
 final_answer=excluded.final_answer
 `,
 		task.ID, task.TenantID, task.Goal, task.Status, task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), task.FinalAnswer,
+		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer,
 	)
 	if err != nil {
 		span.RecordError(err)
@@ -428,19 +441,13 @@ final_answer=excluded.final_answer
 		var exists int
 		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE id = ?`, memoryID).Scan(&exists)
 		if err == sql.ErrNoRows {
-			taskSnap := *task
-			taskSnap.Trace = make([]types.StepTrace, len(task.Trace))
-			copy(taskSnap.Trace, task.Trace)
-			taskSnap.Memories = make([]types.Memory, len(task.Memories))
-			copy(taskSnap.Memories, task.Memories)
-			taskSnap.Unresolved = make([]string, len(task.Unresolved))
-			copy(taskSnap.Unresolved, task.Unresolved)
+			taskSnap := types.CloneTask(task)
 
 			go func() {
 				defer s.memoryIndexGate.done(memoryID)
 				asyncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 				defer cancel()
-				mem, err := memory.CreateMemoryFromTask(asyncCtx, &taskSnap)
+				mem, err := memory.CreateMemoryFromTask(asyncCtx, taskSnap)
 				if err != nil {
 					log.Warn("failed to create memory for task", "task_id", taskSnap.ID, "error", err)
 					return
@@ -464,17 +471,18 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*types.Task, erro
 	span.SetAttributes(attribute.String("agent.task.id", id))
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, final_answer
+SELECT id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
 FROM tasks WHERE id = ?
 `, id)
 
 	var task types.Task
 	var unresolvedJSON string
 	var memoriesJSON string
+	var auditJSON string
 
 	err := row.Scan(
 		&task.ID, &task.TenantID, &task.Goal, &task.Status, &task.MaxSteps, &task.StepCount,
-		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &task.FinalAnswer,
+		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -492,6 +500,11 @@ FROM tasks WHERE id = ?
 	}
 	if err := json.Unmarshal([]byte(memoriesJSON), &task.Memories); err != nil {
 		return nil, err
+	}
+	if auditJSON != "" && auditJSON != "{}" && auditJSON != "null" {
+		if err := json.Unmarshal([]byte(auditJSON), &task.AnswerAudit); err != nil {
+			return nil, err
+		}
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
@@ -542,7 +555,7 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Tas
 	// Build query dynamically so we only add a WHERE clause when needed.
 	// Using a fixed column list avoids SELECT * surprises on schema changes.
 	const base = `
-SELECT id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, final_answer
+	SELECT id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
 FROM tasks`
 
 	var (
@@ -577,9 +590,10 @@ FROM tasks`
 		var t types.Task
 		var unresolvedJSON string
 		var memoriesJSON string
+		var auditJSON string
 		if err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Goal, &t.Status, &t.MaxSteps, &t.StepCount,
-			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &t.FinalAnswer,
+			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer,
 		); err != nil {
 			return nil, err
 		}
@@ -588,6 +602,11 @@ FROM tasks`
 		}
 		if err := json.Unmarshal([]byte(memoriesJSON), &t.Memories); err != nil {
 			return nil, err
+		}
+		if auditJSON != "" && auditJSON != "{}" && auditJSON != "null" {
+			if err := json.Unmarshal([]byte(auditJSON), &t.AnswerAudit); err != nil {
+				return nil, err
+			}
 		}
 		tasks = append(tasks, &t)
 	}

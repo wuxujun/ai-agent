@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
+	"github.com/wuxujun/ai-agent/internal/answerpipeline"
 	"github.com/wuxujun/ai-agent/internal/api"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
@@ -241,6 +242,17 @@ func main() {
 	eng.FactFreshnessChecker = factfreshness.NewLLMChecker(config.LLMSceneFactFreshnessChecker)
 	eng.NumericConsistencyChecker = numericconsistency.NewLLMChecker(config.LLMSceneNumericConsistencyChecker)
 	eng.AnswerUncertaintyCalibrator = uncertainty.NewLLMCalibrator(config.LLMSceneAnswerUncertaintyCalibrator)
+	eng.AnswerPipeline = &answerpipeline.DefaultPipeline{
+		CitationVerifier:      eng.CitationVerifier,
+		FreshnessChecker:      eng.FactFreshnessChecker,
+		NumericChecker:        eng.NumericConsistencyChecker,
+		UncertaintyCalibrator: eng.AnswerUncertaintyCalibrator,
+		SafetyGuard:           eng.SafetyGuard,
+		SceneEnabled:          eng.LLMSceneEnabled,
+		ObserveTokens: func(usage types.TokenUsage, operation string) {
+			mc.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, operation)
+		},
+	}
 
 	// Inject a Coordinator when running in multi-agent mode.
 	// The Coordinator reuses the same LLM config as the main planner
