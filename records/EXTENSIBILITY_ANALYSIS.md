@@ -8,7 +8,7 @@
 
 | 扩展方向 | 关键实现文件 / 接口 | 实现要点 |
 |----------|-------------------|----------|
-| **编排模式**（Orchestrator） | `internal/orchestrator/*.go`，`Engine.Next` 通过环境变量 `AI_AGENT_ORCHESTRATOR` 选路由 | 在 `engine.go` 中新增实现结构体，实现统一的 `runXNext(ctx, task)` 接口即可；只需在 `init()` 或 `main.go` 注册对应模式名称。 |
+| **编排模式**（Orchestrator） | `internal/orchestrator/*.go`，`Engine.Next` 通过环境变量 `AI_AGENT_ORCHESTRATOR_MODE` 选路由 | 在 `engine.go` 中新增实现结构体，实现统一的 `runXNext(ctx, task)` 接口即可；只需在 `init()` 或 `main.go` 注册对应模式名称。 |
 | **LLM Provider** | `internal/planner/llm.go`、`planner/provider.go` | 通过 `AI_AGENT_LLM_PROVIDER` 决定走向；要接入新模型（如 Claude、Azure OpenAI）只需实现一个符合 `LLMClient` 接口的适配层并在 `provider.go` 中映射。 |
 | **存储后端** | `internal/store/store.go`（接口），具体实现：`sqlite.go / postgres.go / redis.go / memory.go` | 新增 DB（MySQL、DynamoDB）只需实现 `Store` 接口的 `SaveFullTask`, `GetTask`, `ReplaceTraces` 等方法，并在启动时通过环境变量或配置文件注入。 |
 | **安全策略** | `internal/policy/policy.go` | 在 `ValidateWorkspace`, `ValidateCommand`, `ValidateReadPath` 中加入自定义校验（例如沙箱网络访问、用户角色限制），或者实现 `PolicyChecker` 接口并在 `Executor.Execute` 前调用。 |

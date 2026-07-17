@@ -23,7 +23,7 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 	)
 
 	if e.Coordinator == nil {
-		err := fmt.Errorf("multi-agent mode requires a Coordinator — set AI_AGENT_ORCHESTRATOR=multiagent and configure a Coordinator in the engine")
+		err := fmt.Errorf("multi-agent mode requires a Coordinator — set AI_AGENT_ORCHESTRATOR_MODE=multiagent and configure a Coordinator in the engine")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err

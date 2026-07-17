@@ -86,9 +86,9 @@ go run ./cmd/server
 
 任务编排入口可通过环境变量切换：
 ```bash
-export AI_AGENT_ORCHESTRATOR=eino    # 默认，使用 Eino Chain 编排
-export AI_AGENT_ORCHESTRATOR=legacy  # 使用旧版 Engine.Next 直接编排
-export AI_AGENT_ORCHESTRATOR=adk     # 使用 Google ADK for Go 编排
+export AI_AGENT_ORCHESTRATOR_MODE=eino    # 默认，使用 Eino Chain 编排
+export AI_AGENT_ORCHESTRATOR_MODE=legacy  # 使用旧版 Engine.Next 直接编排
+export AI_AGENT_ORCHESTRATOR_MODE=adk     # 使用 Google ADK for Go 编排
 ```
 
 ---

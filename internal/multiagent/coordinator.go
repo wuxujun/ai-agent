@@ -457,6 +457,14 @@ func enforceJITResearchPlan(task *types.Task, plan *ResearchPlan) bool {
 	if !ok {
 		return false
 	}
+	// If the preferred JIT search action has already been attempted, we should not
+	// override the plan again. This allows the replanner to fallback to other tools
+	// (like web_search) if RAG returned no results.
+	for _, tr := range task.Trace {
+		if tr.Action == action {
+			return false
+		}
+	}
 	if len(plan.Steps) == 1 && plan.Steps[0].Action == action {
 		return false
 	}

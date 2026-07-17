@@ -220,7 +220,7 @@ sequenceDiagram
 
 ## 5. 四种编排模式详细分析
 
-项目设计了四类互不干扰的 Orchestrator 实现，可以在启动项目时通过 `AI_AGENT_ORCHESTRATOR` 环境变量来切换：
+项目设计了四类互不干扰的 Orchestrator 实现，可以在启动项目时通过 `AI_AGENT_ORCHESTRATOR_MODE` 环境变量来切换：
 
 ### 编排模式对比表
 

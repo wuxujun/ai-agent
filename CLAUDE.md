@@ -36,7 +36,7 @@ documented in `README.md` §"接口 API 指南" — refer there before adding en
 ### The orchestration mode selector
 
 `orchestrator.Engine` is **the** task driver. The `Mode` field (set from
-`AI_AGENT_ORCHESTRATOR` / `orchestrator.mode`) picks one of five strategies for
+`AI_AGENT_ORCHESTRATOR_MODE` / `orchestrator.mode`) picks one of five strategies for
 `Engine.Next`:
 
 | Mode         | File                              | What it does                                                          |

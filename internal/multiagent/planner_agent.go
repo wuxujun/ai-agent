@@ -18,17 +18,17 @@ const plannerSystemPrompt = `You are a research planning agent. Given a user goa
 concrete, ordered research steps. Each step specifies exactly one tool action.
 
 Available actions:
-  find_files   – discover files by glob pattern  (set file_glob, e.g. "*.yaml")
-  search_text  – search for keywords/text        (set search_query; optionally file_glob)
-  read_file    – read a specific file's content  (set file_path)
-  write_file   – write content to a file         (set file_path, content)
-  execute_code – run script execution command    (set command, args; allowed commands: python3, python, go, node, bash, sh)
-  git_diff     – show git diff of the workspace   (optionally set file_path for a single file)
-  http_fetch   – fetch content from a public URL  (set url; private/loopback addresses are blocked)
-  web_search   – search the web for keywords      (set search_query)
-  rag_search   – search current external RAG      (set search_query; details are fetched automatically)
-  memory_search – search historical task memory   (set search_query; details are fetched automatically)
-  analyze_image – analyze a workspace image       (set file_path and prompt)
+  find_files    – discover files by glob pattern  (set file_glob, e.g. "*.yaml")
+  search_text   – search for keywords/text        (set search_query; optionally file_glob)
+  read_file     – read a specific file's content  (set file_path)
+  write_file    – write content to a file         (set file_path, content)
+  execute_code  – run script execution command    (set command, args; allowed commands: python3, python, go, node, bash, sh)
+  git_diff      – show git diff of the workspace   (optionally set file_path for a single file)
+  http_fetch    – fetch content from a public URL  (set url; private/loopback addresses are blocked)
+  web_search    – search the web for keywords      (set search_query)
+  rag_search    – search current external RAG      (set search_query; details are fetched automatically)
+  memory_search – search historical task memory    (set search_query; details are fetched automatically)
+  analyze_image – analyze a workspace image        (set file_path and prompt)
 
 Rules:
 1. Produce between 2 and 8 steps — prefer fewer, higher-quality steps.
@@ -37,7 +37,9 @@ Rules:
 4. Each step builds on previous findings.
 5. Step IDs must be "step-1", "step-2", etc.
 6. Set every unused field to an empty string "".
-7. Never include steps that cannot be executed with the actions above.`
+7. Never include steps that cannot be executed with the actions above.
+8. If rag_search returns zero results, treat this as a signal that the knowledge base has no coverage for this query — do NOT repeat rag_search with the same or a trivially rephrased query. Instead, the next step must fall back to web_search (or http_fetch if a specific source is already known) to obtain the information externally.
+9. Before adding a new step, compare its proposed action + parameters against every action already present in the plan (including prior iterations if replanning). If they are identical (same action, same search_query/file_path/etc.), do not add it — terminate planning immediately instead of emitting a duplicate step. This applies specifically to adaptive-depth replanning: a repeated action against unchanged history means no new information can be gained, so the loop  must stop rather than consume additional LLM calls.`
 
 // PlannerAgent decomposes a user goal into a structured ResearchPlan using an LLM.
 type PlannerAgent struct {
@@ -81,6 +83,47 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 				"minItems":    2,
 				"maxItems":    8,
 				"description": "Ordered list of research steps",
+			},
+		},
+		"required":             []string{"thought_summary", "steps"},
+		"additionalProperties": false,
+	}
+}
+
+// replanJsonSchema returns the JSON Schema used to enforce structured output for Replanning.
+// It differs from jsonSchema by allowing 1 to 5 steps, or even 0 steps (omitting minItems) if no new steps can be tried.
+func (p *PlannerAgent) replanJsonSchema() map[string]any {
+	stepSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":           map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
+			"description":  map[string]any{"type": "string", "description": "What this step investigates"},
+			"action":       map[string]any{"type": "string", "enum": plannerResearchActions()},
+			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search)"},
+			"file_glob":    map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
+			"file_path":    map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
+			"content":      map[string]any{"type": "string", "description": "Content to write (write_file only)"},
+			"command":      map[string]any{"type": "string", "description": "Command/Interpreter to run (execute_code only)"},
+			"args":         map[string]any{"type": "string", "description": "Space-separated arguments (execute_code only)"},
+			"url":          map[string]any{"type": "string", "description": "Absolute http/https URL to fetch (http_fetch only)"},
+			"prompt":       map[string]any{"type": "string", "description": "Question or analysis instruction (analyze_image only)"},
+		},
+		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt"},
+		"additionalProperties": false,
+	}
+
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"thought_summary": map[string]any{
+				"type":        "string",
+				"description": "One-sentence summary of the overall research strategy (max 60 words)",
+			},
+			"steps": map[string]any{
+				"type":        "array",
+				"items":       stepSchema,
+				"maxItems":    5,
+				"description": "Ordered list of research steps (can be empty if no further progress can be made)",
 			},
 		},
 		"required":             []string{"thought_summary", "steps"},
@@ -155,27 +198,41 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 // replannerSystemPrompt instructs the LLM to produce a revised plan after failure.
 const replannerSystemPrompt = `You are a research planning agent tasked with adjusting a research plan because a step has failed.
 
-Given a user goal, the workspace, the trace of previous steps (including the failed step and its error/observation), your job is to analyze why it failed and generate a revised plan of ordered research steps to achieve the goal.
+Given a user goal, the workspace, and the trace of previous steps (including the failed step and its error/observation), your job is to diagnose why it failed and generate a revised plan of ordered research steps to achieve the goal.
 
 Available actions:
-  find_files   – discover files by glob pattern  (set file_glob, e.g. "*.yaml")
-  search_text  – search for keywords/text        (set search_query; optionally file_glob)
-  read_file    – read a specific file's content  (set file_path)
-  write_file   – write content to a file         (set file_path, content)
-  execute_code – run script execution command    (set command, args; allowed commands: python3, python, go, node, bash, sh)
-  git_diff     – show git diff of the workspace   (optionally set file_path for a single file)
-  http_fetch   – fetch content from a public URL  (set url; private/loopback addresses are blocked)
-  web_search   – search the web for keywords      (set search_query)
-  rag_search   – search current external RAG      (set search_query; details are fetched automatically)
-  memory_search – search historical task memory   (set search_query; details are fetched automatically)
-  analyze_image – analyze a workspace image       (set file_path and prompt)
+  find_files    – discover files by glob pattern  (set file_glob, e.g. "*.yaml")
+  search_text   – search for keywords/text        (set search_query; optionally file_glob)
+  read_file     – read a specific file's content  (set file_path)
+  write_file    – write content to a file         (set file_path, content)
+  execute_code  – run script execution command    (set command, args; allowed commands: python3, python, go, node, bash, sh)
+  git_diff      – show git diff of the workspace   (optionally set file_path for a single file)
+  http_fetch    – fetch content from a public URL  (set url; private/loopback addresses are blocked)
+  web_search    – search the web for keywords      (set search_query)
+  rag_search    – search current external RAG      (set search_query; details are fetched automatically)
+  memory_search – search historical task memory    (set search_query; details are fetched automatically)
+  analyze_image – analyze a workspace image        (set file_path and prompt)
 
 Rules:
-1. Analyze the trace and explain why you think it failed in thought_summary.
-2. Generate revised next steps (between 1 and 5 steps).
-3. Do not repeat the exact same failed step unless you use different arguments or parameters.
-4. Step IDs must be "step-1", "step-2", etc.
-5. Set every unused field to an empty string "".`
+1. In thought_summary, classify the failure into one of:
+   - transient (network/timeout/rate-limit — same action may succeed on retry)
+   - parameter_error (wrong path/glob/query/args — same action needs different inputs)
+   - wrong_approach (the action itself cannot achieve the goal — needs a different action entirely)
+   - missing_dependency (a prior step's output was required but absent — needs a step inserted before retrying) 
+   State which category applies and the concrete evidence from the trace that supports it.
+2. Choose the revised steps based on the failure category:
+   - transient: retry the same action with the same or refined parameters.
+   - parameter_error: retry the same action with corrected parameters.
+   - wrong_approach: switch to a different action better suited to the goal.
+   - missing_dependency: insert a step to obtain the missing dependency before retrying the original action.
+3. Generate revised next steps, ordered so each builds on the previous step's expected output.
+4. Do not repeat the exact same failed step with identical parameters. If an action has already failed twice with different parameters, do not attempt it a third time — switch to a different action or escalate by reporting the blocker in thought_summary instead of proposing further steps.
+5. Prefer fewer, higher-quality steps over exhaustive retries.
+6. Step IDs must be "step-1", "step-2", etc.
+7. Set every unused field to an empty string "".
+8. Never include steps that cannot be executed with the actions above.
+9. If any previous rag_search or memory_search returned zero results or no matching documents/evidence (e.g. results=[] or empty findings), treat this as a wrong_approach (lack of coverage in the current knowledge base). Do NOT repeat the search on the same source even with rephrased queries. You MUST fall back to web_search to find the information online.
+10. Before proposing any new step, compare its proposed action and parameters against every step already present in the execution history/trace. If they are identical (same action, same search_query/file_path/etc.), do not add it. If no new action or parameters can be tried, return an empty steps list to terminate planning.`
 
 // Replan calls the LLM to generate a revised ResearchPlan when a execution step fails.
 func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace, memories []types.Memory) (*ResearchPlan, error) {
@@ -200,14 +257,14 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 	teamsCfg := GetTeamsConfig()
 	activeTeam := teamsCfg.GetActiveTeam()
 	if activeTeam.Planner.SystemPrompt != "" {
-		systemPrompt = activeTeam.Planner.SystemPrompt + "\n\nCRITICAL: One of the previous execution steps has FAILED. You must analyze the execution history, explain in thought_summary why it failed, and generate revised next steps (between 1 and 5 steps) to achieve the goal. Do not repeat the exact same failed step unless you use different arguments or parameters."
+		systemPrompt = activeTeam.Planner.SystemPrompt + "\n\nCRITICAL: One of the previous execution steps has FAILED. You must analyze the execution history, explain in thought_summary why it failed, and generate revised next steps to achieve the goal. Do not repeat the exact same failed step unless you use different arguments or parameters."
 		log.Info("Using custom system prompt for ReplannerAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Planner.Name)
 	}
 	if activeTeam.Planner.Provider != "" || activeTeam.Planner.Model != "" || activeTeam.Planner.LLMScene != "" {
 		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentReplanner)
 	}
 
-	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, p.jsonSchema(), &plan)
+	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, p.replanJsonSchema(), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent Replan LLM call failed: %w", err)
 	}
