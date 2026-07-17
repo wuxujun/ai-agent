@@ -41,11 +41,12 @@ type Writer interface {
 	Write(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*WriterOutput, error)
 }
 
-// Coordinator orchestrates the three agents in sequence:
+// Coordinator orchestrates the three agents in sequence and produces a draft:
 //
 //	PlannerAgent → ResearcherAgent (×N) → WriterAgent
 //
-// It updates task.Trace and task.Status in-place.
+// It updates task.Trace and task.Status in-place. Published-answer auditing and
+// final confidence are owned by orchestrator.AnswerPipeline.
 type Coordinator struct {
 	Planner                  Planner
 	Researcher               Researcher
@@ -84,7 +85,7 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 // The workflow has three phases:
 //  1. Plan   – PlannerAgent decomposes the goal into ResearchSteps
 //  2. Research – ResearcherAgent executes each step (budget-gated)
-//  3. Write  – WriterAgent synthesises all evidence into a final answer
+//  3. Write  – WriterAgent synthesises all evidence into an answer draft
 func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
 	ctx = llmcore.WithTaskBudget(ctx, task)
@@ -140,15 +141,16 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 			c.ResolveMemoryConflicts(phaseCtx, task)
 			phaseCtx = llmcore.WithTaskRoutingHints(ctx, task)
 		}
-		conf, writeErr := c.runWritePhase(phaseCtx, task, writerEvidence)
+		draftConfidence, writeErr := c.runWritePhase(phaseCtx, task, writerEvidence)
 		if writeErr != nil {
 			break // fallback happened or writer failed
 		}
 
-		// Adaptive Step Depth expansion: if confidence is low, and we have budget/steps left, request Planner to generate more steps
-		if conf == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && task.StepCount < task.MaxSteps && !tokenBudgetExhausted(task) {
+		// Adaptive Step Depth expansion: draft confidence is a generation-only
+		// signal and never becomes the published answer confidence.
+		if draftConfidence == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && task.StepCount < task.MaxSteps && !tokenBudgetExhausted(task) {
 			depthIterations++
-			log.Info("Confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion", "iteration", depthIterations, "max_iterations", maxDepthIterations)
+			log.Info("Draft confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion", "iteration", depthIterations, "max_iterations", maxDepthIterations)
 
 			// Record adaptive depth trace
 			task.Trace = append(task.Trace, types.StepTrace{
@@ -156,7 +158,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 				Goal:        task.Goal,
 				Action:      "plan",
 				Query:       "adaptive_depth",
-				Observation: "[coordinator] confidence was low; requesting additional steps for deeper investigation",
+				Observation: "[coordinator] draft confidence was low; requesting additional steps for deeper investigation",
 				AgentRole:   RolePlanner,
 			})
 			task.StepCount++
@@ -763,9 +765,13 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	if c.Metrics != nil {
 		c.Metrics.ObserveTokens(output.TokenUsage.PromptTokens, output.TokenUsage.CompletionTokens, output.TokenUsage.TotalTokens, "writer")
 	}
+	var verificationEvidence []types.Evidence
 	_, verificationEnabled := config.Get().LLM.Scenes[config.LLMSceneAnswerVerifier]
 	if c.Verifier != nil && verificationEnabled && llmcore.AllowedForTask(config.LLMSceneAnswerVerifier, task) {
 		verification, verifyErr := c.Verifier.Verify(ctx, task.Goal, output.FinalAnswer, evidence)
+		if verifyErr == nil {
+			verifyErr = validateVerificationResult(verification)
+		}
 		if verifyErr != nil {
 			log.Warn("answer verifier failed; preserving writer result", "task_id", task.ID, "error", verifyErr)
 		} else {
@@ -773,8 +779,9 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 				c.Metrics.ObserveTokens(verification.TokenUsage.PromptTokens, verification.TokenUsage.CompletionTokens, verification.TokenUsage.TotalTokens, "verifier")
 			}
 			if !verification.Supported {
-				output.Confidence = "low"
-				output.EvidenceSummary = fmt.Sprintf("%s | Verification issues: %v", output.EvidenceSummary, verification.Issues)
+				output.DraftConfidence = "low"
+				output.EvidenceSummary = fmt.Sprintf("%s | Verifier reported %d structured issue(s).", output.EvidenceSummary, len(verification.Issues))
+				verificationEvidence = verificationIssuesAsEvidence(verification.Issues)
 			}
 			output.TokenUsage.PromptTokens += verification.TokenUsage.PromptTokens
 			output.TokenUsage.CompletionTokens += verification.TokenUsage.CompletionTokens
@@ -783,24 +790,42 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	}
 	if strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") && planner.RequiresFactualEvidence(task) && !planner.HasSupportingEvidence(task.Trace) {
 		output.FinalAnswer = "未检索到足够证据，暂时无法可靠回答该事实性问题。"
-		output.Confidence = "low"
+		output.DraftConfidence = "low"
 		output.EvidenceSummary = "No successful retrieval or tool evidence supports a factual answer."
 	}
+	draftConfidence := output.resolvedDraftConfidence()
 
 	task.Trace = append(task.Trace, types.StepTrace{
 		Step:        task.StepCount,
 		Goal:        task.Goal,
 		Action:      "write",
 		Query:       "writer",
-		Observation: fmt.Sprintf("[writer] Confidence: %s | Summary: %s", output.Confidence, output.EvidenceSummary),
+		Observation: fmt.Sprintf("[writer] Draft confidence: %s | Summary: %s", draftConfidence, output.EvidenceSummary),
+		Evidence:    verificationEvidence,
 		AgentRole:   RoleWriter,
 		TokenUsage:  output.TokenUsage,
 	})
 	task.StepCount++
 	task.FinalAnswer = output.FinalAnswer
 
-	log.Info("Phase 3 done — answer written", "confidence", output.Confidence, "elapsed", elapsed)
-	return output.Confidence, nil
+	log.Info("Phase 3 done — draft written", "draft_confidence", draftConfidence, "elapsed", elapsed)
+	return draftConfidence, nil
+}
+
+func verificationIssuesAsEvidence(issues []VerificationIssue) []types.Evidence {
+	result := make([]types.Evidence, 0, len(issues))
+	for _, issue := range issues {
+		sourceID := issue.SourceID
+		if sourceID == "" {
+			sourceID = "final_answer"
+		}
+		result = append(result, types.Evidence{
+			Path:  types.AnswerVerifierEvidencePrefix + sourceID,
+			Query: issue.Kind,
+			Lines: []string{issue.Detail},
+		})
+	}
+	return result
 }
 
 func totalTokensUsed(task *types.Task) int {

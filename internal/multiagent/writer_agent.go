@@ -16,9 +16,9 @@ accurate, and concise final answer.
 
 Rules:
 1. Base your answer ONLY on the provided evidence — do not hallucinate.
-2. If the evidence directly answers the goal, set confidence = "high".
-3. If the evidence partially answers it, set confidence = "medium".
-4. If evidence is insufficient or absent, state this clearly and set confidence = "low".
+2. If the evidence directly answers the goal, set draft_confidence = "high".
+3. If the evidence partially answers it, set draft_confidence = "medium".
+4. If evidence is insufficient or absent, state this clearly and set draft_confidence = "low".
 5. evidence_summary should be a brief (≤ 50 words) summary of the key evidence used.
 6. final_answer should be complete and self-contained.`
 
@@ -39,13 +39,13 @@ func (w *WriterAgent) jsonSchema() map[string]any {
 				"type":        "string",
 				"description": "Brief summary of the key evidence used (max 50 words)",
 			},
-			"confidence": map[string]any{
+			"draft_confidence": map[string]any{
 				"type":        "string",
 				"enum":        []string{"high", "medium", "low"},
-				"description": "How confidently the evidence supports the answer",
+				"description": "Generation-time estimate used only to decide whether more research is needed",
 			},
 		},
-		"required":             []string{"final_answer", "evidence_summary", "confidence"},
+		"required":             []string{"final_answer", "evidence_summary", "draft_confidence"},
 		"additionalProperties": false,
 	}
 }
@@ -79,7 +79,7 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 	}
 	output.TokenUsage = usage
 
-	log.Info("Synthesis complete", "confidence", output.Confidence)
+	log.Info("Synthesis complete", "draft_confidence", output.resolvedDraftConfidence())
 	return &output, nil
 }
 

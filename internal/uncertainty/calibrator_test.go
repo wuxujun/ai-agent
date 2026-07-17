@@ -108,6 +108,24 @@ func TestShouldCalibrateAcceptsNumericAudit(t *testing.T) {
 	}
 }
 
+func TestShouldCalibrateAcceptsDraftVerifierFindings(t *testing.T) {
+	task := &types.Task{FinalAnswer: "answer", Trace: []types.StepTrace{{
+		Action: "write",
+		Evidence: []types.Evidence{{
+			Path:  types.AnswerVerifierEvidencePrefix + "step-1",
+			Query: "unsupported_claim",
+			Lines: []string{"claim lacks direct support"},
+		}},
+	}}}
+	if !ShouldCalibrate(task) {
+		t.Fatal("draft verifier findings should trigger calibration")
+	}
+	items := evidenceCatalog(task)
+	if len(items) != 1 || items[0].Action != "write" || !strings.Contains(items[0].Content, "lacks direct support") {
+		t.Fatalf("items=%+v", items)
+	}
+}
+
 func TestCalibrationFailurePreservesAnswer(t *testing.T) {
 	task := &types.Task{FinalAnswer: "original"}
 	Apply(task, nil, types.TokenUsage{TotalTokens: 2}, context.DeadlineExceeded)

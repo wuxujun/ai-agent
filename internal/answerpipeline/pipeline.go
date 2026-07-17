@@ -20,7 +20,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/uncertainty"
 )
 
-const Version = "p0-v1"
+const Version = "p1-v1"
 
 type TokenObserver func(types.TokenUsage, string)
 
@@ -71,6 +71,7 @@ func (p *DefaultPipeline) Process(ctx context.Context, task *types.Task, mode st
 		return report, nil
 	}
 
+	p.importVerifierFindings(task, report)
 	p.runCitation(ctx, task, report)
 	p.runFreshness(ctx, task, report)
 	p.runNumeric(ctx, task, report)
@@ -79,6 +80,17 @@ func (p *DefaultPipeline) Process(ctx context.Context, task *types.Task, mode st
 	finalizeReport(report, task)
 	task.AnswerAudit = report
 	return report, nil
+}
+
+// importVerifierFindings promotes draft-phase verifier output into the common
+// audit report. The original trace evidence remains available to uncertainty,
+// while the report gives API consumers a stable, typed representation.
+func (p *DefaultPipeline) importVerifierFindings(task *types.Task, report *types.AnswerAuditReport) {
+	findings := verifierFindings(task)
+	if len(findings) == 0 {
+		return
+	}
+	report.Stages = append(report.Stages, stage("answer_verify", "warned", "draft verifier findings", types.TokenUsage{}, findings, time.Now()))
 }
 
 func (p *DefaultPipeline) runCitation(ctx context.Context, task *types.Task, report *types.AnswerAuditReport) {
@@ -263,6 +275,39 @@ func hasBlockedInput(task *types.Task) bool {
 		}
 	}
 	return false
+}
+
+func verifierFindings(task *types.Task) []types.AnswerAuditFinding {
+	if task == nil {
+		return nil
+	}
+	var findings []types.AnswerAuditFinding
+	for _, trace := range task.Trace {
+		for _, evidence := range trace.Evidence {
+			if !strings.HasPrefix(evidence.Path, types.AnswerVerifierEvidencePrefix) {
+				continue
+			}
+			detail := strings.TrimSpace(strings.Join(evidence.Lines, "\n"))
+			if detail == "" {
+				continue
+			}
+			switch evidence.Query {
+			case "unsupported_claim", "evidence_gap", "contradiction":
+			default:
+				continue
+			}
+			sourceID := sanitize.Secrets(strings.TrimPrefix(evidence.Path, types.AnswerVerifierEvidencePrefix))
+			if runes := []rune(sourceID); len(runes) > 200 {
+				sourceID = string(runes[:200])
+			}
+			findings = append(findings, types.AnswerAuditFinding{
+				Kind:     evidence.Query,
+				Detail:   errorReason(fmt.Errorf("%s", detail)),
+				SourceID: sourceID,
+			})
+		}
+	}
+	return findings
 }
 
 func finalizeReport(report *types.AnswerAuditReport, task *types.Task) {

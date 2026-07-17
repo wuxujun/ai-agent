@@ -217,10 +217,10 @@ func TestWriterOutput_Fields(t *testing.T) {
 	out := multiagent.WriterOutput{
 		FinalAnswer:     "The answer is 42",
 		EvidenceSummary: "Found in main.go",
-		Confidence:      "high",
+		DraftConfidence: "high",
 	}
 
-	if out.Confidence != "high" {
-		t.Errorf("Confidence: got %q want high", out.Confidence)
+	if out.DraftConfidence != "high" {
+		t.Errorf("DraftConfidence: got %q want high", out.DraftConfidence)
 	}
 }

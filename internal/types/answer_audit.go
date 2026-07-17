@@ -2,6 +2,8 @@ package types
 
 import "time"
 
+const AnswerVerifierEvidencePrefix = "answer_verifier:"
+
 type AnswerAuditFinding struct {
 	Kind     string `json:"kind"`
 	Detail   string `json:"detail,omitempty"`

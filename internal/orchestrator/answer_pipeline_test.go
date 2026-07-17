@@ -5,8 +5,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/wuxujun/ai-agent/internal/answerpipeline"
+	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"github.com/wuxujun/ai-agent/internal/uncertainty"
 )
 
 type pipelineCapture struct {
@@ -39,5 +43,66 @@ func TestPipelineRunsAfterFailureNormalization(t *testing.T) {
 	}
 	if pipeline.calls != 1 || pipeline.status != types.StatusFailed || pipeline.answer != "Failed: boom" {
 		t.Fatalf("pipeline=%+v task=%+v", pipeline, task)
+	}
+}
+
+type multiAgentDraftPlanner struct{}
+
+func (multiAgentDraftPlanner) Plan(context.Context, string, string, []types.Memory) (*multiagent.ResearchPlan, error) {
+	return &multiagent.ResearchPlan{ThoughtSummary: "no tools required"}, nil
+}
+
+func (multiAgentDraftPlanner) Replan(context.Context, string, string, []types.StepTrace, []types.Memory) (*multiagent.ResearchPlan, error) {
+	return &multiagent.ResearchPlan{}, nil
+}
+
+type multiAgentDraftWriter struct{}
+
+func (multiAgentDraftWriter) Write(context.Context, string, []multiagent.StepEvidence, []types.Memory) (*multiagent.WriterOutput, error) {
+	return &multiagent.WriterOutput{FinalAnswer: "candidate answer", EvidenceSummary: "partial evidence", DraftConfidence: "high"}, nil
+}
+
+type multiAgentDraftVerifier struct{}
+
+func (multiAgentDraftVerifier) Verify(context.Context, string, string, []multiagent.StepEvidence) (*multiagent.VerificationResult, error) {
+	return &multiagent.VerificationResult{Supported: false, Issues: []multiagent.VerificationIssue{{Kind: "unsupported_claim", Detail: "claim lacks a cited source", SourceID: "draft-claim-1"}}}, nil
+}
+
+type multiAgentUncertainty struct{}
+
+func (multiAgentUncertainty) Calibrate(context.Context, *types.Task, string) (*uncertainty.Result, types.TokenUsage, error) {
+	return &uncertainty.Result{Confidence: "low", NeedsQualification: true, Reasons: []string{"unsupported_claim"}, Summary: "draft verifier finding"}, types.TokenUsage{}, nil
+}
+
+func TestMultiAgentDraftFlowsThroughUnifiedPipeline(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.AnswerPipeline.Enabled = true
+		cfg.RAG.ContextMode = "prefetch"
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			config.LLMSceneAnswerVerifier:              {},
+			config.LLMSceneAnswerUncertaintyCalibrator: {},
+		}
+	}))
+	coordinator := &multiagent.Coordinator{
+		Planner:  multiAgentDraftPlanner{},
+		Writer:   multiAgentDraftWriter{},
+		Verifier: multiAgentDraftVerifier{},
+	}
+	pipeline := &answerpipeline.DefaultPipeline{UncertaintyCalibrator: multiAgentUncertainty{}}
+	engine := &Engine{Mode: ModeMultiAgent, Coordinator: coordinator, AnswerPipeline: pipeline}
+	task := &types.Task{ID: "multiagent-p1", Goal: "answer with evidence", Status: types.StatusCreated, MaxSteps: 5}
+
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != types.StatusCompleted || task.AnswerAudit == nil || task.AnswerAudit.FinalConfidence != "low" {
+		t.Fatalf("task = %+v", task)
+	}
+	if len(task.AnswerAudit.Stages) != 6 || task.AnswerAudit.Stages[0].Name != "answer_verify" {
+		t.Fatalf("audit stages = %+v", task.AnswerAudit.Stages)
+	}
+	finding := task.AnswerAudit.Stages[0].Findings[0]
+	if finding.Kind != "unsupported_claim" || finding.SourceID != "draft-claim-1" {
+		t.Fatalf("finding = %+v", finding)
 	}
 }

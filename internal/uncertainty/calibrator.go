@@ -36,6 +36,7 @@ func NewLLMCalibrator(scene string) *LLMCalibrator { return &LLMCalibrator{Scene
 type evidenceItem struct {
 	Action  string `json:"action"`
 	Source  string `json:"source,omitempty"`
+	Kind    string `json:"kind,omitempty"`
 	Content string `json:"content"`
 }
 
@@ -83,6 +84,11 @@ func ShouldCalibrate(task *types.Task) bool {
 	for _, trace := range task.Trace {
 		if promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == factfreshness.TraceAction || trace.Action == numericconsistency.TraceAction || trace.Action == "citation_verify" {
 			return true
+		}
+		for _, evidence := range trace.Evidence {
+			if strings.HasPrefix(evidence.Path, types.AnswerVerifierEvidencePrefix) {
+				return true
+			}
 		}
 	}
 	return len(task.Memories) > 0
@@ -168,7 +174,7 @@ func evidenceCatalog(task *types.Task) []evidenceItem {
 		for _, evidence := range trace.Evidence {
 			content := strings.TrimSpace(strings.Join(evidence.Lines, "\n"))
 			if content != "" {
-				items = append(items, evidenceItem{Action: trace.Action, Source: truncate(sanitize.Secrets(evidence.Path), 500), Content: truncate(sanitize.Secrets(content), 1200)})
+				items = append(items, evidenceItem{Action: trace.Action, Source: truncate(sanitize.Secrets(evidence.Path), 500), Kind: truncate(sanitize.Secrets(evidence.Query), 100), Content: truncate(sanitize.Secrets(content), 1200)})
 			}
 		}
 	}

@@ -8,7 +8,11 @@
 //	PlannerAgent → ResearcherAgent (×N steps) → WriterAgent
 package multiagent
 
-import "github.com/wuxujun/ai-agent/internal/types"
+import (
+	"strings"
+
+	"github.com/wuxujun/ai-agent/internal/types"
+)
 
 // AgentRole mirrors types.AgentRole for convenience inside this package.
 type AgentRole = types.AgentRole
@@ -63,11 +67,32 @@ type StepEvidence struct {
 	Failed bool `json:"failed,omitempty"`
 }
 
-// WriterOutput is the final synthesised answer produced by the WriterAgent.
+// WriterOutput is the draft answer produced by the WriterAgent. DraftConfidence
+// is only a generation-time signal used by Coordinator for adaptive research;
+// final confidence is owned by the answer pipeline's uncertainty stage.
 type WriterOutput struct {
 	FinalAnswer     string `json:"final_answer"`
 	EvidenceSummary string `json:"evidence_summary"`
-	// Confidence is one of: "high" | "medium" | "low"
-	Confidence string           `json:"confidence"`
+	// DraftConfidence is one of: "high" | "medium" | "low".
+	DraftConfidence string `json:"draft_confidence"`
+	// Confidence is retained as a source-compatible bridge for custom Writer
+	// implementations. New implementations must set DraftConfidence instead.
+	Confidence string           `json:"-"`
 	TokenUsage types.TokenUsage `json:"token_usage,omitempty"`
+}
+
+func (o *WriterOutput) resolvedDraftConfidence() string {
+	if o == nil {
+		return "low"
+	}
+	value := o.DraftConfidence
+	if value == "" {
+		value = o.Confidence
+	}
+	switch value = strings.ToLower(strings.TrimSpace(value)); value {
+	case "high", "medium", "low":
+		return value
+	default:
+		return "low"
+	}
 }
