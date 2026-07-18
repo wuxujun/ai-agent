@@ -109,6 +109,10 @@ func TestConfigEnvOverrides(t *testing.T) {
 	os.Setenv("AI_AGENT_TELEMETRY_ENVIRONMENT", "test")
 	os.Setenv("AI_AGENT_TELEMETRY_EXPORTER", "stdout")
 	os.Setenv("OPENAI_API_KEY", "test-openai-key")
+	os.Setenv("LANGFUSE_ENABLED", "true")
+	os.Setenv("LANGFUSE_PUBLIC_KEY", "pk-langfuse")
+	os.Setenv("LANGFUSE_SECRET_KEY", "sk-langfuse")
+	os.Setenv("LANGFUSE_BASE_URL", "https://langfuse.test")
 	defer func() {
 		os.Unsetenv("AI_AGENT_API_ADDR")
 		os.Unsetenv("AI_AGENT_STORE_TYPE")
@@ -120,6 +124,10 @@ func TestConfigEnvOverrides(t *testing.T) {
 		os.Unsetenv("AI_AGENT_TELEMETRY_ENVIRONMENT")
 		os.Unsetenv("AI_AGENT_TELEMETRY_EXPORTER")
 		os.Unsetenv("OPENAI_API_KEY")
+		os.Unsetenv("LANGFUSE_ENABLED")
+		os.Unsetenv("LANGFUSE_PUBLIC_KEY")
+		os.Unsetenv("LANGFUSE_SECRET_KEY")
+		os.Unsetenv("LANGFUSE_BASE_URL")
 	}()
 
 	setupViper()
@@ -157,6 +165,9 @@ func TestConfigEnvOverrides(t *testing.T) {
 	}
 	if cfg.Telemetry.Exporter != "stdout" {
 		t.Errorf("expected telemetry.exporter override to be stdout, got %q", cfg.Telemetry.Exporter)
+	}
+	if !cfg.Langfuse.Enabled || cfg.Langfuse.PublicKey != "pk-langfuse" || cfg.Langfuse.SecretKey != "sk-langfuse" || cfg.Langfuse.Host != "https://langfuse.test" {
+		t.Errorf("unexpected Langfuse env overrides: %+v", cfg.Langfuse)
 	}
 }
 

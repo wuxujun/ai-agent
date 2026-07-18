@@ -392,7 +392,7 @@ func setupViper() {
 	_ = viper.BindEnv("search.api_key", "FIRECRAWL_API_KEY")
 	_ = viper.BindEnv("langfuse.public_key", "LANGFUSE_PUBLIC_KEY")
 	_ = viper.BindEnv("langfuse.secret_key", "LANGFUSE_SECRET_KEY")
-	_ = viper.BindEnv("langfuse.host", "LANGFUSE_HOST")
+	_ = viper.BindEnv("langfuse.host", "LANGFUSE_BASE_URL")
 	_ = viper.BindEnv("langfuse.enabled", "LANGFUSE_ENABLED")
 }
 

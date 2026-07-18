@@ -36,15 +36,15 @@ func TestPromptManagerGet(t *testing.T) {
 	defer server.Close()
 
 	// Update config via environment variables
-	os.Setenv("AI_AGENT_LANGFUSE_ENABLED", "true")
-	os.Setenv("AI_AGENT_LANGFUSE_PUBLIC_KEY", "pk-test")
-	os.Setenv("AI_AGENT_LANGFUSE_SECRET_KEY", "sk-test")
-	os.Setenv("AI_AGENT_LANGFUSE_HOST", server.URL)
+	os.Setenv("LANGFUSE_ENABLED", "true")
+	os.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+	os.Setenv("LANGFUSE_SECRET_KEY", "sk-test")
+	os.Setenv("LANGFUSE_BASE_URL", server.URL)
 	defer func() {
-		os.Unsetenv("AI_AGENT_LANGFUSE_ENABLED")
-		os.Unsetenv("AI_AGENT_LANGFUSE_PUBLIC_KEY")
-		os.Unsetenv("AI_AGENT_LANGFUSE_SECRET_KEY")
-		os.Unsetenv("AI_AGENT_LANGFUSE_HOST")
+		os.Unsetenv("LANGFUSE_ENABLED")
+		os.Unsetenv("LANGFUSE_PUBLIC_KEY")
+		os.Unsetenv("LANGFUSE_SECRET_KEY")
+		os.Unsetenv("LANGFUSE_BASE_URL")
 	}()
 
 	// Reload config to pick up env vars
@@ -80,7 +80,7 @@ func TestPromptManagerGet(t *testing.T) {
 	}))
 	defer serverErr.Close()
 
-	os.Setenv("AI_AGENT_LANGFUSE_HOST", serverErr.URL)
+	os.Setenv("LANGFUSE_BASE_URL", serverErr.URL)
 	config.Reload()
 
 	manager.cache = make(map[string]cachedPrompt) // clear cache again
@@ -92,9 +92,9 @@ func TestPromptManagerGet(t *testing.T) {
 }
 
 func TestPromptManagerDisabled(t *testing.T) {
-	os.Setenv("AI_AGENT_LANGFUSE_ENABLED", "false")
+	os.Setenv("LANGFUSE_ENABLED", "false")
 	config.Reload()
-	defer os.Unsetenv("AI_AGENT_LANGFUSE_ENABLED")
+	defer os.Unsetenv("LANGFUSE_ENABLED")
 
 	manager := GetManager()
 	manager.cache = make(map[string]cachedPrompt) // clear cache
@@ -139,15 +139,15 @@ func TestPromptManagerCacheIsScopedByHostAndKey(t *testing.T) {
 	}))
 	defer serverTwo.Close()
 
-	os.Setenv("AI_AGENT_LANGFUSE_ENABLED", "true")
-	os.Setenv("AI_AGENT_LANGFUSE_PUBLIC_KEY", "pk-test")
-	os.Setenv("AI_AGENT_LANGFUSE_SECRET_KEY", "sk-test")
-	os.Setenv("AI_AGENT_LANGFUSE_HOST", serverOne.URL)
+	os.Setenv("LANGFUSE_ENABLED", "true")
+	os.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+	os.Setenv("LANGFUSE_SECRET_KEY", "sk-test")
+	os.Setenv("LANGFUSE_BASE_URL", serverOne.URL)
 	defer func() {
-		os.Unsetenv("AI_AGENT_LANGFUSE_ENABLED")
-		os.Unsetenv("AI_AGENT_LANGFUSE_PUBLIC_KEY")
-		os.Unsetenv("AI_AGENT_LANGFUSE_SECRET_KEY")
-		os.Unsetenv("AI_AGENT_LANGFUSE_HOST")
+		os.Unsetenv("LANGFUSE_ENABLED")
+		os.Unsetenv("LANGFUSE_PUBLIC_KEY")
+		os.Unsetenv("LANGFUSE_SECRET_KEY")
+		os.Unsetenv("LANGFUSE_BASE_URL")
 		config.Reload()
 	}()
 	config.Reload()
@@ -161,7 +161,7 @@ func TestPromptManagerCacheIsScopedByHostAndKey(t *testing.T) {
 		t.Fatalf("first prompt = %q", first)
 	}
 
-	os.Setenv("AI_AGENT_LANGFUSE_HOST", serverTwo.URL)
+	os.Setenv("LANGFUSE_BASE_URL", serverTwo.URL)
 	config.Reload()
 
 	second := manager.Get(ctx, "shared_prompt", "fallback")

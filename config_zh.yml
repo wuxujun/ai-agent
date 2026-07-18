@@ -378,7 +378,7 @@ langfuse:
   enabled: false
 
   # Langfuse 服务的主机地址。
-  # 环境变量覆盖：LANGFUSE_HOST
+  # 环境变量覆盖：LANGFUSE_BASE_URL
   host: "https://cloud.langfuse.com"
 
   # Langfuse 公钥 (pk-lf-...)

@@ -404,7 +404,7 @@ langfuse:
   enabled: false
 
   # Langfuse host URL.
-  # Env override: LANGFUSE_HOST
+  # Env override: LANGFUSE_BASE_URL
   host: "https://cloud.langfuse.com"
 
   # Langfuse Public Key (pk-lf-...)
