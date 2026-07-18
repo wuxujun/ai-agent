@@ -370,3 +370,21 @@ search:
   # 搜索提供商的 API Key 或 Authorization Token。
   # 环境变量覆盖：FIRECRAWL_API_KEY 或 AI_AGENT_SEARCH_API_KEY
   api_key: ""
+
+# Langfuse Prompt 管理配置
+langfuse:
+  # 是否开启从 Langfuse 平台动态获取 Prompt 模板。
+  # 环境变量覆盖：LANGFUSE_ENABLED
+  enabled: false
+
+  # Langfuse 服务的主机地址。
+  # 环境变量覆盖：LANGFUSE_HOST
+  host: "https://cloud.langfuse.com"
+
+  # Langfuse 公钥 (pk-lf-...)
+  # 环境变量覆盖：LANGFUSE_PUBLIC_KEY
+  public_key: ""
+
+  # Langfuse 私钥 (sk-lf-...)
+  # 环境变量覆盖：LANGFUSE_SECRET_KEY
+  secret_key: ""

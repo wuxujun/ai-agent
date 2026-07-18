@@ -150,6 +150,13 @@ type Config struct {
 		// relative to the server's working directory unless absolute.
 		Root string `mapstructure:"root"`
 	} `mapstructure:"skill"`
+
+	Langfuse struct {
+		PublicKey string `mapstructure:"public_key"`
+		SecretKey string `mapstructure:"secret_key"`
+		Host      string `mapstructure:"host"`
+		Enabled   bool   `mapstructure:"enabled"`
+	} `mapstructure:"langfuse"`
 }
 
 type APITenantConfig struct {
@@ -370,6 +377,8 @@ func setupViper() {
 	viper.SetDefault("rag.max_raw_fallback_bytes", 4000)
 	viper.SetDefault("search.url", "https://api.firecrawl.dev/v1/search")
 	viper.SetDefault("search.api_key", "")
+	viper.SetDefault("langfuse.enabled", false)
+	viper.SetDefault("langfuse.host", "https://cloud.langfuse.com")
 
 	// Explicit bindings for standard env variables
 	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
@@ -381,6 +390,10 @@ func setupViper() {
 	_ = viper.BindEnv("rag.authorization", "AI_AGENT_RAG_AUTHORIZATION")
 	_ = viper.BindEnv("search.url", "AI_AGENT_SEARCH_URL")
 	_ = viper.BindEnv("search.api_key", "FIRECRAWL_API_KEY")
+	_ = viper.BindEnv("langfuse.public_key", "LANGFUSE_PUBLIC_KEY")
+	_ = viper.BindEnv("langfuse.secret_key", "LANGFUSE_SECRET_KEY")
+	_ = viper.BindEnv("langfuse.host", "LANGFUSE_HOST")
+	_ = viper.BindEnv("langfuse.enabled", "LANGFUSE_ENABLED")
 }
 
 // unmarshalConfig reads the current viper state into a fresh Config struct.

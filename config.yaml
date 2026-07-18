@@ -396,3 +396,21 @@ search:
   # API key or authorization token for the search provider
   # Env override: FIRECRAWL_API_KEY or AI_AGENT_SEARCH_API_KEY
   api_key: ""
+
+# Langfuse Prompt Management configuration
+langfuse:
+  # Enable dynamic prompt fetching from Langfuse.
+  # Env override: LANGFUSE_ENABLED
+  enabled: false
+
+  # Langfuse host URL.
+  # Env override: LANGFUSE_HOST
+  host: "https://cloud.langfuse.com"
+
+  # Langfuse Public Key (pk-lf-...)
+  # Env override: LANGFUSE_PUBLIC_KEY
+  public_key: ""
+
+  # Langfuse Secret Key (sk-lf-...)
+  # Env override: LANGFUSE_SECRET_KEY
+  secret_key: ""

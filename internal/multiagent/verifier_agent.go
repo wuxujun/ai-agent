@@ -6,9 +6,12 @@ import (
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/promptmanager"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+const verifierSystemPrompt = `Check whether the draft answer is fully supported by the supplied evidence. Classify each issue as unsupported_claim, evidence_gap, or contradiction and identify the source when possible. Return JSON only.`
 
 type VerificationIssue struct {
 	Kind     string `json:"kind"`
@@ -51,7 +54,8 @@ func (v *VerifierAgent) Verify(ctx context.Context, goal, answer string, evidenc
 		"required": []string{"supported", "issues"},
 	}
 	var result VerificationResult
-	usage, err := callLLMJSON(ctx, cfg, "Check whether the draft answer is fully supported by the supplied evidence. Classify each issue as unsupported_claim, evidence_gap, or contradiction and identify the source when possible. Return JSON only.", prompt, schema, &result)
+	systemPrompt := promptmanager.GetManager().Get(ctx, "multiagent_verifier_prompt", verifierSystemPrompt)
+	usage, err := callLLMJSON(ctx, cfg, systemPrompt, prompt, schema, &result)
 	result.TokenUsage = usage
 	if err == nil {
 		err = validateVerificationResult(&result)

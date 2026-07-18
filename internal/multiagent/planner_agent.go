@@ -9,6 +9,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/promptmanager"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -168,6 +169,8 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 	if activeTeam.Planner.SystemPrompt != "" {
 		systemPrompt = activeTeam.Planner.SystemPrompt
 		log.Info("Using custom system prompt for PlannerAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Planner.Name)
+	} else {
+		systemPrompt = promptmanager.GetManager().Get(ctx, "multiagent_planner_prompt", plannerSystemPrompt)
 	}
 	if activeTeam.Planner.Provider != "" || activeTeam.Planner.Model != "" || activeTeam.Planner.LLMScene != "" {
 		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentPlanner)
@@ -259,6 +262,8 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 	if activeTeam.Planner.SystemPrompt != "" {
 		systemPrompt = activeTeam.Planner.SystemPrompt + "\n\nCRITICAL: One of the previous execution steps has FAILED. You must analyze the execution history, explain in thought_summary why it failed, and generate revised next steps to achieve the goal. Do not repeat the exact same failed step unless you use different arguments or parameters."
 		log.Info("Using custom system prompt for ReplannerAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Planner.Name)
+	} else {
+		systemPrompt = promptmanager.GetManager().Get(ctx, "multiagent_replanner_prompt", replannerSystemPrompt)
 	}
 	if activeTeam.Planner.Provider != "" || activeTeam.Planner.Model != "" || activeTeam.Planner.LLMScene != "" {
 		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentReplanner)
