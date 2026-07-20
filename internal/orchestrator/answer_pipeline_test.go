@@ -95,8 +95,11 @@ func TestMultiAgentDraftFlowsThroughUnifiedPipeline(t *testing.T) {
 	if err := engine.Next(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	if task.Status != types.StatusCompleted || task.AnswerAudit == nil || task.AnswerAudit.FinalConfidence != "low" {
+	if task.Status != types.StatusPartial || task.AnswerAudit == nil || task.AnswerAudit.FinalConfidence != "low" {
 		t.Fatalf("task = %+v", task)
+	}
+	if len(task.Unresolved) != 1 || task.Unresolved[0] != "final_answer_not_fully_supported" {
+		t.Fatalf("unresolved = %v", task.Unresolved)
 	}
 	if len(task.AnswerAudit.Stages) != 6 || task.AnswerAudit.Stages[0].Name != "answer_verify" {
 		t.Fatalf("audit stages = %+v", task.AnswerAudit.Stages)

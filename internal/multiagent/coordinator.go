@@ -45,6 +45,12 @@ type Writer interface {
 	Write(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*WriterOutput, error)
 }
 
+type researchPhaseResult struct {
+	Evidence []StepEvidence
+	Complete bool
+	Reason   string
+}
+
 type workflowContextKey struct{}
 
 func withWorkflow(ctx context.Context, workflow Workflow) context.Context {
@@ -121,9 +127,13 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	)
 
 	teamsCfg := GetTeamsConfig()
-	workflow := teamsCfg.ActiveWorkflow()
-	ctx = withWorkflow(ctx, workflow)
-	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam, "workflow", workflow)
+	configuredWorkflow := teamsCfg.ActiveWorkflow()
+	planningWorkflow := configuredWorkflow
+	if planningWorkflow == WorkflowAdaptive {
+		planningWorkflow = WorkflowResearch
+	}
+	ctx = withWorkflow(ctx, planningWorkflow)
+	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam, "configured_workflow", configuredWorkflow)
 
 	// ── Phase 1: Plan ──────────────────────────────────────────────────────────
 	plan, err := c.runPlanPhase(ctx, task)
@@ -132,6 +142,18 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		span.SetStatus(codes.Error, "plan phase failed")
 		return err
 	}
+	route := resolveWorkflow(configuredWorkflow, teamsCfg.GetActiveTeam().Routing, task, plan)
+	workflow := route.Effective
+	ctx = withWorkflow(ctx, workflow)
+	if configuredWorkflow == WorkflowAdaptive {
+		recordWorkflowRoute(task, route)
+	}
+	log.Info("Selected multi-agent workflow", "task_id", task.ID, "configured_workflow", configuredWorkflow, "workflow", workflow, "reason", route.Reason)
+	span.SetAttributes(
+		attribute.String("multiagent.workflow.configured", string(configuredWorkflow)),
+		attribute.String("multiagent.workflow.effective", string(workflow)),
+		attribute.String("multiagent.workflow.route_reason", route.Reason),
+	)
 	if workflow == WorkflowReviewed {
 		plan, err = c.requireCriticApproval(ctx, task, plan)
 		if err != nil {
@@ -152,11 +174,20 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	currentSteps := plan.Steps
 	depthIterations := 0
 	maxDepthIterations := 2
+	executionComplete := true
+	executionReason := ""
+	finalSufficient := false
 
 	for {
 		// ── Phase 2: Research / Execute ────────────────────────────────────────────
-		evidenceBatch := c.runResearchPhase(ctx, task, currentSteps)
-		allEvidence = append(allEvidence, evidenceBatch...)
+		researchResult := c.runResearchPhase(ctx, task, currentSteps)
+		allEvidence = append(allEvidence, researchResult.Evidence...)
+		if !researchResult.Complete {
+			executionComplete = false
+			if executionReason == "" {
+				executionReason = researchResult.Reason
+			}
+		}
 		span.SetAttributes(attribute.Int("multiagent.research.evidence_items", len(allEvidence)))
 
 		select {
@@ -179,9 +210,12 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		var draftConfidence string
 		var writeErr error
 		if workflow == WorkflowReviewed {
-			draftConfidence, writeErr = c.runVerifyPhase(phaseCtx, task, writerEvidence)
+			var supported bool
+			draftConfidence, supported, writeErr = c.runVerifyPhase(phaseCtx, task, writerEvidence)
+			finalSufficient = supported
 		} else {
 			draftConfidence, writeErr = c.runWritePhase(phaseCtx, task, writerEvidence)
+			finalSufficient = draftConfidence != "low"
 		}
 		if writeErr != nil {
 			break // fallback happened or writer failed
@@ -189,7 +223,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 
 		// Adaptive Step Depth expansion: draft confidence is a generation-only
 		// signal and never becomes the published answer confidence.
-		if draftConfidence == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && task.StepCount < task.MaxSteps && !tokenBudgetExhausted(task) {
+		if draftConfidence == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && multiAgentToolStepCount(task) < task.MaxSteps && !tokenBudgetExhausted(task) {
 			depthIterations++
 			log.Info("Draft confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion", "iteration", depthIterations, "max_iterations", maxDepthIterations)
 
@@ -251,7 +285,16 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	}
 
 	if task.Status != types.StatusFailed {
-		task.Status = types.StatusCompleted
+		if executionComplete && finalSufficient {
+			task.Status = types.StatusCompleted
+		} else {
+			task.Status = types.StatusPartial
+			reason := executionReason
+			if reason == "" {
+				reason = "final_answer_not_fully_supported"
+			}
+			appendUnresolvedReason(task, reason)
+		}
 		if c.Metrics != nil {
 			c.Metrics.IncCompleted()
 		}
@@ -263,6 +306,27 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		attribute.String("agent.task.final_answer", task.FinalAnswer),
 	)
 	return nil
+}
+
+func recordWorkflowRoute(task *types.Task, decision workflowRouteDecision) {
+	if task == nil {
+		return
+	}
+	for _, trace := range task.Trace {
+		if trace.Action == WorkflowRouteTraceAction {
+			return
+		}
+	}
+	observation, _ := json.Marshal(decision)
+	task.Trace = append(task.Trace, types.StepTrace{
+		Step:        task.StepCount,
+		Goal:        task.Goal,
+		Action:      WorkflowRouteTraceAction,
+		Query:       string(decision.Effective),
+		Observation: string(observation),
+		AgentRole:   RolePlanner,
+	})
+	task.StepCount++
 }
 
 // ── phase helpers ─────────────────────────────────────────────────────────────
@@ -417,10 +481,10 @@ func (c *Coordinator) requireCriticApproval(ctx context.Context, task *types.Tas
 	return revised, nil
 }
 
-func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, steps []ResearchStep) []StepEvidence {
+func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, steps []ResearchStep) researchPhaseResult {
 	log.Info("Phase 2 — Researching", "task_id", task.ID)
 
-	var allEvidence []StepEvidence
+	result := researchPhaseResult{Complete: true}
 
 	currentSteps := make([]ResearchStep, len(steps))
 	copy(currentSteps, steps)
@@ -432,10 +496,19 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		// Budget and step-count gate
 		if task.ToolBudget <= 0 || tokenBudgetExhausted(task) {
 			log.Info("Budget exhausted (tools or tokens) — stopping research early")
+			result.Complete = false
+			if tokenBudgetExhausted(task) {
+				result.Reason = "token_budget_exhausted"
+			} else {
+				result.Reason = "tool_budget_exhausted"
+			}
 			break
 		}
-		if task.StepCount >= task.MaxSteps {
+		toolSteps := multiAgentToolStepCount(task)
+		if toolSteps >= task.MaxSteps {
 			log.Info("Max steps reached — stopping research early")
+			result.Complete = false
+			result.Reason = "max_tool_steps_reached"
 			break
 		}
 
@@ -443,13 +516,15 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		select {
 		case <-ctx.Done():
 			log.Info("Context cancelled during research phase")
-			return allEvidence
+			result.Complete = false
+			result.Reason = "context_cancelled"
+			return result
 		default:
 		}
 
 		// Partition: collect a batch of parallelisable (read-only) steps at the front,
 		// or fall back to a single serial step.
-		batch, remainder, isParallel := partitionBatch(currentSteps, task.ToolBudget, task.MaxSteps-task.StepCount)
+		batch, remainder, isParallel := partitionBatch(currentSteps, task.ToolBudget, task.MaxSteps-toolSteps)
 		currentSteps = remainder
 
 		// Look-ahead token budget defense: clamp parallel batch size if remaining budget is tight
@@ -488,7 +563,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			batchEvidence, anyFailed = c.runBatchSerial(ctx, task, batch)
 		}
 
-		allEvidence = append(allEvidence, batchEvidence...)
+		result.Evidence = append(result.Evidence, batchEvidence...)
 		if followups := retrievalFetchSteps(batchEvidence); len(followups) > 0 {
 			// Search candidates are intentionally compact. Fetch selected details
 			// before unrelated remaining work so the Writer receives real evidence,
@@ -525,7 +600,9 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 					if replanErr != nil {
 						log.Error("Revised plan rejected by critic", "error", replanErr)
 						task.Status = types.StatusFailed
-						return allEvidence
+						result.Complete = false
+						result.Reason = "critic_rejected_recovery_plan"
+						return result
 					}
 				} else {
 					c.critiqueResearchPlan(ctx, task, newPlan)
@@ -534,10 +611,16 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 				continue
 			}
 		}
+		if anyFailed {
+			result.Complete = false
+			if result.Reason == "" {
+				result.Reason = "execution_step_failed"
+			}
+		}
 	}
 
-	log.Info("Phase 2 done", "evidence_items", len(allEvidence))
-	return allEvidence
+	log.Info("Phase 2 done", "evidence_items", len(result.Evidence), "complete", result.Complete, "reason", result.Reason)
+	return result
 }
 
 // isReadOnlyAction returns true for actions that are safe to run concurrently
@@ -681,6 +764,36 @@ func executionTraceIdentity(ctx context.Context) (AgentRole, string) {
 	return RoleResearcher, "researcher"
 }
 
+// multiAgentToolStepCount derives the persisted tool-step count from role-tagged
+// traces. StepCount remains the global trace sequence and is intentionally not
+// used to enforce MaxSteps in multi-agent mode.
+func multiAgentToolStepCount(task *types.Task) int {
+	if task == nil {
+		return 0
+	}
+	count := 0
+	for _, trace := range task.Trace {
+		if trace.AgentRole == RoleResearcher || trace.AgentRole == RoleExecutor {
+			count++
+		}
+	}
+	return count
+}
+
+func appendUnresolvedReason(task *types.Task, reason string) {
+	if task == nil || strings.TrimSpace(reason) == "" {
+		return
+	}
+	for _, existing := range task.Unresolved {
+		if existing == reason {
+			return
+		}
+	}
+	if len(task.Unresolved) < 10 {
+		task.Unresolved = append(task.Unresolved, reason)
+	}
+}
+
 // runBatchParallel executes a batch of read-only steps concurrently.
 func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, batch []ResearchStep) (evidence []StepEvidence, anyFailed bool) {
 	type result struct {
@@ -783,7 +896,7 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batch []ResearchStep) (evidence []StepEvidence, anyFailed bool) {
 	agentRole, agentLabel := executionTraceIdentity(ctx)
 	for _, step := range batch {
-		if task.ToolBudget <= 0 || task.StepCount >= task.MaxSteps {
+		if task.ToolBudget <= 0 || multiAgentToolStepCount(task) >= task.MaxSteps {
 			break
 		}
 		select {
@@ -875,12 +988,12 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 	return
 }
 
-func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {
+func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, bool, error) {
 	log.Info("Phase 3 — Verifying execution result", "task_id", task.ID)
 	if c.FinalVerifier == nil {
 		err := fmt.Errorf("reviewed workflow requires a final Verifier")
 		task.Status = types.StatusFailed
-		return "low", err
+		return "low", false, err
 	}
 
 	start := time.Now()
@@ -900,7 +1013,7 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evid
 		task.StepCount++
 		task.Status = types.StatusFailed
 		task.FinalAnswer = "Execution completed but final verification failed. See trace for gathered evidence."
-		return "low", err
+		return "low", false, err
 	}
 	if c.Metrics != nil {
 		c.Metrics.ObserveTokens(output.TokenUsage.PromptTokens, output.TokenUsage.CompletionTokens, output.TokenUsage.TotalTokens, "verifier")
@@ -928,7 +1041,7 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evid
 	task.StepCount++
 	task.FinalAnswer = output.FinalAnswer
 	log.Info("Phase 3 done — result verified", "supported", output.Supported, "draft_confidence", confidence, "elapsed", elapsed)
-	return confidence, nil
+	return confidence, output.Supported, nil
 }
 
 func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {

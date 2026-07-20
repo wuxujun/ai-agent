@@ -8,6 +8,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -330,6 +331,26 @@ func formatTracesForReplanner(traces []types.StepTrace) string {
 		}
 		b.WriteString(fmt.Sprintf("- Step %d [%s]: Action: %s, Query: %s\n", tr.Step, role, tr.Action, tr.Query))
 		b.WriteString(fmt.Sprintf("  Observation: %s\n", tr.Observation))
+		if tr.Action == plancritic.TraceAction {
+			for i, evidence := range tr.Evidence {
+				if i >= 10 {
+					break
+				}
+				lines := evidence.Lines
+				if len(lines) > 4 {
+					lines = lines[:4]
+				}
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if len([]rune(line)) > 1000 {
+						line = string([]rune(line)[:1000])
+					}
+					if line != "" {
+						b.WriteString(fmt.Sprintf("  Critic feedback [%s/%s]: %s\n", evidence.Path, evidence.Query, line))
+					}
+				}
+			}
+		}
 	}
 	return b.String()
 }

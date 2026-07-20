@@ -49,7 +49,12 @@ teams:
       name: "Doc Writer"
       system_prompt: "Document code"
   data:
-    workflow: "planner_critic_executor_verifier"
+    workflow: "adaptive"
+    routing:
+      reviewed_intents: ["coding", "automation"]
+      reviewed_complexities: ["medium", "high"]
+      reviewed_min_plan_steps: 4
+      allow_research_high_risk_tools: false
     planner:
       name: "Data Planner"
       system_prompt: "Analyze CSVs"
@@ -63,6 +68,9 @@ teams:
       name: "Data Executor"
     verifier:
       name: "Result Verifier"
+      draft_prompt_name: "teams/data/verifier-draft"
+      draft_system_prompt: "Draft from evidence"
+      prompt_name: "teams/data/verifier-check"
     writer:
       name: "Data Writer"
       system_prompt: "Summarize findings"
@@ -91,11 +99,17 @@ teams:
 	if activeTeam.Planner.Model != "gemini-2.5" {
 		t.Errorf("expected planner model 'gemini-2.5', got %q", activeTeam.Planner.Model)
 	}
-	if cfg.ActiveWorkflow() != multiagent.WorkflowReviewed {
-		t.Fatalf("expected reviewed workflow, got %q", cfg.ActiveWorkflow())
+	if cfg.ActiveWorkflow() != multiagent.WorkflowAdaptive {
+		t.Fatalf("expected adaptive workflow, got %q", cfg.ActiveWorkflow())
+	}
+	if len(activeTeam.Routing.ReviewedIntents) != 2 || len(activeTeam.Routing.ReviewedComplexities) != 2 || activeTeam.Routing.ReviewedMinPlanSteps != 4 || activeTeam.Routing.AllowResearchHighRiskTools {
+		t.Fatalf("adaptive routing configuration was not parsed: %+v", activeTeam.Routing)
 	}
 	if activeTeam.Critic.Name != "Plan Reviewer" || activeTeam.Executor.Name != "Data Executor" || activeTeam.Verifier.Name != "Result Verifier" {
 		t.Fatalf("four-role configuration was not parsed: %+v", activeTeam)
+	}
+	if activeTeam.Verifier.DraftPromptName != "teams/data/verifier-draft" || activeTeam.Verifier.DraftSystemPrompt != "Draft from evidence" || activeTeam.Verifier.PromptName != "teams/data/verifier-check" {
+		t.Fatalf("split verifier prompts were not parsed: %+v", activeTeam.Verifier)
 	}
 
 	llmCfg := multiagent.GetLLMConfig(activeTeam.Planner)
@@ -114,5 +128,15 @@ func TestTeamsConfig_WorkflowEnvironmentOverride(t *testing.T) {
 	cfg := multiagent.GetTeamsConfig()
 	if cfg.ActiveWorkflow() != multiagent.WorkflowReviewed {
 		t.Fatalf("expected workflow override, got %q", cfg.ActiveWorkflow())
+	}
+}
+
+func TestTeamsConfig_AdaptiveWorkflowEnvironmentOverride(t *testing.T) {
+	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "auto")
+
+	cfg := multiagent.GetTeamsConfig()
+	if cfg.ActiveWorkflow() != multiagent.WorkflowAdaptive {
+		t.Fatalf("expected adaptive workflow override, got %q", cfg.ActiveWorkflow())
 	}
 }

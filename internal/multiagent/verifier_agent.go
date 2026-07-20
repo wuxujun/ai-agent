@@ -12,15 +12,13 @@ import (
 
 const verifierSystemPrompt = `Check whether the draft answer is fully supported by the supplied evidence. Classify each issue as unsupported_claim, evidence_gap, or contradiction and identify the source when possible. Return JSON only.`
 
-const finalVerifierSystemPrompt = `You are the final verifier in a plan-review-execute-verify workflow. Produce the final answer using only the supplied execution evidence, then independently check every material claim against that evidence.
+const finalVerifierDraftSystemPrompt = `You are the answer drafting stage of the verifier role in a plan-review-execute-verify workflow. Produce a candidate final answer using only the supplied execution evidence. Do not judge your own answer; an independent verification call will do that.
 
 Rules:
 1. final_answer must be complete and self-contained.
-2. Set supported=false when any material claim lacks evidence or contradicts evidence.
-3. Classify issues as unsupported_claim, evidence_gap, or contradiction.
-4. Set draft_confidence to low when supported=false, otherwise high or medium according to evidence coverage.
-5. evidence_summary must briefly identify the evidence used.
-6. Return JSON only.`
+2. draft_confidence must reflect evidence coverage.
+3. evidence_summary must briefly identify the evidence used.
+4. Return JSON only.`
 
 type VerificationIssue struct {
 	Kind     string `json:"kind"`
@@ -45,6 +43,13 @@ type FinalVerificationOutput struct {
 	Supported       bool                `json:"supported"`
 	Issues          []VerificationIssue `json:"issues"`
 	TokenUsage      types.TokenUsage    `json:"token_usage,omitempty"`
+}
+
+type finalAnswerCandidate struct {
+	FinalAnswer     string           `json:"final_answer"`
+	EvidenceSummary string           `json:"evidence_summary"`
+	DraftConfidence string           `json:"draft_confidence"`
+	TokenUsage      types.TokenUsage `json:"token_usage,omitempty"`
 }
 
 func (o *FinalVerificationOutput) resolvedDraftConfidence() string {
@@ -104,47 +109,46 @@ func (v *VerifierAgent) Verify(ctx context.Context, goal, answer string, evidenc
 func (v *VerifierAgent) Finalize(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*FinalVerificationOutput, error) {
 	agentCfg := GetTeamsConfig().GetActiveTeam().Verifier
 	cfg := GetLLMConfig(agentCfg, config.LLMSceneAnswerVerifier)
-	systemPrompt := resolveAgentPrompt(ctx, agentCfg, "multiagent_final_verifier_prompt", finalVerifierSystemPrompt)
+	systemPrompt := resolveAgentPrompt(ctx, draftPromptConfig(agentCfg), "multiagent_final_verifier_draft_prompt", finalVerifierDraftSystemPrompt)
 	prompt := (&WriterAgent{}).buildPrompt(goal, evidence, memories)
-	var output FinalVerificationOutput
-	usage, err := callLLMJSON(ctx, cfg, systemPrompt, prompt, finalVerifierSchema(), &output)
-	output.TokenUsage = usage
+	var candidate finalAnswerCandidate
+	draftUsage, err := callLLMJSON(ctx, cfg, systemPrompt, prompt, finalAnswerCandidateSchema(), &candidate)
+	candidate.TokenUsage = draftUsage
 	if err != nil {
-		return &output, err
+		return nil, fmt.Errorf("generate verification candidate: %w", err)
 	}
-	verification := &VerificationResult{Supported: output.Supported, Issues: output.Issues}
-	if err := validateVerificationResult(verification); err != nil {
-		return &output, err
+	if strings.TrimSpace(candidate.FinalAnswer) == "" || strings.TrimSpace(candidate.EvidenceSummary) == "" {
+		return nil, fmt.Errorf("final verifier returned an incomplete candidate answer")
 	}
-	output.Issues = verification.Issues
-	if strings.TrimSpace(output.FinalAnswer) == "" || strings.TrimSpace(output.EvidenceSummary) == "" {
-		return &output, fmt.Errorf("final verifier returned an incomplete answer")
+
+	verification, err := v.Verify(ctx, goal, candidate.FinalAnswer, evidence)
+	if err != nil {
+		return nil, fmt.Errorf("verify candidate answer: %w", err)
 	}
-	return &output, nil
+	output := &FinalVerificationOutput{
+		FinalAnswer:     candidate.FinalAnswer,
+		EvidenceSummary: candidate.EvidenceSummary,
+		DraftConfidence: candidate.DraftConfidence,
+		Supported:       verification.Supported,
+		Issues:          verification.Issues,
+		TokenUsage:      candidate.TokenUsage,
+	}
+	addMultiAgentUsage(&output.TokenUsage, verification.TokenUsage)
+	if !output.Supported {
+		output.DraftConfidence = "low"
+	}
+	return output, nil
 }
 
-func finalVerifierSchema() map[string]any {
+func finalAnswerCandidateSchema() map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
 			"final_answer":     map[string]any{"type": "string"},
 			"evidence_summary": map[string]any{"type": "string"},
 			"draft_confidence": map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}},
-			"supported":        map[string]any{"type": "boolean"},
-			"issues": map[string]any{
-				"type": "array", "maxItems": 10,
-				"items": map[string]any{
-					"type": "object", "additionalProperties": false,
-					"properties": map[string]any{
-						"kind":      map[string]any{"type": "string", "enum": []string{"unsupported_claim", "evidence_gap", "contradiction"}},
-						"detail":    map[string]any{"type": "string", "maxLength": 500},
-						"source_id": map[string]any{"type": "string", "maxLength": 200},
-					},
-					"required": []string{"kind", "detail", "source_id"},
-				},
-			},
 		},
-		"required": []string{"final_answer", "evidence_summary", "draft_confidence", "supported", "issues"},
+		"required": []string{"final_answer", "evidence_summary", "draft_confidence"},
 	}
 }
 

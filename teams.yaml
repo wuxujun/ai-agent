@@ -8,6 +8,13 @@ active_team: "software" # Choices: "software" | "software_reviewed" | "data"
 teams:
   software:
     workflow: "planner_researcher_writer"
+    # Set workflow to "adaptive" (or use AI_AGENT_MULTIAGENT_WORKFLOW=adaptive)
+    # to select the reviewed topology for matching tasks without another LLM call.
+    routing:
+      reviewed_intents: ["coding", "automation"]
+      reviewed_complexities: ["high"]
+      reviewed_min_plan_steps: 4
+      allow_research_high_risk_tools: false
     planner:
       name: "Software Architect Planner"
       # prompt_name: "teams/software/planner"
@@ -119,5 +126,6 @@ teams:
       name: "Software Tool Executor"
     verifier:
       name: "Software Result Verifier"
-      # prompt_name: "teams/software-reviewed/verifier"
+      # draft_prompt_name: "teams/software-reviewed/verifier-draft"
+      # prompt_name: "teams/software-reviewed/verifier-check"
       # llm_scene: "answer_verifier"
