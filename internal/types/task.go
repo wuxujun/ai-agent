@@ -10,6 +10,9 @@ type AgentRole string
 
 const (
 	AgentRolePlanner    AgentRole = "planner"
+	AgentRoleCritic     AgentRole = "critic"
+	AgentRoleExecutor   AgentRole = "executor"
+	AgentRoleVerifier   AgentRole = "verifier"
 	AgentRoleResearcher AgentRole = "researcher"
 	AgentRoleWriter     AgentRole = "writer"
 	AgentRoleSingle     AgentRole = "" // default single-agent mode

@@ -37,21 +37,41 @@ type Researcher interface {
 	Research(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error)
 }
 
+type Executor interface {
+	Execute(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error)
+}
+
 type Writer interface {
 	Write(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*WriterOutput, error)
 }
 
-// Coordinator orchestrates the three agents in sequence and produces a draft:
+type workflowContextKey struct{}
+
+func withWorkflow(ctx context.Context, workflow Workflow) context.Context {
+	return context.WithValue(ctx, workflowContextKey{}, workflow)
+}
+
+func workflowFromContext(ctx context.Context) Workflow {
+	if workflow, ok := ctx.Value(workflowContextKey{}).(Workflow); ok {
+		return workflow
+	}
+	return WorkflowResearch
+}
+
+// Coordinator supports both configured collaboration topologies:
 //
 //	PlannerAgent → ResearcherAgent (×N) → WriterAgent
+//	PlannerAgent → CriticAgent → ExecutorAgent (×N) → VerifierAgent
 //
 // It updates task.Trace and task.Status in-place. Published-answer auditing and
 // final confidence are owned by orchestrator.AnswerPipeline.
 type Coordinator struct {
 	Planner                  Planner
 	Researcher               Researcher
+	Executor                 Executor
 	Writer                   Writer
 	Verifier                 AnswerVerifier
+	FinalVerifier            FinalVerifier
 	Metrics                  *metrics.Collector
 	SuspendForApproval       func(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error)
 	ResolveMemoryConflicts   func(ctx context.Context, task *types.Task)
@@ -69,8 +89,11 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 	return &Coordinator{
 		Planner:                  &PlannerAgent{ArgumentRepairer: planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)},
 		Researcher:               &ResearcherAgent{},
+		Executor:                 &ExecutorAgent{},
 		Writer:                   &WriterAgent{},
-		PlanCritic:               plancritic.NewLLMCritic(config.LLMScenePlanCritic),
+		Verifier:                 &VerifierAgent{},
+		FinalVerifier:            &VerifierAgent{},
+		PlanCritic:               &CriticAgent{},
 		PromptInjectionDetector:  promptguard.NewLLMDetector(config.LLMScenePromptInjectionDetector),
 		EvidenceRelevanceFilter:  evidencefilter.NewLLMFilter(config.LLMSceneEvidenceRelevanceFilter),
 		EvidenceConflictResolver: evidenceconflict.NewLLMResolver(config.LLMSceneEvidenceConflictResolver),
@@ -82,10 +105,9 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 // Run executes the full multi-agent workflow for the given task, updating
 // task.Trace, task.StepCount, task.ToolBudget, and task.Status in-place.
 //
-// The workflow has three phases:
-//  1. Plan   – PlannerAgent decomposes the goal into ResearchSteps
-//  2. Research – ResearcherAgent executes each step (budget-gated)
-//  3. Write  – WriterAgent synthesises all evidence into an answer draft
+// The selected team's workflow controls whether tool steps and final synthesis
+// are owned by Researcher/Writer or Executor/Verifier. Both paths retain the
+// same policy, approval, cancellation, and budget gates.
 func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
 	ctx = llmcore.WithTaskBudget(ctx, task)
@@ -99,7 +121,9 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	)
 
 	teamsCfg := GetTeamsConfig()
-	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam)
+	workflow := teamsCfg.ActiveWorkflow()
+	ctx = withWorkflow(ctx, workflow)
+	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam, "workflow", workflow)
 
 	// ── Phase 1: Plan ──────────────────────────────────────────────────────────
 	plan, err := c.runPlanPhase(ctx, task)
@@ -107,6 +131,17 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "plan phase failed")
 		return err
+	}
+	if workflow == WorkflowReviewed {
+		plan, err = c.requireCriticApproval(ctx, task, plan)
+		if err != nil {
+			task.Status = types.StatusFailed
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "critic phase failed")
+			return err
+		}
+	} else {
+		c.critiqueResearchPlan(ctx, task, plan)
 	}
 	span.SetAttributes(attribute.Int("multiagent.plan.step_count", len(plan.Steps)))
 	if c.EventCallback != nil {
@@ -119,7 +154,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	maxDepthIterations := 2
 
 	for {
-		// ── Phase 2: Research ──────────────────────────────────────────────────────
+		// ── Phase 2: Research / Execute ────────────────────────────────────────────
 		evidenceBatch := c.runResearchPhase(ctx, task, currentSteps)
 		allEvidence = append(allEvidence, evidenceBatch...)
 		span.SetAttributes(attribute.Int("multiagent.research.evidence_items", len(allEvidence)))
@@ -131,7 +166,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		default:
 		}
 
-		// ── Phase 3: Write ─────────────────────────────────────────────────────────
+		// ── Phase 3: Write / Verify ────────────────────────────────────────────────
 		phaseCtx := llmcore.WithTaskRoutingHints(ctx, task)
 		writerEvidence := append([]StepEvidence(nil), allEvidence...)
 		if annotation := c.resolveEvidenceConflicts(phaseCtx, task, allEvidence); annotation != nil {
@@ -141,7 +176,13 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 			c.ResolveMemoryConflicts(phaseCtx, task)
 			phaseCtx = llmcore.WithTaskRoutingHints(ctx, task)
 		}
-		draftConfidence, writeErr := c.runWritePhase(phaseCtx, task, writerEvidence)
+		var draftConfidence string
+		var writeErr error
+		if workflow == WorkflowReviewed {
+			draftConfidence, writeErr = c.runVerifyPhase(phaseCtx, task, writerEvidence)
+		} else {
+			draftConfidence, writeErr = c.runWritePhase(phaseCtx, task, writerEvidence)
+		}
 		if writeErr != nil {
 			break // fallback happened or writer failed
 		}
@@ -186,7 +227,16 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 				TokenUsage:  newPlan.TokenUsage,
 			})
 			task.StepCount++
-			c.critiqueResearchPlan(replanCtx, task, newPlan)
+			if workflow == WorkflowReviewed {
+				newPlan, replanErr = c.requireCriticApproval(replanCtx, task, newPlan)
+				if replanErr != nil {
+					log.Error("Adaptive plan rejected by critic", "error", replanErr)
+					task.Status = types.StatusFailed
+					break
+				}
+			} else {
+				c.critiqueResearchPlan(replanCtx, task, newPlan)
+			}
 
 			// Prepare new steps for the next iteration
 			currentSteps = newPlan.Steps
@@ -257,7 +307,6 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	})
 	task.StepCount++
 	task.Status = types.StatusRunning
-	c.critiqueResearchPlan(ctx, task, plan)
 
 	log.Info("Phase 1 done", "steps_planned", len(plan.Steps), "elapsed", elapsed)
 	return plan, nil
@@ -282,31 +331,90 @@ func researchPlanFromJITDecision(task *types.Task, decision *planner.PlanDecisio
 }
 
 func (c *Coordinator) critiqueResearchPlan(ctx context.Context, task *types.Task, plan *ResearchPlan) {
+	_, _ = c.reviewResearchPlan(ctx, task, plan, false, false)
+}
+
+func (c *Coordinator) reviewResearchPlan(ctx context.Context, task *types.Task, plan *ResearchPlan, required, countStep bool) (*plancritic.Result, error) {
 	if c.PlanCritic == nil || plan == nil {
-		return
+		if required {
+			return nil, fmt.Errorf("reviewed workflow requires a Critic")
+		}
+		return nil, nil
 	}
-	if _, enabled := config.Get().LLM.Scenes[config.LLMScenePlanCritic]; !enabled || !llmcore.AllowedForTask(config.LLMScenePlanCritic, task) {
-		return
+	if !required {
+		if _, enabled := config.Get().LLM.Scenes[config.LLMScenePlanCritic]; !enabled || !llmcore.AllowedForTask(config.LLMScenePlanCritic, task) {
+			return nil, nil
+		}
 	}
 	neutral := plancritic.Plan{Summary: plan.ThoughtSummary, Steps: make([]plancritic.Step, 0, len(plan.Steps))}
 	for _, step := range plan.Steps {
 		neutral.Steps = append(neutral.Steps, plancritic.Step{Action: step.Action, Description: step.Description, Parameters: stepToParams(step)})
 	}
-	if !plancritic.ShouldCritique(task, neutral) {
-		return
+	if !required && !plancritic.ShouldCritique(task, neutral) {
+		return nil, nil
 	}
 	fingerprint := plancritic.Fingerprint(neutral)
-	if plancritic.AlreadyCritiqued(task, fingerprint) {
-		return
+	if !required && plancritic.AlreadyCritiqued(task, fingerprint) {
+		return &plancritic.Result{Approved: true, Summary: "plan already reviewed"}, nil
 	}
 	result, usage, err := c.PlanCritic.Critique(ctx, task, neutral)
 	plancritic.ApplyResult(task, neutral, result, usage, err)
+	if len(task.Trace) > 0 {
+		trace := &task.Trace[len(task.Trace)-1]
+		trace.Goal = task.Goal
+		trace.AgentRole = RoleCritic
+	}
+	if countStep {
+		task.StepCount++
+	}
 	if err != nil {
 		log.Warn("Plan critic failed; deterministic controls remain active", "task_id", task.ID, "error", err)
 	}
 	if c.Metrics != nil {
 		c.Metrics.ObserveTokens(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, "plan_critic")
 	}
+	return result, err
+}
+
+func (c *Coordinator) requireCriticApproval(ctx context.Context, task *types.Task, plan *ResearchPlan) (*ResearchPlan, error) {
+	result, err := c.reviewResearchPlan(ctx, task, plan, true, true)
+	if err != nil {
+		return nil, fmt.Errorf("CriticAgent: %w", err)
+	}
+	if result != nil && result.Approved {
+		return plan, nil
+	}
+
+	revised, err := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
+	if err != nil {
+		return nil, fmt.Errorf("CriticAgent rejected plan and replanning failed: %w", err)
+	}
+	if revised == nil || len(revised.Steps) == 0 {
+		return nil, fmt.Errorf("CriticAgent rejected plan and replanning returned no executable steps")
+	}
+	enforceJITResearchPlan(task, revised)
+	task.Trace = append(task.Trace, types.StepTrace{
+		Step:        task.StepCount,
+		Goal:        task.Goal,
+		Action:      "plan",
+		Query:       "critic_replan",
+		Observation: fmt.Sprintf("[planner] %s — %d revised step(s) after critic review", revised.ThoughtSummary, len(revised.Steps)),
+		AgentRole:   RolePlanner,
+		TokenUsage:  revised.TokenUsage,
+	})
+	task.StepCount++
+	if c.Metrics != nil {
+		c.Metrics.ObserveTokens(revised.TokenUsage.PromptTokens, revised.TokenUsage.CompletionTokens, revised.TokenUsage.TotalTokens, "replanner")
+	}
+
+	result, err = c.reviewResearchPlan(ctx, task, revised, true, true)
+	if err != nil {
+		return nil, fmt.Errorf("CriticAgent: %w", err)
+	}
+	if result == nil || !result.Approved {
+		return nil, fmt.Errorf("CriticAgent rejected the revised plan")
+	}
+	return revised, nil
 }
 
 func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, steps []ResearchStep) []StepEvidence {
@@ -412,7 +520,16 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 					TokenUsage:  newPlan.TokenUsage,
 				})
 				task.StepCount++
-				c.critiqueResearchPlan(ctx, task, newPlan)
+				if workflowFromContext(ctx) == WorkflowReviewed {
+					newPlan, replanErr = c.requireCriticApproval(ctx, task, newPlan)
+					if replanErr != nil {
+						log.Error("Revised plan rejected by critic", "error", replanErr)
+						task.Status = types.StatusFailed
+						return allEvidence
+					}
+				} else {
+					c.critiqueResearchPlan(ctx, task, newPlan)
+				}
 				currentSteps = newPlan.Steps
 				continue
 			}
@@ -544,6 +661,26 @@ func partitionBatch(steps []ResearchStep, budgetLeft, stepsLeft int) (batch []Re
 	return steps[:end], steps[end:], true
 }
 
+func (c *Coordinator) executeWorkflowStep(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
+	if workflowFromContext(ctx) == WorkflowReviewed {
+		if c.Executor == nil {
+			return nil, fmt.Errorf("reviewed workflow requires an Executor")
+		}
+		return c.Executor.Execute(ctx, workspace, step)
+	}
+	if c.Researcher == nil {
+		return nil, fmt.Errorf("research workflow requires a Researcher")
+	}
+	return c.Researcher.Research(ctx, workspace, step)
+}
+
+func executionTraceIdentity(ctx context.Context) (AgentRole, string) {
+	if workflowFromContext(ctx) == WorkflowReviewed {
+		return RoleExecutor, "executor"
+	}
+	return RoleResearcher, "researcher"
+}
+
 // runBatchParallel executes a batch of read-only steps concurrently.
 func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, batch []ResearchStep) (evidence []StepEvidence, anyFailed bool) {
 	type result struct {
@@ -557,6 +694,7 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 
 	results := make([]result, len(batch))
 	baseStep := task.StepCount
+	agentRole, agentLabel := executionTraceIdentity(ctx)
 
 	var wg sync.WaitGroup
 	for i, step := range batch {
@@ -564,15 +702,15 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 		go func(idx int, s ResearchStep) {
 			defer wg.Done()
 			start := time.Now()
-			ev, err := c.Researcher.Research(ctx, task.Workspace, s)
+			ev, err := c.executeWorkflowStep(ctx, task.Workspace, s)
 			elapsed := time.Since(start)
 
 			var obs string
 			failed := (err != nil) || (ev != nil && ev.Failed)
 			if err != nil {
-				obs = fmt.Sprintf("[researcher] fatal error: %v", err)
-			} else {
-				obs = fmt.Sprintf("[researcher] %s", ev.Observation)
+				obs = fmt.Sprintf("[%s] fatal error: %v", agentLabel, err)
+			} else if ev != nil {
+				obs = fmt.Sprintf("[%s] %s", agentLabel, ev.Observation)
 			}
 
 			var trEvidence []types.Evidence
@@ -592,7 +730,7 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 				Observation: obs,
 				Evidence:    trEvidence,
 				TokenUsage:  tokenUsage,
-				AgentRole:   RoleResearcher,
+				AgentRole:   agentRole,
 			}
 
 			results[idx] = result{
@@ -615,7 +753,7 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 		audit := c.inspectStepEvidence(ctx, task, r.ev, r.failed)
 		relevanceAudit := c.filterStepEvidence(ctx, task, r.ev, r.failed)
 		if r.ev != nil {
-			r.tr.Observation = fmt.Sprintf("[researcher] %s", r.ev.Observation)
+			r.tr.Observation = fmt.Sprintf("[%s] %s", agentLabel, r.ev.Observation)
 			r.tr.Evidence = r.ev.Evidence
 		}
 		task.Trace = append(task.Trace, r.tr)
@@ -643,6 +781,7 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 
 // runBatchSerial executes steps one at a time (used for write/execute steps).
 func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batch []ResearchStep) (evidence []StepEvidence, anyFailed bool) {
+	agentRole, agentLabel := executionTraceIdentity(ctx)
 	for _, step := range batch {
 		if task.ToolBudget <= 0 || task.StepCount >= task.MaxSteps {
 			break
@@ -675,7 +814,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 		}
 
 		start := time.Now()
-		ev, err := c.Researcher.Research(ctx, task.Workspace, step)
+		ev, err := c.executeWorkflowStep(ctx, task.Workspace, step)
 		elapsed := time.Since(start)
 
 		if c.Metrics != nil {
@@ -684,16 +823,16 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 
 		var obs string
 		if err != nil {
-			obs = fmt.Sprintf("[researcher] fatal error: %v", err)
+			obs = fmt.Sprintf("[%s] fatal error: %v", agentLabel, err)
 		} else if ev != nil {
-			obs = fmt.Sprintf("[researcher] %s", ev.Observation)
+			obs = fmt.Sprintf("[%s] %s", agentLabel, ev.Observation)
 		}
 
 		failed := (err != nil) || (ev != nil && ev.Failed)
 		audit := c.inspectStepEvidence(ctx, task, ev, failed)
 		relevanceAudit := c.filterStepEvidence(ctx, task, ev, failed)
 		if ev != nil && err == nil {
-			obs = fmt.Sprintf("[researcher] %s", ev.Observation)
+			obs = fmt.Sprintf("[%s] %s", agentLabel, ev.Observation)
 		}
 
 		var trEvidence []types.Evidence
@@ -713,7 +852,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 			Observation: obs,
 			Evidence:    trEvidence,
 			TokenUsage:  tokenUsage,
-			AgentRole:   RoleResearcher,
+			AgentRole:   agentRole,
 		})
 		if audit != nil {
 			task.Trace = append(task.Trace, *audit)
@@ -734,6 +873,62 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 		task.Status = types.StatusRunning
 	}
 	return
+}
+
+func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {
+	log.Info("Phase 3 — Verifying execution result", "task_id", task.ID)
+	if c.FinalVerifier == nil {
+		err := fmt.Errorf("reviewed workflow requires a final Verifier")
+		task.Status = types.StatusFailed
+		return "low", err
+	}
+
+	start := time.Now()
+	output, err := c.FinalVerifier.Finalize(ctx, task.Goal, evidence, task.Memories)
+	elapsed := time.Since(start)
+	if err != nil {
+		log.Error("VerifierAgent failed", "task_id", task.ID, "error", err)
+		task.Trace = append(task.Trace, types.StepTrace{
+			Step:        task.StepCount,
+			Goal:        task.Goal,
+			Action:      "verify",
+			Query:       "verifier",
+			Observation: fmt.Sprintf("[verifier] final verification error: %v", err),
+			Error:       err.Error(),
+			AgentRole:   RoleVerifier,
+		})
+		task.StepCount++
+		task.Status = types.StatusFailed
+		task.FinalAnswer = "Execution completed but final verification failed. See trace for gathered evidence."
+		return "low", err
+	}
+	if c.Metrics != nil {
+		c.Metrics.ObserveTokens(output.TokenUsage.PromptTokens, output.TokenUsage.CompletionTokens, output.TokenUsage.TotalTokens, "verifier")
+	}
+	if strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") && planner.RequiresFactualEvidence(task) && !planner.HasSupportingEvidence(task.Trace) {
+		output.FinalAnswer = "未检索到足够证据，暂时无法可靠回答该事实性问题。"
+		output.DraftConfidence = "low"
+		output.Supported = false
+		output.EvidenceSummary = "No successful retrieval or tool evidence supports a factual answer."
+		if len(output.Issues) == 0 {
+			output.Issues = []VerificationIssue{{Kind: "evidence_gap", Detail: "No successful retrieval evidence", SourceID: "final_answer"}}
+		}
+	}
+	confidence := output.resolvedDraftConfidence()
+	task.Trace = append(task.Trace, types.StepTrace{
+		Step:        task.StepCount,
+		Goal:        task.Goal,
+		Action:      "verify",
+		Query:       "verifier",
+		Observation: fmt.Sprintf("[verifier] supported=%t confidence=%s | Summary: %s", output.Supported, confidence, output.EvidenceSummary),
+		Evidence:    verificationIssuesAsEvidence(output.Issues),
+		AgentRole:   RoleVerifier,
+		TokenUsage:  output.TokenUsage,
+	})
+	task.StepCount++
+	task.FinalAnswer = output.FinalAnswer
+	log.Info("Phase 3 done — result verified", "supported", output.Supported, "draft_confidence", confidence, "elapsed", elapsed)
+	return confidence, nil
 }
 
 func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {

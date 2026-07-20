@@ -1,23 +1,68 @@
 package multiagent
 
 import (
+	"context"
 	"os"
+	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/promptmanager"
 	"gopkg.in/yaml.v3"
 )
 
+type Workflow string
+
+const (
+	WorkflowResearch Workflow = "planner_researcher_writer"
+	WorkflowReviewed Workflow = "planner_critic_executor_verifier"
+)
+
 type AgentConfig struct {
-	Name         string `yaml:"name" json:"name"`
-	SystemPrompt string `yaml:"system_prompt" json:"system_prompt"`
-	Provider     string `yaml:"provider" json:"provider"`
-	Model        string `yaml:"model" json:"model"`
-	LLMScene     string `yaml:"llm_scene" json:"llm_scene"`
+	Name           string `yaml:"name" json:"name"`
+	SystemPrompt   string `yaml:"system_prompt" json:"system_prompt"`
+	PromptName     string `yaml:"prompt_name" json:"prompt_name"`
+	LangfusePrompt string `yaml:"langfuse_prompt" json:"langfuse_prompt"`
+	Provider       string `yaml:"provider" json:"provider"`
+	Model          string `yaml:"model" json:"model"`
+	LLMScene       string `yaml:"llm_scene" json:"llm_scene"`
+}
+
+// resolveAgentPrompt preserves inline prompt compatibility while allowing a
+// team role to name a Langfuse-managed prompt. prompt_name is the preferred
+// field; langfuse_prompt remains an explicit alias.
+func resolveAgentPrompt(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string) string {
+	return resolveAgentPromptWithFetcher(ctx, agentCfg, defaultName, defaultPrompt, promptmanager.GetManager().Get)
+}
+
+func resolveAgentPromptWithFetcher(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string, fetch func(context.Context, string, string) string) string {
+	fallback := defaultPrompt
+	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
+		fallback = agentCfg.SystemPrompt
+	}
+	promptName := strings.TrimSpace(agentCfg.PromptName)
+	if promptName == "" {
+		promptName = strings.TrimSpace(agentCfg.LangfusePrompt)
+	}
+	if promptName != "" {
+		return fetch(ctx, promptName, fallback)
+	}
+	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
+		return agentCfg.SystemPrompt
+	}
+	return fetch(ctx, defaultName, defaultPrompt)
+}
+
+func hasConfiguredPrompt(agentCfg AgentConfig) bool {
+	return strings.TrimSpace(agentCfg.SystemPrompt) != "" || strings.TrimSpace(agentCfg.PromptName) != "" || strings.TrimSpace(agentCfg.LangfusePrompt) != ""
 }
 
 type TeamConfig struct {
+	Workflow   Workflow    `yaml:"workflow" json:"workflow"`
 	Planner    AgentConfig `yaml:"planner" json:"planner"`
+	Critic     AgentConfig `yaml:"critic" json:"critic"`
+	Executor   AgentConfig `yaml:"executor" json:"executor"`
+	Verifier   AgentConfig `yaml:"verifier" json:"verifier"`
 	Researcher AgentConfig `yaml:"researcher" json:"researcher"`
 	Writer     AgentConfig `yaml:"writer" json:"writer"`
 }
@@ -56,8 +101,29 @@ func GetTeamsConfig() *TeamsConfig {
 	if envTeam := os.Getenv("AI_AGENT_MULTIAGENT_TEAM"); envTeam != "" {
 		cfg.ActiveTeam = envTeam
 	}
+	if envWorkflow := os.Getenv("AI_AGENT_MULTIAGENT_WORKFLOW"); envWorkflow != "" {
+		team := cfg.Teams[cfg.ActiveTeam]
+		team.Workflow = parseWorkflow(envWorkflow)
+		cfg.Teams[cfg.ActiveTeam] = team
+	}
 
 	return cfg
+}
+
+// ActiveWorkflow returns the selected orchestration topology. Empty and
+// unrecognised values deliberately preserve the original three-role workflow.
+func (c *TeamsConfig) ActiveWorkflow() Workflow {
+	return parseWorkflow(string(c.GetActiveTeam().Workflow))
+}
+
+func parseWorkflow(value string) Workflow {
+	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(value)))
+	switch normalized {
+	case "planner_critic_executor_verifier", "review", "reviewed", "execution":
+		return WorkflowReviewed
+	default:
+		return WorkflowResearch
+	}
 }
 
 // GetActiveTeam returns the active TeamConfig. If the active team is not found,

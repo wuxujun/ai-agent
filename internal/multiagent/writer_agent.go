@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
-	"github.com/wuxujun/ai-agent/internal/promptmanager"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -63,14 +62,11 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 		cfg = LLMConfigForScene(config.LLMSceneMultiAgentWriter)
 	}
 
-	systemPrompt := writerSystemPrompt
 	teamsCfg := GetTeamsConfig()
 	activeTeam := teamsCfg.GetActiveTeam()
-	if activeTeam.Writer.SystemPrompt != "" {
-		systemPrompt = activeTeam.Writer.SystemPrompt
-		log.Info("Using custom system prompt for WriterAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Writer.Name)
-	} else {
-		systemPrompt = promptmanager.GetManager().Get(ctx, "multiagent_writer_prompt", writerSystemPrompt)
+	systemPrompt := resolveAgentPrompt(ctx, activeTeam.Writer, "multiagent_writer_prompt", writerSystemPrompt)
+	if hasConfiguredPrompt(activeTeam.Writer) {
+		log.Info("Using team-configured system prompt for WriterAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Writer.Name, "prompt_name", activeTeam.Writer.PromptName)
 	}
 	if activeTeam.Writer.Provider != "" || activeTeam.Writer.Model != "" || activeTeam.Writer.LLMScene != "" {
 		cfg = GetLLMConfig(activeTeam.Writer, config.LLMSceneMultiAgentWriter)

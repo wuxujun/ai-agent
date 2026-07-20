@@ -1,11 +1,16 @@
-// Package multiagent implements a three-role collaborative agent system:
+// Package multiagent implements configurable collaborative agent workflows:
 //   - PlannerAgent  – decomposes the user's goal into a concrete research plan (LLM-powered)
+//   - CriticAgent   – reviews plans before reviewed-workflow execution (LLM-powered)
+//   - ExecutorAgent – executes approved plan steps through registered tools (tool-only)
+//   - VerifierAgent – synthesises and verifies reviewed-workflow results (LLM-powered)
 //   - ResearcherAgent – executes each research step using local file tools (tool-only, no LLM)
 //   - WriterAgent   – synthesises all gathered evidence into a final answer (LLM-powered)
 //
-// The Coordinator orchestrates the three agents in sequence:
+// The Coordinator supports both the original research workflow and a reviewed
+// execution workflow:
 //
 //	PlannerAgent → ResearcherAgent (×N steps) → WriterAgent
+//	PlannerAgent → CriticAgent → ExecutorAgent (×N steps) → VerifierAgent
 package multiagent
 
 import (
@@ -19,6 +24,9 @@ type AgentRole = types.AgentRole
 
 const (
 	RolePlanner    AgentRole = types.AgentRolePlanner
+	RoleCritic     AgentRole = types.AgentRoleCritic
+	RoleExecutor   AgentRole = types.AgentRoleExecutor
+	RoleVerifier   AgentRole = types.AgentRoleVerifier
 	RoleResearcher AgentRole = types.AgentRoleResearcher
 	RoleWriter     AgentRole = types.AgentRoleWriter
 )

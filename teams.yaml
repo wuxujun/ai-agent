@@ -1,12 +1,16 @@
 # Dynamic Multi-Agent Swarm Configuration
 # This file allows loading dynamic agent teams to replace the default hardcoded agents.
+# Each LLM role may set prompt_name to fetch its system prompt from Langfuse.
+# system_prompt remains the fallback when Langfuse is disabled or unavailable.
 
-active_team: "software" # Choices: "software" | "data"
+active_team: "software" # Choices: "software" | "software_reviewed" | "data"
 
 teams:
   software:
+    workflow: "planner_researcher_writer"
     planner:
       name: "Software Architect Planner"
+      # prompt_name: "teams/software/planner"
       system_prompt: |
         You are a software architect agent. Given a user goal, decompose it into
         concrete, ordered research steps. Each step specifies exactly one tool action.
@@ -40,6 +44,7 @@ teams:
 
     writer:
       name: "Software Technical Writer"
+      # prompt_name: "teams/software/writer"
       system_prompt: |
         You are a software technical writer agent. You receive a user goal and a structured
         collection of evidence gathered from local file searches. Your job is to write a clear,
@@ -54,6 +59,7 @@ teams:
         6. final_answer should be complete and self-contained.
 
   data:
+    workflow: "planner_researcher_writer"
     planner:
       name: "Data Analyst Planner"
       system_prompt: |
@@ -96,3 +102,22 @@ teams:
         4. If evidence is insufficient or absent, state this clearly and set draft_confidence = "low".
         5. evidence_summary should be a brief (≤ 50 words) summary of the key evidence used.
         6. final_answer should be complete and self-contained.
+
+  # Reviewed topology: Planner -> Critic -> Executor -> Verifier.
+  # Switch with active_team above or AI_AGENT_MULTIAGENT_TEAM=software_reviewed.
+  software_reviewed:
+    workflow: "planner_critic_executor_verifier"
+    planner:
+      name: "Software Execution Planner"
+      # prompt_name: "teams/software-reviewed/planner"
+      # llm_scene: "multiagent_planner"
+    critic:
+      name: "Software Plan Critic"
+      # prompt_name: "teams/software-reviewed/critic"
+      # llm_scene: "plan_critic"
+    executor:
+      name: "Software Tool Executor"
+    verifier:
+      name: "Software Result Verifier"
+      # prompt_name: "teams/software-reviewed/verifier"
+      # llm_scene: "answer_verifier"

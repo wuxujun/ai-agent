@@ -13,6 +13,21 @@ import (
 // directives to the underlying tools package.
 type ResearcherAgent struct{}
 
+// ExecutorAgent is the tool-running role used by the reviewed four-role
+// workflow. It shares the policy-enforced execution implementation with the
+// legacy ResearcherAgent but has independent team identity and trace roles.
+type ExecutorAgent struct{}
+
+func (e *ExecutorAgent) Execute(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
+	agentName := "Executor"
+	activeTeam := GetTeamsConfig().GetActiveTeam()
+	if activeTeam.Executor.Name != "" {
+		agentName = activeTeam.Executor.Name
+	}
+	log.Info("Execution step starting", "step_id", step.ID, "action", step.Action, "desc", step.Description, "agent_name", agentName)
+	return executeResearchStep(ctx, workspace, step, "ExecutorAgent")
+}
+
 // Research executes a single ResearchStep and returns gathered evidence.
 // Errors inside individual tool calls are treated as non-fatal: the observation
 // records the error and the caller can decide whether to continue.
@@ -24,10 +39,13 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 		agentName = activeTeam.Researcher.Name
 	}
 	log.Info("Research step starting", "step_id", step.ID, "action", step.Action, "desc", step.Description, "agent_name", agentName)
+	return executeResearchStep(ctx, workspace, step, "ResearcherAgent")
+}
 
+func executeResearchStep(ctx context.Context, workspace string, step ResearchStep, roleName string) (*StepEvidence, error) {
 	// Validate workspace boundary before any operation.
 	if err := policy.ValidateWorkspace(workspace); err != nil {
-		return nil, fmt.Errorf("ResearcherAgent workspace policy: %w", err)
+		return nil, fmt.Errorf("%s workspace policy: %w", roleName, err)
 	}
 
 	ev := &StepEvidence{
