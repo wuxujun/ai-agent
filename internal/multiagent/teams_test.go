@@ -39,6 +39,7 @@ func TestTeamsConfig_EnvironmentOverride(t *testing.T) {
 func TestTeamsConfig_YAMLParse(t *testing.T) {
 	yamlContent := `
 active_team: "data"
+resume_config_policy: "require_match"
 teams:
   software:
     planner:
@@ -54,23 +55,34 @@ teams:
       reviewed_intents: ["coding", "automation"]
       reviewed_complexities: ["medium", "high"]
       reviewed_min_plan_steps: 4
+      reviewed_min_remaining_llm_calls: 3
+      reviewed_min_remaining_tokens: 1200
       allow_research_high_risk_tools: false
+    critic_policy:
+      max_replans: 2
     planner:
       name: "Data Planner"
       system_prompt: "Analyze CSVs"
       prompt_name: "teams/data/planner"
+      prompt_label: "staging"
       provider: "gemini"
       model: "gemini-2.5"
     critic:
       name: "Plan Reviewer"
       langfuse_prompt: "teams/data/critic"
+      prompt_version: 9
     executor:
       name: "Data Executor"
     verifier:
       name: "Result Verifier"
       draft_prompt_name: "teams/data/verifier-draft"
+      draft_prompt_label: "latest"
       draft_system_prompt: "Draft from evidence"
+      draft_provider: "openai-responses"
+      draft_model: "gpt-draft"
+      draft_llm_scene: "multiagent_writer"
       prompt_name: "teams/data/verifier-check"
+      prompt_version: 5
     writer:
       name: "Data Writer"
       system_prompt: "Summarize findings"
@@ -85,6 +97,9 @@ teams:
 	if cfg.ActiveTeam != "data" {
 		t.Errorf("expected active team to be 'data', got %q", cfg.ActiveTeam)
 	}
+	if cfg.ResumeConfigPolicy != multiagent.ResumeConfigRequireMatch {
+		t.Fatalf("resume config policy = %q", cfg.ResumeConfigPolicy)
+	}
 
 	activeTeam := cfg.GetActiveTeam()
 	if activeTeam.Planner.Name != "Data Planner" {
@@ -96,20 +111,32 @@ teams:
 	if activeTeam.Planner.PromptName != "teams/data/planner" || activeTeam.Critic.LangfusePrompt != "teams/data/critic" {
 		t.Fatalf("Langfuse prompt references were not parsed: %+v", activeTeam)
 	}
+	if activeTeam.Planner.PromptLabel != "staging" || activeTeam.Critic.PromptVersion != 9 {
+		t.Fatalf("Langfuse prompt selectors were not parsed: %+v", activeTeam)
+	}
 	if activeTeam.Planner.Model != "gemini-2.5" {
 		t.Errorf("expected planner model 'gemini-2.5', got %q", activeTeam.Planner.Model)
 	}
 	if cfg.ActiveWorkflow() != multiagent.WorkflowAdaptive {
 		t.Fatalf("expected adaptive workflow, got %q", cfg.ActiveWorkflow())
 	}
-	if len(activeTeam.Routing.ReviewedIntents) != 2 || len(activeTeam.Routing.ReviewedComplexities) != 2 || activeTeam.Routing.ReviewedMinPlanSteps != 4 || activeTeam.Routing.AllowResearchHighRiskTools {
+	if len(activeTeam.Routing.ReviewedIntents) != 2 || len(activeTeam.Routing.ReviewedComplexities) != 2 || activeTeam.Routing.ReviewedMinPlanSteps != 4 || activeTeam.Routing.ReviewedMinRemainingLLMCalls != 3 || activeTeam.Routing.ReviewedMinRemainingTokens != 1200 || activeTeam.Routing.AllowResearchHighRiskTools {
 		t.Fatalf("adaptive routing configuration was not parsed: %+v", activeTeam.Routing)
+	}
+	if activeTeam.CriticPolicy.MaxReplans == nil || *activeTeam.CriticPolicy.MaxReplans != 2 {
+		t.Fatalf("critic policy was not parsed: %+v", activeTeam.CriticPolicy)
 	}
 	if activeTeam.Critic.Name != "Plan Reviewer" || activeTeam.Executor.Name != "Data Executor" || activeTeam.Verifier.Name != "Result Verifier" {
 		t.Fatalf("four-role configuration was not parsed: %+v", activeTeam)
 	}
 	if activeTeam.Verifier.DraftPromptName != "teams/data/verifier-draft" || activeTeam.Verifier.DraftSystemPrompt != "Draft from evidence" || activeTeam.Verifier.PromptName != "teams/data/verifier-check" {
 		t.Fatalf("split verifier prompts were not parsed: %+v", activeTeam.Verifier)
+	}
+	if activeTeam.Verifier.DraftPromptLabel != "latest" || activeTeam.Verifier.PromptVersion != 5 {
+		t.Fatalf("split verifier selectors were not parsed: %+v", activeTeam.Verifier)
+	}
+	if activeTeam.Verifier.DraftProvider != "openai-responses" || activeTeam.Verifier.DraftModel != "gpt-draft" || activeTeam.Verifier.DraftLLMScene != "multiagent_writer" {
+		t.Fatalf("split verifier LLM configuration was not parsed: %+v", activeTeam.Verifier)
 	}
 
 	llmCfg := multiagent.GetLLMConfig(activeTeam.Planner)
@@ -138,5 +165,14 @@ func TestTeamsConfig_AdaptiveWorkflowEnvironmentOverride(t *testing.T) {
 	cfg := multiagent.GetTeamsConfig()
 	if cfg.ActiveWorkflow() != multiagent.WorkflowAdaptive {
 		t.Fatalf("expected adaptive workflow override, got %q", cfg.ActiveWorkflow())
+	}
+}
+
+func TestTeamsConfig_ResumePolicyEnvironmentOverride(t *testing.T) {
+	t.Setenv("AI_AGENT_MULTIAGENT_RESUME_CONFIG_POLICY", "latest")
+
+	cfg := multiagent.GetTeamsConfig()
+	if cfg.ResumeConfigPolicy != multiagent.ResumeConfigUseLatest {
+		t.Fatalf("expected use_latest resume policy, got %q", cfg.ResumeConfigPolicy)
 	}
 }

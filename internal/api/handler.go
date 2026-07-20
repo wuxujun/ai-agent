@@ -444,7 +444,8 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
-	if types.IsTerminalTaskStatus(task.Status) {
+	resumingMultiAgent := h.engine.CanResumeTask(task)
+	if types.IsTerminalTaskStatus(task.Status) && !resumingMultiAgent {
 		c.JSON(http.StatusOK, task)
 		return
 	}
@@ -504,7 +505,11 @@ func (h *Handler) runAll(c *gin.Context) {
 	// check protects against a peer process holding its own reservation.
 	// StatusPaused is accepted here to support resuming tasks that were
 	// interrupted by a previous graceful shutdown (P1 rollback).
-	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, []types.TaskStatus{types.StatusCreated, types.StatusRunning, types.StatusAwaitingApproval, types.StatusPaused}, types.StatusRunning)
+	startableStatuses := []types.TaskStatus{types.StatusCreated, types.StatusRunning, types.StatusAwaitingApproval, types.StatusPaused}
+	if resumingMultiAgent {
+		startableStatuses = append(startableStatuses, types.StatusPartial)
+	}
+	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, startableStatuses, types.StatusRunning)
 	if err != nil || !success {
 		// Reservation cleanup with compare-and-delete so we never erase a slot
 		// some other goroutine just installed (cannot happen today because the

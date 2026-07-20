@@ -607,6 +607,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	if effectiveMode == "" {
 		effectiveMode = ModeEino
 	}
+	resumingMultiAgent := effectiveMode == ModeMultiAgent && e.CanResumeTask(task)
 	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(effectiveMode))
 	defer func() {
 		if types.IsTerminalTaskStatus(task.Status) {
@@ -614,7 +615,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		}
 	}()
 	wasCompleted := task.Status == types.StatusCompleted
-	if types.IsTerminalTaskStatus(task.Status) {
+	if types.IsTerminalTaskStatus(task.Status) && !resumingMultiAgent {
 		return nil
 	}
 	ctx = store.WithTenantScope(ctx, task.TenantID)
@@ -659,16 +660,16 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			}
 		}
 	}()
-	if !wasCompleted && !e.guardInput(ctx, task) {
+	if !wasCompleted && !resumingMultiAgent && !e.guardInput(ctx, task) {
 		return nil
 	}
-	if !wasCompleted {
+	if !wasCompleted && !resumingMultiAgent {
 		e.routeIntent(ctx, task)
 		ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	}
 
 	prefetchContext := strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "prefetch")
-	if prefetchContext && task.StepCount == 0 && len(task.Memories) == 0 {
+	if !resumingMultiAgent && prefetchContext && task.StepCount == 0 && len(task.Memories) == 0 {
 		var retrievedMems []types.Memory
 		retrievalQuery := task.Goal
 		var ragUsage types.TokenUsage
@@ -723,7 +724,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			}
 		}
 	}
-	if !wasCompleted && prefetchContext {
+	if !wasCompleted && !resumingMultiAgent && prefetchContext {
 		e.ResolveMemoryConflicts(ctx, task)
 		ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	}
@@ -1007,9 +1008,12 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		role := types.AgentRoleSingle
 		if e.Mode == ModeMultiAgent {
 			role = types.AgentRoleResearcher
+			if contextRole, ok := multiagent.ApprovalAgentRoleFromContext(ctx); ok {
+				role = contextRole
+			}
 		}
 		task.Trace = append(task.Trace, types.StepTrace{
-			Step:        task.StepCount + 1,
+			Step:        task.StepCount,
 			Goal:        task.Goal,
 			Action:      action,
 			Observation: fmt.Sprintf("Action rejected by user. Reason: %s", msg),
@@ -1062,7 +1066,9 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 		e.Metrics.IncRunAll()
 	}
 
-	for !types.IsTerminalTaskStatus(task.Status) {
+	resumeTerminal := e.CanResumeTask(task)
+	for !types.IsTerminalTaskStatus(task.Status) || resumeTerminal {
+		resumeTerminal = false
 		select {
 		case <-ctx.Done():
 			engineLog.Warn("task canceled", "task_id", task.ID, "error", ctx.Err())

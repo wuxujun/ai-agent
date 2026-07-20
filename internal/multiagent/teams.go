@@ -2,7 +2,9 @@ package multiagent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 
@@ -23,35 +25,66 @@ const (
 	WorkflowAdaptive Workflow = "adaptive"
 )
 
-const WorkflowRouteTraceAction = "multiagent_workflow_route"
+const (
+	WorkflowRouteTraceAction    = "multiagent_workflow_route"
+	TeamConfigChangeTraceAction = "multiagent_team_config_change"
+)
+
+type ResumeConfigPolicy string
+
+const (
+	ResumeConfigUseLatest    ResumeConfigPolicy = "use_latest"
+	ResumeConfigRequireMatch ResumeConfigPolicy = "require_match"
+)
 
 type AgentConfig struct {
-	Name              string `yaml:"name" json:"name"`
-	SystemPrompt      string `yaml:"system_prompt" json:"system_prompt"`
-	PromptName        string `yaml:"prompt_name" json:"prompt_name"`
-	LangfusePrompt    string `yaml:"langfuse_prompt" json:"langfuse_prompt"`
-	DraftPromptName   string `yaml:"draft_prompt_name" json:"draft_prompt_name"`
-	DraftSystemPrompt string `yaml:"draft_system_prompt" json:"draft_system_prompt"`
-	Provider          string `yaml:"provider" json:"provider"`
-	Model             string `yaml:"model" json:"model"`
-	LLMScene          string `yaml:"llm_scene" json:"llm_scene"`
+	Name               string `yaml:"name" json:"name"`
+	SystemPrompt       string `yaml:"system_prompt" json:"system_prompt"`
+	PromptName         string `yaml:"prompt_name" json:"prompt_name"`
+	LangfusePrompt     string `yaml:"langfuse_prompt" json:"langfuse_prompt"`
+	PromptLabel        string `yaml:"prompt_label" json:"prompt_label"`
+	PromptVersion      int    `yaml:"prompt_version" json:"prompt_version"`
+	DraftPromptName    string `yaml:"draft_prompt_name" json:"draft_prompt_name"`
+	DraftPromptLabel   string `yaml:"draft_prompt_label" json:"draft_prompt_label"`
+	DraftPromptVersion int    `yaml:"draft_prompt_version" json:"draft_prompt_version"`
+	DraftSystemPrompt  string `yaml:"draft_system_prompt" json:"draft_system_prompt"`
+	DraftProvider      string `yaml:"draft_provider" json:"draft_provider"`
+	DraftModel         string `yaml:"draft_model" json:"draft_model"`
+	DraftLLMScene      string `yaml:"draft_llm_scene" json:"draft_llm_scene"`
+	Provider           string `yaml:"provider" json:"provider"`
+	Model              string `yaml:"model" json:"model"`
+	LLMScene           string `yaml:"llm_scene" json:"llm_scene"`
 }
 
-func draftPromptConfig(agentCfg AgentConfig) AgentConfig {
+func draftAgentConfig(agentCfg AgentConfig) AgentConfig {
 	return AgentConfig{
-		SystemPrompt: agentCfg.DraftSystemPrompt,
-		PromptName:   agentCfg.DraftPromptName,
+		SystemPrompt:  agentCfg.DraftSystemPrompt,
+		PromptName:    agentCfg.DraftPromptName,
+		PromptLabel:   agentCfg.DraftPromptLabel,
+		PromptVersion: agentCfg.DraftPromptVersion,
+		Provider:      firstConfigured(agentCfg.DraftProvider, agentCfg.Provider),
+		Model:         firstConfigured(agentCfg.DraftModel, agentCfg.Model),
+		LLMScene:      agentCfg.DraftLLMScene,
 	}
+}
+
+func firstConfigured(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // resolveAgentPrompt preserves inline prompt compatibility while allowing a
 // team role to name a Langfuse-managed prompt. prompt_name is the preferred
 // field; langfuse_prompt remains an explicit alias.
 func resolveAgentPrompt(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string) string {
-	return resolveAgentPromptWithFetcher(ctx, agentCfg, defaultName, defaultPrompt, promptmanager.GetManager().Get)
+	return resolveAgentPromptWithSelectorFetcher(ctx, agentCfg, defaultName, defaultPrompt, promptmanager.GetManager().GetWithSelector)
 }
 
-func resolveAgentPromptWithFetcher(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string, fetch func(context.Context, string, string) string) string {
+func resolveAgentPromptForTask(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string) (string, error) {
 	fallback := defaultPrompt
 	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
 		fallback = agentCfg.SystemPrompt
@@ -61,39 +94,113 @@ func resolveAgentPromptWithFetcher(ctx context.Context, agentCfg AgentConfig, de
 		promptName = strings.TrimSpace(agentCfg.LangfusePrompt)
 	}
 	if promptName != "" {
-		return fetch(ctx, promptName, fallback)
+		resolved, err := promptmanager.GetManager().ResolvePinned(ctx, promptName, agentPromptSelector(agentCfg), fallback)
+		return resolved.Content, err
+	}
+	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
+		return agentCfg.SystemPrompt, nil
+	}
+	resolved, err := promptmanager.GetManager().ResolvePinned(ctx, defaultName, agentPromptSelector(agentCfg), defaultPrompt)
+	return resolved.Content, err
+}
+
+func resolveAgentPromptWithFetcher(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string, fetch func(context.Context, string, string) string) string {
+	return resolveAgentPromptWithSelectorFetcher(ctx, agentCfg, defaultName, defaultPrompt, func(ctx context.Context, name string, _ promptmanager.Selector, fallback string) string {
+		return fetch(ctx, name, fallback)
+	})
+}
+
+func resolveAgentPromptWithSelectorFetcher(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string, fetch func(context.Context, string, promptmanager.Selector, string) string) string {
+	fallback := defaultPrompt
+	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
+		fallback = agentCfg.SystemPrompt
+	}
+	promptName := strings.TrimSpace(agentCfg.PromptName)
+	if promptName == "" {
+		promptName = strings.TrimSpace(agentCfg.LangfusePrompt)
+	}
+	if promptName != "" {
+		return fetch(ctx, promptName, agentPromptSelector(agentCfg), fallback)
 	}
 	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
 		return agentCfg.SystemPrompt
 	}
-	return fetch(ctx, defaultName, defaultPrompt)
+	return fetch(ctx, defaultName, agentPromptSelector(agentCfg), defaultPrompt)
 }
 
 func hasConfiguredPrompt(agentCfg AgentConfig) bool {
-	return strings.TrimSpace(agentCfg.SystemPrompt) != "" || strings.TrimSpace(agentCfg.PromptName) != "" || strings.TrimSpace(agentCfg.LangfusePrompt) != ""
+	return strings.TrimSpace(agentCfg.SystemPrompt) != "" || strings.TrimSpace(agentCfg.PromptName) != "" || strings.TrimSpace(agentCfg.LangfusePrompt) != "" || strings.TrimSpace(agentCfg.PromptLabel) != "" || agentCfg.PromptVersion != 0
+}
+
+func agentPromptSelector(agentCfg AgentConfig) promptmanager.Selector {
+	return promptmanager.Selector{Label: agentCfg.PromptLabel, Version: agentCfg.PromptVersion}
 }
 
 type TeamConfig struct {
-	Workflow   Workflow              `yaml:"workflow" json:"workflow"`
-	Routing    WorkflowRoutingConfig `yaml:"routing" json:"routing"`
-	Planner    AgentConfig           `yaml:"planner" json:"planner"`
-	Critic     AgentConfig           `yaml:"critic" json:"critic"`
-	Executor   AgentConfig           `yaml:"executor" json:"executor"`
-	Verifier   AgentConfig           `yaml:"verifier" json:"verifier"`
-	Researcher AgentConfig           `yaml:"researcher" json:"researcher"`
-	Writer     AgentConfig           `yaml:"writer" json:"writer"`
+	Workflow     Workflow              `yaml:"workflow" json:"workflow"`
+	Routing      WorkflowRoutingConfig `yaml:"routing" json:"routing"`
+	CriticPolicy CriticPolicyConfig    `yaml:"critic_policy" json:"critic_policy"`
+	Planner      AgentConfig           `yaml:"planner" json:"planner"`
+	Critic       AgentConfig           `yaml:"critic" json:"critic"`
+	Executor     AgentConfig           `yaml:"executor" json:"executor"`
+	Verifier     AgentConfig           `yaml:"verifier" json:"verifier"`
+	Researcher   AgentConfig           `yaml:"researcher" json:"researcher"`
+	Writer       AgentConfig           `yaml:"writer" json:"writer"`
 }
 
 type WorkflowRoutingConfig struct {
-	ReviewedIntents            []string `yaml:"reviewed_intents" json:"reviewed_intents"`
-	ReviewedComplexities       []string `yaml:"reviewed_complexities" json:"reviewed_complexities"`
-	ReviewedMinPlanSteps       int      `yaml:"reviewed_min_plan_steps" json:"reviewed_min_plan_steps"`
-	AllowResearchHighRiskTools bool     `yaml:"allow_research_high_risk_tools" json:"allow_research_high_risk_tools"`
+	ReviewedIntents              []string `yaml:"reviewed_intents" json:"reviewed_intents"`
+	ReviewedComplexities         []string `yaml:"reviewed_complexities" json:"reviewed_complexities"`
+	ReviewedMinPlanSteps         int      `yaml:"reviewed_min_plan_steps" json:"reviewed_min_plan_steps"`
+	ReviewedMinRemainingLLMCalls int      `yaml:"reviewed_min_remaining_llm_calls" json:"reviewed_min_remaining_llm_calls"`
+	ReviewedMinRemainingTokens   int      `yaml:"reviewed_min_remaining_tokens" json:"reviewed_min_remaining_tokens"`
+	AllowResearchHighRiskTools   bool     `yaml:"allow_research_high_risk_tools" json:"allow_research_high_risk_tools"`
+}
+
+type CriticPolicyConfig struct {
+	MaxReplans *int `yaml:"max_replans" json:"max_replans"`
 }
 
 type TeamsConfig struct {
-	ActiveTeam string                `yaml:"active_team" json:"active_team"`
-	Teams      map[string]TeamConfig `yaml:"teams" json:"teams"`
+	ActiveTeam         string                `yaml:"active_team" json:"active_team"`
+	ResumeConfigPolicy ResumeConfigPolicy    `yaml:"resume_config_policy" json:"resume_config_policy"`
+	Teams              map[string]TeamConfig `yaml:"teams" json:"teams"`
+}
+
+type teamConfigSnapshot struct {
+	ActiveTeam   string
+	Team         TeamConfig
+	Digest       string
+	ResumePolicy ResumeConfigPolicy
+}
+
+type teamConfigSnapshotContextKey struct{}
+
+func newTeamConfigSnapshot(activeTeam string, team TeamConfig) teamConfigSnapshot {
+	raw, _ := json.Marshal(team)
+	digest := sha256.Sum256(raw)
+	return teamConfigSnapshot{
+		ActiveTeam:   activeTeam,
+		Team:         team,
+		Digest:       fmt.Sprintf("%x", digest[:12]),
+		ResumePolicy: ResumeConfigUseLatest,
+	}
+}
+
+func withTeamConfigSnapshot(ctx context.Context, snapshot teamConfigSnapshot) context.Context {
+	return context.WithValue(ctx, teamConfigSnapshotContextKey{}, snapshot)
+}
+
+func teamConfigFromContext(ctx context.Context) teamConfigSnapshot {
+	if ctx != nil {
+		if snapshot, ok := ctx.Value(teamConfigSnapshotContextKey{}).(teamConfigSnapshot); ok {
+			return snapshot
+		}
+	}
+	teamsCfg := GetTeamsConfig()
+	snapshot := newTeamConfigSnapshot(teamsCfg.ActiveTeam, teamsCfg.GetActiveTeam())
+	snapshot.ResumePolicy = teamsCfg.ResumeConfigPolicy
+	return snapshot
 }
 
 // GetTeamsConfig loads and parses teams.yaml if it exists.
@@ -130,8 +237,25 @@ func GetTeamsConfig() *TeamsConfig {
 		team.Workflow = parseWorkflow(envWorkflow)
 		cfg.Teams[cfg.ActiveTeam] = team
 	}
+	if envPolicy := os.Getenv("AI_AGENT_MULTIAGENT_RESUME_CONFIG_POLICY"); envPolicy != "" {
+		cfg.ResumeConfigPolicy = parseResumeConfigPolicy(envPolicy)
+	} else {
+		cfg.ResumeConfigPolicy = parseResumeConfigPolicy(string(cfg.ResumeConfigPolicy))
+	}
 
 	return cfg
+}
+
+func parseResumeConfigPolicy(value string) ResumeConfigPolicy {
+	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(value)))
+	switch normalized {
+	case "require_match", "strict", "locked":
+		return ResumeConfigRequireMatch
+	case "", "use_latest", "latest":
+		return ResumeConfigUseLatest
+	default:
+		return ResumeConfigRequireMatch
+	}
 }
 
 // ActiveWorkflow returns the selected orchestration mode. Empty and
@@ -163,8 +287,23 @@ func resolveWorkflow(configured Workflow, routing WorkflowRoutingConfig, task *t
 		return workflowRouteDecision{Configured: configured, Effective: configured, Reason: "configured"}
 	}
 	if persisted, ok := persistedWorkflowRoute(task); ok {
+		if persisted.Effective == WorkflowResearch {
+			reevaluated := resolveAdaptiveWorkflow(routing, task, plan)
+			if reevaluated.Effective == WorkflowReviewed {
+				reevaluated.Reason = "resume_escalation:" + reevaluated.Reason
+				return reevaluated
+			}
+		}
 		return persisted
 	}
+	return resolveAdaptiveWorkflow(routing, task, plan)
+}
+
+// resolveAdaptiveWorkflow evaluates a newly generated plan without consulting
+// a persisted route. Replans use it to support one-way escalation when later
+// steps are riskier than the initial plan.
+func resolveAdaptiveWorkflow(routing WorkflowRoutingConfig, task *types.Task, plan *ResearchPlan) workflowRouteDecision {
+	configured := WorkflowAdaptive
 	if !routing.AllowResearchHighRiskTools && plan != nil {
 		for _, step := range plan.Steps {
 			if tool, ok := tools.Get(step.Action); ok && tool.RiskLevel() == types.RiskLevelHigh {
@@ -178,15 +317,37 @@ func resolveWorkflow(configured Workflow, routing WorkflowRoutingConfig, task *t
 		complexities = []string{"high"}
 	}
 	if containsRoutingValue(complexities, complexity) {
-		return workflowRouteDecision{Configured: configured, Effective: WorkflowReviewed, Reason: "complexity:" + complexity}
+		return applyReviewedBudgetGate(workflowRouteDecision{Configured: configured, Effective: WorkflowReviewed, Reason: "complexity:" + complexity}, routing, task)
 	}
 	if containsRoutingValue(routing.ReviewedIntents, intent) {
-		return workflowRouteDecision{Configured: configured, Effective: WorkflowReviewed, Reason: "intent:" + intent}
+		return applyReviewedBudgetGate(workflowRouteDecision{Configured: configured, Effective: WorkflowReviewed, Reason: "intent:" + intent}, routing, task)
 	}
 	if routing.ReviewedMinPlanSteps > 0 && plan != nil && len(plan.Steps) >= routing.ReviewedMinPlanSteps {
-		return workflowRouteDecision{Configured: configured, Effective: WorkflowReviewed, Reason: "plan_steps"}
+		return applyReviewedBudgetGate(workflowRouteDecision{Configured: configured, Effective: WorkflowReviewed, Reason: "plan_steps"}, routing, task)
 	}
 	return workflowRouteDecision{Configured: configured, Effective: WorkflowResearch, Reason: "default_research"}
+}
+
+func applyReviewedBudgetGate(decision workflowRouteDecision, routing WorkflowRoutingConfig, task *types.Task) workflowRouteDecision {
+	if task == nil {
+		return decision
+	}
+	if routing.ReviewedMinRemainingLLMCalls > 0 && task.LLMCallBudget > 0 {
+		remaining := task.LLMCallBudget - task.LLMCalls
+		if remaining < routing.ReviewedMinRemainingLLMCalls {
+			decision.Effective = WorkflowResearch
+			decision.Reason = "budget_fallback:llm_calls:" + decision.Reason
+			return decision
+		}
+	}
+	if routing.ReviewedMinRemainingTokens > 0 && task.TokenBudget > 0 {
+		remaining := task.TokenBudget - totalTokensUsed(task)
+		if remaining < routing.ReviewedMinRemainingTokens {
+			decision.Effective = WorkflowResearch
+			decision.Reason = "budget_fallback:tokens:" + decision.Reason
+		}
+	}
+	return decision
 }
 
 func persistedWorkflowRoute(task *types.Task) (workflowRouteDecision, bool) {

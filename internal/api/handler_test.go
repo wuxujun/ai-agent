@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/api"
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -62,6 +64,21 @@ func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, decision *
 	return nil, nil
 }
 
+type apiResumeVerifier struct{ calls int }
+
+func (v *apiResumeVerifier) Draft(context.Context, string, []multiagent.StepEvidence, []types.Memory) (*multiagent.VerificationDraft, error) {
+	return nil, fmt.Errorf("draft must not run during resume")
+}
+
+func (v *apiResumeVerifier) Verify(context.Context, string, string, []multiagent.StepEvidence) (*multiagent.VerificationResult, error) {
+	v.calls++
+	return &multiagent.VerificationResult{Supported: true}, nil
+}
+
+func (v *apiResumeVerifier) Finalize(context.Context, string, []multiagent.StepEvidence, []types.Memory) (*multiagent.FinalVerificationOutput, error) {
+	return nil, fmt.Errorf("finalize must not run during resume")
+}
+
 func setupTestRouter(t *testing.T, st store.Store, eng *orchestrator.Engine) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -96,6 +113,47 @@ func waitForTaskStatus(t *testing.T, st store.Store, taskID string, want types.T
 			t.Fatalf("timed out waiting for task %s status %s; last status %s", taskID, want, task.Status)
 		case <-ticker.C:
 		}
+	}
+}
+
+func TestRunAllResumesPartialVerifierCheckpoint(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.AnswerPipeline.Enabled = false
+		cfg.RAG.ContextMode = "prefetch"
+	}))
+	st := store.NewMemoryStore()
+	verifier := &apiResumeVerifier{}
+	engine := &orchestrator.Engine{
+		Mode:  orchestrator.ModeMultiAgent,
+		Store: st,
+		Coordinator: &multiagent.Coordinator{
+			FinalVerifier: verifier,
+		},
+	}
+	task := &types.Task{
+		ID: "api-verifier-resume", Goal: "verify", Status: types.StatusPartial, FinalAnswer: "candidate", StepCount: 1,
+		Trace: []types.StepTrace{{
+			Step:        0,
+			Action:      multiagent.VerifierDraftCheckpointTraceAction,
+			Query:       "verifier_draft_checkpoint",
+			Observation: `{"version":1,"draft":{"final_answer":"candidate","evidence_summary":"evidence","draft_confidence":"high"},"evidence":[],"execution_complete":true}`,
+			AgentRole:   types.AgentRoleVerifier,
+		}},
+	}
+	if err := st.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	r := setupTestRouter(t, st, engine)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks/api-verifier-resume/run-all", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("run-all status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	persisted := waitForTaskStatus(t, st, task.ID, types.StatusCompleted)
+	if verifier.calls != 1 || persisted.FinalAnswer != "candidate" || multiagent.HasPendingVerifierDraft(persisted) {
+		t.Fatalf("persisted=%+v verifier_calls=%d", persisted, verifier.calls)
 	}
 }
 

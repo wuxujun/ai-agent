@@ -21,6 +21,13 @@ func (t *highRiskStubTool) Execute(ctx context.Context, workspace string, params
 	return &tools.ToolResult{}, nil
 }
 
+type countingExecutor struct{ calls int }
+
+func (e *countingExecutor) Execute(context.Context, string, ResearchStep) (*StepEvidence, error) {
+	e.calls++
+	return &StepEvidence{Observation: "executed"}, nil
+}
+
 // TestIsReadOnlyActionRejectsHighRiskTool verifies the approval-bypass guard:
 // even if an action name appears in the read-only allow-list, a tool that the
 // registry reports as high-risk must NOT be treated as parallelisable, so it is
@@ -61,6 +68,39 @@ func TestPartitionBatchForcesHighRiskSerial(t *testing.T) {
 	}
 	if len(remainder) != 1 || remainder[0].ID != "s2" {
 		t.Errorf("expected remaining step in remainder, got %+v", remainder)
+	}
+}
+
+func TestRunBatchSerialFailsClosedWithoutApprovalHandler(t *testing.T) {
+	executor := &countingExecutor{}
+	coordinator := &Coordinator{Executor: executor}
+	task := &types.Task{Goal: "write output", Workspace: t.TempDir(), MaxSteps: 1, ToolBudget: 1}
+	ctx := withWorkflow(context.Background(), WorkflowReviewed)
+
+	evidence, failed, err := coordinator.runBatchSerial(ctx, task, []ResearchStep{{ID: "step-1", Action: "write_file", FilePath: "result.txt", Content: "result"}})
+	if err == nil || !failed {
+		t.Fatalf("failed=%t err=%v, want fail-closed error", failed, err)
+	}
+	if executor.calls != 0 || len(evidence) != 0 || task.ToolBudget != 1 {
+		t.Fatalf("executor calls=%d evidence=%v tool_budget=%d", executor.calls, evidence, task.ToolBudget)
+	}
+	if len(task.Trace) != 1 || task.Trace[0].AgentRole != RoleExecutor || !isApprovalGateTrace(task.Trace[0]) {
+		t.Fatalf("approval failure trace = %+v", task.Trace)
+	}
+	if got := multiAgentToolStepCount(task); got != 0 {
+		t.Fatalf("tool step count = %d, want 0 for a blocked action", got)
+	}
+}
+
+func TestMultiAgentToolStepCountExcludesUserRejection(t *testing.T) {
+	task := &types.Task{Trace: []types.StepTrace{{
+		Action:    "write_file",
+		AgentRole: RoleExecutor,
+		Error:     "rejected",
+		Evidence:  []types.Evidence{{Path: "user_feedback", Query: "disapproval"}},
+	}}}
+	if got := multiAgentToolStepCount(task); got != 0 {
+		t.Fatalf("tool step count = %d, want 0", got)
 	}
 }
 

@@ -61,13 +61,15 @@ func TestValidateVerificationResultRejectsInconsistentPayload(t *testing.T) {
 }
 
 type sequentialFinalVerifierCaller struct {
-	calls int
+	calls   int
+	configs []llmcore.Config
 }
 
-func (c *sequentialFinalVerifierCaller) CallJSON(_ context.Context, _ llmcore.Config, _, _ string, _ map[string]any, dest any) (types.TokenUsage, error) {
+func (c *sequentialFinalVerifierCaller) CallJSON(_ context.Context, cfg llmcore.Config, _, _ string, _ map[string]any, dest any) (types.TokenUsage, error) {
 	c.calls++
+	c.configs = append(c.configs, cfg)
 	switch output := dest.(type) {
-	case *finalAnswerCandidate:
+	case *VerificationDraft:
 		output.FinalAnswer = "candidate answer"
 		output.EvidenceSummary = "step-1 evidence"
 		output.DraftConfidence = "high"
@@ -95,6 +97,9 @@ func TestFinalVerifierUsesIndependentDraftAndVerificationCalls(t *testing.T) {
 	}
 	if caller.calls != 2 {
 		t.Fatalf("LLM calls = %d, want 2", caller.calls)
+	}
+	if caller.configs[0].Scene != config.LLMSceneMultiAgentWriter || caller.configs[1].Scene != config.LLMSceneAnswerVerifier {
+		t.Fatalf("LLM scenes = [%q, %q]", caller.configs[0].Scene, caller.configs[1].Scene)
 	}
 	if output.Supported || output.DraftConfidence != "low" {
 		t.Fatalf("output = %+v", output)

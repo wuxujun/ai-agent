@@ -45,7 +45,7 @@ type FinalVerificationOutput struct {
 	TokenUsage      types.TokenUsage    `json:"token_usage,omitempty"`
 }
 
-type finalAnswerCandidate struct {
+type VerificationDraft struct {
 	FinalAnswer     string           `json:"final_answer"`
 	EvidenceSummary string           `json:"evidence_summary"`
 	DraftConfidence string           `json:"draft_confidence"`
@@ -68,11 +68,19 @@ type FinalVerifier interface {
 	Finalize(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*FinalVerificationOutput, error)
 }
 
+// CheckpointFinalVerifier exposes the two independent verifier stages so the
+// coordinator can persist a generated draft before starting verification.
+type CheckpointFinalVerifier interface {
+	FinalVerifier
+	AnswerVerifier
+	Draft(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*VerificationDraft, error)
+}
+
 type VerifierAgent struct{}
 
 func (v *VerifierAgent) Verify(ctx context.Context, goal, answer string, evidence []StepEvidence) (*VerificationResult, error) {
 	cfg := LLMConfigForScene(config.LLMSceneAnswerVerifier)
-	agentCfg := GetTeamsConfig().GetActiveTeam().Verifier
+	agentCfg := teamConfigFromContext(ctx).Team.Verifier
 	if agentCfg.Provider != "" || agentCfg.Model != "" || agentCfg.LLMScene != "" {
 		cfg = GetLLMConfig(agentCfg, config.LLMSceneAnswerVerifier)
 	}
@@ -97,7 +105,10 @@ func (v *VerifierAgent) Verify(ctx context.Context, goal, answer string, evidenc
 		"required": []string{"supported", "issues"},
 	}
 	var result VerificationResult
-	systemPrompt := resolveAgentPrompt(ctx, agentCfg, "multiagent_verifier_prompt", verifierSystemPrompt)
+	systemPrompt, promptErr := resolveAgentPromptForTask(ctx, agentCfg, "multiagent_verifier_prompt", verifierSystemPrompt)
+	if promptErr != nil {
+		return nil, fmt.Errorf("resolve VerifierAgent prompt: %w", promptErr)
+	}
 	usage, err := callLLMJSON(ctx, cfg, systemPrompt, prompt, schema, &result)
 	result.TokenUsage = usage
 	if err == nil {
@@ -106,12 +117,16 @@ func (v *VerifierAgent) Verify(ctx context.Context, goal, answer string, evidenc
 	return &result, err
 }
 
-func (v *VerifierAgent) Finalize(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*FinalVerificationOutput, error) {
-	agentCfg := GetTeamsConfig().GetActiveTeam().Verifier
-	cfg := GetLLMConfig(agentCfg, config.LLMSceneAnswerVerifier)
-	systemPrompt := resolveAgentPrompt(ctx, draftPromptConfig(agentCfg), "multiagent_final_verifier_draft_prompt", finalVerifierDraftSystemPrompt)
+func (v *VerifierAgent) Draft(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*VerificationDraft, error) {
+	agentCfg := teamConfigFromContext(ctx).Team.Verifier
+	draftCfg := draftAgentConfig(agentCfg)
+	cfg := GetLLMConfig(draftCfg, config.LLMSceneMultiAgentWriter)
+	systemPrompt, promptErr := resolveAgentPromptForTask(ctx, draftCfg, "multiagent_final_verifier_draft_prompt", finalVerifierDraftSystemPrompt)
+	if promptErr != nil {
+		return nil, fmt.Errorf("resolve VerifierAgent draft prompt: %w", promptErr)
+	}
 	prompt := (&WriterAgent{}).buildPrompt(goal, evidence, memories)
-	var candidate finalAnswerCandidate
+	var candidate VerificationDraft
 	draftUsage, err := callLLMJSON(ctx, cfg, systemPrompt, prompt, finalAnswerCandidateSchema(), &candidate)
 	candidate.TokenUsage = draftUsage
 	if err != nil {
@@ -119,6 +134,14 @@ func (v *VerifierAgent) Finalize(ctx context.Context, goal string, evidence []St
 	}
 	if strings.TrimSpace(candidate.FinalAnswer) == "" || strings.TrimSpace(candidate.EvidenceSummary) == "" {
 		return nil, fmt.Errorf("final verifier returned an incomplete candidate answer")
+	}
+	return &candidate, nil
+}
+
+func (v *VerifierAgent) Finalize(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*FinalVerificationOutput, error) {
+	candidate, err := v.Draft(ctx, goal, evidence, memories)
+	if err != nil {
+		return nil, err
 	}
 
 	verification, err := v.Verify(ctx, goal, candidate.FinalAnswer, evidence)

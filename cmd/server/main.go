@@ -263,6 +263,7 @@ func main() {
 		eng.Coordinator.Verifier = &multiagent.VerifierAgent{}
 		eng.Coordinator.SuspendForApproval = eng.SuspendForApproval
 		eng.Coordinator.ResolveMemoryConflicts = eng.ResolveMemoryConflicts
+		eng.Coordinator.PersistTask = st.SaveFullTask
 		slog.Info("multi-agent mode enabled",
 			"coordinator_provider", os.Getenv("AI_AGENT_LLM_PROVIDER"),
 		)

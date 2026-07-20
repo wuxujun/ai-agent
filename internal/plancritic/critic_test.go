@@ -59,3 +59,15 @@ func TestShouldCritiqueFingerprintAndApply(t *testing.T) {
 		t.Fatal("high-complexity task should trigger critique")
 	}
 }
+
+func TestDefaultSystemPromptCalibratesRejectionBoundary(t *testing.T) {
+	for _, expected := range []string{
+		"Reserve high severity for a blocker",
+		"Approve feasible plans that only have optional refinements or low/medium issues",
+		"do not reject merely because",
+	} {
+		if !strings.Contains(DefaultSystemPrompt, expected) {
+			t.Fatalf("default critic prompt is missing %q", expected)
+		}
+	}
+}

@@ -62,11 +62,14 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 		cfg = LLMConfigForScene(config.LLMSceneMultiAgentWriter)
 	}
 
-	teamsCfg := GetTeamsConfig()
-	activeTeam := teamsCfg.GetActiveTeam()
-	systemPrompt := resolveAgentPrompt(ctx, activeTeam.Writer, "multiagent_writer_prompt", writerSystemPrompt)
+	teamSnapshot := teamConfigFromContext(ctx)
+	activeTeam := teamSnapshot.Team
+	systemPrompt, promptErr := resolveAgentPromptForTask(ctx, activeTeam.Writer, "multiagent_writer_prompt", writerSystemPrompt)
+	if promptErr != nil {
+		return nil, fmt.Errorf("resolve WriterAgent prompt: %w", promptErr)
+	}
 	if hasConfiguredPrompt(activeTeam.Writer) {
-		log.Info("Using team-configured system prompt for WriterAgent", "team", teamsCfg.ActiveTeam, "agent_name", activeTeam.Writer.Name, "prompt_name", activeTeam.Writer.PromptName)
+		log.Info("Using team-configured system prompt for WriterAgent", "team", teamSnapshot.ActiveTeam, "agent_name", activeTeam.Writer.Name, "prompt_name", activeTeam.Writer.PromptName)
 	}
 	if activeTeam.Writer.Provider != "" || activeTeam.Writer.Model != "" || activeTeam.Writer.LLMScene != "" {
 		cfg = GetLLMConfig(activeTeam.Writer, config.LLMSceneMultiAgentWriter)

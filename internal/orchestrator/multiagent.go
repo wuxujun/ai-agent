@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -29,7 +30,7 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 		return err
 	}
 
-	if types.IsTerminalTaskStatus(task.Status) {
+	if types.IsTerminalTaskStatus(task.Status) && !e.CanResumeTask(task) {
 		log.Info("task already finished, skipping", "task_id", task.ID, "status", string(task.Status))
 		return nil
 	}
@@ -54,4 +55,19 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 		"steps", task.StepCount,
 	)
 	return nil
+}
+
+// CanResumeTask identifies the narrow terminal-state exception used for a
+// partial multi-agent task whose verifier draft was persisted successfully.
+func (e *Engine) CanResumeTask(task *types.Task) bool {
+	if e == nil || task == nil {
+		return false
+	}
+	mode := e.Mode
+	if mode == "" {
+		mode = ModeEino
+	}
+	resumableStatus := task.Status == types.StatusPartial || task.Status == types.StatusRunning
+	resumeCheckpoint := multiagent.HasPendingVerifierDraft(task) || multiagent.HasPendingTeamConfigChange(task)
+	return mode == ModeMultiAgent && resumableStatus && resumeCheckpoint
 }

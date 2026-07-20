@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -191,6 +192,7 @@ func TestSuspendForApprovalPostApprovalSaveUsesDetachedCtx(t *testing.T) {
 func TestSuspendForApprovalRejectionTracesFeedback(t *testing.T) {
 	st := &ctxAwareStore{}
 	engine := newSuspendEngine(st)
+	engine.Mode = ModeMultiAgent
 	task := &types.Task{ID: "task-rejection-feedback", Workspace: t.TempDir(), Goal: "test goal"}
 
 	// Resolver goroutine that rejects the request with a feedback message.
@@ -209,7 +211,7 @@ func TestSuspendForApprovalRejectionTracesFeedback(t *testing.T) {
 		}
 	}()
 
-	callerCtx := context.Background()
+	callerCtx := multiagent.WithApprovalAgentRole(context.Background(), types.AgentRoleExecutor)
 	approved, _, err := engine.SuspendForApproval(callerCtx, task, "write_file", map[string]any{"path": "x.txt", "content": "hi"})
 	if err != nil {
 		t.Fatalf("SuspendForApproval err = %v, want nil", err)
@@ -226,6 +228,9 @@ func TestSuspendForApprovalRejectionTracesFeedback(t *testing.T) {
 	tr := task.Trace[0]
 	if tr.Action != "write_file" {
 		t.Errorf("trace action = %q, want write_file", tr.Action)
+	}
+	if tr.Step != 0 || tr.AgentRole != types.AgentRoleExecutor {
+		t.Errorf("trace step=%d role=%q, want step=0 role=%q", tr.Step, tr.AgentRole, types.AgentRoleExecutor)
 	}
 	if tr.Error == "" || tr.Observation == "" {
 		t.Errorf("expected non-empty Error and Observation in rejection trace")

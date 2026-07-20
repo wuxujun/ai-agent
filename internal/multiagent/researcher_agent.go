@@ -20,7 +20,7 @@ type ExecutorAgent struct{}
 
 func (e *ExecutorAgent) Execute(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
 	agentName := "Executor"
-	activeTeam := GetTeamsConfig().GetActiveTeam()
+	activeTeam := teamConfigFromContext(ctx).Team
 	if activeTeam.Executor.Name != "" {
 		agentName = activeTeam.Executor.Name
 	}
@@ -33,8 +33,7 @@ func (e *ExecutorAgent) Execute(ctx context.Context, workspace string, step Rese
 // records the error and the caller can decide whether to continue.
 func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
 	agentName := "Researcher"
-	teamsCfg := GetTeamsConfig()
-	activeTeam := teamsCfg.GetActiveTeam()
+	activeTeam := teamConfigFromContext(ctx).Team
 	if activeTeam.Researcher.Name != "" {
 		agentName = activeTeam.Researcher.Name
 	}

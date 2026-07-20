@@ -67,6 +67,10 @@ func (w *mockWriter) Write(ctx context.Context, goal string, evidence []multiage
 	}, nil
 }
 
+func approveHighRisk(context.Context, *types.Task, string, map[string]any) (bool, map[string]any, error) {
+	return true, nil, nil
+}
+
 func TestCoordinatorReplanOnError(t *testing.T) {
 	mp := &mockPlanner{
 		planSteps: []multiagent.ResearchStep{
@@ -81,9 +85,10 @@ func TestCoordinatorReplanOnError(t *testing.T) {
 	mw := &mockWriter{}
 
 	coordinator := &multiagent.Coordinator{
-		Planner:    mp,
-		Researcher: mr,
-		Writer:     mw,
+		Planner:            mp,
+		Researcher:         mr,
+		Writer:             mw,
+		SuspendForApproval: approveHighRisk,
 	}
 
 	task := &types.Task{
@@ -133,9 +138,10 @@ func TestCoordinatorReplanOnFailureObservation(t *testing.T) {
 	mw := &mockWriter{}
 
 	coordinator := &multiagent.Coordinator{
-		Planner:    mp,
-		Researcher: mr,
-		Writer:     mw,
+		Planner:            mp,
+		Researcher:         mr,
+		Writer:             mw,
+		SuspendForApproval: approveHighRisk,
 	}
 
 	task := &types.Task{

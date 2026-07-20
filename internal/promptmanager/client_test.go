@@ -6,9 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestPromptManagerGet(t *testing.T) {
@@ -72,6 +76,9 @@ func TestPromptManagerGet(t *testing.T) {
 	}
 	if called != 1 {
 		t.Errorf("expected 1 server call (cached), got %d", called)
+	}
+	if _, err := manager.ResolveStrict(ctx, "test_prompt", Selector{}); err == nil || !strings.Contains(err.Error(), "no positive version") {
+		t.Fatalf("expected strict resolution to require response version, got %v", err)
 	}
 
 	// 3. Fallback scenario when server fails
@@ -171,12 +178,148 @@ func TestPromptManagerCacheIsScopedByHostAndKey(t *testing.T) {
 }
 
 func TestBuildPromptURLEscapesPromptNameAsSinglePathSegment(t *testing.T) {
-	endpoint, err := buildPromptURL("https://cloud.langfuse.com/base/", "folder/a b/中文")
+	endpoint, err := buildPromptURL("https://cloud.langfuse.com/base/", "folder/a b/中文", Selector{})
 	if err != nil {
 		t.Fatalf("build prompt URL: %v", err)
 	}
 	expected := "https://cloud.langfuse.com/base/api/public/v2/prompts/folder%2Fa%20b%2F%E4%B8%AD%E6%96%87?label=production"
 	if endpoint != expected {
 		t.Fatalf("endpoint = %q; want %q", endpoint, expected)
+	}
+}
+
+func TestPromptManagerSelectorScopesCacheAndRequest(t *testing.T) {
+	calls := make(map[string]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		selector := r.URL.RawQuery
+		calls[selector]++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name":    "critic",
+			"version": 7,
+			"labels":  []string{"latest"},
+			"prompt":  "prompt for " + selector,
+		})
+	}))
+	defer server.Close()
+
+	os.Setenv("LANGFUSE_ENABLED", "true")
+	os.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+	os.Setenv("LANGFUSE_SECRET_KEY", "sk-test")
+	os.Setenv("LANGFUSE_BASE_URL", server.URL)
+	defer func() {
+		os.Unsetenv("LANGFUSE_ENABLED")
+		os.Unsetenv("LANGFUSE_PUBLIC_KEY")
+		os.Unsetenv("LANGFUSE_SECRET_KEY")
+		os.Unsetenv("LANGFUSE_BASE_URL")
+		config.Reload()
+	}()
+	config.Reload()
+
+	manager := GetManager()
+	manager.cache = make(map[string]cachedPrompt)
+	ctx := context.Background()
+	production := manager.GetWithSelector(ctx, "critic", Selector{Label: "production"}, "fallback")
+	latest := manager.GetWithSelector(ctx, "critic", Selector{Label: "latest"}, "fallback")
+	version := manager.GetWithSelector(ctx, "critic", Selector{Version: 7}, "fallback")
+	versionAgain := manager.GetWithSelector(ctx, "critic", Selector{Version: 7}, "fallback")
+
+	if production != "prompt for label=production" || latest != "prompt for label=latest" || version != "prompt for version=7" || versionAgain != version {
+		t.Fatalf("production=%q latest=%q version=%q cached=%q", production, latest, version, versionAgain)
+	}
+	if calls["label=production"] != 1 || calls["label=latest"] != 1 || calls["version=7"] != 1 {
+		t.Fatalf("calls=%v", calls)
+	}
+
+	versionSelector := Selector{Version: 7}
+	cacheKey := promptCacheKey(server.URL, "pk-test", "critic", versionSelector)
+	manager.cache[cacheKey] = cachedPrompt{resolved: fallbackPrompt("critic", versionSelector, "fallback"), expiredAt: time.Now().Add(time.Minute)}
+	strict, err := manager.ResolveStrict(ctx, "critic", versionSelector)
+	if err != nil || strict.Content != "prompt for version=7" || strict.Version != 7 || len(strict.Labels) != 1 || strict.Labels[0] != "latest" || strict.Source != "langfuse" || calls["version=7"] != 2 {
+		t.Fatalf("strict=%+v err=%v calls=%v", strict, err, calls)
+	}
+}
+
+func TestSelectorValidationAndVersionURL(t *testing.T) {
+	if _, err := (Selector{Label: "latest", Version: 2}).Normalize(); err == nil {
+		t.Fatal("expected label and version conflict")
+	}
+	if _, err := (Selector{Version: -1}).Normalize(); err == nil {
+		t.Fatal("expected negative version rejection")
+	}
+	endpoint, err := buildPromptURL("https://cloud.langfuse.com", "critic", Selector{Version: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "https://cloud.langfuse.com/api/public/v2/prompts/critic?version=12" {
+		t.Fatalf("endpoint=%q", endpoint)
+	}
+}
+
+func TestPromptManagerGetStrictRequiresLangfuse(t *testing.T) {
+	t.Cleanup(func() { config.Reload() })
+	t.Setenv("LANGFUSE_ENABLED", "false")
+	config.Reload()
+	if _, err := GetManager().GetStrict(context.Background(), "critic", Selector{}); err == nil {
+		t.Fatal("expected disabled Langfuse to fail strict prompt resolution")
+	}
+}
+
+func TestResolveRecordsMetadataWithoutPromptContent(t *testing.T) {
+	t.Cleanup(func() { config.Reload() })
+	t.Setenv("LANGFUSE_ENABLED", "false")
+	config.Reload()
+
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, span := provider.Tracer("test").Start(context.Background(), "resolve")
+	resolved := GetManager().Resolve(ctx, "teams/test/critic", Selector{Label: "production"}, "sensitive prompt body")
+	span.End()
+	if resolved.Source != "fallback" || resolved.Content != "sensitive prompt body" || resolved.Selector.Label != "production" {
+		t.Fatalf("resolved=%+v", resolved)
+	}
+	raw, err := json.Marshal(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sensitive prompt body") {
+		t.Fatalf("serialized metadata leaked prompt content: %s", raw)
+	}
+	spans := recorder.Ended()
+	if len(spans) != 1 || len(spans[0].Events()) != 1 {
+		t.Fatalf("spans=%d events=%d", len(spans), len(spans[0].Events()))
+	}
+	event := spans[0].Events()[0]
+	if event.Name != "agent.prompt.resolved" {
+		t.Fatalf("event=%+v", event)
+	}
+	for _, attr := range event.Attributes {
+		if strings.Contains(attr.Value.Emit(), "sensitive prompt body") {
+			t.Fatalf("span attribute leaked prompt content: %+v", attr)
+		}
+	}
+}
+
+func TestResolutionSpanIncludesActualVersion(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, span := provider.Tracer("test").Start(context.Background(), "resolve")
+	recordPromptResolution(ctx, ResolvedPrompt{
+		Name: "teams/test/critic", Version: 23, Labels: []string{"production"},
+		Selector: Selector{Label: "production"}, Source: "langfuse", Content: "do not record",
+	}, "fetched")
+	span.End()
+	event := recorder.Ended()[0].Events()[0]
+	attributes := make(map[string]string, len(event.Attributes))
+	for _, attr := range event.Attributes {
+		attributes[string(attr.Key)] = attr.Value.Emit()
+	}
+	if attributes["agent.prompt.version"] != "23" || attributes["agent.prompt.source"] != "langfuse" || attributes["agent.prompt.selector"] != "label:production" {
+		t.Fatalf("attributes=%v", attributes)
+	}
+	for _, value := range attributes {
+		if strings.Contains(value, "do not record") {
+			t.Fatalf("attributes leaked prompt content: %v", attributes)
+		}
 	}
 }
