@@ -1,0 +1,156 @@
+# 动态多智能体团队配置（中文版）
+# 本文件用于加载动态智能体团队，以替换默认的硬编码 Agent 配置。
+# 每个 LLM 角色均可设置 prompt_name，以从 Langfuse 获取系统提示词。
+# prompt_label（默认值：production）与正整数 prompt_version 互斥，不可同时使用。
+# Verifier 草稿阶段使用 draft_prompt_label / draft_prompt_version，语义相同。
+# 远程解析的标签会在任务生命周期内锁定到实际版本号，确保执行一致性。
+# 当 Langfuse 被禁用或不可用时，自动回退到 system_prompt 内联提示词。
+# runtime 默认为 legacy。DAG 运行时支持固定工作流和自适应路由；
+# Research→Reviewed 的升级路由仅在 legacy 模式下生效。
+# 可通过环境变量 AI_AGENT_MULTIAGENT_RUNTIME=dag 强制切换至 DAG 运行时。
+
+active_team: "software" # 可选值："software" | "software_reviewed" | "data"
+# require_match 可防止恢复任务时静默切换提示词或模型。
+# 如需刻意切换，请设置 AI_AGENT_MULTIAGENT_RESUME_CONFIG_POLICY=use_latest。
+resume_config_policy: "require_match"
+
+teams:
+  software:
+    # 在您的环境中验证固定 Research 工作流正常运行后，可切换至 "dag" 运行时。
+    runtime: "legacy"
+    workflow: "planner_researcher_writer"
+    # 将 workflow 设置为 "adaptive"（或使用环境变量 AI_AGENT_MULTIAGENT_WORKFLOW=adaptive）
+    # 可在无需额外 LLM 调用的情况下，对符合条件的任务自动选用 Reviewed 拓扑。
+    routing:
+      reviewed_intents: ["coding", "automation"]       # 触发 Reviewed 流程的任务意图
+      reviewed_complexities: ["high"]                  # 触发 Reviewed 流程的复杂度等级
+      reviewed_min_plan_steps: 4                       # 触发 Reviewed 流程的最小计划步数
+      reviewed_min_remaining_llm_calls: 3              # 触发 Reviewed 流程所需的最小剩余 LLM 调用次数
+      reviewed_min_remaining_tokens: 0                 # 触发 Reviewed 流程所需的最小剩余 Token 数
+      allow_research_high_risk_tools: false            # 是否允许 Research 流程使用高风险工具
+    planner:
+      name: "软件架构规划师"
+      # prompt_name: "teams/software/planner"
+      # prompt_label: "production"
+      system_prompt: |
+        你是一名软件架构 Agent。根据用户目标，将其分解为具体的、有序的研究步骤。
+        每个步骤指定且仅指定一个工具动作。
+        重点关注：查找文件、搜索代码、编写代码以及执行代码，以解决软件工程任务。
+
+        可用动作：
+          find_files   – 通过 glob 模式发现文件（设置 file_glob，例如 "*.go"）
+          search_text  – 搜索关键词或文本（设置 search_query；可选 file_glob 过滤）
+          read_file    – 读取指定文件内容（设置 file_path）
+          write_file   – 将内容写入文件（设置 file_path, content）
+          execute_code – 运行脚本执行命令（设置 command, args；允许的命令：python3, python, go, node, bash, sh）
+          git_diff     – 显示工作区的 git 差异（可选 file_path 限定单个文件）
+          http_fetch   – 从公开 URL 获取内容（设置 url；私有/回环地址已被屏蔽）
+          web_search   – 在网络上搜索关键词（设置 search_query）
+
+        规则：
+          1. 生成 2 至 8 个步骤——优先选择更少但质量更高的步骤。目标可被完整解决后立即停止，不要填充多余步骤。
+          2. 前 1-2 个步骤必须为 find_files、search_text 或 web_search（第一步绝不能是 execute_code 或 write_file）。
+          3. 每个步骤必须基于上一步骤的具体发现（在相关处引用文件路径 / 匹配行 / 已获取内容）。
+          4. 若某步骤未产生有效结果，下一步骤必须变换策略（更宽泛的 glob、不同关键词、备用工具），而非重复执行。
+          5. 步骤 ID 必须严格按顺序命名为 "step-1"、"step-2"……
+          6. 将所有未使用的字段设置为空字符串 ""。
+          7. 输出必须严格符合提供的 JSON Schema——不得添加多余键、不得使用 Markdown 包裹、不得添加注释。
+      # 可选：为该 Agent 指定自定义 LLM 提供商和模型：
+      # provider: "gemini"
+      # model: "gemini-2.5-flash"
+      # llm_scene: "multiagent_planner"
+
+    researcher:
+      name: "软件开发研究员"
+
+    writer:
+      name: "软件技术写作师"
+      # prompt_name: "teams/software/writer"
+      # prompt_version: 12
+      system_prompt: |
+        你是一名软件技术写作 Agent。你将接收用户目标以及从本地文件搜索中收集到的
+        结构化证据集合。你的任务是撰写清晰、准确、简洁的最终答案，说明软件变更或解决方案。
+
+        规则：
+        1. 答案必须且仅能基于所提供的证据——不得凭空捏造。
+        2. 若证据直接回答了目标，设置 draft_confidence = "high"。
+        3. 若证据部分回答了目标，设置 draft_confidence = "medium"。
+        4. 若证据不足或缺失，明确说明此情况并设置 draft_confidence = "low"。
+        5. evidence_summary 应为对所用关键证据的简短摘要（不超过 50 个词）。
+        6. final_answer 应完整且自成体系。
+
+  data:
+    runtime: "legacy"
+    workflow: "planner_researcher_writer"
+    planner:
+      name: "数据分析规划师"
+      system_prompt: |
+        你是一名数据分析 Agent。根据用户目标，将其分解为具体的、有序的研究步骤。
+        每个步骤指定且仅指定一个工具动作。
+        重点关注：查找数据文件（CSV、JSON、txt）、搜索文本、读取数据文件以及运行 Python 脚本处理数据。
+
+        可用动作：
+          find_files   – 通过 glob 模式发现文件（设置 file_glob，例如 "*.csv"）
+          search_text  – 搜索关键词或文本（设置 search_query；可选 file_glob 过滤）
+          read_file    – 读取指定文件内容（设置 file_path）
+          write_file   – 将内容写入文件（设置 file_path, content）
+          execute_code – 运行脚本执行命令（设置 command, args；允许的命令：python3, python, go, node, bash, sh）
+          git_diff     – 显示工作区的 git 差异（可选 file_path 限定单个文件）
+          http_fetch   – 从公开 URL 获取内容（设置 url；私有/回环地址已被屏蔽）
+          web_search   – 在网络上搜索关键词（设置 search_query）
+
+        规则：
+        1. 生成 2 至 8 个步骤——优先选择更少但质量更高的步骤。
+        2. 从宏观开始（find_files 或 search_text），然后逐步缩小范围或执行（read_file、write_file、execute_code）。
+        3. 每个步骤基于前一步骤的发现构建。
+        4. 步骤 ID 必须命名为 "step-1"、"step-2" 等。
+        5. 将所有未使用的字段设置为空字符串 ""。
+        6. 不得包含无法通过上述动作执行的步骤。
+
+    researcher:
+      name: "数据挖掘研究员"
+
+    writer:
+      name: "数据报告综合师"
+      system_prompt: |
+        你是一名数据报告 Agent。你将接收用户目标以及从数据搜索中收集到的结构化证据集合。
+        你的任务是撰写清晰、准确、简洁的最终报告，汇总数据发现和指标。
+
+        规则：
+        1. 答案必须且仅能基于所提供的证据——不得凭空捏造。
+        2. 若证据直接回答了目标，设置 draft_confidence = "high"。
+        3. 若证据部分回答了目标，设置 draft_confidence = "medium"。
+        4. 若证据不足或缺失，明确说明此情况并设置 draft_confidence = "low"。
+        5. evidence_summary 应为对所用关键证据的简短摘要（不超过 50 个词）。
+        6. final_answer 应完整且自成体系。
+
+  # 审查拓扑：Planner -> Critic -> Executor -> Verifier。
+  # 可通过上方 active_team 切换，或设置环境变量 AI_AGENT_MULTIAGENT_TEAM=software_reviewed。
+  software_reviewed:
+    # 通过环境变量 AI_AGENT_MULTIAGENT_RUNTIME=dag 可显式启用金丝雀模式。
+    runtime: "legacy"
+    workflow: "planner_critic_executor_verifier"
+    critic_policy:
+      max_replans: 2                                   # Critic 驳回后最大重规划次数
+    planner:
+      name: "软件执行规划师"
+      # prompt_name: "teams/software-reviewed/planner"
+      # prompt_label: "production"
+      # llm_scene: "multiagent_planner"
+    critic:
+      name: "软件计划评审师"
+      # prompt_name: "teams/software-reviewed/critic"
+      # 两种选择器互斥；latest 适用于评估阶段，不适用于生产灰度发布。
+      # prompt_label: "production"
+      # prompt_version: 12
+      # llm_scene: "plan_critic"
+    executor:
+      name: "软件工具执行器"
+    verifier:
+      name: "软件结果验证师"
+      # draft_prompt_name: "teams/software-reviewed/verifier-draft"
+      # draft_prompt_label: "production"
+      draft_llm_scene: "multiagent_writer"             # 草稿生成阶段使用的 LLM 场景
+      # prompt_name: "teams/software-reviewed/verifier-check"
+      # prompt_label: "production"
+      llm_scene: "answer_verifier"                     # 独立支持度审查阶段使用的 LLM 场景

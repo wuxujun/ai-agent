@@ -1,0 +1,124 @@
+name: Release Multi-Platform Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Upload Release Artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        include:
+          - os: darwin
+            arch: amd64
+            artifact_name: ai-agent-darwin-amd64
+            asset_name: ai-agent-darwin-amd64.tar.gz
+          - os: darwin
+            arch: arm64
+            artifact_name: ai-agent-darwin-arm64
+            asset_name: ai-agent-darwin-arm64.tar.gz
+          - os: linux
+            arch: amd64
+            artifact_name: ai-agent-linux-amd64
+            asset_name: ai-agent-linux-amd64.tar.gz
+          - os: linux
+            arch: arm64
+            artifact_name: ai-agent-linux-arm64
+            asset_name: ai-agent-linux-arm64.tar.gz
+          - os: windows
+            arch: amd64
+            artifact_name: ai-agent-windows-amd64
+            asset_name: ai-agent-windows-amd64.zip
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Package Release Directory Structure
+        run: |
+          mkdir -p build_stage/${{ matrix.artifact_name }}
+          EXEC_NAME="server"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            EXEC_NAME="server.exe"
+          fi
+
+          # 编译 Go 二进制文件
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build \
+            -ldflags="-s -w" \
+            -o build_stage/${{ matrix.artifact_name }}/${EXEC_NAME} \
+            ./cmd/server
+
+          # 复制配置文件和必要的资产目录
+          cp config.yaml build_stage/${{ matrix.artifact_name }}/
+          cp teams.yaml build_stage/${{ matrix.artifact_name }}/
+          cp -r skills build_stage/${{ matrix.artifact_name }}/
+          mkdir -p build_stage/${{ matrix.artifact_name }}/data \
+                   build_stage/${{ matrix.artifact_name }}/logs \
+                   build_stage/${{ matrix.artifact_name }}/workspace
+
+      - name: Create Archive (.tar.gz / .zip)
+        run: |
+          cd build_stage
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            zip -r ../dist/${{ matrix.asset_name }} ${{ matrix.artifact_name }}
+          else
+            tar -czvf ../dist/${{ matrix.asset_name }} ${{ matrix.artifact_name }}
+          fi
+          cd ..
+
+      - name: Upload Artifacts to Action Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+
+  publish-release:
+    name: Create GitHub Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./release-assets
+
+      - name: Move Assets to Flat Directory
+        run: |
+          mkdir -p ./final-assets
+          find ./release-assets -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} ./final-assets/ \;
+          ls -la ./final-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./final-assets/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
