@@ -129,8 +129,8 @@ teams:
   # Reviewed topology: Planner -> Critic -> Executor -> Verifier.
   # Switch with active_team above or AI_AGENT_MULTIAGENT_TEAM=software_reviewed.
   software_reviewed:
-    # P4 canary: reviewed workflow runs on the DAG runtime.
-    runtime: "dag"
+    # Enable the canary explicitly with AI_AGENT_MULTIAGENT_RUNTIME=dag.
+    runtime: "legacy"
     workflow: "planner_critic_executor_verifier"
     critic_policy:
       max_replans: 2
