@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: "ai-agent"
+    orgId: 1
+    folder: "AI Agent"
+    type: file
+    disableDeletion: false
+    editable: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
