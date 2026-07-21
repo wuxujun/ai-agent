@@ -3,6 +3,7 @@ package multiagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var tracer = otel.Tracer("ai-agent/multiagent")
@@ -152,16 +154,28 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	teamSnapshot.ResumePolicy = teamsCfg.ResumeConfigPolicy
 	ctx = withTeamConfigSnapshot(ctx, teamSnapshot)
 	configuredWorkflow := teamsCfg.ActiveWorkflow()
+	runtimeMode := teamsCfg.ActiveRuntime()
+	if forced, _ := ctx.Value(forceLegacyRuntimeContextKey{}).(bool); forced {
+		runtimeMode = RuntimeLegacy
+	}
+	configuredGraphSummary, err := annotateWorkflowGraph(span, "multiagent.workflow.configured_graph", configuredWorkflow)
+	if err != nil {
+		task.Status = types.StatusFailed
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "configured workflow graph is invalid")
+		return err
+	}
 	planningWorkflow := configuredWorkflow
 	if planningWorkflow == WorkflowAdaptive {
 		planningWorkflow = WorkflowResearch
 	}
 	ctx = withWorkflow(ctx, planningWorkflow)
-	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam, "team_config_digest", teamSnapshot.Digest, "configured_workflow", configuredWorkflow)
+	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam, "team_config_digest", teamSnapshot.Digest, "configured_workflow", configuredWorkflow, "runtime", runtimeMode, "configured_graph_digest", configuredGraphSummary.Digest)
 	span.SetAttributes(
 		attribute.String("multiagent.team", teamSnapshot.ActiveTeam),
 		attribute.String("multiagent.team_config_digest", teamSnapshot.Digest),
 		attribute.String("multiagent.resume_config_policy", string(teamSnapshot.ResumePolicy)),
+		attribute.String("multiagent.runtime.configured", string(runtimeMode)),
 	)
 	traceCountBeforeConfigCheck := len(task.Trace)
 	if err := enforceTeamConfigResumePolicy(task, teamSnapshot); err != nil {
@@ -192,10 +206,26 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	span.SetAttributes(attribute.Int("multiagent.prompt_version_pin_count", len(persistedPins)))
 	if checkpoint, ok := pendingVerifierDraft(task); ok && task.Status != types.StatusFailed && task.Status != types.StatusCompleted {
 		ctx = withWorkflow(ctx, WorkflowReviewed)
+		resumeRuntime := RuntimeLegacy
+		if runtimeMode == RuntimeDAG && (configuredWorkflow == WorkflowReviewed || configuredWorkflow == WorkflowAdaptive) {
+			resumeRuntime = RuntimeDAG
+		}
+		if _, graphErr := annotateWorkflowGraph(span, "multiagent.workflow.effective_graph", WorkflowReviewed); graphErr != nil {
+			task.Status = types.StatusFailed
+			span.RecordError(graphErr)
+			span.SetStatus(codes.Error, "resume workflow graph is invalid")
+			return graphErr
+		}
 		log.Info("Resuming multi-agent task from verifier draft checkpoint", "task_id", task.ID)
 		err := c.resumeVerifierCheckpoint(ctx, task, checkpoint)
+		if err == nil && runtimeMode == RuntimeDAG && (configuredWorkflow == WorkflowReviewed || configuredWorkflow == WorkflowAdaptive) {
+			if checkpointErr := c.completeReviewedDAGVerifierCheckpoint(ctx, task); checkpointErr != nil {
+				err = checkpointErr
+			}
+		}
 		span.SetAttributes(
 			attribute.Bool("multiagent.verifier.resumed", true),
+			attribute.String("multiagent.runtime.effective", string(resumeRuntime)),
 			attribute.String("agent.task.final_status", string(task.Status)),
 		)
 		if err != nil {
@@ -203,6 +233,102 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 			span.SetStatus(codes.Error, "verifier checkpoint resume failed")
 		}
 		return err
+	}
+	if runtimeMode == RuntimeDAG && (configuredWorkflow == WorkflowResearch || configuredWorkflow == WorkflowReviewed) {
+		effectiveWorkflow := configuredWorkflow
+		route := workflowRouteDecision{Configured: configuredWorkflow, Effective: effectiveWorkflow, Reason: "configured"}
+		if c.Metrics != nil {
+			c.Metrics.ObserveMultiAgentRoute(string(route.Configured), string(route.Effective), route.Reason)
+		}
+		if _, graphErr := annotateWorkflowGraph(span, "multiagent.workflow.effective_graph", effectiveWorkflow); graphErr != nil {
+			task.Status = types.StatusFailed
+			span.RecordError(graphErr)
+			span.SetStatus(codes.Error, "effective workflow graph is invalid")
+			return graphErr
+		}
+		span.SetAttributes(
+			attribute.String("multiagent.runtime.effective", string(RuntimeDAG)),
+			attribute.String("multiagent.workflow.configured", string(configuredWorkflow)),
+			attribute.String("multiagent.workflow.effective", string(effectiveWorkflow)),
+			attribute.String("multiagent.workflow.route_reason", route.Reason),
+		)
+		log.Info("Executing fixed workflow with DAG runtime", "task_id", task.ID, "workflow", effectiveWorkflow)
+		var err error
+		if effectiveWorkflow == WorkflowReviewed {
+			err = c.runReviewedWorkflowDAG(withWorkflow(ctx, effectiveWorkflow), task, teamCfg)
+		} else {
+			err = c.runResearchWorkflowDAG(withWorkflow(ctx, effectiveWorkflow), task, teamCfg)
+		}
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "DAG runtime failed")
+		}
+		log.Info("Workflow complete", "task_id", task.ID, "status", task.Status, "runtime", RuntimeDAG)
+		span.SetAttributes(
+			attribute.String("agent.task.final_status", string(task.Status)),
+			attribute.String("agent.task.final_answer", task.FinalAnswer),
+		)
+		return err
+	}
+	if runtimeMode == RuntimeDAG && configuredWorkflow == WorkflowAdaptive {
+		plan, planErr := c.runPlanPhase(ctx, task)
+		if planErr != nil {
+			span.RecordError(planErr)
+			span.SetStatus(codes.Error, "adaptive DAG plan phase failed")
+			return planErr
+		}
+		route := resolveWorkflow(configuredWorkflow, teamCfg.Routing, task, plan)
+		if c.Metrics != nil {
+			c.Metrics.ObserveMultiAgentRoute(string(route.Configured), string(route.Effective), route.Reason)
+		}
+		if configuredWorkflow == WorkflowAdaptive {
+			recordWorkflowRoute(task, route)
+		}
+		if _, graphErr := annotateWorkflowGraph(span, "multiagent.workflow.effective_graph", route.Effective); graphErr != nil {
+			task.Status = types.StatusFailed
+			span.RecordError(graphErr)
+			span.SetStatus(codes.Error, "adaptive effective workflow graph is invalid")
+			return graphErr
+		}
+		span.SetAttributes(
+			attribute.String("multiagent.runtime.effective", string(RuntimeDAG)),
+			attribute.String("multiagent.workflow.configured", string(configuredWorkflow)),
+			attribute.String("multiagent.workflow.effective", string(route.Effective)),
+			attribute.String("multiagent.workflow.route_reason", route.Reason),
+		)
+		var dagErr error
+		if route.Effective == WorkflowReviewed {
+			dagErr = c.runReviewedWorkflowDAGFromPlan(withWorkflow(ctx, WorkflowReviewed), task, teamCfg, plan)
+		} else {
+			dagErr = c.runResearchWorkflowDAGFromPlan(withWorkflow(ctx, WorkflowResearch), task, teamCfg, plan, WorkflowAdaptive)
+		}
+		var escalationErr *adaptiveDAGEscalationError
+		if dagErr != nil && errors.As(dagErr, &escalationErr) {
+			span.SetAttributes(attribute.String("multiagent.runtime.fallback_reason", escalationErr.reason))
+			if c.Metrics != nil {
+				c.Metrics.ObserveMultiAgentRoute(string(WorkflowAdaptive), string(WorkflowReviewed), "dag_fallback:"+escalationErr.reason)
+			}
+			log.Warn("Adaptive DAG escalated during Research; continuing with Legacy runtime", "task_id", task.ID, "reason", escalationErr.reason)
+			return c.Run(withForceLegacyRuntime(ctx), task)
+		}
+		if dagErr != nil {
+			span.RecordError(dagErr)
+			span.SetStatus(codes.Error, "adaptive DAG runtime failed")
+		}
+		span.SetAttributes(
+			attribute.String("agent.task.final_status", string(task.Status)),
+			attribute.String("agent.task.final_answer", task.FinalAnswer),
+		)
+		return dagErr
+	}
+	if runtimeMode == RuntimeDAG {
+		span.SetAttributes(
+			attribute.String("multiagent.runtime.effective", string(RuntimeLegacy)),
+			attribute.String("multiagent.runtime.fallback_reason", "workflow_not_migrated"),
+		)
+		log.Warn("DAG runtime requested for a workflow that has not migrated; using legacy runtime", "task_id", task.ID, "workflow", configuredWorkflow)
+	} else {
+		span.SetAttributes(attribute.String("multiagent.runtime.effective", string(RuntimeLegacy)))
 	}
 
 	// ── Phase 1: Plan ──────────────────────────────────────────────────────────
@@ -218,10 +344,17 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	}
 	workflow := route.Effective
 	ctx = withWorkflow(ctx, workflow)
+	effectiveGraphSummary, err := annotateWorkflowGraph(span, "multiagent.workflow.effective_graph", workflow)
+	if err != nil {
+		task.Status = types.StatusFailed
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "effective workflow graph is invalid")
+		return err
+	}
 	if configuredWorkflow == WorkflowAdaptive {
 		recordWorkflowRoute(task, route)
 	}
-	log.Info("Selected multi-agent workflow", "task_id", task.ID, "configured_workflow", configuredWorkflow, "workflow", workflow, "reason", route.Reason)
+	log.Info("Selected multi-agent workflow", "task_id", task.ID, "configured_workflow", configuredWorkflow, "workflow", workflow, "reason", route.Reason, "effective_graph_digest", effectiveGraphSummary.Digest)
 	span.SetAttributes(
 		attribute.String("multiagent.workflow.configured", string(configuredWorkflow)),
 		attribute.String("multiagent.workflow.effective", string(workflow)),
@@ -414,6 +547,25 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		attribute.String("agent.task.final_answer", task.FinalAnswer),
 	)
 	return nil
+}
+
+func annotateWorkflowGraph(span trace.Span, prefix string, workflow Workflow) (WorkflowGraphSummary, error) {
+	graph, err := BuildWorkflowGraph(workflow)
+	if err != nil {
+		return WorkflowGraphSummary{}, err
+	}
+	summary, err := graph.Summary()
+	if err != nil {
+		return WorkflowGraphSummary{}, fmt.Errorf("summarize workflow graph %q: %w", workflow, err)
+	}
+	span.SetAttributes(
+		attribute.String(prefix+".digest", summary.Digest),
+		attribute.Int(prefix+".node_count", summary.NodeCount),
+		attribute.Int(prefix+".level_count", summary.LevelCount),
+		attribute.Int(prefix+".max_level_width", summary.MaxLevelWidth),
+		attribute.Int(prefix+".conditional_nodes", summary.ConditionalNodes),
+	)
+	return summary, nil
 }
 
 func recordWorkflowRoute(task *types.Task, decision workflowRouteDecision) {

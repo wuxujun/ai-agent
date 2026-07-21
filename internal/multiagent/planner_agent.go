@@ -336,7 +336,7 @@ func addMultiAgentUsage(total *types.TokenUsage, additional types.TokenUsage) {
 func formatTracesForReplanner(traces []types.StepTrace) string {
 	var b strings.Builder
 	for _, tr := range traces {
-		if tr.Action == PromptVersionBindingTraceAction {
+		if tr.Action == PromptVersionBindingTraceAction || tr.Action == WorkflowRuntimeCheckpointTraceAction {
 			continue
 		}
 		role := tr.AgentRole

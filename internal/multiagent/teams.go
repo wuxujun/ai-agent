@@ -19,10 +19,17 @@ import (
 
 type Workflow string
 
+type OrchestrationRuntime string
+
 const (
 	WorkflowResearch Workflow = "planner_researcher_writer"
 	WorkflowReviewed Workflow = "planner_critic_executor_verifier"
 	WorkflowAdaptive Workflow = "adaptive"
+)
+
+const (
+	RuntimeLegacy OrchestrationRuntime = "legacy"
+	RuntimeDAG    OrchestrationRuntime = "dag"
 )
 
 const (
@@ -137,6 +144,7 @@ func agentPromptSelector(agentCfg AgentConfig) promptmanager.Selector {
 }
 
 type TeamConfig struct {
+	Runtime      OrchestrationRuntime  `yaml:"runtime" json:"runtime,omitempty"`
 	Workflow     Workflow              `yaml:"workflow" json:"workflow"`
 	Routing      WorkflowRoutingConfig `yaml:"routing" json:"routing"`
 	CriticPolicy CriticPolicyConfig    `yaml:"critic_policy" json:"critic_policy"`
@@ -175,9 +183,18 @@ type teamConfigSnapshot struct {
 }
 
 type teamConfigSnapshotContextKey struct{}
+type forceLegacyRuntimeContextKey struct{}
+
+func withForceLegacyRuntime(ctx context.Context) context.Context {
+	return context.WithValue(ctx, forceLegacyRuntimeContextKey{}, true)
+}
 
 func newTeamConfigSnapshot(activeTeam string, team TeamConfig) teamConfigSnapshot {
-	raw, _ := json.Marshal(team)
+	canonicalTeam := team
+	if parseOrchestrationRuntime(string(canonicalTeam.Runtime)) == RuntimeLegacy {
+		canonicalTeam.Runtime = ""
+	}
+	raw, _ := json.Marshal(canonicalTeam)
 	digest := sha256.Sum256(raw)
 	return teamConfigSnapshot{
 		ActiveTeam:   activeTeam,
@@ -237,6 +254,11 @@ func GetTeamsConfig() *TeamsConfig {
 		team.Workflow = parseWorkflow(envWorkflow)
 		cfg.Teams[cfg.ActiveTeam] = team
 	}
+	if envRuntime := os.Getenv("AI_AGENT_MULTIAGENT_RUNTIME"); envRuntime != "" {
+		team := cfg.Teams[cfg.ActiveTeam]
+		team.Runtime = parseOrchestrationRuntime(envRuntime)
+		cfg.Teams[cfg.ActiveTeam] = team
+	}
 	if envPolicy := os.Getenv("AI_AGENT_MULTIAGENT_RESUME_CONFIG_POLICY"); envPolicy != "" {
 		cfg.ResumeConfigPolicy = parseResumeConfigPolicy(envPolicy)
 	} else {
@@ -262,6 +284,22 @@ func parseResumeConfigPolicy(value string) ResumeConfigPolicy {
 // unrecognised values deliberately preserve the original three-role workflow.
 func (c *TeamsConfig) ActiveWorkflow() Workflow {
 	return parseWorkflow(string(c.GetActiveTeam().Workflow))
+}
+
+// ActiveRuntime returns the rollout mode for graph execution. Unknown and
+// empty values remain on the established Coordinator path.
+func (c *TeamsConfig) ActiveRuntime() OrchestrationRuntime {
+	return parseOrchestrationRuntime(string(c.GetActiveTeam().Runtime))
+}
+
+func parseOrchestrationRuntime(value string) OrchestrationRuntime {
+	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(value)))
+	switch normalized {
+	case "dag", "graph", "graph_runtime":
+		return RuntimeDAG
+	default:
+		return RuntimeLegacy
+	}
 }
 
 func parseWorkflow(value string) Workflow {

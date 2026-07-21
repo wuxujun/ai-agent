@@ -12,6 +12,7 @@ func TestTeamsConfig_DefaultFallback(t *testing.T) {
 	// Clean up any environment override
 	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "")
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "")
+	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "")
 
 	// Ensure no local teams.yaml is read by moving away or testing in clean env.
 	// We'll rename local teams.yaml if it exists, but since we are running tests,
@@ -50,6 +51,7 @@ teams:
       name: "Doc Writer"
       system_prompt: "Document code"
   data:
+    runtime: "dag"
     workflow: "adaptive"
     routing:
       reviewed_intents: ["coding", "automation"]
@@ -120,6 +122,9 @@ teams:
 	if cfg.ActiveWorkflow() != multiagent.WorkflowAdaptive {
 		t.Fatalf("expected adaptive workflow, got %q", cfg.ActiveWorkflow())
 	}
+	if cfg.ActiveRuntime() != multiagent.RuntimeDAG {
+		t.Fatalf("expected DAG runtime, got %q", cfg.ActiveRuntime())
+	}
 	if len(activeTeam.Routing.ReviewedIntents) != 2 || len(activeTeam.Routing.ReviewedComplexities) != 2 || activeTeam.Routing.ReviewedMinPlanSteps != 4 || activeTeam.Routing.ReviewedMinRemainingLLMCalls != 3 || activeTeam.Routing.ReviewedMinRemainingTokens != 1200 || activeTeam.Routing.AllowResearchHighRiskTools {
 		t.Fatalf("adaptive routing configuration was not parsed: %+v", activeTeam.Routing)
 	}
@@ -165,6 +170,16 @@ func TestTeamsConfig_AdaptiveWorkflowEnvironmentOverride(t *testing.T) {
 	cfg := multiagent.GetTeamsConfig()
 	if cfg.ActiveWorkflow() != multiagent.WorkflowAdaptive {
 		t.Fatalf("expected adaptive workflow override, got %q", cfg.ActiveWorkflow())
+	}
+}
+
+func TestTeamsConfig_RuntimeEnvironmentOverride(t *testing.T) {
+	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "graph")
+
+	cfg := multiagent.GetTeamsConfig()
+	if cfg.ActiveRuntime() != multiagent.RuntimeDAG {
+		t.Fatalf("expected DAG runtime override, got %q", cfg.ActiveRuntime())
 	}
 }
 

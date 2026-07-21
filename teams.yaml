@@ -5,6 +5,9 @@
 # Verifier Draft uses draft_prompt_label / draft_prompt_version in the same way.
 # A remotely resolved label is pinned to its actual version for the lifetime of a task.
 # system_prompt remains the fallback when Langfuse is disabled or unavailable.
+# runtime defaults to legacy. DAG rollout supports fixed workflows and the
+# adaptive route; Research-to-Reviewed escalation falls back to legacy.
+# Override with AI_AGENT_MULTIAGENT_RUNTIME=dag.
 
 active_team: "software" # Choices: "software" | "software_reviewed" | "data"
 # require_match prevents a resumed task from silently switching prompts/models.
@@ -13,6 +16,8 @@ resume_config_policy: "require_match"
 
 teams:
   software:
+    # Use "dag" after validating the fixed Research workflow in your environment.
+    runtime: "legacy"
     workflow: "planner_researcher_writer"
     # Set workflow to "adaptive" (or use AI_AGENT_MULTIAGENT_WORKFLOW=adaptive)
     # to select the reviewed topology for matching tasks without another LLM call.
@@ -76,6 +81,7 @@ teams:
         6. final_answer should be complete and self-contained.
 
   data:
+    runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
       name: "Data Analyst Planner"
@@ -123,6 +129,8 @@ teams:
   # Reviewed topology: Planner -> Critic -> Executor -> Verifier.
   # Switch with active_team above or AI_AGENT_MULTIAGENT_TEAM=software_reviewed.
   software_reviewed:
+    # P4 canary: reviewed workflow runs on the DAG runtime.
+    runtime: "dag"
     workflow: "planner_critic_executor_verifier"
     critic_policy:
       max_replans: 2

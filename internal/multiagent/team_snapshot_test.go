@@ -83,3 +83,15 @@ func TestTeamConfigResumePolicyDoesNothingWhenDigestMatches(t *testing.T) {
 		t.Fatalf("matching snapshot changed task: %+v", task)
 	}
 }
+
+func TestTeamConfigSnapshotTreatsLegacyRuntimeAsDefault(t *testing.T) {
+	withoutRuntime := newTeamConfigSnapshot("team", TeamConfig{Workflow: WorkflowResearch})
+	legacy := newTeamConfigSnapshot("team", TeamConfig{Runtime: RuntimeLegacy, Workflow: WorkflowResearch})
+	dag := newTeamConfigSnapshot("team", TeamConfig{Runtime: RuntimeDAG, Workflow: WorkflowResearch})
+	if withoutRuntime.Digest != legacy.Digest {
+		t.Fatalf("legacy runtime changed digest: %q != %q", withoutRuntime.Digest, legacy.Digest)
+	}
+	if dag.Digest == legacy.Digest {
+		t.Fatalf("DAG runtime did not change digest %q", dag.Digest)
+	}
+}
