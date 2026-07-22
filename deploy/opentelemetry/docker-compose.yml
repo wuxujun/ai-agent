@@ -29,9 +29,22 @@ services:
     depends_on:
       - otel-collector
 
+  jaeger-storage-init:
+    image: busybox:1.37.0
+    container_name: jaeger-storage-init
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - mkdir -p /badger/data /badger/key && chown 10001:10001 /badger /badger/data /badger/key
+    volumes:
+      - jaeger-data:/badger
+    restart: "no"
+
   jaeger:
     image: jaegertracing/all-in-one:1.76.0
     container_name: jaeger
+    user: "10001:10001"
     restart: unless-stopped
     environment:
       - COLLECTOR_OTLP_ENABLED=true
@@ -41,6 +54,9 @@ services:
       - BADGER_DIRECTORY_KEY=/badger/key
     volumes:
       - jaeger-data:/badger
+    depends_on:
+      jaeger-storage-init:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:16686:16686"
 

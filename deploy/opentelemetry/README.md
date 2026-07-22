@@ -185,6 +185,10 @@ Compose 使用以下命名卷：
 后再次执行 `up -d`，各服务会重新挂载同一组卷。Jaeger 使用单节点 Badger 存储，适合
 本地开发；生产环境应按容量和可靠性要求选择专用存储后端。
 
+Jaeger 镜像以 UID `10001` 的非 root 用户运行。`jaeger-storage-init` 是一次性初始化
+容器，只负责创建 Badger 目录并设置所有者；初始化成功后退出，Jaeger 随后以非 root
+用户启动。`docker compose ps -a` 中该容器显示 `Exited (0)` 属于正常状态。
+
 ## 常见问题
 
 ### 应用日志持续出现 telemetry connection/export error
@@ -213,3 +217,23 @@ Prometheus 中查询 `agent_planner_calls_total`，判断指标是否已经进�
 先查看 Collector 与 Tempo 日志，并确认 Collector 没有连接 `tempo:4317` 失败的错误。
 Tempo 的 OTLP receiver 已显式监听容器网络接口 `0.0.0.0:4317` 和
 `0.0.0.0:4318`。
+
+### Jaeger 报告 `/badger` permission denied
+
+确认一次性初始化容器执行成功：
+
+```bash
+docker compose \
+  --env-file deploy/opentelemetry/.env \
+  -f deploy/opentelemetry/docker-compose.yml \
+  ps -a jaeger-storage-init
+```
+
+然后查看初始化日志：
+
+```bash
+docker compose \
+  --env-file deploy/opentelemetry/.env \
+  -f deploy/opentelemetry/docker-compose.yml \
+  logs jaeger-storage-init jaeger
+```
