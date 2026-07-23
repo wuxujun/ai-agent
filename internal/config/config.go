@@ -152,10 +152,13 @@ type Config struct {
 	} `mapstructure:"skill"`
 
 	Langfuse struct {
-		PublicKey string `mapstructure:"public_key"`
-		SecretKey string `mapstructure:"secret_key"`
-		Host      string `mapstructure:"host"`
-		Enabled   bool   `mapstructure:"enabled"`
+		PublicKey               string `mapstructure:"public_key"`
+		SecretKey               string `mapstructure:"secret_key"`
+		Host                    string `mapstructure:"host"`
+		Enabled                 bool   `mapstructure:"enabled"`
+		BootstrapMissingPrompts bool   `mapstructure:"bootstrap_missing_prompts"`
+		BootstrapFailurePolicy  string `mapstructure:"bootstrap_failure_policy"`
+		BootstrapTimeoutSeconds int    `mapstructure:"bootstrap_timeout_seconds"`
 	} `mapstructure:"langfuse"`
 }
 
@@ -379,6 +382,9 @@ func setupViper() {
 	viper.SetDefault("search.api_key", "")
 	viper.SetDefault("langfuse.enabled", false)
 	viper.SetDefault("langfuse.host", "https://cloud.langfuse.com")
+	viper.SetDefault("langfuse.bootstrap_missing_prompts", false)
+	viper.SetDefault("langfuse.bootstrap_failure_policy", "fail")
+	viper.SetDefault("langfuse.bootstrap_timeout_seconds", 15)
 
 	// Explicit bindings for standard env variables
 	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
@@ -394,6 +400,9 @@ func setupViper() {
 	_ = viper.BindEnv("langfuse.secret_key", "LANGFUSE_SECRET_KEY")
 	_ = viper.BindEnv("langfuse.host", "LANGFUSE_BASE_URL")
 	_ = viper.BindEnv("langfuse.enabled", "LANGFUSE_ENABLED")
+	_ = viper.BindEnv("langfuse.bootstrap_missing_prompts", "LANGFUSE_BOOTSTRAP_MISSING_PROMPTS")
+	_ = viper.BindEnv("langfuse.bootstrap_failure_policy", "LANGFUSE_BOOTSTRAP_FAILURE_POLICY")
+	_ = viper.BindEnv("langfuse.bootstrap_timeout_seconds", "LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS")
 }
 
 // unmarshalConfig reads the current viper state into a fresh Config struct.
@@ -775,6 +784,15 @@ func diffConfigs(old, new *Config) []string {
 	addIf("telemetry.endpoint", old.Telemetry.Endpoint, new.Telemetry.Endpoint)
 	addIf("telemetry.environment", old.Telemetry.Environment, new.Telemetry.Environment)
 	addIf("telemetry.exporter", old.Telemetry.Exporter, new.Telemetry.Exporter)
+	if old.Langfuse.Enabled != new.Langfuse.Enabled {
+		changes = append(changes, fmt.Sprintf("langfuse.enabled: %t → %t", old.Langfuse.Enabled, new.Langfuse.Enabled))
+	}
+	addIf("langfuse.host", old.Langfuse.Host, new.Langfuse.Host)
+	if old.Langfuse.BootstrapMissingPrompts != new.Langfuse.BootstrapMissingPrompts {
+		changes = append(changes, fmt.Sprintf("langfuse.bootstrap_missing_prompts: %t → %t", old.Langfuse.BootstrapMissingPrompts, new.Langfuse.BootstrapMissingPrompts))
+	}
+	addIf("langfuse.bootstrap_failure_policy", old.Langfuse.BootstrapFailurePolicy, new.Langfuse.BootstrapFailurePolicy)
+	addIfInt("langfuse.bootstrap_timeout_seconds", old.Langfuse.BootstrapTimeoutSeconds, new.Langfuse.BootstrapTimeoutSeconds)
 
 	return changes
 }
@@ -1019,6 +1037,14 @@ func routeStringMatches(allowed []string, actual string) bool {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.Langfuse.BootstrapFailurePolicy)) {
+	case "", "fail", "warn":
+	default:
+		return fmt.Errorf("langfuse.bootstrap_failure_policy must be fail or warn")
+	}
+	if c.Langfuse.BootstrapTimeoutSeconds < 0 {
+		return fmt.Errorf("langfuse.bootstrap_timeout_seconds must be >= 0")
+	}
 	switch strings.ToLower(strings.TrimSpace(c.AnswerPipeline.Enforcement)) {
 	case "", "observe", "advisory", "strict":
 	default:

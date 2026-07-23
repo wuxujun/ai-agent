@@ -73,6 +73,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
 		t.Errorf("unexpected planner trace budget defaults: %+v", cfg.LLM)
 	}
+	if cfg.Langfuse.BootstrapMissingPrompts || cfg.Langfuse.BootstrapFailurePolicy != "fail" || cfg.Langfuse.BootstrapTimeoutSeconds != 15 {
+		t.Errorf("unexpected Langfuse bootstrap defaults: %+v", cfg.Langfuse)
+	}
 }
 
 func TestConcreteTaskFinalizerSceneIsLoaded(t *testing.T) {
@@ -113,6 +116,9 @@ func TestConfigEnvOverrides(t *testing.T) {
 	os.Setenv("LANGFUSE_PUBLIC_KEY", "pk-langfuse")
 	os.Setenv("LANGFUSE_SECRET_KEY", "sk-langfuse")
 	os.Setenv("LANGFUSE_BASE_URL", "https://langfuse.test")
+	os.Setenv("LANGFUSE_BOOTSTRAP_MISSING_PROMPTS", "true")
+	os.Setenv("LANGFUSE_BOOTSTRAP_FAILURE_POLICY", "warn")
+	os.Setenv("LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS", "25")
 	defer func() {
 		os.Unsetenv("AI_AGENT_API_ADDR")
 		os.Unsetenv("AI_AGENT_STORE_TYPE")
@@ -128,6 +134,9 @@ func TestConfigEnvOverrides(t *testing.T) {
 		os.Unsetenv("LANGFUSE_PUBLIC_KEY")
 		os.Unsetenv("LANGFUSE_SECRET_KEY")
 		os.Unsetenv("LANGFUSE_BASE_URL")
+		os.Unsetenv("LANGFUSE_BOOTSTRAP_MISSING_PROMPTS")
+		os.Unsetenv("LANGFUSE_BOOTSTRAP_FAILURE_POLICY")
+		os.Unsetenv("LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS")
 	}()
 
 	setupViper()
@@ -168,6 +177,29 @@ func TestConfigEnvOverrides(t *testing.T) {
 	}
 	if !cfg.Langfuse.Enabled || cfg.Langfuse.PublicKey != "pk-langfuse" || cfg.Langfuse.SecretKey != "sk-langfuse" || cfg.Langfuse.Host != "https://langfuse.test" {
 		t.Errorf("unexpected Langfuse env overrides: %+v", cfg.Langfuse)
+	}
+	if !cfg.Langfuse.BootstrapMissingPrompts || cfg.Langfuse.BootstrapFailurePolicy != "warn" || cfg.Langfuse.BootstrapTimeoutSeconds != 25 {
+		t.Errorf("unexpected Langfuse bootstrap env overrides: %+v", cfg.Langfuse)
+	}
+}
+
+func TestValidateLangfuseBootstrap(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai-responses"
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.Langfuse.BootstrapFailurePolicy = "warn"
+	cfg.Langfuse.BootstrapTimeoutSeconds = 5
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid Langfuse bootstrap config rejected: %v", err)
+	}
+	cfg.Langfuse.BootstrapFailurePolicy = "ignore"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "bootstrap_failure_policy") {
+		t.Fatalf("expected invalid failure policy, got %v", err)
+	}
+	cfg.Langfuse.BootstrapFailurePolicy = "fail"
+	cfg.Langfuse.BootstrapTimeoutSeconds = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "bootstrap_timeout_seconds") {
+		t.Fatalf("expected invalid timeout, got %v", err)
 	}
 }
 

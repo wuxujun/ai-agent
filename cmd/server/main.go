@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -89,6 +90,22 @@ func main() {
 			slog.Error("telemetry shutdown failed", "error", err)
 		}
 	}()
+
+	if cfg.Langfuse.BootstrapMissingPrompts {
+		summary, err := bootstrapLangfusePrompts(cfg)
+		if err != nil {
+			if strings.EqualFold(strings.TrimSpace(cfg.Langfuse.BootstrapFailurePolicy), "warn") {
+				slog.Warn("Langfuse prompt bootstrap failed; local fallbacks remain available", "error", err)
+			} else {
+				log.Fatalf("failed to bootstrap Langfuse prompts: %v", err)
+			}
+		} else {
+			slog.Info("Langfuse prompts synchronized",
+				"existing", summary.Existing,
+				"created", summary.Created,
+			)
+		}
+	}
 
 	// Start filesystem watcher so the config is hot-reloaded automatically
 	// whenever config.yaml is saved on disk (no signal required).
@@ -427,6 +444,20 @@ waitLoop:
 		slog.Error("background task shutdown timed out", "error", err)
 	}
 	slog.Info("shutdown complete")
+}
+
+func bootstrapLangfusePrompts(cfg *config.Config) (multiagent.PromptBootstrapSummary, error) {
+	timeoutSeconds := cfg.Langfuse.BootstrapTimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 15
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+	teamsCfg, err := multiagent.LoadTeamsConfigStrict()
+	if err != nil {
+		return multiagent.PromptBootstrapSummary{}, err
+	}
+	return multiagent.BootstrapTeamPrompts(ctx, teamsCfg)
 }
 
 func configureLogger(cfg *config.Config) error {

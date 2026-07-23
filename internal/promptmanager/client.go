@@ -70,10 +70,11 @@ type cachedPrompt struct {
 }
 
 type PromptManager struct {
-	mu     sync.RWMutex
-	cache  map[string]cachedPrompt
-	client *http.Client
-	ttl    time.Duration
+	mu       sync.RWMutex
+	ensureMu sync.Mutex
+	cache    map[string]cachedPrompt
+	client   *http.Client
+	ttl      time.Duration
 }
 
 var (
@@ -279,7 +280,7 @@ func (pm *PromptManager) fetchFromLangfuse(ctx context.Context, name string, sel
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return ResolvedPrompt{}, fmt.Errorf("http status %d", resp.StatusCode)
+		return ResolvedPrompt{}, &HTTPStatusError{Method: http.MethodGet, URL: endpoint, StatusCode: resp.StatusCode}
 	}
 
 	var data PromptResponse

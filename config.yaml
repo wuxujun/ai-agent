@@ -414,3 +414,17 @@ langfuse:
   # Langfuse Secret Key (sk-lf-...)
   # Env override: LANGFUSE_SECRET_KEY
   secret_key: ""
+
+  # On startup, fetch every explicitly named teams.yaml prompt and create it
+  # from system_prompt only when the prompt name is confirmed absent.
+  # Keep disabled on ordinary replicas in a multi-instance deployment.
+  # Env override: LANGFUSE_BOOTSTRAP_MISSING_PROMPTS
+  bootstrap_missing_prompts: false
+
+  # Startup behavior when prompt synchronization fails: "fail" or "warn".
+  # Env override: LANGFUSE_BOOTSTRAP_FAILURE_POLICY
+  bootstrap_failure_policy: "fail"
+
+  # Total startup synchronization timeout in seconds. 0 uses 15 seconds.
+  # Env override: LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS
+  bootstrap_timeout_seconds: 15

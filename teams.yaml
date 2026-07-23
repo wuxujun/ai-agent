@@ -30,8 +30,8 @@ teams:
       allow_research_high_risk_tools: false
     planner:
       name: "Software Architect Planner"
-      # prompt_name: "teams/software/planner"
-      # prompt_label: "production"
+      prompt_name: "teams/software/planner"
+      prompt_label: "production"
       system_prompt: |
         You are a software architect agent. Given a user goal, decompose it into
         concrete, ordered research steps. Each step specifies exactly one tool action.
@@ -79,8 +79,8 @@ teams:
 
     writer:
       name: "Software Technical Writer"
-      # prompt_name: "teams/software/writer"
-      # prompt_version: 12
+      prompt_name: "teams/software/writer"
+      prompt_label: "production"
       system_prompt: |
         You are a software technical writer agent. You receive a user goal and a structured
         collection of evidence gathered from local file searches and tool executions.
@@ -104,6 +104,8 @@ teams:
     workflow: "planner_researcher_writer"
     planner:
       name: "Data Analyst Planner"
+      prompt_name: "teams/data/planner"
+      prompt_label: "production"
       system_prompt: |
         You are a data analyst agent. Given a user goal, decompose it into
         concrete, ordered research steps. Each step specifies exactly one tool action.
@@ -145,6 +147,8 @@ teams:
 
     writer:
       name: "Data Reporter Synthesizer"
+      prompt_name: "teams/data/writer"
+      prompt_label: "production"
       system_prompt: |
         You are a data reporting agent. You receive a user goal and a structured
         collection of evidence gathered from data searches and script executions.
@@ -173,8 +177,8 @@ teams:
       max_replans: 2
     planner:
       name: "Software Execution Planner"
-      # prompt_name: "teams/software-reviewed/planner"
-      # prompt_label: "production"
+      prompt_name: "teams/software-reviewed/planner"
+      prompt_label: "production"
       # llm_scene: "multiagent_planner"
       system_prompt: |
         You are a software execution planning agent in a reviewed workflow.
@@ -209,10 +213,9 @@ teams:
         9. Return JSON only.
     critic:
       name: "Software Plan Critic"
-      # prompt_name: "teams/software-reviewed/critic"
+      prompt_name: "teams/software-reviewed/critic"
       # Choose one selector; latest is useful for evaluation, not production rollout.
-      # prompt_label: "production"
-      # prompt_version: 12
+      prompt_label: "production"
       # llm_scene: "plan_critic"
       system_prompt: |
         Independently critique the proposed execution plan before tools run.
@@ -239,8 +242,8 @@ teams:
       name: "Software Tool Executor"
     verifier:
       name: "Software Result Verifier"
-      # draft_prompt_name: "teams/software-reviewed/verifier-draft"
-      # draft_prompt_label: "production"
+      draft_prompt_name: "teams/software-reviewed/verifier-draft"
+      draft_prompt_label: "production"
       draft_llm_scene: "multiagent_writer"
       draft_system_prompt: |
         You are the answer drafting stage of the verifier role in a plan-review-execute-verify workflow.
@@ -254,8 +257,8 @@ teams:
         3. evidence_summary must briefly identify the evidence used (≤ 50 words).
         4. When referencing results, include file paths or command outputs for traceability.
         5. Return JSON only.
-      # prompt_name: "teams/software-reviewed/verifier-check"
-      # prompt_label: "production"
+      prompt_name: "teams/software-reviewed/verifier-check"
+      prompt_label: "production"
       llm_scene: "answer_verifier"
       system_prompt: |
         Check whether the draft answer is fully supported by the supplied execution evidence.
@@ -280,8 +283,8 @@ teams:
     workflow: "planner_researcher_writer"
     planner:
       name: "Knowledge Base Q&A Planner"
-      # prompt_name: "teams/kb-qa/planner"
-      # prompt_label: "production"
+      prompt_name: "teams/kb-qa/planner"
+      prompt_label: "production"
       system_prompt: |
         You are an enterprise knowledge base Q&A planning agent. Given a user question,
         decompose it into a precise, ordered set of retrieval steps targeting internal
@@ -330,8 +333,8 @@ teams:
 
     writer:
       name: "Knowledge Base Answer Synthesizer"
-      # prompt_name: "teams/kb-qa/writer"
-      # prompt_label: "production"
+      prompt_name: "teams/kb-qa/writer"
+      prompt_label: "production"
       system_prompt: |
         You are an enterprise knowledge base answer synthesizer. You receive a user
         question and a structured collection of evidence retrieved from internal

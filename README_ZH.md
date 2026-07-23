@@ -176,7 +176,7 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `rag` | `search_url`、`search_method`（`MCP` / `POST`）、`context_mode`（`jit` / `prefetch`） |
 | `embedding` | `model`（用于记忆向量搜索） |
 | `answer_pipeline` | `enabled`、`enforcement`、必选审计阶段 |
-| `langfuse` | `enabled`、`host`、`public_key`、`secret_key` |
+| `langfuse` | 凭证、运行时获取及可选的启动 Prompt 初始化 |
 | `telemetry` | `enabled`、`endpoint`、`exporter`（`otlp` / `stdout`） |
 | `log` | `level`、`console`、`file_enabled`、`directory`、`retention_days` |
 | `search` | `url`、`api_key`（Firecrawl 或兼容服务） |
@@ -210,6 +210,38 @@ AI_AGENT_MULTIAGENT_TEAM=software_reviewed
 AI_AGENT_MULTIAGENT_WORKFLOW=adaptive      # planner_researcher_writer | planner_critic_executor_verifier | adaptive
 AI_AGENT_MULTIAGENT_RUNTIME=dag            # legacy | dag
 ```
+
+### Langfuse Prompt 启动同步
+
+`teams.yaml` 中交给 Langfuse 管理的角色需要配置 `prompt_name`、label 或固定版本，并
+保留 `system_prompt` 作为本地降级内容和首次创建种子：
+
+```yaml
+planner:
+  prompt_name: "teams/software/planner"
+  prompt_label: "production"
+  system_prompt: |
+    You are a software architect agent...
+```
+
+显式开启启动同步：
+
+```bash
+LANGFUSE_ENABLED=true
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BOOTSTRAP_MISSING_PROMPTS=true
+LANGFUSE_BOOTSTRAP_FAILURE_POLICY=fail
+LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS=15
+```
+
+服务启动时会获取所有显式命名的团队 Prompt。只有目标 label 和 `latest` 都确认该
+Prompt 名称不存在时，才使用 `system_prompt` 创建 text Prompt。鉴权失败、超时、
+服务端错误、已有 Prompt 缺少目标 label，以及固定版本不存在都不会触发创建。
+
+多实例部署中，普通副本应关闭 bootstrap，只允许一个指定实例或部署 Job 执行，避免
+并发创建首个版本。关闭 bootstrap 不影响运行时获取和本地 fallback。
 
 ---
 

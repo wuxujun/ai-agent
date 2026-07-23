@@ -176,7 +176,7 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `rag` | `search_url`, `search_method` (`MCP` / `POST`), `context_mode` (`jit` / `prefetch`) |
 | `embedding` | `model` (used for memory vector search) |
 | `answer_pipeline` | `enabled`, `enforcement`, required audit stages |
-| `langfuse` | `enabled`, `host`, `public_key`, `secret_key` |
+| `langfuse` | credentials, runtime fetching, and optional startup prompt bootstrap |
 | `telemetry` | `enabled`, `endpoint`, `exporter` (`otlp` / `stdout`) |
 | `log` | `level`, `console`, `file_enabled`, `directory`, `retention_days` |
 | `search` | `url`, `api_key` (Firecrawl or compatible) |
@@ -209,6 +209,43 @@ AI_AGENT_MULTIAGENT_TEAM=software_reviewed
 AI_AGENT_MULTIAGENT_WORKFLOW=adaptive      # planner_researcher_writer | planner_critic_executor_verifier | adaptive
 AI_AGENT_MULTIAGENT_RUNTIME=dag            # legacy | dag
 ```
+
+### Langfuse Prompt Bootstrap
+
+Each Langfuse-managed role in `teams.yaml` declares `prompt_name`, a label or
+fixed version, and keeps `system_prompt` as its local fallback and first-version
+seed:
+
+```yaml
+planner:
+  prompt_name: "teams/software/planner"
+  prompt_label: "production"
+  system_prompt: |
+    You are a software architect agent...
+```
+
+Enable startup synchronization explicitly:
+
+```bash
+LANGFUSE_ENABLED=true
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BOOTSTRAP_MISSING_PROMPTS=true
+LANGFUSE_BOOTSTRAP_FAILURE_POLICY=fail
+LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS=15
+```
+
+At startup the server fetches every explicitly named team prompt. It creates a
+text prompt from `system_prompt` only after both the requested label and
+`latest` confirm that the prompt name is absent. Authentication errors,
+timeouts, server errors, missing labels on existing prompts, and missing fixed
+versions never trigger creation.
+
+Keep bootstrap disabled on ordinary replicas in a multi-instance deployment;
+run it on one designated instance or a deployment job to avoid concurrent
+first-version creation. Runtime fetching and local fallback remain available
+when bootstrap is disabled.
 
 ---
 
