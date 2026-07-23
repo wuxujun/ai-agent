@@ -24,6 +24,12 @@ metrics_generator:
       store: memberlist
 
   processor:
+    local_blocks:
+      # Required by TraceQL metrics queries such as `{ } | rate()`.
+      filter_server_spans: false
+      # Persist RF1 blocks so metrics queries can cover historical traces.
+      flush_to_storage: true
+
     service_graphs:
       wait: 10s
       max_items: 10000
@@ -52,5 +58,6 @@ overrides:
   defaults:
     metrics_generator:
       processors:
+        - local-blocks
         - service-graphs
         - span-metrics

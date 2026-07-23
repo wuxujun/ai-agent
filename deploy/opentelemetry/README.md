@@ -218,6 +218,30 @@ Prometheus 中查询 `agent_planner_calls_total`，判断指标是否已经进�
 Tempo 的 OTLP receiver 已显式监听容器网络接口 `0.0.0.0:4317` 和
 `0.0.0.0:4318`。
 
+### TraceQL `rate()` 报告 `localblocks processor not found`
+
+TraceQL metrics 查询需要 Tempo metrics-generator 的 `local-blocks` processor。当前
+配置已经为所有租户启用该 processor，并将生成的 RF1 blocks 写入持久化存储。修改
+`tempo.yaml` 后需要重新创建 Tempo 容器：
+
+```bash
+docker compose \
+  --env-file deploy/opentelemetry/.env \
+  -f deploy/opentelemetry/docker-compose.yml \
+  up -d --force-recreate tempo
+```
+
+然后确认 Tempo 就绪并查看日志：
+
+```bash
+curl --fail http://127.0.0.1:3200/ready
+
+docker compose \
+  --env-file deploy/opentelemetry/.env \
+  -f deploy/opentelemetry/docker-compose.yml \
+  logs tempo
+```
+
 ### Jaeger 报告 `/badger` permission denied
 
 确认一次性初始化容器执行成功：
