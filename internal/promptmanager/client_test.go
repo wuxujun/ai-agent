@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -286,16 +287,32 @@ func TestResolveRecordsMetadataWithoutPromptContent(t *testing.T) {
 		t.Fatalf("serialized metadata leaked prompt content: %s", raw)
 	}
 	spans := recorder.Ended()
-	if len(spans) != 1 || len(spans[0].Events()) != 1 {
-		t.Fatalf("spans=%d events=%d", len(spans), len(spans[0].Events()))
+	if len(spans) != 2 {
+		t.Fatalf("spans=%d, want parent and prompt resolution child", len(spans))
 	}
-	event := spans[0].Events()[0]
+	parent := findEndedSpan(t, spans, "resolve")
+	if len(parent.Events()) != 1 {
+		t.Fatalf("parent events=%d, want 1", len(parent.Events()))
+	}
+	event := parent.Events()[0]
 	if event.Name != "agent.prompt.resolved" {
 		t.Fatalf("event=%+v", event)
 	}
 	for _, attr := range event.Attributes {
 		if strings.Contains(attr.Value.Emit(), "sensitive prompt body") {
 			t.Fatalf("span attribute leaked prompt content: %+v", attr)
+		}
+	}
+	resolution := findEndedSpan(t, spans, promptResolutionSpanName)
+	resolutionAttributes := spanAttributes(resolution)
+	if resolutionAttributes["agent.prompt.name"] != "teams/test/critic" ||
+		resolutionAttributes["agent.prompt.source"] != "fallback" ||
+		resolutionAttributes["agent.prompt.outcome"] != "disabled_or_unconfigured" {
+		t.Fatalf("resolution span attributes=%v", resolutionAttributes)
+	}
+	for _, value := range resolutionAttributes {
+		if strings.Contains(value, "sensitive prompt body") {
+			t.Fatalf("resolution span leaked prompt content: %v", resolutionAttributes)
 		}
 	}
 }
@@ -309,7 +326,8 @@ func TestResolutionSpanIncludesActualVersion(t *testing.T) {
 		Selector: Selector{Label: "production"}, Source: "langfuse", Content: "do not record",
 	}, "fetched")
 	span.End()
-	event := recorder.Ended()[0].Events()[0]
+	spans := recorder.Ended()
+	event := findEndedSpan(t, spans, "resolve").Events()[0]
 	attributes := make(map[string]string, len(event.Attributes))
 	for _, attr := range event.Attributes {
 		attributes[string(attr.Key)] = attr.Value.Emit()
@@ -322,4 +340,52 @@ func TestResolutionSpanIncludesActualVersion(t *testing.T) {
 			t.Fatalf("attributes leaked prompt content: %v", attributes)
 		}
 	}
+	resolutionAttributes := spanAttributes(findEndedSpan(t, spans, promptResolutionSpanName))
+	if resolutionAttributes["agent.prompt.version"] != "23" ||
+		resolutionAttributes["agent.prompt.source"] != "langfuse" ||
+		resolutionAttributes["agent.prompt.selector"] != "label:production" {
+		t.Fatalf("resolution span attributes=%v", resolutionAttributes)
+	}
+}
+
+func TestResolutionFailureCreatesVisibleErrorSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, span := provider.Tracer("test").Start(context.Background(), "resolve")
+	recordPromptResolutionError(ctx, "teams/test/critic", Selector{Label: "production"}, "fetch_error")
+	span.End()
+
+	spans := recorder.Ended()
+	parent := findEndedSpan(t, spans, "resolve")
+	if len(parent.Events()) != 1 || parent.Events()[0].Name != "agent.prompt.resolve_failed" {
+		t.Fatalf("parent events=%+v", parent.Events())
+	}
+	resolution := findEndedSpan(t, spans, promptResolutionSpanName)
+	if resolution.Status().Code != codes.Error || resolution.Status().Description != "fetch_error" {
+		t.Fatalf("resolution status=%+v", resolution.Status())
+	}
+	attributes := spanAttributes(resolution)
+	if attributes["agent.prompt.name"] != "teams/test/critic" ||
+		attributes["agent.prompt.outcome"] != "fetch_error" {
+		t.Fatalf("resolution span attributes=%v", attributes)
+	}
+}
+
+func findEndedSpan(t *testing.T, spans []sdktrace.ReadOnlySpan, name string) sdktrace.ReadOnlySpan {
+	t.Helper()
+	for _, span := range spans {
+		if span.Name() == name {
+			return span
+		}
+	}
+	t.Fatalf("span %q not found in %d ended spans", name, len(spans))
+	return nil
+}
+
+func spanAttributes(span sdktrace.ReadOnlySpan) map[string]string {
+	attributes := make(map[string]string, len(span.Attributes()))
+	for _, attr := range span.Attributes() {
+		attributes[string(attr.Key)] = attr.Value.Emit()
+	}
+	return attributes
 }

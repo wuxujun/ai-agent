@@ -13,10 +13,13 @@ import (
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
 var log = logger.Component("promptmanager")
+
+const promptResolutionSpanName = "agent.prompt.resolve"
 
 type PromptResponse struct {
 	Name    string          `json:"name"`
@@ -326,17 +329,34 @@ func recordPromptResolution(ctx context.Context, resolved ResolvedPrompt, outcom
 		attrs = append(attrs, attribute.StringSlice("agent.prompt.labels", resolved.Labels))
 	}
 	trace.SpanFromContext(ctx).AddEvent("agent.prompt.resolved", trace.WithAttributes(attrs...))
+	recordPromptResolutionSpan(ctx, attrs, false, "")
 }
 
 func recordPromptResolutionError(ctx context.Context, name string, selector Selector, outcome string) {
 	if ctx == nil {
 		return
 	}
-	trace.SpanFromContext(ctx).AddEvent("agent.prompt.resolve_failed", trace.WithAttributes(
+	attrs := []attribute.KeyValue{
 		attribute.String("agent.prompt.name", strings.TrimSpace(name)),
 		attribute.String("agent.prompt.selector", selector.String()),
 		attribute.String("agent.prompt.outcome", outcome),
-	))
+	}
+	trace.SpanFromContext(ctx).AddEvent("agent.prompt.resolve_failed", trace.WithAttributes(attrs...))
+	recordPromptResolutionSpan(ctx, attrs, true, outcome)
+}
+
+// recordPromptResolutionSpan mirrors prompt resolution metadata onto a short
+// child span. Grafana's trace timeline always exposes spans, while span events
+// can be hidden by drilldown and trace-detail views. The existing parent event
+// remains the compatibility and point-in-time signal.
+func recordPromptResolutionSpan(ctx context.Context, attrs []attribute.KeyValue, failed bool, outcome string) {
+	parent := trace.SpanFromContext(ctx)
+	tracer := parent.TracerProvider().Tracer("ai-agent/promptmanager")
+	_, span := tracer.Start(ctx, promptResolutionSpanName, trace.WithAttributes(attrs...))
+	if failed {
+		span.SetStatus(codes.Error, outcome)
+	}
+	span.End()
 }
 
 func promptCacheKey(host, pubKey, name string, selector Selector) string {
