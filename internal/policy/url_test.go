@@ -55,6 +55,18 @@ func TestValidateURL_Blocks(t *testing.T) {
 	}
 }
 
+func TestValidateConfiguredURL_PrivateNetworkRequiresExplicitOptIn(t *testing.T) {
+	if err := ValidateConfiguredURL("http://127.0.0.1:8080/mcp", false); err == nil {
+		t.Fatal("private configured URL accepted without opt-in")
+	}
+	if err := ValidateConfiguredURL("http://127.0.0.1:8080/mcp", true); err != nil {
+		t.Fatalf("private configured URL rejected with opt-in: %v", err)
+	}
+	if err := ValidateConfiguredURL("http://user:secret@example.com/mcp", true); err == nil {
+		t.Fatal("configured URL accepted embedded credentials")
+	}
+}
+
 func TestSafeHTTPClientDialsValidatedIP(t *testing.T) {
 	originalLookupIP := lookupIP
 	originalDial := dialResolvedIP

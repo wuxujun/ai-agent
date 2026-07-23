@@ -21,6 +21,19 @@ type sequenceADKLLM struct {
 	calls     int
 }
 
+type fakeADKMCPTool struct{}
+
+func (fakeADKMCPTool) Name() string        { return "custom_adk_mcp_tool" }
+func (fakeADKMCPTool) Description() string { return "dynamic MCP tool for ADK tests" }
+func (fakeADKMCPTool) Parameters() map[string]any {
+	return map[string]any{"query": map[string]any{"type": "string"}}
+}
+func (fakeADKMCPTool) RiskLevel() types.RiskLevel { return types.RiskLevelHigh }
+func (fakeADKMCPTool) Execute(context.Context, string, map[string]interface{}) (*tools.ToolResult, error) {
+	return &tools.ToolResult{Observation: "ok"}, nil
+}
+func (fakeADKMCPTool) IsMCPTool() bool { return true }
+
 func (m *sequenceADKLLM) Name() string { return "sequence-adk-llm" }
 
 func (m *sequenceADKLLM) GenerateContent(context.Context, *model.LLMRequest, bool) iter.Seq2[*model.LLMResponse, error] {
@@ -190,4 +203,28 @@ func TestAdkRAGToolRetrievesEvidence(t *testing.T) {
 	if len(task.Trace) == 0 || task.Trace[0].Action != "rag_search" || len(task.Trace[0].Evidence) == 0 {
 		t.Fatalf("RAG evidence trace not recorded: %+v", task.Trace)
 	}
+}
+
+func TestBuildADKMCPToolsIncludesDynamicRegistryTools(t *testing.T) {
+	const name = "custom_adk_mcp_tool"
+	old, existed := tools.Get(name)
+	tools.Register(fakeADKMCPTool{})
+	t.Cleanup(func() {
+		if existed {
+			tools.Register(old)
+		} else {
+			tools.Unregister(name)
+		}
+	})
+
+	dynamic, err := buildADKMCPTools()
+	if err != nil {
+		t.Fatalf("buildADKMCPTools: %v", err)
+	}
+	for _, candidate := range dynamic {
+		if candidate.Name() == name {
+			return
+		}
+	}
+	t.Fatalf("dynamic ADK tools do not contain %q", name)
 }

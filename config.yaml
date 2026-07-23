@@ -333,6 +333,32 @@ rag:
   # Env override: AI_AGENT_RAG_MAX_RAW_FALLBACK_BYTES
   max_raw_fallback_bytes: 4000
 
+# General MCP Streamable HTTP services. Tools are discovered with tools/list at
+# startup and registered as <tool_prefix>_<remote_tool_name>. Changes to this
+# list currently require a service restart.
+mcp:
+  servers: []
+  # Example:
+  # servers:
+  #   - name: "github"
+  #     url: "https://mcp.example.com/mcp"
+  #     # Reads the credential from this environment variable. A bare token is
+  #     # sent as Bearer; a value containing a scheme is preserved as-is.
+  #     authorization_env: "GITHUB_MCP_AUTHORIZATION"
+  #     # Defaults to "mcp_<name>", producing e.g. mcp_github_search_code.
+  #     tool_prefix: "mcp_github"
+  #     # Remote tools default to high risk and therefore require approval.
+  #     risk_level: "high"
+  #     timeout_seconds: 15
+  #     # Maximum discovered tools accepted from this server (default 64).
+  #     max_tools: 64
+  #     # A required server prevents startup when discovery fails. Optional
+  #     # server failures are logged and isolated from healthy servers.
+  #     required: false
+  #     disabled: false
+  #     # Private/loopback endpoints are rejected unless explicitly enabled.
+  #     allow_private_network: false
+
 # Logging configuration
 log:
   # Log verbosity. Supported: "debug", "info", "warn", "error"

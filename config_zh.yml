@@ -307,6 +307,30 @@ rag:
   # 环境变量覆盖：AI_AGENT_RAG_MAX_RAW_FALLBACK_BYTES
   max_raw_fallback_bytes: 4000
 
+# 通用 MCP Streamable HTTP 服务。启动时通过 tools/list 发现工具，并以
+# <tool_prefix>_<远程工具名> 注册。修改此列表目前需要重启服务。
+mcp:
+  servers: []
+  # 示例：
+  # servers:
+  #   - name: "github"
+  #     url: "https://mcp.example.com/mcp"
+  #     # 从指定环境变量读取凭据。裸 Token 会自动添加 Bearer；
+  #     # 已包含认证方案的值会保持原样。
+  #     authorization_env: "GITHUB_MCP_AUTHORIZATION"
+  #     # 默认为“mcp_<name>”，例如 mcp_github_search_code。
+  #     tool_prefix: "mcp_github"
+  #     # 远程工具默认是高风险，需要经过现有审批流程。
+  #     risk_level: "high"
+  #     timeout_seconds: 15
+  #     # 此服务允许发现的最大工具数（默认64）。
+  #     max_tools: 64
+  #     # 必需服务发现失败时阻止启动；可选服务失败会被隔离并记录。
+  #     required: false
+  #     disabled: false
+  #     # 私网/回环地址默认拒绝，必须显式开启。
+  #     allow_private_network: false
+
 # 日志配置
 log:
   # 日志详细级别。支持：“debug”、“info”、“warn”、“error”。

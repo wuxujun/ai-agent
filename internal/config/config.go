@@ -121,6 +121,10 @@ type Config struct {
 		MaxRawFallbackBytes    int    `mapstructure:"max_raw_fallback_bytes"`
 	} `mapstructure:"rag"`
 
+	MCP struct {
+		Servers []MCPServerConfig `mapstructure:"servers"`
+	} `mapstructure:"mcp"`
+
 	Search struct {
 		URL    string `mapstructure:"url"`
 		APIKey string `mapstructure:"api_key"`
@@ -169,6 +173,22 @@ type APITenantConfig struct {
 	DailyLLMCostBudgetUSD        float64  `mapstructure:"daily_llm_cost_budget_usd"`
 	AnswerPipelineEnforcement    string   `mapstructure:"answer_pipeline_enforcement"`
 	AnswerPipelineRequiredStages []string `mapstructure:"answer_pipeline_required_stages"`
+}
+
+// MCPServerConfig describes one operator-configured MCP Streamable HTTP
+// server. AuthorizationEnv names an environment variable containing the
+// credential so secrets never need to be stored in config.yaml.
+type MCPServerConfig struct {
+	Name                string `mapstructure:"name"`
+	URL                 string `mapstructure:"url"`
+	AuthorizationEnv    string `mapstructure:"authorization_env"`
+	ToolPrefix          string `mapstructure:"tool_prefix"`
+	RiskLevel           string `mapstructure:"risk_level"`
+	TimeoutSeconds      int    `mapstructure:"timeout_seconds"`
+	MaxTools            int    `mapstructure:"max_tools"`
+	Disabled            bool   `mapstructure:"disabled"`
+	Required            bool   `mapstructure:"required"`
+	AllowPrivateNetwork bool   `mapstructure:"allow_private_network"`
 }
 
 // LLMEndpointConfig is a provider/model profile used by a specific LLM scene.
@@ -537,6 +557,7 @@ func cloneConfig(source *Config) *Config {
 	for scene, endpoint := range source.LLM.Scenes {
 		cloned.LLM.Scenes[scene] = cloneLLMEndpoint(endpoint)
 	}
+	cloned.MCP.Servers = append([]MCPServerConfig(nil), source.MCP.Servers...)
 	return &cloned
 }
 
@@ -758,6 +779,12 @@ func diffConfigs(old, new *Config) []string {
 	addIfInt("rag.max_memory_bytes", old.RAG.MaxMemoryBytes, new.RAG.MaxMemoryBytes)
 	addIfInt("rag.max_memory_prompt_bytes", old.RAG.MaxMemoryPromptBytes, new.RAG.MaxMemoryPromptBytes)
 	addIfInt("rag.max_raw_fallback_bytes", old.RAG.MaxRawFallbackBytes, new.RAG.MaxRawFallbackBytes)
+
+	// MCP credentials are referenced by environment-variable name, never by
+	// value, so comparing the declarative server list is safe.
+	if !reflect.DeepEqual(old.MCP.Servers, new.MCP.Servers) {
+		changes = append(changes, "mcp.servers: changed")
+	}
 
 	// Search
 	addIf("search.url", old.Search.URL, new.Search.URL)
@@ -1103,6 +1130,61 @@ func (c *Config) Validate() error {
 	}
 	if c.RAG.JITSearchMaxCalls < 0 || c.RAG.JITRetrievalMaxCycles < 0 || c.RAG.JITFetchMaxItems < 0 || c.RAG.JITRAGFetchMaxBytes < 0 || c.RAG.JITMemoryFetchMaxBytes < 0 {
 		return fmt.Errorf("rag JIT limits must be >= 0")
+	}
+	seenMCPNames := make(map[string]bool, len(c.MCP.Servers))
+	for i, server := range c.MCP.Servers {
+		if server.Disabled {
+			continue
+		}
+		name := strings.TrimSpace(server.Name)
+		if name == "" {
+			return fmt.Errorf("mcp.servers[%d].name must not be empty", i)
+		}
+		nameHasAlnum := false
+		for _, r := range name {
+			if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+				return fmt.Errorf("mcp server name %q may contain only letters, digits, '_' and '-'", name)
+			}
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				nameHasAlnum = true
+			}
+		}
+		if !nameHasAlnum {
+			return fmt.Errorf("mcp server name %q must contain a letter or digit", name)
+		}
+		canonicalName := strings.ToLower(name)
+		if seenMCPNames[canonicalName] {
+			return fmt.Errorf("mcp server name %q is duplicated", name)
+		}
+		seenMCPNames[canonicalName] = true
+		if strings.TrimSpace(server.URL) == "" {
+			return fmt.Errorf("mcp server %q url must not be empty", name)
+		}
+		if prefix := strings.TrimSpace(server.ToolPrefix); prefix != "" {
+			prefixHasAlnum := false
+			for _, r := range prefix {
+				if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+					return fmt.Errorf("mcp server %q tool_prefix may contain only letters, digits, '_' and '-'", name)
+				}
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+					prefixHasAlnum = true
+				}
+			}
+			if !prefixHasAlnum {
+				return fmt.Errorf("mcp server %q tool_prefix must contain a letter or digit", name)
+			}
+		}
+		if server.TimeoutSeconds < 0 {
+			return fmt.Errorf("mcp server %q timeout_seconds must be >= 0", name)
+		}
+		if server.MaxTools < 0 {
+			return fmt.Errorf("mcp server %q max_tools must be >= 0", name)
+		}
+		switch strings.ToLower(strings.TrimSpace(server.RiskLevel)) {
+		case "", "low", "high":
+		default:
+			return fmt.Errorf("mcp server %q risk_level must be low or high", name)
+		}
 	}
 	if c.LLM.PlannerTraceMaxItems < 0 || c.LLM.PlannerObservationMaxChars < 0 || c.LLM.PlannerEvidenceMaxItems < 0 || c.LLM.PlannerEvidenceLineMaxChars < 0 || c.LLM.PlannerTraceMaxChars < 0 {
 		return fmt.Errorf("planner trace budget values must be >= 0")

@@ -13,6 +13,7 @@
 - **Multi-Provider LLM** — OpenAI (Responses API & Chat), Gemini, Ollama, LiteLLM gateway, Google ADK. Per-scene model overrides, circuit breaker, retry budget, and cost tracking.
 - **Answer Quality Pipeline** — Parallel audits: fact freshness, numeric consistency, uncertainty calibration, and safety guard — all configurable per tenant.
 - **RAG / Memory** — JIT or prefetch retrieval via MCP or REST; vector search (in-process cosine or pgvector); long-term task memory with conflict resolution.
+- **Multi-MCP Tools** — Discover tools from multiple MCP Streamable HTTP services, namespace them per server, and isolate optional-service failures.
 - **Full Observability** — OpenTelemetry traces + metrics (OTLP or stdout), structured JSON logs with daily rotation, local metrics endpoint.
 - **Security** — Workspace boundary enforcement, high-risk tool approval flow, prompt-injection detection, secret sanitization, URL allowlist.
 - **Hot Reload** — Config and API keys reload without restart via `POST /api/config/reload`.
@@ -174,6 +175,7 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `llm` | `provider`, `model`, per-scene overrides, circuit breaker, retry budget, cost caps |
 | `store` | `type` (`sqlite` / `postgres` / `redis` / `memory`), `dsn`, `vector_search` |
 | `rag` | `search_url`, `search_method` (`MCP` / `POST`), `context_mode` (`jit` / `prefetch`) |
+| `mcp` | `servers[]` with URL, credential environment variable, tool prefix, risk level, and failure policy (restart required) |
 | `embedding` | `model` (used for memory vector search) |
 | `answer_pipeline` | `enabled`, `enforcement`, required audit stages |
 | `langfuse` | credentials, runtime fetching, and optional startup prompt bootstrap |

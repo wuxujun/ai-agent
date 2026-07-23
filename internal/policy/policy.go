@@ -140,17 +140,14 @@ func ValidateWorkspace(root string) error {
 // endpoint 169.254.169.254). Because the URL originates from LLM output, this
 // gate prevents the agent from being steered into the internal network.
 func ValidateURL(raw string) error {
+	if err := validateHTTPURL(raw); err != nil {
+		return err
+	}
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return errors.New("invalid url")
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("only http/https urls are allowed")
-	}
 	host := u.Hostname()
-	if host == "" {
-		return errors.New("url has no host")
-	}
 
 	var ips []net.IP
 	if ip := net.ParseIP(host); ip != nil {
@@ -167,6 +164,34 @@ func ValidateURL(raw string) error {
 		if isBlockedIP(ip) {
 			return errors.New("url resolves to a disallowed (private/loopback/link-local) address")
 		}
+	}
+	return nil
+}
+
+// ValidateConfiguredURL validates an operator-provided HTTP endpoint. Private
+// addresses remain blocked by default. They are accepted only when the
+// operator explicitly opts in, which is useful for locally hosted MCP servers
+// while keeping model-provided URLs behind the strict ValidateURL gate.
+func ValidateConfiguredURL(raw string, allowPrivate bool) error {
+	if !allowPrivate {
+		return ValidateURL(raw)
+	}
+	return validateHTTPURL(raw)
+}
+
+func validateHTTPURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return errors.New("invalid url")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("only http/https urls are allowed")
+	}
+	if u.Hostname() == "" {
+		return errors.New("url has no host")
+	}
+	if u.User != nil {
+		return errors.New("url userinfo is not allowed")
 	}
 	return nil
 }
@@ -340,6 +365,30 @@ func SafeHTTPClient(timeout time.Duration) *http.Client {
 			urlStr := req.URL.String()
 			if err := ValidateURL(urlStr); err != nil {
 				return fmt.Errorf("SSRF guard redirect violation: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// ConfiguredHTTPClient applies the outbound network policy selected for a
+// trusted, operator-configured endpoint. The default path is the SSRF-safe
+// client. An explicit private-network opt-in still enforces HTTP(S)-only
+// redirects and bounded connection behavior.
+func ConfiguredHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
+	if !allowPrivate {
+		return SafeHTTPClient(timeout)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	return &http.Client{
+		Transport: otelhttp.NewTransport(transport),
+		Timeout:   timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if err := ValidateConfiguredURL(req.URL.String(), true); err != nil {
+				return fmt.Errorf("configured endpoint redirect violation: %w", err)
 			}
 			return nil
 		},

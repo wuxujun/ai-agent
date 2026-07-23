@@ -169,6 +169,31 @@ func main() {
 		GetEmbedding: memory.GetEmbedding,
 		MemoryStore:  st,
 	})
+	mcpManager, mcpSummary, mcpErr := tools.RegisterMCPTools(context.Background(), cfg.MCP.Servers, tools.DefaultRegistry)
+	if mcpErr != nil {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = mcpManager.Close(closeCtx)
+		closeCancel()
+		log.Fatalf("failed to initialize required MCP services: %v", mcpErr)
+	}
+	for serverName, failure := range mcpSummary.Failures {
+		slog.Warn("optional MCP service unavailable", "server", serverName, "error", failure)
+	}
+	if mcpSummary.ServersConfigured > 0 {
+		slog.Info("MCP services initialized",
+			"configured", mcpSummary.ServersConfigured,
+			"ready", mcpSummary.ServersReady,
+			"tools", mcpSummary.ToolsRegistered,
+			"failed", len(mcpSummary.Failures),
+		)
+	}
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		if err := mcpManager.Close(closeCtx); err != nil {
+			slog.Warn("MCP session cleanup failed", "error", err)
+		}
+	}()
 
 	mode := orchestrator.Mode(cfg.Orchestrator.Mode)
 

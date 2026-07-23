@@ -13,6 +13,7 @@
 - **多 LLM 提供商** — OpenAI（Responses API & Chat）、Gemini、Ollama、LiteLLM 网关、Google ADK。支持按 Scene 覆盖模型、熔断器、重试预算和成本追踪。
 - **答案质量流水线** — 并行审计：事实时效性、数值一致性、不确定性校准、安全防护，均可按租户独立配置。
 - **RAG / 长期记忆** — JIT 或预取检索，支持 MCP 或 REST；向量搜索（进程内余弦相似度或 pgvector）；带冲突解决的长期任务记忆。
+- **多 MCP 工具** — 从多个 MCP Streamable HTTP 服务发现工具，按服务设置命名空间，并隔离可选服务故障。
 - **完整可观测性** — OpenTelemetry 链路追踪 + 指标（OTLP 或标准输出）、结构化 JSON 日志（每日轮转）、本地指标接口。
 - **安全防护** — Workspace 边界强制校验、高风险工具人工审批、Prompt 注入检测、敏感信息脱敏、URL 访问白名单。
 - **热重载配置** — 通过 `POST /api/config/reload` 无需重启即可重新加载配置与 API Key。
@@ -174,6 +175,7 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `llm` | `provider`、`model`、按 Scene 覆盖、熔断器、重试预算、成本上限 |
 | `store` | `type`（`sqlite` / `postgres` / `redis` / `memory`）、`dsn`、`vector_search` |
 | `rag` | `search_url`、`search_method`（`MCP` / `POST`）、`context_mode`（`jit` / `prefetch`） |
+| `mcp` | `servers[]`，包含 URL、凭据环境变量、工具前缀、风险级别和故障策略（修改后需重启） |
 | `embedding` | `model`（用于记忆向量搜索） |
 | `answer_pipeline` | `enabled`、`enforcement`、必选审计阶段 |
 | `langfuse` | 凭证、运行时获取及可选的启动 Prompt 初始化 |

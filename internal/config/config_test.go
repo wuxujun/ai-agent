@@ -856,3 +856,68 @@ func TestDiffConfigs_IncludesNewFields(t *testing.T) {
 		t.Errorf("diffConfigs did not report change in rag.max_memory_prompt_bytes; changes: %v", changes)
 	}
 }
+
+func TestMCPServersDecodeCloneAndValidate(t *testing.T) {
+	resetConfig()
+	defer resetConfig()
+	setupViper()
+	viper.SetConfigType("yaml")
+	if err := viper.ReadConfig(strings.NewReader(`
+mcp:
+  servers:
+    - name: github
+      url: https://mcp.example.test/mcp
+      authorization_env: GITHUB_MCP_AUTHORIZATION
+      tool_prefix: corp_github
+      risk_level: high
+      timeout_seconds: 12
+      required: true
+`)); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := unmarshalConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(cfg.MCP.Servers) != 1 {
+		t.Fatalf("MCP servers = %+v", cfg.MCP.Servers)
+	}
+	server := cfg.MCP.Servers[0]
+	if server.Name != "github" || server.AuthorizationEnv != "GITHUB_MCP_AUTHORIZATION" || server.ToolPrefix != "corp_github" || !server.Required || server.TimeoutSeconds != 12 {
+		t.Fatalf("decoded MCP server = %+v", server)
+	}
+
+	cloned := cloneConfig(cfg)
+	cloned.MCP.Servers[0].Name = "changed"
+	if cfg.MCP.Servers[0].Name != "github" {
+		t.Fatal("cloneConfig shared MCP server backing array")
+	}
+}
+
+func TestMCPServerValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		servers []MCPServerConfig
+	}{
+		{name: "missing name", servers: []MCPServerConfig{{URL: "https://example.test/mcp"}}},
+		{name: "invalid name", servers: []MCPServerConfig{{Name: "bad name", URL: "https://example.test/mcp"}}},
+		{name: "duplicate name", servers: []MCPServerConfig{{Name: "one", URL: "https://one.test/mcp"}, {Name: "ONE", URL: "https://two.test/mcp"}}},
+		{name: "missing url", servers: []MCPServerConfig{{Name: "one"}}},
+		{name: "negative timeout", servers: []MCPServerConfig{{Name: "one", URL: "https://one.test/mcp", TimeoutSeconds: -1}}},
+		{name: "negative max tools", servers: []MCPServerConfig{{Name: "one", URL: "https://one.test/mcp", MaxTools: -1}}},
+		{name: "invalid risk", servers: []MCPServerConfig{{Name: "one", URL: "https://one.test/mcp", RiskLevel: "medium"}}},
+		{name: "invalid prefix", servers: []MCPServerConfig{{Name: "one", URL: "https://one.test/mcp", ToolPrefix: "bad prefix"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.MCP.Servers = test.servers
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate succeeded, want error")
+			}
+		})
+	}
+}

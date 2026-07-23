@@ -65,6 +65,12 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
+func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 // List returns all registered tools ordered by name. Deterministic ordering
 // keeps the generated planner schema and prompt tool list stable across runs.
 func (r *Registry) List() []Tool {
@@ -103,4 +109,8 @@ func Register(t Tool) {
 
 func Get(name string) (Tool, bool) {
 	return DefaultRegistry.Get(name)
+}
+
+func Unregister(name string) {
+	DefaultRegistry.Unregister(name)
 }
