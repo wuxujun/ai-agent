@@ -5,8 +5,19 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/skills"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+)
+
+var (
+	skillLog    = logger.Component("skills")
+	skillTracer = otel.Tracer("ai-agent/skills")
 )
 
 // UseSkillTool loads the full instructions of an installed skill by name. It is
@@ -55,13 +66,28 @@ func (t *UseSkillTool) Validate(params map[string]any) error {
 }
 
 func (t *UseSkillTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
-	if t.Skills == nil {
-		return nil, fmt.Errorf("use_skill: skill registry not configured")
-	}
 	name, _ := params["name"].(string)
 	name = strings.TrimSpace(name)
+	mode := strings.TrimSpace(config.Get().Orchestrator.Mode)
+
+	ctx, span := skillTracer.Start(ctx, "skill.use",
+		trace.WithAttributes(
+			attribute.String("agent.skill.name", name),
+			attribute.String("agent.orchestrator.mode", mode),
+		),
+	)
+	defer span.End()
+
+	if t.Skills == nil {
+		err := fmt.Errorf("use_skill: skill registry not configured")
+		recordSkillUseFailure(ctx, span, name, mode, err)
+		return nil, err
+	}
+	span.SetAttributes(attribute.Int("agent.skill.registry_count", len(t.Skills.List())))
 	if name == "" {
-		return nil, fmt.Errorf("use_skill requires non-empty name")
+		err := fmt.Errorf("use_skill requires non-empty name")
+		recordSkillUseFailure(ctx, span, name, mode, err)
+		return nil, err
 	}
 
 	skill, ok := t.Skills.Get(name)
@@ -71,13 +97,31 @@ func (t *UseSkillTool) Execute(ctx context.Context, workspace string, params map
 		for _, s := range t.Skills.List() {
 			available = append(available, s.Name)
 		}
-		return nil, fmt.Errorf("use_skill: unknown skill %q; available: %s", name, strings.Join(available, ", "))
+		err := fmt.Errorf("use_skill: unknown skill %q; available: %s", name, strings.Join(available, ", "))
+		recordSkillUseFailure(ctx, span, name, mode, err)
+		return nil, err
 	}
 
 	body, resources, err := t.Skills.Body(name)
 	if err != nil {
-		return nil, fmt.Errorf("use_skill: %w", err)
+		err = fmt.Errorf("use_skill: %w", err)
+		recordSkillUseFailure(ctx, span, name, mode, err)
+		return nil, err
 	}
+	span.SetAttributes(
+		attribute.Bool("agent.skill.loaded", true),
+		attribute.Int("agent.skill.resource_count", len(resources)),
+		attribute.Int("agent.skill.allowed_tool_count", len(skill.AllowedTools)),
+	)
+	span.SetStatus(codes.Ok, "skill loaded")
+	skillLog.InfoContext(ctx, "skill invoked",
+		appendTraceFields(span,
+			"skill", name,
+			"mode", mode,
+			"resource_count", len(resources),
+			"allowed_tool_count", len(skill.AllowedTools),
+		)...,
+	)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Loaded skill %q. Follow these instructions using the available tools.\n\n", name)
@@ -94,6 +138,30 @@ func (t *UseSkillTool) Execute(ctx context.Context, workspace string, params map
 		Query:       "use_skill:" + name,
 		Observation: b.String(),
 	}, nil
+}
+
+func recordSkillUseFailure(ctx context.Context, span trace.Span, name, mode string, err error) {
+	span.RecordError(err)
+	span.SetAttributes(attribute.Bool("agent.skill.loaded", false))
+	span.SetStatus(codes.Error, "skill load failed")
+	skillLog.WarnContext(ctx, "skill invocation failed",
+		appendTraceFields(span,
+			"skill", name,
+			"mode", mode,
+			"error", err,
+		)...,
+	)
+}
+
+func appendTraceFields(span trace.Span, fields ...any) []any {
+	spanContext := span.SpanContext()
+	if !spanContext.IsValid() {
+		return fields
+	}
+	return append(fields,
+		"trace_id", spanContext.TraceID().String(),
+		"span_id", spanContext.SpanID().String(),
+	)
 }
 
 // RegisterUseSkill wires the use_skill tool into the default registry. Unlike

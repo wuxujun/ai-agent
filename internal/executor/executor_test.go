@@ -9,6 +9,8 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/executor"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/skills"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -143,5 +145,52 @@ func TestExecutorPartialFailureIsNonFatal(t *testing.T) {
 	}
 	if !strings.Contains(traces[1].Observation, "successfully wrote") {
 		t.Errorf("expected sibling success observation, got %q", traces[1].Observation)
+	}
+}
+
+func TestExecutorRecordsUseSkillInTaskTrace(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "code-review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
+name: code-review
+description: Review code.
+---
+Follow the review checklist.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry := skills.NewRegistry(root)
+	if err := registry.Load(); err != nil {
+		t.Fatal(err)
+	}
+	tools.RegisterUseSkill(registry)
+	t.Cleanup(func() { tools.Unregister("use_skill") })
+
+	task := &types.Task{
+		ID:        "skill-trace-task",
+		Goal:      "review this project",
+		Workspace: root,
+		Status:    types.StatusRunning,
+	}
+	decision := &planner.PlanDecision{Actions: []planner.ActionCall{{
+		Action:     "use_skill",
+		Parameters: map[string]any{"name": "code-review"},
+	}}}
+
+	traces, err := (&executor.DefaultExecutor{}).Execute(context.Background(), task, decision)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(traces) != 1 {
+		t.Fatalf("trace count = %d", len(traces))
+	}
+	if traces[0].Action != "use_skill" || traces[0].Query != "use_skill:code-review" {
+		t.Fatalf("skill trace = %+v", traces[0])
+	}
+	if !strings.Contains(traces[0].Observation, `Loaded skill "code-review"`) {
+		t.Fatalf("skill observation = %q", traces[0].Observation)
 	}
 }

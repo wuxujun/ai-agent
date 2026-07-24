@@ -124,7 +124,17 @@ func main() {
 	if err := skillReg.Load(); err != nil {
 		slog.Warn("skills load failed, continuing without skills", "error", err)
 	} else {
-		slog.Info("skills loaded", "count", len(skillReg.List()), "root", skillRoot)
+		loadedSkills := skillReg.List()
+		skillNames := make([]string, 0, len(loadedSkills))
+		for _, skill := range loadedSkills {
+			skillNames = append(skillNames, skill.Name)
+		}
+		slog.Info("skills loaded",
+			"count", len(loadedSkills),
+			"root", skillRoot,
+			"skills", skillNames,
+			"mode", cfg.Orchestrator.Mode,
+		)
 	}
 	tools.RegisterUseSkill(skillReg)
 	planner.SkillRegistry = skillReg
