@@ -79,4 +79,25 @@ func TestStructuredRequestUsesRegisteredProtocol(t *testing.T) {
 	if body["model"] != "custom-model" {
 		t.Fatalf("request body = %+v", body)
 	}
+	messages, ok := body["messages"].([]map[string]any)
+	if !ok || len(messages) == 0 || !strings.Contains(strings.ToLower(messages[0]["content"].(string)), "json") {
+		t.Fatalf("structured request messages must mention JSON: %+v", body["messages"])
+	}
+}
+
+func TestVisionStructuredChatRequestMentionsJSON(t *testing.T) {
+	body, kind, err := visionStructuredRequest(
+		Config{Provider: llmprovider.LiteLLM, Model: "agent-vision"},
+		"Analyze the image.",
+		"Describe what is visible.",
+		VisionInput{MIMEType: "image/png", Data: []byte("png")},
+		map[string]any{"type": "object"},
+	)
+	if err != nil || kind != "chat" {
+		t.Fatalf("kind=%q body=%+v err=%v", kind, body, err)
+	}
+	messages, ok := body["messages"].([]map[string]any)
+	if !ok || len(messages) == 0 || !strings.Contains(strings.ToLower(messages[0]["content"].(string)), "json") {
+		t.Fatalf("structured vision request messages must mention JSON: %+v", body["messages"])
+	}
 }

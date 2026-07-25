@@ -30,6 +30,15 @@ func TestLiteLLMStructuredOutputContract(t *testing.T) {
 		if body["model"] != "agent-writer" || body["response_format"] == nil {
 			t.Errorf("unexpected request body: %+v", body)
 		}
+		messages, ok := body["messages"].([]any)
+		if !ok || len(messages) == 0 {
+			t.Errorf("missing request messages: %+v", body)
+		} else {
+			rawMessages, _ := json.Marshal(messages)
+			if !strings.Contains(strings.ToLower(string(rawMessages)), "json") {
+				t.Errorf("structured LiteLLM request messages must mention JSON: %s", rawMessages)
+			}
+		}
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"answer\":\"ok\"}"}}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)), Request: r}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })

@@ -136,6 +136,7 @@ func visionStructuredRequest(cfg Config, systemPrompt, userPrompt string, image 
 	case llmprovider.ProtocolOpenAIResponses:
 		return map[string]any{"model": cfg.Model, "input": []map[string]any{{"role": "system", "content": []map[string]any{{"type": "input_text", "text": systemPrompt}}}, {"role": "user", "content": []map[string]any{{"type": "input_text", "text": userPrompt}, {"type": "input_image", "image_url": dataURL}}}}, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "response", "strict": true, "schema": schema}}}, "responses", nil
 	case llmprovider.ProtocolOpenAIChat:
+		systemPrompt = ensureJSONMention(systemPrompt, userPrompt)
 		content := []map[string]any{{"type": "text", "text": userPrompt}, {"type": "image_url", "image_url": map[string]any{"url": dataURL}}}
 		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": content}}, "response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "response", "strict": true, "schema": schema}}}, "chat", nil
 	case llmprovider.ProtocolOllama:
@@ -154,12 +155,26 @@ func structuredRequest(cfg Config, systemPrompt, userPrompt string, schema map[s
 	case llmprovider.ProtocolOpenAIResponses:
 		return map[string]any{"model": cfg.Model, "input": []map[string]any{{"role": "system", "content": []map[string]any{{"type": "input_text", "text": systemPrompt}}}, {"role": "user", "content": []map[string]any{{"type": "input_text", "text": userPrompt}}}}, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "response", "strict": true, "schema": schema}}}, "responses", nil
 	case llmprovider.ProtocolOpenAIChat:
+		systemPrompt = ensureJSONMention(systemPrompt, userPrompt)
 		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "response", "strict": true, "schema": schema}}}, "chat", nil
 	case llmprovider.ProtocolOllama:
 		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "stream": false, "format": schema}, "ollama", nil
 	default:
 		return nil, "", fmt.Errorf("provider %s protocol %s is not supported by HTTP structured transport", cfg.Provider, spec.Protocol)
 	}
+}
+
+// DashScope requires at least one message to mention JSON whenever an
+// OpenAI-compatible request uses response_format. Keep this transport-level so
+// every structured scene is valid even when its domain prompt omits the term.
+func ensureJSONMention(systemPrompt, userPrompt string) string {
+	if strings.Contains(strings.ToLower(systemPrompt+"\n"+userPrompt), "json") {
+		return systemPrompt
+	}
+	if systemPrompt == "" {
+		return "Return valid JSON only."
+	}
+	return systemPrompt + "\n\nReturn valid JSON only."
 }
 
 func extractStructuredResponse(kind string, raw []byte) (string, types.TokenUsage, error) {

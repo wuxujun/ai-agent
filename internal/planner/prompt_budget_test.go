@@ -93,7 +93,7 @@ func TestBuildSystemPromptMatchesContextMode(t *testing.T) {
 func TestBuildSystemPromptRestrictsWorkspaceAndExecuteTools(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
 	prompt := BuildSystemPrompt()
-	for _, required := range []string{"only when the goal explicitly concerns local files", "Never use execute_code merely"} {
+	for _, required := range []string{"only when the goal explicitly concerns local files", "Never use execute_code merely", "JSON decision object"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("system prompt missing source-routing rule %q: %s", required, prompt)
 		}

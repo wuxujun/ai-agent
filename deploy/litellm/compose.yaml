@@ -1,9 +1,23 @@
 services:
   litellm:
     image: ${LITELLM_IMAGE:-docker.litellm.ai/berriai/litellm@sha256:9ef6f45bc0104940571765e610c52a1d761b5ec85efcd193795281086ee61277}
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    command:
+      [
+        "--config",
+        "/app/config.yaml",
+        "--port",
+        "4000",
+        "--num_workers",
+        "1",
+        "--telemetry",
+        "False",
+      ]
     init: true
     restart: unless-stopped
+    cpus: ${LITELLM_CPU_LIMIT:-1.0}
+    mem_limit: ${LITELLM_MEMORY_LIMIT:-2g}
+    memswap_limit: ${LITELLM_MEMORY_LIMIT:-2g}
+    pids_limit: ${LITELLM_PIDS_LIMIT:-128}
     ports:
       - "${LITELLM_BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
     environment:
@@ -30,7 +44,7 @@ services:
         required: false
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3)"]
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 12
       start_period: 30s
@@ -41,6 +55,10 @@ services:
     entrypoint: ["python", "/bootstrap/bootstrap_models.py"]
     init: true
     restart: unless-stopped
+    cpus: ${LITELLM_BOOTSTRAP_CPU_LIMIT:-0.25}
+    mem_limit: ${LITELLM_BOOTSTRAP_MEMORY_LIMIT:-128m}
+    memswap_limit: ${LITELLM_BOOTSTRAP_MEMORY_LIMIT:-128m}
+    pids_limit: ${LITELLM_BOOTSTRAP_PIDS_LIMIT:-32}
     environment:
       LITELLM_BASE_URL: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
@@ -58,6 +76,10 @@ services:
     image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     profiles: ["bundled-db"]
     restart: unless-stopped
+    cpus: ${POSTGRES_CPU_LIMIT:-0.5}
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-256m}
+    memswap_limit: ${POSTGRES_MEMORY_LIMIT:-256m}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-128}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-litellm}
       POSTGRES_USER: ${POSTGRES_USER:-litellm}
@@ -66,7 +88,7 @@ services:
       - litellm_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
-      interval: 5s
+      interval: 15s
       timeout: 5s
       retries: 12
       start_period: 10s

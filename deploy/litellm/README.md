@@ -23,11 +23,23 @@ Start and inspect the stack:
 
 ```bash
 docker compose --env-file deploy/litellm/.env \
-  -f deploy/litellm/compose.yaml --profile bundled-db up -d
+  -f deploy/litellm/compose.yaml up -d
 docker compose --env-file deploy/litellm/.env \
-  -f deploy/litellm/compose.yaml --profile bundled-db ps
+  -f deploy/litellm/compose.yaml ps
 curl http://127.0.0.1:4000/health/liveliness
 ```
+
+`COMPOSE_PROFILES=bundled-db` in `.env` keeps PostgreSQL in the active Compose
+service set for both `up` and `down`. Supplying the profile only to `up` can
+leave PostgreSQL running when a later plain `down` does not select that service.
+
+The local stack defaults to one LiteLLM worker and disables telemetry. Compose
+also applies resource ceilings: 1 CPU/2 GiB for LiteLLM, 0.25 CPU/128 MiB
+for the model reconciler, and 0.5 CPU/256 MiB for PostgreSQL. Override
+`LITELLM_CPU_LIMIT`, `LITELLM_MEMORY_LIMIT`, and the related values documented
+in `.env.example` when production concurrency requires more capacity. Swap
+cannot exceed each service's memory ceiling. A limit that is too low can cause
+Docker to restart an out-of-memory container.
 
 Open the Admin UI at `http://127.0.0.1:4000/ui` and sign in with
 `LITELLM_UI_USERNAME` and `LITELLM_UI_PASSWORD`. Swagger remains available at
@@ -132,7 +144,7 @@ To stop the services without deleting the database:
 
 ```bash
 docker compose --env-file deploy/litellm/.env \
-  -f deploy/litellm/compose.yaml --profile bundled-db down
+  -f deploy/litellm/compose.yaml down
 ```
 
 Do not use `down --volumes` unless the persisted LiteLLM configuration, keys,
@@ -149,6 +161,7 @@ Set `LITELLM_DATABASE_URL` in `deploy/litellm/.env`. For example, if PostgreSQL
 is running on the Docker host and listens on host port `55432`:
 
 ```dotenv
+COMPOSE_PROFILES=
 LITELLM_DATABASE_URL=postgresql://litellm:password@host.docker.internal:55432/litellm
 ```
 
