@@ -1,18 +1,90 @@
-# Local LiteLLM E2E
+# Local LiteLLM Gateway
 
-The Compose service exposes LiteLLM at `http://127.0.0.1:4000` and reads
-provider credentials only from environment variables.
+The Compose stack runs LiteLLM with PostgreSQL persistence and enables its
+Admin UI. The gateway binds to `127.0.0.1:4000` by default; PostgreSQL is
+available only inside the Compose network.
+
+## Start the gateway
+
+Create the local environment file and replace all example secrets:
 
 ```bash
-export LITELLM_MASTER_KEY="$(openssl rand -hex 24)"
-docker compose -f deploy/litellm/compose.yaml up -d
-docker compose -f deploy/litellm/compose.yaml ps
+cp deploy/litellm/.env.example deploy/litellm/.env
+openssl rand -hex 32
+```
+
+Use independently generated values for `LITELLM_MASTER_KEY`,
+`LITELLM_SALT_KEY`, `LITELLM_UI_PASSWORD`, and `POSTGRES_PASSWORD`. Prefix the
+master key with `sk-`. Do not rotate `LITELLM_SALT_KEY` after storing provider
+credentials: existing encrypted credentials cannot be decrypted with a new
+salt.
+
+Start and inspect the stack:
+
+```bash
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml --profile bundled-db up -d
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml --profile bundled-db ps
 curl http://127.0.0.1:4000/health/liveliness
 ```
+
+Open the Admin UI at `http://127.0.0.1:4000/ui` and sign in with
+`LITELLM_UI_USERNAME` and `LITELLM_UI_PASSWORD`. Swagger remains available at
+`http://127.0.0.1:4000/docs`.
+
+Models declared in `config.yaml` remain available. Models, virtual keys and
+provider credentials created in the UI are stored in the
+`litellm_postgres_data` volume. `STORE_MODEL_IN_DB=True` allows UI-managed
+models to survive restarts.
+
+To stop the services without deleting the database:
+
+```bash
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml --profile bundled-db down
+```
+
+Do not use `down --volumes` unless the persisted LiteLLM configuration, keys,
+and spend history are intentionally being discarded.
+
+## Use an existing PostgreSQL server
+
+LiteLLM can share a PostgreSQL server with other applications. Use a dedicated
+database and database user for LiteLLM rather than sharing another
+application's database/schema. The user must be able to create and migrate the
+LiteLLM tables.
+
+Set `LITELLM_DATABASE_URL` in `deploy/litellm/.env`. For example, if PostgreSQL
+is running on the Docker host and listens on host port `55432`:
+
+```dotenv
+LITELLM_DATABASE_URL=postgresql://litellm:password@host.docker.internal:55432/litellm
+```
+
+Percent-encode special characters in the username or password used in the URL.
+`host.docker.internal` works with Docker Desktop; the Compose configuration
+also maps it through `host-gateway` for Docker Engine on Linux.
+
+Start only LiteLLM—omit the `bundled-db` profile:
+
+```bash
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml up -d litellm
+```
+
+For PostgreSQL on another machine, replace `host.docker.internal:55432` with
+that server's reachable hostname and port. Ensure PostgreSQL accepts the Docker
+host/network in `listen_addresses`, `pg_hba.conf`, and any firewall rules.
+
+## Connect ai-agent
 
 Run the project client against the gateway:
 
 ```bash
+set -a
+source deploy/litellm/.env
+set +a
 AI_AGENT_LLM_PROVIDER=litellm \
 AI_AGENT_LLM_MODEL=agent-planner \
 AI_AGENT_LLM_BASE_URL=http://127.0.0.1:4000/v1/chat/completions \
