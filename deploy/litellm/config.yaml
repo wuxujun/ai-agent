@@ -1,24 +1,3 @@
-model_list:
-  - model_name: agent-planner
-    litellm_params:
-      model: openai/gpt-4.1-mini
-      api_key: os.environ/OPENAI_API_KEY
-
-  - model_name: agent-planner-fallback
-    litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY
-
-  - model_name: agent-writer
-    litellm_params:
-      model: openai/gpt-4.1-mini
-      api_key: os.environ/OPENAI_API_KEY
-
-  - model_name: agent-fast
-    litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY
-
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 

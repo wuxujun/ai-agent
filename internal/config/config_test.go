@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -919,5 +921,27 @@ func TestMCPServerValidation(t *testing.T) {
 				t.Fatal("Validate succeeded, want error")
 			}
 		})
+	}
+}
+
+func TestLocalizedConfigMatchesPrimaryConfig(t *testing.T) {
+	readSettings := func(name string) map[string]any {
+		t.Helper()
+		content, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		parser := viper.New()
+		parser.SetConfigType("yaml")
+		if err := parser.ReadConfig(bytes.NewReader(content)); err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		return parser.AllSettings()
+	}
+
+	primary := readSettings("config.yaml")
+	localized := readSettings("config_zh.yml")
+	if !reflect.DeepEqual(primary, localized) {
+		t.Fatal("config_zh.yml keys or values differ from config.yaml")
 	}
 }

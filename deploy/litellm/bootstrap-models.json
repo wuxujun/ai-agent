@@ -1,0 +1,86 @@
+[
+  {
+    "model_name": "agent-planner",
+    "litellm_params": {
+      "model": "dashscope/qwen3.7-plus",
+      "api_key": "os.environ/DASHSCOPE_API_KEY",
+      "api_base": "os.environ/DASHSCOPE_API_BASE"
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "agent-planner-fallback",
+    "litellm_params": {
+      "model": "dashscope/qwen3.6-plus",
+      "api_key": "os.environ/DASHSCOPE_API_KEY",
+      "api_base": "os.environ/DASHSCOPE_API_BASE"
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "agent-writer",
+    "litellm_params": {
+      "model": "dashscope/qwen3.5-plus",
+      "api_key": "os.environ/DASHSCOPE_API_KEY",
+      "api_base": "os.environ/DASHSCOPE_API_BASE"
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "agent-fast",
+    "litellm_params": {
+      "model": "dashscope/qwen3.6-flash",
+      "api_key": "os.environ/DASHSCOPE_API_KEY",
+      "api_base": "os.environ/DASHSCOPE_API_BASE"
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "agent-planner-legacy",
+    "litellm_params": {
+      "model": "openai/gpt-4.1-mini",
+      "api_key": "os.environ/OPENAI_API_KEY"
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "agent-planner-fallback-legacy",
+    "litellm_params": {
+      "model": "gemini/gemini-2.5-flash",
+      "api_key": "os.environ/GEMINI_API_KEY"
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "agent-writer-legacy",
+    "litellm_params": {
+      "model": "openai/gpt-4.1-mini",
+      "api_key": "os.environ/OPENAI_API_KEY"
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "agent-fast-legacy",
+    "litellm_params": {
+      "model": "gemini/gemini-2.5-flash",
+      "api_key": "os.environ/GEMINI_API_KEY"
+    },
+    "model_info": {
+      "id": null
+    }
+  }
+]

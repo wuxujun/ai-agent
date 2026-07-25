@@ -158,57 +158,73 @@ llm:
   planner_evidence_line_max_chars: 300
   planner_trace_max_chars: 5000
 
-  # The finalizer inherits the global provider/model. Keep this scene enabled
-  # so retrieval tasks can synthesize before exhausting tool steps. When a
-  # task cost budget is enabled, configure real pricing here or in llm.gateway.
-  scenes:
-    task_finalizer:
-      timeout_seconds: 30
-
-
-  # Optional shared gateway defaults. LiteLLM exposes an OpenAI-compatible
+  # Shared gateway defaults. LiteLLM exposes an OpenAI-compatible
   # /v1/chat/completions endpoint and model aliases configured in LiteLLM.
-  # gateway:
-  #   provider: "litellm"
-  #   api_key: ""
-  #   base_url: "http://127.0.0.1:4000/v1/chat/completions"
-  #   timeout_seconds: 30
-  #   # Optional pricing used only for estimated cost metrics.
-  #   input_cost_per_million_usd: 2.0
-  #   output_cost_per_million_usd: 8.0
+  gateway:
+    provider: "litellm"
+    api_key: ""
+    base_url: "http://127.0.0.1:4000/v1/chat/completions"
+    timeout_seconds: 30
+    # Optional pricing used only for estimated cost metrics.
+    # input_cost_per_million_usd: 2.0
+    # output_cost_per_million_usd: 8.0
 
   # Per-call-site profiles. Omitted fields inherit gateway, then legacy settings.
   # Dynamic routes apply to generation scenes; embedding and adk reject routes.
   # Set fallback_scene: "", max_retries: 0, or min_remaining_tokens: 0 to
   # explicitly clear the corresponding gateway policy for one scene.
-  # scenes:
-  #   task_planner:
-  #     model: "agent-planner"
-  #     input_cost_per_million_usd: 2.0
-  #     output_cost_per_million_usd: 8.0
-  #     fallback_scene: "task_planner_fallback"
-  #     max_retries: 1
-  #     min_remaining_tokens: 2000
-  #     # Ordered, first-match routing rules. The target is another scene and
-  #     # inherits that scene's provider, model, pricing, retries and fallback.
-  #     routes:
-  #       - target_scene: "task_planner_economy"
-  #         max_remaining_tokens: 4000
-  #         min_step_count: 2
-  #       - target_scene: "task_planner_quality"
-  #         intents: ["coding", "research"]
-  #         complexities: ["high"]
-  #         cost_tiers: ["unconstrained"]
-  #         latency_tiers: ["flexible"]
-  #         quality_tiers: ["quality"]
+  scenes:
+    task_planner:
+      model: "agent-planner"
+      fallback_scene: "task_planner_legacy"
+      # Optional pricing and routing:
+      # input_cost_per_million_usd: 2.0
+      # output_cost_per_million_usd: 8.0
+      # min_remaining_tokens: 2000
+      # routes:
+      #   - target_scene: "task_planner_economy"
+      #     max_remaining_tokens: 4000
+      #     min_step_count: 2
+      #   - target_scene: "task_planner_quality"
+      #     intents: ["coding", "research"]
+      #     complexities: ["high"]
+      #     cost_tiers: ["unconstrained"]
+      #     latency_tiers: ["flexible"]
+      #     quality_tiers: ["quality"]
+    task_planner_legacy:
+      model: "agent-planner-legacy"
+      max_retries: 1
+    task_finalizer:
+      model: "agent-writer"
+      timeout_seconds: 30
+      fallback_scene: "task_finalizer_legacy"
+    task_finalizer_legacy:
+      model: "agent-writer-legacy"
+      max_retries: 1
+    multiagent_planner:
+      model: "agent-planner"
+      fallback_scene: "multiagent_planner_legacy"
+    multiagent_planner_legacy:
+      model: "agent-planner-legacy"
+      max_retries: 1
+    multiagent_replanner:
+      model: "agent-planner-fallback"
+      fallback_scene: "multiagent_replanner_legacy"
+    multiagent_replanner_legacy:
+      model: "agent-planner-fallback-legacy"
+      max_retries: 1
+    multiagent_writer:
+      model: "agent-writer"
+      fallback_scene: "multiagent_writer_legacy"
+    multiagent_writer_legacy:
+      model: "agent-writer-legacy"
+      max_retries: 1
+
+    # Optional profiles. Uncomment entries directly under this scenes map.
   #   task_planner_economy:
   #     model: "agent-planner-fast"
   #   task_planner_quality:
   #     model: "agent-planner-strong"
-  #   task_planner_fallback:
-  #     model: "agent-planner-backup"
-  #   task_finalizer:
-  #     model: "agent-writer"
   #   citation_verifier:
   #     model: "agent-verifier"
   #   safety_guard:
@@ -255,14 +271,6 @@ llm:
   #     model: "agent-fast"
   #   rag_reranker:
   #     model: "agent-reranker"
-  #   multiagent_planner:
-  #     model: "agent-planner"
-  #   multiagent_replanner:
-  #     model: "agent-planner-strong"
-  #     timeout_seconds: 60
-  #   multiagent_writer:
-  #     model: "agent-writer"
-  #     timeout_seconds: 60
   #   embedding:
   #     model: "agent-embedding"
   #     base_url: "http://127.0.0.1:4000/v1/embeddings"

@@ -23,6 +23,12 @@ api:
   #     admin: false
   #     daily_llm_call_budget: 100
   #     daily_llm_cost_budget_usd: 10
+  #     answer_pipeline_enforcement: strict
+  #     answer_pipeline_required_stages:
+  #       - fact_freshness_check
+  #       - numeric_consistency_check
+  #       - answer_uncertainty_calibrate
+  #       - safety_guard_output
 
 # 存储配置
 store:
@@ -67,6 +73,32 @@ orchestrator:
   # 设置为0时使用默认值600秒。
   # 环境变量覆盖：AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
   run_all_timeout_seconds: 600
+
+# 最终答案质量流水线
+answer_pipeline:
+  # 是否启用最终答案审计流水线。
+  enabled: true
+  # 执行策略：observe、advisory 或 strict。
+  enforcement: observe
+  # 为答案审计阶段预留的 Token 数。
+  audit_token_reserve: 4000
+  # 单个审计阶段的超时时间，单位为秒。
+  stage_timeout_seconds: 20
+  # 独立审计阶段是否允许并行执行。
+  parallel_audits: true
+  # 必需阶段失败后的任务状态：partial 或其他受支持策略。
+  on_required_stage_failure: partial
+  required_stages:
+    - fact_freshness_check
+    - numeric_consistency_check
+    - answer_uncertainty_calibrate
+    - safety_guard_output
+  stage_token_budgets:
+    citation_verify: 600
+    fact_freshness_check: 900
+    numeric_consistency_check: 900
+    answer_uncertainty_calibrate: 1000
+    safety_guard_output: 600
 
 # LLM 提供商配置
 llm:
@@ -133,56 +165,73 @@ llm:
   planner_evidence_line_max_chars: 300
   planner_trace_max_chars: 5000
 
-  # Finalizer 继承全局提供商和模型。保持该场景启用，以便检索任务在耗尽
-  # 工具步骤前合成答案。启用任务费用预算时，请在此处或 llm.gateway 配置真实价格。
-  scenes:
-    task_finalizer:
-      timeout_seconds: 30
-
-
-  # 可选的共享网关默认配置。LiteLLM 提供兼容 OpenAI 的
+  # 共享网关默认配置。LiteLLM 提供兼容 OpenAI 的
   # /v1/chat/completions 端点，以及在 LiteLLM 中配置的模型别名。
-  # gateway:
-  #   provider: "litellm"
-  #   api_key: ""
-  #   base_url: "http://127.0.0.1:4000/v1/chat/completions"
-  #   timeout_seconds: 30
-  #   # 可选价格，仅用于预估费用指标。
-  #   input_cost_per_million_usd: 2.0
-  #   output_cost_per_million_usd: 8.0
+  gateway:
+    provider: "litellm"
+    api_key: ""
+    base_url: "http://127.0.0.1:4000/v1/chat/completions"
+    timeout_seconds: 30
+    # 可选价格，仅用于预估费用指标。
+    # input_cost_per_million_usd: 2.0
+    # output_cost_per_million_usd: 8.0
 
   # 按调用场景配置。省略的字段先继承 gateway，再继承旧版全局配置。
   # 动态路由适用于生成场景；embedding 和 adk 不支持路由。
   # 可设置 fallback_scene: ""、max_retries: 0 或 min_remaining_tokens: 0，
   # 为单个场景显式清除对应的网关策略。
-  # scenes:
-  #   task_planner:
-  #     model: "agent-planner"
-  #     input_cost_per_million_usd: 2.0
-  #     output_cost_per_million_usd: 8.0
-  #     fallback_scene: "task_planner_fallback"
-  #     max_retries: 1
-  #     min_remaining_tokens: 2000
-  #     # 按顺序匹配的路由规则，命中第一条即停止。目标是另一个场景，
-  #     # 并继承该场景的提供商、模型、价格、重试与 fallback 配置。
-  #     routes:
-  #       - target_scene: "task_planner_economy"
-  #         max_remaining_tokens: 4000
-  #         min_step_count: 2
-  #       - target_scene: "task_planner_quality"
-  #         intents: ["coding", "research"]
-  #         complexities: ["high"]
-  #         cost_tiers: ["unconstrained"]
-  #         latency_tiers: ["flexible"]
-  #         quality_tiers: ["quality"]
+  scenes:
+    task_planner:
+      model: "agent-planner"
+      fallback_scene: "task_planner_legacy"
+      # 可选价格和动态路由：
+      # input_cost_per_million_usd: 2.0
+      # output_cost_per_million_usd: 8.0
+      # min_remaining_tokens: 2000
+      # routes:
+      #   - target_scene: "task_planner_economy"
+      #     max_remaining_tokens: 4000
+      #     min_step_count: 2
+      #   - target_scene: "task_planner_quality"
+      #     intents: ["coding", "research"]
+      #     complexities: ["high"]
+      #     cost_tiers: ["unconstrained"]
+      #     latency_tiers: ["flexible"]
+      #     quality_tiers: ["quality"]
+    task_planner_legacy:
+      model: "agent-planner-legacy"
+      max_retries: 1
+    task_finalizer:
+      model: "agent-writer"
+      timeout_seconds: 30
+      fallback_scene: "task_finalizer_legacy"
+    task_finalizer_legacy:
+      model: "agent-writer-legacy"
+      max_retries: 1
+    multiagent_planner:
+      model: "agent-planner"
+      fallback_scene: "multiagent_planner_legacy"
+    multiagent_planner_legacy:
+      model: "agent-planner-legacy"
+      max_retries: 1
+    multiagent_replanner:
+      model: "agent-planner-fallback"
+      fallback_scene: "multiagent_replanner_legacy"
+    multiagent_replanner_legacy:
+      model: "agent-planner-fallback-legacy"
+      max_retries: 1
+    multiagent_writer:
+      model: "agent-writer"
+      fallback_scene: "multiagent_writer_legacy"
+    multiagent_writer_legacy:
+      model: "agent-writer-legacy"
+      max_retries: 1
+
+    # 可选场景。需要时直接在当前 scenes 映射下取消注释。
   #   task_planner_economy:
   #     model: "agent-planner-fast"
   #   task_planner_quality:
   #     model: "agent-planner-strong"
-  #   task_planner_fallback:
-  #     model: "agent-planner-backup"
-  #   task_finalizer:
-  #     model: "agent-writer"
   #   citation_verifier:
   #     model: "agent-verifier"
   #   safety_guard:
@@ -229,14 +278,6 @@ llm:
   #     model: "agent-fast"
   #   rag_reranker:
   #     model: "agent-reranker"
-  #   multiagent_planner:
-  #     model: "agent-planner"
-  #   multiagent_replanner:
-  #     model: "agent-planner-strong"
-  #     timeout_seconds: 60
-  #   multiagent_writer:
-  #     model: "agent-writer"
-  #     timeout_seconds: 60
   #   embedding:
   #     model: "agent-embedding"
   #     base_url: "http://127.0.0.1:4000/v1/embeddings"
@@ -412,3 +453,16 @@ langfuse:
   # Langfuse 私钥 (sk-lf-...)
   # 环境变量覆盖：LANGFUSE_SECRET_KEY
   secret_key: ""
+
+  # 启动时获取 teams.yaml 中显式命名的全部 Prompt；仅在确认不存在时，
+  # 使用 system_prompt 创建。多实例部署中，普通副本应保持关闭。
+  # 环境变量覆盖：LANGFUSE_BOOTSTRAP_MISSING_PROMPTS
+  bootstrap_missing_prompts: false
+
+  # Prompt 同步失败时的启动策略："fail" 或 "warn"。
+  # 环境变量覆盖：LANGFUSE_BOOTSTRAP_FAILURE_POLICY
+  bootstrap_failure_policy: "fail"
+
+  # 启动同步总超时时间，单位为秒。设置为0时使用15秒。
+  # 环境变量覆盖：LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS
+  bootstrap_timeout_seconds: 15

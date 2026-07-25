@@ -33,10 +33,100 @@ Open the Admin UI at `http://127.0.0.1:4000/ui` and sign in with
 `LITELLM_UI_USERNAME` and `LITELLM_UI_PASSWORD`. Swagger remains available at
 `http://127.0.0.1:4000/docs`.
 
-Models declared in `config.yaml` remain available. Models, virtual keys and
-provider credentials created in the UI are stored in the
-`litellm_postgres_data` volume. `STORE_MODEL_IN_DB=True` allows UI-managed
+Models, virtual keys and provider credentials created in the UI are stored in
+the `litellm_postgres_data` volume. `STORE_MODEL_IN_DB=True` allows UI-managed
 models to survive restarts.
+
+### Model bootstrap and Admin UI ownership
+
+Baseline model aliases are defined in `bootstrap-models.json`, not in the
+LiteLLM `model_list`. The `model-bootstrap` service waits for LiteLLM to become
+healthy, checks `/model/info`, and creates each missing alias through
+`POST /model/new`. Created models are stored in PostgreSQL and appear in the
+Admin UI with `db_model=true`.
+
+The reconciler is intentionally create-only:
+
+- Existing aliases are never updated, so Admin UI edits remain authoritative.
+- Models not present in the seed manifest are never deleted.
+- A deleted baseline alias is recreated on the next reconciliation interval.
+- Provider API keys remain environment references and are not copied into the
+  seed manifest.
+
+The default aliases use distinct DashScope Qwen models that support structured
+output:
+
+| Alias | DashScope model | Purpose |
+| --- | --- | --- |
+| `agent-planner` | `qwen3.7-plus` | Complex planning and tool decisions |
+| `agent-planner-fallback` | `qwen3.6-plus` | Planner fallback |
+| `agent-writer` | `qwen3.5-plus` | Final synthesis and writing |
+| `agent-fast` | `qwen3.6-flash` | Low-latency utility scenes |
+
+Legacy aliases coexist for controlled fallback and rollback:
+
+| Alias | Upstream model |
+| --- | --- |
+| `agent-planner-legacy` | `openai/gpt-4.1-mini` |
+| `agent-planner-fallback-legacy` | `gemini/gemini-2.5-flash` |
+| `agent-writer-legacy` | `openai/gpt-4.1-mini` |
+| `agent-fast-legacy` | `gemini/gemini-2.5-flash` |
+
+Configure the DashScope credential and regional endpoint before inference:
+
+```dotenv
+DASHSCOPE_API_KEY=sk-your-dashscope-key
+DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+OPENAI_API_KEY=sk-your-openai-key
+GEMINI_API_KEY=your-gemini-key
+```
+
+The root `config.yaml` binds core scenes to Qwen aliases and uses the matching
+Legacy aliases as application-level fallback. To switch one scene
+deterministically, exchange its primary and fallback model names. For example:
+
+```yaml
+llm:
+  scenes:
+    task_planner:
+      model: "agent-planner-legacy"
+      fallback_scene: "task_planner_qwen_fallback"
+    task_planner_qwen_fallback:
+      model: "agent-planner"
+```
+
+Reload ai-agent after changing scene bindings:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer ${AI_AGENT_API_KEY}" \
+  http://127.0.0.1:8088/api/config/reload
+```
+
+Changing an upstream deployment in the LiteLLM Admin UI takes effect behind
+that alias without an ai-agent reload. Keep provider-specific aliases separate
+when deterministic switching and rollback are required; registering multiple
+providers under one alias delegates selection to LiteLLM routing.
+
+The default reconciliation interval is 60 seconds. Override it in
+`deploy/litellm/.env`:
+
+```dotenv
+LITELLM_MODEL_BOOTSTRAP_INTERVAL_SECONDS=60
+LITELLM_MODEL_BOOTSTRAP_TIMEOUT_SECONDS=10
+```
+
+Inspect bootstrap activity and confirm database ownership:
+
+```bash
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml logs model-bootstrap
+
+source deploy/litellm/.env
+curl -sS -H "Authorization: Bearer ${LITELLM_MASTER_KEY}" \
+  http://127.0.0.1:4000/model/info |
+  jq '.data[] | {model_name, db_model: .model_info.db_model}'
+```
 
 To stop the services without deleting the database:
 
@@ -66,11 +156,11 @@ Percent-encode special characters in the username or password used in the URL.
 `host.docker.internal` works with Docker Desktop; the Compose configuration
 also maps it through `host-gateway` for Docker Engine on Linux.
 
-Start only LiteLLM—omit the `bundled-db` profile:
+Start LiteLLM and its model reconciler while omitting the `bundled-db` profile:
 
 ```bash
 docker compose --env-file deploy/litellm/.env \
-  -f deploy/litellm/compose.yaml up -d litellm
+  -f deploy/litellm/compose.yaml up -d litellm model-bootstrap
 ```
 
 For PostgreSQL on another machine, replace `host.docker.internal:55432` with
