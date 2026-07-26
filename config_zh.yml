@@ -226,6 +226,9 @@ llm:
     multiagent_writer_legacy:
       model: "agent-writer-legacy"
       max_retries: 1
+    embedding:
+      model: "agent-embedding"
+      base_url: "http://127.0.0.1:4000/v1/embeddings"
 
     # 可选场景。需要时直接在当前 scenes 映射下取消注释。
   #   task_planner_economy:
@@ -278,9 +281,6 @@ llm:
   #     model: "agent-fast"
   #   rag_reranker:
   #     model: "agent-reranker"
-  #   embedding:
-  #     model: "agent-embedding"
-  #     base_url: "http://127.0.0.1:4000/v1/embeddings"
   #   adk:
   #     provider: "gemini"
   #     model: "gemini-2.5-flash"

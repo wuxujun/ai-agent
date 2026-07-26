@@ -270,6 +270,12 @@ func main() {
 		Primary: plannerClient,
 		Metrics: mc,
 	}
+	if fallbackScene := cfg.ResolveLLMScene(config.LLMSceneTaskPlanner).FallbackScene; fallbackScene != "" {
+		secondaryPlanner := planner.NewLLMPlannerForScene(fallbackScene)
+		secondaryPlanner.Compressor = planner.NewLLMContextCompressor(config.LLMSceneContextCompressor)
+		secondaryPlanner.ArgumentRepairer = planner.NewLLMToolArgumentRepairer(config.LLMSceneToolArgumentRepair)
+		combinedPlanner.Secondary = secondaryPlanner
+	}
 
 	eng := &orchestrator.Engine{
 		Planner:  combinedPlanner,

@@ -77,6 +77,7 @@ class BootstrapModelsTest(unittest.TestCase):
                 "agent-planner-fallback",
                 "agent-writer",
                 "agent-fast",
+                "agent-embedding",
                 "agent-planner-legacy",
                 "agent-planner-fallback-legacy",
                 "agent-writer-legacy",
@@ -86,6 +87,7 @@ class BootstrapModelsTest(unittest.TestCase):
         qwen_models = [
             model for model in models
             if not model["model_name"].endswith("-legacy")
+            and model["model_name"] != "agent-embedding"
         ]
         upstream_models = {
             model["litellm_params"]["model"] for model in qwen_models
@@ -102,6 +104,19 @@ class BootstrapModelsTest(unittest.TestCase):
                 params["api_base"],
                 "os.environ/DASHSCOPE_API_BASE",
             )
+
+        embedding = next(
+            model for model in models
+            if model["model_name"] == "agent-embedding"
+        )
+        self.assertEqual(
+            embedding["litellm_params"],
+            {
+                "model": "dashscope/text-embedding-v4",
+                "api_key": "os.environ/DASHSCOPE_API_KEY",
+                "api_base": "os.environ/DASHSCOPE_API_BASE",
+            },
+        )
 
         legacy = {
             model["model_name"]: model["litellm_params"]

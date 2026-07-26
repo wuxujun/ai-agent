@@ -167,6 +167,43 @@ func TestLLMPlannerProviders(t *testing.T) {
 	})
 }
 
+func TestOpenAIChatPlannerEmbedsJSONSchemaInSystemMessage(t *testing.T) {
+	response := `data: {"choices":[{"delta":{"content":"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"answer\",\"actions\":[{\"action\":\"none\",\"parameters\":{}}]}"}}]}` + "\n\n" + "data: [DONE]\n\n"
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		if len(body.Messages) == 0 ||
+			!strings.Contains(body.Messages[0].Content, "JSON Schema") ||
+			!strings.Contains(body.Messages[0].Content, `"required":["thought_summary","stop","final_answer","actions"]`) {
+			t.Errorf("planner system message is missing the JSON schema: %+v", body.Messages)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(response)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, _, err := (&openAIChatProvider{}).Plan(context.Background(), PlanRequest{
+		Client:       client,
+		Model:        "agent-planner",
+		BaseURL:      "http://litellm.test/v1/chat/completions",
+		SystemPrompt: "Choose the next action.",
+		UserPrompt:   "Task goal: inspect the repository.",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLLMPlannerRoutesJITRetrievalBeforeProviderCall(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"

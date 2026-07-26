@@ -74,6 +74,7 @@ output:
 | `agent-planner-fallback` | `qwen3.6-plus` | Planner fallback |
 | `agent-writer` | `qwen3.5-plus` | Final synthesis and writing |
 | `agent-fast` | `qwen3.6-flash` | Low-latency utility scenes |
+| `agent-embedding` | `text-embedding-v4` | Memory and retrieval vectors |
 
 Legacy aliases coexist for controlled fallback and rollback:
 

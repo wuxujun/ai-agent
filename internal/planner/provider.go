@@ -213,10 +213,14 @@ func (p *liteLLMProvider) Name() ProviderType { return ProviderLiteLLM }
 func (p *openAIChatProvider) Name() ProviderType { return ProviderOpenAI }
 
 func (p *openAIChatProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
+	systemPrompt, err := llmcore.WithJSONSchemaInstruction(req.SystemPrompt, PlannerDecisionSchema())
+	if err != nil {
+		return "", types.TokenUsage{}, err
+	}
 	reqBody := map[string]any{
 		"model": req.Model,
 		"messages": []map[string]any{
-			{"role": "system", "content": req.SystemPrompt},
+			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": req.UserPrompt},
 		},
 		"response_format": map[string]any{

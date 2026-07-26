@@ -219,6 +219,9 @@ llm:
     multiagent_writer_legacy:
       model: "agent-writer-legacy"
       max_retries: 1
+    embedding:
+      model: "agent-embedding"
+      base_url: "http://127.0.0.1:4000/v1/embeddings"
 
     # Optional profiles. Uncomment entries directly under this scenes map.
   #   task_planner_economy:
@@ -271,9 +274,6 @@ llm:
   #     model: "agent-fast"
   #   rag_reranker:
   #     model: "agent-reranker"
-  #   embedding:
-  #     model: "agent-embedding"
-  #     base_url: "http://127.0.0.1:4000/v1/embeddings"
   #   adk:
   #     provider: "gemini"
   #     model: "gemini-2.5-flash"

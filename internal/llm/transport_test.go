@@ -80,8 +80,12 @@ func TestStructuredRequestUsesRegisteredProtocol(t *testing.T) {
 		t.Fatalf("request body = %+v", body)
 	}
 	messages, ok := body["messages"].([]map[string]any)
-	if !ok || len(messages) == 0 || !strings.Contains(strings.ToLower(messages[0]["content"].(string)), "json") {
-		t.Fatalf("structured request messages must mention JSON: %+v", body["messages"])
+	if !ok || len(messages) == 0 {
+		t.Fatalf("structured request messages missing: %+v", body["messages"])
+	}
+	systemPrompt, _ := messages[0]["content"].(string)
+	if !strings.Contains(systemPrompt, `"type":"object"`) || !strings.Contains(systemPrompt, "JSON Schema") {
+		t.Fatalf("structured request system prompt must include JSON schema: %q", systemPrompt)
 	}
 }
 
@@ -97,7 +101,11 @@ func TestVisionStructuredChatRequestMentionsJSON(t *testing.T) {
 		t.Fatalf("kind=%q body=%+v err=%v", kind, body, err)
 	}
 	messages, ok := body["messages"].([]map[string]any)
-	if !ok || len(messages) == 0 || !strings.Contains(strings.ToLower(messages[0]["content"].(string)), "json") {
-		t.Fatalf("structured vision request messages must mention JSON: %+v", body["messages"])
+	if !ok || len(messages) == 0 {
+		t.Fatalf("structured vision request messages missing: %+v", body["messages"])
+	}
+	systemPrompt, _ := messages[0]["content"].(string)
+	if !strings.Contains(systemPrompt, `"type":"object"`) || !strings.Contains(systemPrompt, "JSON Schema") {
+		t.Fatalf("structured vision request system prompt must include JSON schema: %q", systemPrompt)
 	}
 }
