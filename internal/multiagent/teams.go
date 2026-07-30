@@ -468,13 +468,19 @@ func GetLLMConfig(agentCfg AgentConfig, defaultScene ...string) LLMConfig {
 	}
 	cfg := LLMConfigForScene(scene)
 	if agentCfg.Provider != "" {
-		globalCfg := config.Get()
-		resolved := globalCfg.ResolveLLMProviderConfig(agentCfg.Provider)
+		sceneProvider := cfg.Provider
 		cfg.Provider = planner.ProviderType(agentCfg.Provider)
-		cfg.APIKey = resolved.APIKey
-		cfg.BaseURL = resolved.BaseURL
-		if agentCfg.Model == "" {
-			cfg.Model = resolved.Model
+		// A redundant role-level provider must not discard the selected scene's
+		// gateway credentials and URL. This is especially important for LiteLLM,
+		// whose deployment-specific BaseURL cannot have a useful registry default.
+		if cfg.Provider != sceneProvider {
+			globalCfg := config.Get()
+			resolved := globalCfg.ResolveLLMProviderConfig(agentCfg.Provider)
+			cfg.APIKey = resolved.APIKey
+			cfg.BaseURL = resolved.BaseURL
+			if agentCfg.Model == "" {
+				cfg.Model = resolved.Model
+			}
 		}
 	}
 	if agentCfg.Model != "" {

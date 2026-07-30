@@ -7,6 +7,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -49,6 +50,39 @@ func TestCallLLMJSONPreservesSceneResilienceConfig(t *testing.T) {
 	}
 	if capture.cfg.MinRemainingTokens != 321 {
 		t.Fatalf("minimum remaining tokens = %d, want 321", capture.cfg.MinRemainingTokens)
+	}
+}
+
+func TestGetLLMConfigPreservesLiteLLMGatewayForRedundantProvider(t *testing.T) {
+	restore := config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.APIKey = "legacy-key"
+		cfg.LLM.Gateway = config.LLMEndpointConfig{
+			Provider: "litellm",
+			APIKey:   "gateway-key",
+			BaseURL:  "http://litellm:4000/v1/chat/completions",
+		}
+		cfg.LLM.Scenes[config.LLMSceneMultiAgentPlanner] = config.LLMEndpointConfig{
+			Model: "agent-planner",
+		}
+	})
+	t.Cleanup(restore)
+
+	cfg := GetLLMConfig(AgentConfig{
+		Provider: "litellm",
+		LLMScene: config.LLMSceneMultiAgentPlanner,
+	})
+
+	if cfg.Provider != planner.ProviderLiteLLM {
+		t.Fatalf("provider = %q, want litellm", cfg.Provider)
+	}
+	if cfg.APIKey != "gateway-key" {
+		t.Fatalf("API key = %q, want gateway key", cfg.APIKey)
+	}
+	if cfg.BaseURL != "http://litellm:4000/v1/chat/completions" {
+		t.Fatalf("BaseURL = %q, want LiteLLM gateway URL", cfg.BaseURL)
+	}
+	if cfg.Model != "agent-planner" {
+		t.Fatalf("model = %q, want scene model", cfg.Model)
 	}
 }
 
