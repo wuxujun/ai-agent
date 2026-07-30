@@ -127,6 +127,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	api.GET("/metrics", AdminMiddleware(), h.getMetrics)
 	api.GET("/usage", h.getTenantUsage)
 	api.POST("/config/reload", AdminMiddleware(), h.reloadConfig)
+	api.POST("/prompt/init", AdminMiddleware(), h.initPrompts)
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})

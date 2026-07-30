@@ -295,6 +295,7 @@ when bootstrap is disabled.
 |:---|:---|:---|
 | `GET` | `/api/metrics` | Local performance metrics |
 | `POST` | `/api/config/reload` | Hot-reload config (returns redacted diff) |
+| `POST` | `/api/prompt/init` | Admin: idempotently initialize missing `teams.yaml` prompts in Langfuse |
 | `GET` | `/ping` | Health check → `{"message":"pong"}` |
 
 ---

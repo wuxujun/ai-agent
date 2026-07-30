@@ -451,6 +451,8 @@ langfuse:
 
   # On startup, fetch every explicitly named teams.yaml prompt and create it
   # from system_prompt only when the prompt name is confirmed absent.
+  # The same idempotent synchronization can be triggered dynamically by an
+  # administrator with POST /api/prompt/init, even when this startup flag is false.
   # Keep disabled on ordinary replicas in a multi-instance deployment.
   # Env override: LANGFUSE_BOOTSTRAP_MISSING_PROMPTS
   bootstrap_missing_prompts: false

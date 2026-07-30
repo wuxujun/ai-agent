@@ -1033,6 +1033,14 @@ func TestTenantAuthenticationAndTaskIsolation(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodPost, "/api/prompt/init", nil)
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("tenant prompt initialization access = %d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
 	req, _ = http.NewRequest(http.MethodGet, "/api/usage", nil)
 	req.Header.Set("X-API-Key", "tenant-a-test-key")
 	r.ServeHTTP(w, req)
