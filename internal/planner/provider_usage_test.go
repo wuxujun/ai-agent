@@ -76,3 +76,20 @@ func TestParseOpenAIResponsesDerivesTotalWhenMissing(t *testing.T) {
 		t.Errorf("TotalTokens = %d, want 130 (derived from input+output)", usage.TotalTokens)
 	}
 }
+
+func TestParseOpenAIChatReadsUsageAfterDoneMarker(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"thought_summary\\\":\\\"done\\\"}\"}}]}\n\n" +
+		"data: [DONE]\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3308,\"completion_tokens\":931,\"total_tokens\":4239}}\n\n"
+
+	text, usage, err := parseOpenAIChat(mkResp(body), nil)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if text != `{"thought_summary":"done"}` {
+		t.Fatalf("text = %q", text)
+	}
+	if usage.PromptTokens != 3308 || usage.CompletionTokens != 931 || usage.TotalTokens != 4239 {
+		t.Fatalf("usage = %+v, want {3308 931 4239}", usage)
+	}
+}

@@ -114,6 +114,7 @@ type openAIResponsesProvider struct{}
 func (p *openAIResponsesProvider) Name() ProviderType { return ProviderOpenAIResponses }
 
 func (p *openAIResponsesProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
+	schema := PlannerDecisionOpenAISchema()
 	reqBody := map[string]any{
 		"model": req.Model,
 		"input": []map[string]any{
@@ -135,7 +136,7 @@ func (p *openAIResponsesProvider) Plan(ctx context.Context, req PlanRequest, onC
 				"type":   "json_schema",
 				"name":   "planner_decision",
 				"strict": true,
-				"schema": PlannerDecisionSchema(),
+				"schema": schema,
 			},
 		},
 	}
@@ -210,12 +211,36 @@ type liteLLMProvider struct{ openAIChatProvider }
 
 func (p *liteLLMProvider) Name() ProviderType { return ProviderLiteLLM }
 
+func (p *liteLLMProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
+	return planOpenAIChat(ctx, req, onChunk, true)
+}
+
 func (p *openAIChatProvider) Name() ProviderType { return ProviderOpenAI }
 
 func (p *openAIChatProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
-	systemPrompt, err := llmcore.WithJSONSchemaInstruction(req.SystemPrompt, PlannerDecisionSchema())
+	return planOpenAIChat(ctx, req, onChunk, false)
+}
+
+func planOpenAIChat(ctx context.Context, req PlanRequest, onChunk func(string), gatewayCompatible bool) (string, types.TokenUsage, error) {
+	schema := PlannerDecisionOpenAISchema()
+	systemPrompt, err := llmcore.WithJSONSchemaInstruction(req.SystemPrompt, schema)
 	if err != nil {
 		return "", types.TokenUsage{}, err
+	}
+	responseFormat := map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name":   "planner_decision",
+			"strict": true,
+			"schema": schema,
+		},
+	}
+	if gatewayCompatible {
+		// A LiteLLM alias can route to providers that only implement JSON mode,
+		// not OpenAI's strict json_schema subset. The system instruction above
+		// still carries the complete schema; json_object keeps the transport
+		// portable across those aliases.
+		responseFormat = map[string]any{"type": "json_object"}
 	}
 	reqBody := map[string]any{
 		"model": req.Model,
@@ -223,15 +248,8 @@ func (p *openAIChatProvider) Plan(ctx context.Context, req PlanRequest, onChunk 
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": req.UserPrompt},
 		},
-		"response_format": map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name":   "planner_decision",
-				"strict": true,
-				"schema": PlannerDecisionSchema(),
-			},
-		},
-		"stream": true,
+		"response_format": responseFormat,
+		"stream":          true,
 		"stream_options": map[string]any{
 			"include_usage": true,
 		},
@@ -264,7 +282,9 @@ func parseOpenAIChat(resp *http.Response, onChunk func(string)) (string, types.T
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
-			break
+			// Some OpenAI-compatible gateways emit the final usage event after
+			// the done marker. Keep scanning until EOF so accounting is not lost.
+			continue
 		}
 
 		type chatResponse struct {

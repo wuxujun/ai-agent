@@ -599,21 +599,90 @@ func genaiSchemaFromSpec(spec any) *genai.Schema {
 }
 
 func unmarshalDecision(textValue string, decision *PlanDecision) error {
-	// First try: direct unmarshal
-	if err := json.Unmarshal([]byte(textValue), decision); err == nil {
+	if err := decodeDecisionJSON(textValue, decision); err == nil {
 		return nil
 	}
 
-	// Fallback: extract the JSON block between the first '{' and last '}'
-	firstIdx := strings.Index(textValue, "{")
-	lastIdx := strings.LastIndex(textValue, "}")
-	if firstIdx != -1 && lastIdx != -1 && firstIdx < lastIdx {
-		cleaned := textValue[firstIdx : lastIdx+1]
-		if err := json.Unmarshal([]byte(cleaned), decision); err == nil {
+	// OpenAI-compatible models occasionally wrap structured output in prose or
+	// Markdown. Inspect each complete JSON object instead of taking everything
+	// between the first and last braces; the latter can merge a schema echo and
+	// a later decision into one invalid candidate.
+	var candidateErr error
+	for _, candidate := range jsonObjectCandidates(textValue) {
+		if err := decodeDecisionJSON(candidate, decision); err == nil {
 			log.Info("successfully parsed decision JSON after extracting from raw response")
 			return nil
+		} else {
+			candidateErr = err
 		}
 	}
 
-	return json.Unmarshal([]byte(textValue), decision)
+	if candidateErr != nil {
+		return candidateErr
+	}
+	return fmt.Errorf("planner response does not contain a JSON object")
+}
+
+func decodeDecisionJSON(raw string, decision *PlanDecision) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return err
+	}
+	for _, required := range []string{"thought_summary", "stop", "final_answer", "actions"} {
+		if _, ok := fields[required]; !ok {
+			return fmt.Errorf("planner decision missing required field %q", required)
+		}
+	}
+	var parsed PlanDecision
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return err
+	}
+	*decision = parsed
+	return nil
+}
+
+func jsonObjectCandidates(value string) []string {
+	var result []string
+	start := -1
+	depth := 0
+	inString := false
+	escaped := false
+	for index := 0; index < len(value); index++ {
+		current := value[index]
+		if start < 0 {
+			if current == '{' {
+				start = index
+				depth = 1
+				inString = false
+				escaped = false
+			}
+			continue
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch current {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch current {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				result = append(result, value[start:index+1])
+				start = -1
+			}
+		}
+	}
+	return result
 }

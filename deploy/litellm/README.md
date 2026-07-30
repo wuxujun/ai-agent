@@ -1,8 +1,9 @@
 # Local LiteLLM Gateway
 
 The Compose stack runs LiteLLM with PostgreSQL persistence and enables its
-Admin UI. The gateway binds to `127.0.0.1:4000` by default; PostgreSQL is
-available only inside the Compose network.
+Admin UI. The gateway binds to `127.0.0.1:4000` by default. PostgreSQL publishes
+port `5432` on host loopback by default and can be explicitly exposed on a
+trusted external interface.
 
 ## Start the gateway
 
@@ -41,9 +42,123 @@ in `.env.example` when production concurrency requires more capacity. Swap
 cannot exceed each service's memory ceiling. A limit that is too low can cause
 Docker to restart an out-of-memory container.
 
+### OpenAI provider
+
+Configure OpenAI directly or route OpenAI models through a compatible private
+endpoint:
+
+```dotenv
+OPENAI_API_KEY=sk-replace-with-your-key
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+For a compatible proxy:
+
+```dotenv
+OPENAI_BASE_URL=https://openai-proxy.example.com/v1
+```
+
+The pinned LiteLLM image also recognizes the legacy `OPENAI_API_BASE` variable,
+but `OPENAI_BASE_URL` takes precedence and is the deployment convention used by
+this Compose stack. Models should use the `openai/` provider prefix.
+
+### Groq provider
+
+The Compose service passes LiteLLM's native Groq environment variables into
+the gateway:
+
+```dotenv
+GROQ_API_KEY=gsk-replace-with-your-key
+GROQ_API_BASE=https://api.groq.com/openai/v1
+```
+
+`GROQ_API_BASE` may point to a compatible private endpoint or network proxy.
+Include the Groq OpenAI-compatible `/openai/v1` path expected by the target
+endpoint and omit a trailing slash. Models registered in LiteLLM should use the
+`groq/` provider prefix, for example `groq/llama-3.3-70b-versatile`.
+
+### Gemini provider
+
+The Compose service also passes LiteLLM's native Gemini endpoint variables:
+
+```dotenv
+GEMINI_API_KEY=replace-with-your-key
+GEMINI_API_BASE=https://generativelanguage.googleapis.com
+```
+
+For a compatible private endpoint or network proxy, replace
+`GEMINI_API_BASE` with its base origin. Do not include `/v1beta` in the standard
+configuration because LiteLLM appends the Gemini API path:
+
+```dotenv
+GEMINI_API_BASE=https://gemini-proxy.example.com
+```
+
+Models registered in LiteLLM should use the `gemini/` provider prefix, for
+example `gemini/gemini-2.5-flash`.
+
+### xAI provider
+
+Configure xAI directly or replace its OpenAI-compatible endpoint with a private
+proxy:
+
+```dotenv
+XAI_API_KEY=xai-replace-with-your-key
+XAI_API_BASE=https://api.x.ai/v1
+```
+
+Models registered in LiteLLM should use the `xai/` provider prefix, for example
+`xai/grok-4`.
+
+### NVIDIA NIM provider
+
+Configure NVIDIA NIM directly or point LiteLLM at a compatible self-hosted NIM
+endpoint:
+
+```dotenv
+NVIDIA_NIM_API_KEY=nvapi-replace-with-your-key
+NVIDIA_NIM_API_BASE=https://integrate.api.nvidia.com/v1
+```
+
+Models registered in LiteLLM should use the `nvidia_nim/` provider prefix. A
+self-hosted endpoint may use a value such as
+`http://nvidia-nim.internal:8000/v1`.
+
 Open the Admin UI at `http://127.0.0.1:4000/ui` and sign in with
 `LITELLM_UI_USERNAME` and `LITELLM_UI_PASSWORD`. Swagger remains available at
 `http://127.0.0.1:4000/docs`.
+
+### SMTP email notifications
+
+The Compose service passes optional SMTP settings from `.env`. For Tencent
+Exmail, configure the complete sender address and its client-specific password:
+
+```dotenv
+SMTP_HOST=smtp.exmail.qq.com
+SMTP_PORT=465
+SMTP_USERNAME=notifications@example.com
+SMTP_PASSWORD=replace-with-client-specific-password
+SMTP_SENDER_EMAIL=notifications@example.com
+SMTP_TLS=False
+SMTP_USE_SSL=True
+LITELLM_EMAIL_INCLUDE_API_KEY=False
+PROXY_BASE_URL=https://proxy.your-company.com
+```
+
+`PROXY_BASE_URL` must be the externally reachable LiteLLM URL because
+notification templates use it when generating links. Prefer HTTPS in
+non-local environments and omit a trailing slash.
+
+After all SMTP values are configured, enable the callback in `config.yaml`:
+
+```yaml
+litellm_settings:
+  callbacks: ["smtp_email"]
+```
+
+Restart LiteLLM after changing either file. The SMTP callback sends invitation,
+virtual-key, and budget notification emails to addresses attached to those
+events; it is not used for request/response payload logging.
 
 Models, virtual keys and provider credentials created in the UI are stored in
 the `litellm_postgres_data` volume. `STORE_MODEL_IN_DB=True` allows UI-managed
@@ -150,6 +265,47 @@ docker compose --env-file deploy/litellm/.env \
 
 Do not use `down --volumes` unless the persisted LiteLLM configuration, keys,
 and spend history are intentionally being discarded.
+
+## Expose the bundled PostgreSQL service
+
+The bundled PostgreSQL service publishes its container port through
+`POSTGRES_BIND_ADDRESS` and `POSTGRES_PORT`. The defaults expose it only on
+host loopback:
+
+```dotenv
+POSTGRES_BIND_ADDRESS=127.0.0.1
+POSTGRES_PORT=5432
+```
+
+For access from a trusted external network, bind the server's private/VPN
+address where possible. Binding all interfaces is supported but must be paired
+with a restrictive firewall or cloud security group:
+
+```dotenv
+POSTGRES_BIND_ADDRESS=0.0.0.0
+POSTGRES_PORT=55432
+POSTGRES_PASSWORD=replace-with-a-long-random-password
+```
+
+Recreate only the PostgreSQL container to apply a changed port mapping. The
+named data volume is retained:
+
+```bash
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml up -d --force-recreate postgres
+```
+
+Remote clients then connect to the Docker host, not the Compose service name:
+
+```bash
+psql "host=your-server.example.com port=55432 dbname=litellm user=litellm sslmode=prefer"
+```
+
+Do not expose PostgreSQL unrestricted to the public internet. Limit inbound TCP
+to known source IPs, use a non-default host port, and prefer a VPN or SSH
+tunnel. The bundled configuration does not provision a PostgreSQL server
+certificate, so configure PostgreSQL TLS separately before sending credentials
+over an untrusted network.
 
 ## Use an existing PostgreSQL server
 

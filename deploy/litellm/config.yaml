@@ -1,6 +1,15 @@
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  # Persist request prompts and model responses in spend logs so the complete
+  # payload is available from the LiteLLM Admin UI. This may contain sensitive
+  # data and increases database storage usage.
+  store_prompts_in_spend_logs: true
+  disable_spend_logs: false
+  disable_error_logs: false
+  alerting: ["email"]
 
 litellm_settings:
   request_timeout: 60
+  turn_off_message_logging: false
   set_verbose: false
+  callbacks: ["smtp_email"]

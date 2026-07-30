@@ -72,6 +72,36 @@ func PlannerDecisionSchema() map[string]any {
 	}
 }
 
+// PlannerDecisionOpenAISchema returns the planner schema restricted to the
+// JSON Schema subset accepted by OpenAI structured outputs. Tool schemas remain
+// unchanged so application-side validation can still enforce constraints that
+// are not supported by the provider (for example uniqueItems).
+func PlannerDecisionOpenAISchema() map[string]any {
+	return withoutUnsupportedOpenAIKeywords(PlannerDecisionSchema()).(map[string]any)
+}
+
+func withoutUnsupportedOpenAIKeywords(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, child := range typed {
+			if key == "uniqueItems" {
+				continue
+			}
+			result[key] = withoutUnsupportedOpenAIKeywords(child)
+		}
+		return result
+	case []any:
+		result := make([]any, len(typed))
+		for index, child := range typed {
+			result[index] = withoutUnsupportedOpenAIKeywords(child)
+		}
+		return result
+	default:
+		return value
+	}
+}
+
 func strictActionVariant(action string, parameters map[string]any) map[string]any {
 	required := make([]string, 0, len(parameters))
 	for name := range parameters {

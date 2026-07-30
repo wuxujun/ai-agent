@@ -33,7 +33,24 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       DASHSCOPE_API_BASE: ${DASHSCOPE_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_BASE: ${GEMINI_API_BASE:-https://generativelanguage.googleapis.com}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_API_BASE: ${GROQ_API_BASE:-https://api.groq.com/openai/v1}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      XAI_API_BASE: ${XAI_API_BASE:-https://api.x.ai/v1}
+      NVIDIA_NIM_API_KEY: ${NVIDIA_NIM_API_KEY:-}
+      NVIDIA_NIM_API_BASE: ${NVIDIA_NIM_API_BASE:-https://integrate.api.nvidia.com/v1}
+      SMTP_HOST: ${SMTP_HOST:-smtp.exmail.qq.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_SENDER_EMAIL: ${SMTP_SENDER_EMAIL:-}
+      SMTP_TLS: ${SMTP_TLS:-False}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-True}
+      EMAIL_INCLUDE_API_KEY: ${LITELLM_EMAIL_INCLUDE_API_KEY:-False}
+      PROXY_BASE_URL: ${PROXY_BASE_URL:-http://127.0.0.1:4000}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     extra_hosts:
@@ -84,6 +101,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-litellm}
       POSTGRES_USER: ${POSTGRES_USER:-litellm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-litellm-local-change-me}
+    ports:
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - litellm_postgres_data:/var/lib/postgresql/data
     healthcheck:

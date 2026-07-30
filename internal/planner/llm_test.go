@@ -175,6 +175,7 @@ func TestOpenAIChatPlannerEmbedsJSONSchemaInSystemMessage(t *testing.T) {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
+			ResponseFormat map[string]any `json:"response_format"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			return nil, err
@@ -183,6 +184,10 @@ func TestOpenAIChatPlannerEmbedsJSONSchemaInSystemMessage(t *testing.T) {
 			!strings.Contains(body.Messages[0].Content, "JSON Schema") ||
 			!strings.Contains(body.Messages[0].Content, `"required":["thought_summary","stop","final_answer","actions"]`) {
 			t.Errorf("planner system message is missing the JSON schema: %+v", body.Messages)
+		}
+		encodedFormat, _ := json.Marshal(body.ResponseFormat)
+		if body.ResponseFormat["type"] != "json_schema" || strings.Contains(string(encodedFormat), "uniqueItems") {
+			t.Errorf("direct OpenAI response_format is not compatible strict schema: %s", encodedFormat)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -193,6 +198,45 @@ func TestOpenAIChatPlannerEmbedsJSONSchemaInSystemMessage(t *testing.T) {
 	})}
 
 	_, _, err := (&openAIChatProvider{}).Plan(context.Background(), PlanRequest{
+		Client:       client,
+		Model:        "agent-planner",
+		BaseURL:      "http://litellm.test/v1/chat/completions",
+		SystemPrompt: "Choose the next action.",
+		UserPrompt:   "Task goal: inspect the repository.",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLiteLLMPlannerUsesGatewayCompatibleJSONMode(t *testing.T) {
+	response := `data: {"choices":[{"delta":{"content":"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"answer\",\"actions\":[{\"action\":\"none\",\"parameters\":{}}]}"}}]}` + "\n\n" + "data: [DONE]\n\n"
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			ResponseFormat map[string]any `json:"response_format"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		if body.ResponseFormat["type"] != "json_object" {
+			t.Errorf("LiteLLM response_format = %+v, want json_object", body.ResponseFormat)
+		}
+		if len(body.Messages) == 0 || !strings.Contains(body.Messages[0].Content, "JSON Schema") {
+			t.Errorf("LiteLLM system message is missing schema instruction: %+v", body.Messages)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(response)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, _, err := (&liteLLMProvider{}).Plan(context.Background(), PlanRequest{
 		Client:       client,
 		Model:        "agent-planner",
 		BaseURL:      "http://litellm.test/v1/chat/completions",
@@ -288,6 +332,33 @@ func TestUnmarshalDecisionFallback(t *testing.T) {
 	}
 	if decision.ThoughtSummary != "Finding files" {
 		t.Errorf("expected thought_summary 'Finding files', got %q", decision.ThoughtSummary)
+	}
+}
+
+func TestUnmarshalDecisionRejectsSchemaEcho(t *testing.T) {
+	rawInput := `{"type":"object","additionalProperties":false,"properties":{"actions":{"type":"array"}}}`
+
+	var decision PlanDecision
+	err := unmarshalDecision(rawInput, &decision)
+	if err == nil {
+		t.Fatalf("schema echo was accepted as a decision: %+v", decision)
+	}
+	if !strings.Contains(err.Error(), `missing required field "thought_summary"`) {
+		t.Fatalf("error = %q, want missing required field", err)
+	}
+}
+
+func TestUnmarshalDecisionSkipsSchemaEchoBeforeDecision(t *testing.T) {
+	rawInput := `{"type":"object","properties":{"actions":{"type":"array"}}}
+The schema above describes the output.
+{"thought_summary":"done","stop":true,"final_answer":"answer","actions":[{"action":"none","parameters":{}}]}`
+
+	var decision PlanDecision
+	if err := unmarshalDecision(rawInput, &decision); err != nil {
+		t.Fatalf("failed to find decision after schema echo: %v", err)
+	}
+	if !decision.Stop || decision.FinalAnswer != "answer" || len(decision.Actions) != 1 || decision.Actions[0].Action != "none" {
+		t.Fatalf("unexpected decision: %+v", decision)
 	}
 }
 

@@ -83,6 +83,28 @@ func TestSchemaParametersAreScopedByAction(t *testing.T) {
 	}
 }
 
+func TestOpenAISchemaRemovesUnsupportedUniqueItems(t *testing.T) {
+	toolSchema := PlannerDecisionSchema()
+	retrievalVariant := openAIActionVariant(t, toolSchema, "rag_fetch")
+	toolIDs := retrievalVariant["properties"].(map[string]any)["parameters"].(map[string]any)["properties"].(map[string]any)["ids"].(map[string]any)
+	if toolIDs["uniqueItems"] != true {
+		t.Fatalf("tool schema uniqueItems = %v, want true", toolIDs["uniqueItems"])
+	}
+
+	providerSchema := PlannerDecisionOpenAISchema()
+	providerVariant := openAIActionVariant(t, providerSchema, "rag_fetch")
+	providerIDs := providerVariant["properties"].(map[string]any)["parameters"].(map[string]any)["properties"].(map[string]any)["ids"].(map[string]any)
+	if _, exists := providerIDs["uniqueItems"]; exists {
+		t.Fatalf("OpenAI provider schema still contains unsupported uniqueItems: %+v", providerIDs)
+	}
+
+	// Building the provider schema must not mutate the authoritative tool
+	// schema, because local validation still owns the uniqueness constraint.
+	if toolIDs["uniqueItems"] != true {
+		t.Fatal("building provider schema mutated the tool schema")
+	}
+}
+
 func openAIActionVariant(t *testing.T, schema map[string]any, name string) map[string]any {
 	t.Helper()
 	props := schema["properties"].(map[string]any)
