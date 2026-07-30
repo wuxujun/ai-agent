@@ -74,6 +74,9 @@ jobs:
           cp config.yaml build_stage/${{ matrix.artifact_name }}/
           cp teams.yaml build_stage/${{ matrix.artifact_name }}/
           cp -r skills build_stage/${{ matrix.artifact_name }}/
+          if [ "${{ matrix.os }}" = "linux" ]; then
+            cp deploy/systemd/ai-agent.service build_stage/${{ matrix.artifact_name }}/
+          fi
           mkdir -p build_stage/${{ matrix.artifact_name }}/data \
                    build_stage/${{ matrix.artifact_name }}/logs \
                    build_stage/${{ matrix.artifact_name }}/workspace

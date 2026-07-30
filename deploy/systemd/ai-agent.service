@@ -1,0 +1,39 @@
+[Unit]
+Description=AI Agent Runtime Service
+Documentation=https://github.com/wuxujun/ai-agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ai-agent
+Group=ai-agent
+WorkingDirectory=/opt/ai-agent
+EnvironmentFile=-/etc/ai-agent/ai-agent.env
+ExecStart=/opt/ai-agent/server
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0027
+LimitNOFILE=65535
+
+# The application and bundled configuration are read-only. Runtime state is
+# limited to the directories shipped for data, logs, and task workspaces.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/opt/ai-agent/data /opt/ai-agent/logs /opt/ai-agent/workspace
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-agent
+
+[Install]
+WantedBy=multi-user.target

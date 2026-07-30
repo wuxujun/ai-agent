@@ -128,6 +128,51 @@ Open the Admin UI at `http://127.0.0.1:4000/ui` and sign in with
 `LITELLM_UI_USERNAME` and `LITELLM_UI_PASSWORD`. Swagger remains available at
 `http://127.0.0.1:4000/docs`.
 
+### Serve LiteLLM under `/litellm`
+
+When the public gateway exposes LiteLLM below a URL prefix, configure both the
+ASGI root path and the externally reachable URL:
+
+```dotenv
+SERVER_ROOT_PATH=/litellm
+PROXY_BASE_URL=https://gateway.example.com/litellm
+```
+
+Keep `DOCS_URL=/docs` and `ROOT_REDIRECT_URL=/ui` in Compose. LiteLLM applies
+`SERVER_ROOT_PATH` when generating public Admin UI routes, so including the
+prefix in those two values would produce duplicate paths.
+
+Use `nginx-litellm-subpath.conf` as the Nginx location template. Its
+`proxy_pass` URL intentionally ends in `/`, which removes the external
+`/litellm/` prefix before forwarding the request. The `^~` location modifier is
+also required when the server has a generic dot-file rule such as
+`location ~ /\.`; without it, `/.well-known/litellm-ui-config` can be rejected
+by Nginx before it reaches LiteLLM.
+
+After installing the location block in the applicable HTTPS `server`, validate
+and reload Nginx, then recreate LiteLLM so the new environment variable is
+loaded:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml up -d --force-recreate litellm
+```
+
+Verify both the direct upstream route and the public prefixed routes:
+
+```bash
+curl -i http://127.0.0.1:4000/health/liveliness
+curl -i http://127.0.0.1:4000/.well-known/litellm-ui-config
+curl -i https://gateway.example.com/litellm/health/liveliness
+curl -i https://gateway.example.com/litellm/.well-known/litellm-ui-config
+```
+
+The public responses should come from LiteLLM rather than an Nginx HTML 404.
+When upgrading the pinned LiteLLM image, verify subpath UI behavior before
+deploying because older releases had `SERVER_ROOT_PATH` regressions.
+
 ### SMTP email notifications
 
 The Compose service passes optional SMTP settings from `.env`. For Tencent
@@ -142,7 +187,8 @@ SMTP_SENDER_EMAIL=notifications@example.com
 SMTP_TLS=False
 SMTP_USE_SSL=True
 LITELLM_EMAIL_INCLUDE_API_KEY=False
-PROXY_BASE_URL=https://proxy.your-company.com
+SERVER_ROOT_PATH=/litellm
+PROXY_BASE_URL=https://proxy.your-company.com/litellm
 ```
 
 `PROXY_BASE_URL` must be the externally reachable LiteLLM URL because

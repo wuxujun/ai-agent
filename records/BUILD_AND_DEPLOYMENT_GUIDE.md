@@ -254,41 +254,43 @@ launchctl load ~/Library/LaunchAgents/com.aiagent.server.plist
 #### (1) 安装与解压
 ```bash
 sudo mkdir -p /opt/ai-agent
-sudo tar -xzvf ai-agent-v1.0.0-linux-amd64.tar.gz -C /opt/ai-agent
+sudo tar -xzvf ai-agent-v1.0.0-linux-amd64.tar.gz -C /opt/ai-agent --strip-components=1
 sudo chmod +x /opt/ai-agent/server
+sudo useradd --system --home-dir /opt/ai-agent --shell /usr/sbin/nologin ai-agent
+sudo chown -R ai-agent:ai-agent /opt/ai-agent/data /opt/ai-agent/logs /opt/ai-agent/workspace
 ```
 
 #### (2) 创建 systemd 服务文件
-新建 `/etc/systemd/system/ai-agent.service`：
-```ini
-[Unit]
-Description=AI Agent Go Runtime Engine Service
-After=network.target
+Linux 发布包已包含 `ai-agent.service`。安装服务文件并创建仅 root 可读的环境变量文件：
+```bash
+sudo install -m 0644 /opt/ai-agent/ai-agent.service /etc/systemd/system/ai-agent.service
+sudo install -d -m 0750 /etc/ai-agent
+sudo touch /etc/ai-agent/ai-agent.env
+sudo chmod 0600 /etc/ai-agent/ai-agent.env
+sudo editor /etc/ai-agent/ai-agent.env
+```
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/ai-agent
-ExecStart=/opt/ai-agent/server
-Restart=always
-RestartSec=5
-
-# 环境变量设置
-Environment="OPENAI_API_KEY=your-api-key"
-Environment="AI_AGENT_API_ADDR=0.0.0.0:8088"
-Environment="AI_AGENT_STORE_TYPE=sqlite"
-Environment="AI_AGENT_STORE_DSN=/opt/ai-agent/data/agent.db"
-
-[Install]
-WantedBy=multi-user.target
+`/etc/ai-agent/ai-agent.env` 示例：
+```dotenv
+AI_AGENT_API_ADDR=0.0.0.0:8088
+AI_AGENT_API_KEY=replace-with-a-strong-admin-key
+AI_AGENT_STORE_TYPE=sqlite
+AI_AGENT_STORE_DSN=/opt/ai-agent/data/agent.db
+AI_AGENT_LLM_PROVIDER=litellm
+AI_AGENT_LLM_BASE_URL=http://127.0.0.1:4000/v1/chat/completions
+AI_AGENT_LLM_API_KEY=replace-with-a-litellm-virtual-key
+LANGFUSE_ENABLED=true
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=replace-with-langfuse-public-key
+LANGFUSE_SECRET_KEY=replace-with-langfuse-secret-key
 ```
 
 #### (3) 启动与开启自启
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl start ai-agent
-sudo systemctl enable ai-agent
+sudo systemctl enable --now ai-agent
 sudo systemctl status ai-agent
+sudo journalctl -u ai-agent -f
 ```
 
 ---
