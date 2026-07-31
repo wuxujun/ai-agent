@@ -80,11 +80,13 @@ services:
     environment:
       LITELLM_BASE_URL: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
+      LITELLM_MODEL_BOOTSTRAP_MANIFEST: ${LITELLM_MODEL_BOOTSTRAP_MANIFEST:-/bootstrap/bootstrap-models.json}
       LITELLM_MODEL_BOOTSTRAP_INTERVAL_SECONDS: ${LITELLM_MODEL_BOOTSTRAP_INTERVAL_SECONDS:-60}
       LITELLM_MODEL_BOOTSTRAP_TIMEOUT_SECONDS: ${LITELLM_MODEL_BOOTSTRAP_TIMEOUT_SECONDS:-10}
     volumes:
       - ./bootstrap_models.py:/bootstrap/bootstrap_models.py:ro
       - ./bootstrap-models.json:/bootstrap/bootstrap-models.json:ro
+      - ./qwen-models.json:/bootstrap/qwen-models.json:ro
     depends_on:
       litellm:
         condition: service_healthy

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import copy
 import json
 import os
 import sys
@@ -8,12 +9,22 @@ import urllib.error
 import urllib.request
 
 
+def configured_team_name(model):
+    team_name = model.get("team_name")
+    if team_name is None:
+        return None
+    if not isinstance(team_name, str):
+        raise ValueError("team_name must be a string or null")
+    team_name = team_name.strip()
+    return team_name or None
+
+
 def load_manifest(path):
     with open(path, encoding="utf-8") as handle:
         models = json.load(handle)
     if not isinstance(models, list) or not models:
         raise ValueError("bootstrap manifest must contain a non-empty model list")
-    names = set()
+    deployments = set()
     for model in models:
         if not isinstance(model, dict):
             raise ValueError("every bootstrap model must be an object")
@@ -22,13 +33,39 @@ def load_manifest(path):
         info = model.get("model_info")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("every bootstrap model requires model_name")
-        if name in names:
-            raise ValueError(f"duplicate bootstrap model_name: {name}")
         if not isinstance(params, dict) or not params.get("model"):
             raise ValueError(f"bootstrap model {name} requires litellm_params.model")
+        credential_name = params.get("litellm_credential_name")
+        if credential_name is not None and (
+            not isinstance(credential_name, str) or not credential_name.strip()
+        ):
+            raise ValueError(
+                f"bootstrap model {name} has invalid "
+                "litellm_params.litellm_credential_name"
+            )
         if not isinstance(info, dict):
             raise ValueError(f"bootstrap model {name} requires model_info")
-        names.add(name)
+        try:
+            team_name = configured_team_name(model)
+        except ValueError as error:
+            raise ValueError(f"bootstrap model {name} has invalid team_name") from error
+        if team_name is not None and info.get("team_id") is not None:
+            raise ValueError(
+                f"bootstrap model {name} cannot set both team_name "
+                "and model_info.team_id"
+            )
+        deployment = (
+            name,
+            params.get("model"),
+            credential_name,
+            team_name,
+            info.get("team_id"),
+        )
+        if deployment in deployments:
+            raise ValueError(
+                f"duplicate bootstrap deployment for model_name: {name}"
+            )
+        deployments.add(deployment)
     return models
 
 
@@ -54,22 +91,71 @@ def existing_model_names(base_url, master_key, timeout=10):
     data = response.get("data")
     if not isinstance(data, list):
         raise ValueError("LiteLLM /model/info returned invalid data")
-    return {
-        item.get("model_name")
-        for item in data
-        if isinstance(item, dict) and isinstance(item.get("model_name"), str)
-    }
+    names = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("model_name")
+        if isinstance(name, str):
+            names.add(name)
+        info = item.get("model_info")
+        if isinstance(info, dict):
+            public_name = info.get("team_public_model_name")
+            if isinstance(public_name, str):
+                names.add(public_name)
+    return names
+
+
+def team_ids_by_name(base_url, master_key, timeout=10):
+    response = request_json(base_url, master_key, "GET", "/team/list", timeout=timeout)
+    if isinstance(response, list):
+        teams = response
+    elif isinstance(response, dict):
+        teams = response.get("teams", response.get("data"))
+    else:
+        teams = None
+    if not isinstance(teams, list):
+        raise ValueError("LiteLLM /team/list returned invalid data")
+
+    result = {}
+    for team in teams:
+        if not isinstance(team, dict):
+            continue
+        name = team.get("team_alias")
+        team_id = team.get("team_id")
+        if not isinstance(name, str) or not isinstance(team_id, str):
+            continue
+        if name in result and result[name] != team_id:
+            raise ValueError(f"duplicate LiteLLM team_alias: {name}")
+        result[name] = team_id
+    return result
+
+
+def model_create_payload(model, team_ids):
+    payload = copy.deepcopy(model)
+    team_name = configured_team_name(payload)
+    payload.pop("team_name", None)
+    if team_name is None:
+        return payload
+    team_id = team_ids.get(team_name)
+    if team_id is None:
+        raise ValueError(f"LiteLLM team not found: {team_name}")
+    payload["model_info"]["team_id"] = team_id
+    return payload
 
 
 def reconcile(base_url, master_key, models, timeout=10):
     existing = existing_model_names(base_url, master_key, timeout)
+    missing = [model for model in models if model["model_name"] not in existing]
+    team_ids = {}
+    if any(configured_team_name(model) is not None for model in missing):
+        team_ids = team_ids_by_name(base_url, master_key, timeout)
     created = []
-    for model in models:
+    for model in missing:
         name = model["model_name"]
-        if name in existing:
-            continue
+        payload = model_create_payload(model, team_ids)
         try:
-            request_json(base_url, master_key, "POST", "/model/new", model, timeout)
+            request_json(base_url, master_key, "POST", "/model/new", payload, timeout)
         except urllib.error.HTTPError:
             # Another reconciler may have created the alias after our list call.
             if name not in existing_model_names(base_url, master_key, timeout):
@@ -95,14 +181,21 @@ def main():
     if timeout <= 0:
         raise ValueError("LITELLM_MODEL_BOOTSTRAP_TIMEOUT_SECONDS must be > 0")
 
-    models = load_manifest(manifest)
     while True:
         try:
+            # Load on every pass so a temporarily missing/invalid bind mount
+            # does not terminate the container and corrected manifests are
+            # picked up without recreating the reconciler.
+            models = load_manifest(manifest)
             created = reconcile(base_url, master_key, models, timeout)
             if created:
                 print("created missing LiteLLM models: " + ", ".join(created), flush=True)
         except (OSError, ValueError, urllib.error.URLError) as error:
-            print(f"LiteLLM model bootstrap failed: {error}", file=sys.stderr, flush=True)
+            print(
+                f"LiteLLM model bootstrap failed for {manifest}: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
         time.sleep(interval)
 
 

@@ -128,6 +128,17 @@ Open the Admin UI at `http://127.0.0.1:4000/ui` and sign in with
 `LITELLM_UI_USERNAME` and `LITELLM_UI_PASSWORD`. Swagger remains available at
 `http://127.0.0.1:4000/docs`.
 
+The local direct-access configuration must not set a public URL prefix:
+
+```dotenv
+SERVER_ROOT_PATH=
+PROXY_BASE_URL=http://127.0.0.1:4000
+```
+
+If `SERVER_ROOT_PATH=/litellm` is set instead, the direct container UI is
+`http://127.0.0.1:4000/litellm/ui/`; `http://127.0.0.1:4000/ui/` will return
+404 because the UI assets are mounted below the configured root path.
+
 ### Serve LiteLLM under `/litellm`
 
 When the public gateway exposes LiteLLM below a URL prefix, configure both the
@@ -225,6 +236,88 @@ The reconciler is intentionally create-only:
 - A deleted baseline alias is recreated on the next reconciliation interval.
 - Provider API keys remain environment references and are not copied into the
   seed manifest.
+
+#### Use the Qwen manifest with a LiteLLM Credential
+
+`qwen-models.json` is a Qwen-only alternative to `bootstrap-models.json`. It
+references the reusable LiteLLM Credential named `dashscope-qwen` and assigns
+the models to the Team whose alias is `ai-agent`:
+
+```json
+{
+  "team_name": "ai-agent",
+  "litellm_params": {
+    "model": "dashscope/qwen3.7-plus",
+    "litellm_credential_name": "dashscope-qwen"
+  }
+}
+```
+
+Create `dashscope-qwen` in the LiteLLM Admin UI before selecting this manifest.
+The Credential should contain the DashScope API key and API base. Its name is a
+literal LiteLLM database lookup key; `credential_name` and `credential_id` are
+not valid replacements in a `/model/new` payload.
+
+Create the Team before starting the reconciler, or change `team_name` in
+`qwen-models.json` to an existing LiteLLM `team_alias`. `team_name` is a local
+manifest convenience field: the reconciler calls `GET /team/list`, requires an
+exact and unique alias match, removes `team_name`, and sends the resolved ID as
+`model_info.team_id` to `POST /model/new`.
+
+Omit `team_name`, or set it to `null`, `""`, or whitespace, to create a global
+model without resolving or assigning a Team. The bootstrap-only `team_name`
+field is always removed before the `/model/new` request.
+
+The manifest may repeat a `model_name` to create a LiteLLM model group with
+multiple deployments, for example one deployment per Credential. Repeated
+entries must differ by upstream `model`, `litellm_credential_name`, or Team;
+only an identical deployment tuple is rejected as a configuration error.
+
+LiteLLM restricts models scoped with `model_info.team_id` to Premium/Enterprise
+deployments. A Community deployment will reject Team-scoped model creation
+with HTTP 403; remove `team_name` from each entry to create ordinary global
+models instead.
+
+Confirm the Credential exists:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer <LITELLM_MASTER_KEY>" \
+  http://127.0.0.1:4000/credentials/by_name/dashscope-qwen
+```
+
+Confirm the configured Team alias exists:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer <LITELLM_MASTER_KEY>" \
+  http://127.0.0.1:4000/team/list
+```
+
+Select the Qwen manifest in `deploy/litellm/.env`:
+
+```dotenv
+LITELLM_MODEL_BOOTSTRAP_MANIFEST=/bootstrap/qwen-models.json
+```
+
+Then recreate the reconciler:
+
+```bash
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml up -d --force-recreate model-bootstrap
+```
+
+The reconciler remains create-only. If an alias such as `agent-planner`
+already exists, selecting the Qwen manifest will not replace its credential or
+other settings; update/delete that deployment deliberately through the Admin
+UI before expecting it to be recreated.
+
+The manifest is reloaded on every reconciliation pass. A missing bind mount,
+invalid JSON, unknown Team, or temporarily unavailable LiteLLM API is logged
+with the manifest path and retried without terminating the container. If Docker
+shows `Restarting`, confirm the deployed `bootstrap_models.py` contains this
+retry behavior and recreate `model-bootstrap`; an older script loaded the
+manifest before entering its retry loop.
 
 The default aliases use distinct DashScope Qwen models that support structured
 output:
