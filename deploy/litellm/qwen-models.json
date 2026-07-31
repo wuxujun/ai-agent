@@ -3,9 +3,10 @@
     "model_name": "agent-plan-qwen3.8-max-preview",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.8-max-preview",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -15,9 +16,10 @@
     "model_name": "agent-plan-qwen3.7-plus",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.7-plus",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -27,9 +29,10 @@
     "model_name": "agent-plan-qwen3.7-max",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.7-max",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -39,9 +42,10 @@
     "model_name": "agent-plan-qwen3.6-plus",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.6-plus",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -51,9 +55,10 @@
     "model_name": "agent-plan-qwen3.6-flash",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.6-flash",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -63,9 +68,10 @@
     "model_name": "agent-plan-deepseek-v4-pro",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v4-pro",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -75,9 +81,10 @@
     "model_name": "agent-plan-deepseek-v4-flash",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v4-flash",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -87,9 +94,10 @@
     "model_name": "agent-plan-deepseek-v3.2",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v3.2",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -99,9 +107,10 @@
     "model_name": "agent-plan-MiniMax-M2.5",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "MiniMax-M2.5",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -111,9 +120,10 @@
     "model_name": "agent-plan-glm-5.2",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "glm-5.2",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -123,9 +133,10 @@
     "model_name": "agent-plan-glm-5.1",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "glm-5.1",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -135,9 +146,10 @@
     "model_name": "agent-plan-kimi-k2.7-code",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.7-code",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -147,9 +159,10 @@
     "model_name": "agent-plan-kimi-k2.6",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.6",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -159,9 +172,10 @@
     "model_name": "agent-plan-kimi-k2.5",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.5",
-      "litellm_credential_name": "AgentPlan-QwenH"
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -171,9 +185,10 @@
     "model_name": "agent-plan2-qwen3.8-max-preview",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.8-max-preview",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -183,9 +198,10 @@
     "model_name": "agent-plan2-qwen3.7-plus",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.7-plus",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -195,9 +211,10 @@
     "model_name": "agent-plan2-qwen3.7-max",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.7-max",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -207,9 +224,10 @@
     "model_name": "agent-plan2-qwen3.6-plus",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.6-plus",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -219,9 +237,10 @@
     "model_name": "agent-plan2-qwen3.6-flash",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.6-flash",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -231,9 +250,10 @@
     "model_name": "agent-plan2-deepseek-v4-pro",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v4-pro",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -243,9 +263,10 @@
     "model_name": "agent-plan2-deepseek-v4-flash",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v4-flash",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -255,9 +276,10 @@
     "model_name": "agent-plan2-deepseek-v3.2",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v3.2",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -267,9 +289,10 @@
     "model_name": "agent-plan2-MiniMax-M2.5",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "MiniMax-M2.5",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -279,9 +302,10 @@
     "model_name": "agent-plan2-glm-5.2",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "glm-5.2",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -291,9 +315,10 @@
     "model_name": "agent-plan2-glm-5.1",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "glm-5.1",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -303,9 +328,10 @@
     "model_name": "agent-plan2-kimi-k2.7-code",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.7-code",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -315,9 +341,10 @@
     "model_name": "agent-plan2-kimi-k2.6",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.6",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -327,21 +354,23 @@
     "model_name": "agent-plan2-kimi-k2.5",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.5",
-      "litellm_credential_name": "AgentPlan-QwenH2"
+      "litellm_credential_name": "AgentPlan-QwenH2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
     }
   },
   {
-    "model_name": "agent-plan—n-qwen3.8-max-preview",
+    "model_name": "agent-plan-n-qwen3.8-max-preview",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.8-max-preview",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -351,9 +380,10 @@
     "model_name": "agent-plan-n-qwen3.7-plus",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.7-plus",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -363,9 +393,10 @@
     "model_name": "agent-plan-n-qwen3.7-max",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.7-max",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -375,9 +406,10 @@
     "model_name": "agent-plan-n-qwen3.6-plus",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.6-plus",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -387,9 +419,10 @@
     "model_name": "agent-plan-n-qwen3.6-flash",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.6-flash",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -399,9 +432,10 @@
     "model_name": "agent-plan-n-deepseek-v4-pro",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v4-pro",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -411,9 +445,10 @@
     "model_name": "agent-plan-n-deepseek-v4-flash",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v4-flash",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -423,9 +458,10 @@
     "model_name": "agent-plan-n-deepseek-v3.2",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v3.2",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -435,9 +471,10 @@
     "model_name": "agent-plan-n-MiniMax-M2.5",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "MiniMax-M2.5",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -447,9 +484,10 @@
     "model_name": "agent-plan-n-glm-5.2",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "glm-5.2",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -459,9 +497,10 @@
     "model_name": "agent-plan-n-glm-5.1",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "glm-5.1",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -471,9 +510,10 @@
     "model_name": "agent-plan-n-kimi-k2.7-code",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.7-code",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -483,9 +523,10 @@
     "model_name": "agent-plan-n-kimi-k2.6",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.6",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -495,9 +536,10 @@
     "model_name": "agent-plan-n-kimi-k2.5",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.5",
-      "litellm_credential_name": "AgentPlan-Qwen"
+      "litellm_credential_name": "AgentPlan-Qwen",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -507,9 +549,10 @@
     "model_name": "agent-plan-n2-qwen3.8-max-preview",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.8-max-preview",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -519,9 +562,10 @@
     "model_name": "agent-plan-n2-qwen3.7-plus",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.7-plus",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -531,9 +575,10 @@
     "model_name": "agent-plan-n2-qwen3.7-max",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.7-max",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -543,9 +588,10 @@
     "model_name": "agent-plan-n2-qwen3.6-plus",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.6-plus",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -555,9 +601,10 @@
     "model_name": "agent-plan-n2-qwen3.6-flash",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "qwen3.6-flash",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -567,9 +614,10 @@
     "model_name": "agent-plan-n2-deepseek-v4-pro",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v4-pro",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -579,9 +627,10 @@
     "model_name": "agent-plan-n2-deepseek-v4-flash",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v4-flash",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -591,9 +640,10 @@
     "model_name": "agent-plan-n2-deepseek-v3.2",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "deepseek-v3.2",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -603,9 +653,10 @@
     "model_name": "agent-plan-n2-MiniMax-M2.5",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "MiniMax-M2.5",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -615,9 +666,10 @@
     "model_name": "agent-plan-n2-glm-5.2",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "glm-5.2",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -627,9 +679,10 @@
     "model_name": "agent-plan-n2-glm-5.1",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "glm-5.1",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -639,9 +692,10 @@
     "model_name": "agent-plan-n2-kimi-k2.7-code",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.7-code",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -651,9 +705,10 @@
     "model_name": "agent-plan-n2-kimi-k2.6",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.6",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -663,13 +718,13 @@
     "model_name": "agent-plan-n2-kimi-k2.5",
     "team_name": "",
     "litellm_params": {
-      "custom_llm_provider":"custom_openai",
+      "custom_llm_provider": "custom_openai",
       "model": "kimi-k2.5",
-      "litellm_credential_name": "AgentPlan-Qwen2"
+      "litellm_credential_name": "AgentPlan-Qwen2",
+      "drop_params": true
     },
     "model_info": {
       "id": null
     }
   }
-
 ]

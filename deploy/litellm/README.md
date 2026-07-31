@@ -225,13 +225,17 @@ models to survive restarts.
 
 Baseline model aliases are defined in `bootstrap-models.json`, not in the
 LiteLLM `model_list`. The `model-bootstrap` service waits for LiteLLM to become
-healthy, checks `/model/info`, and creates each missing alias through
-`POST /model/new`. Created models are stored in PostgreSQL and appear in the
+healthy, checks `/model/info`, creates each missing deployment through
+`POST /model/new`, and patches changed manifest-owned `litellm_params` through
+`PATCH /model/{id}/update`. Models are stored in PostgreSQL and appear in the
 Admin UI with `db_model=true`.
 
-The reconciler is intentionally create-only:
+The reconciler is declarative for `litellm_params` and conservative elsewhere:
 
-- Existing aliases are never updated, so Admin UI edits remain authoritative.
+- Existing deployments are matched by public model name, upstream model, and
+  Credential. Manifest keys in `litellm_params` are updated when they differ.
+- LiteLLM-generated defaults and `model_info` values not owned by the manifest
+  are preserved.
 - Models not present in the seed manifest are never deleted.
 - A deleted baseline alias is recreated on the next reconciliation interval.
 - Provider API keys remain environment references and are not copied into the
@@ -248,10 +252,16 @@ the models to the Team whose alias is `ai-agent`:
   "team_name": "ai-agent",
   "litellm_params": {
     "model": "dashscope/qwen3.7-plus",
-    "litellm_credential_name": "dashscope-qwen"
+    "litellm_credential_name": "dashscope-qwen",
+    "drop_params": true
   }
 }
 ```
+
+`drop_params: true` makes LiteLLM discard request parameters unsupported by
+the selected custom provider instead of rejecting the request. The reconciler
+adds this setting to missing deployments and patches existing deployments that
+do not yet have it.
 
 Create `dashscope-qwen` in the LiteLLM Admin UI before selecting this manifest.
 The Credential should contain the DashScope API key and API base. Its name is a
@@ -296,11 +306,16 @@ curl -sS \
   http://127.0.0.1:4000/team/list
 ```
 
-Select the Qwen manifest in `deploy/litellm/.env`:
+Reconcile the baseline and Qwen manifests together in `deploy/litellm/.env`:
 
 ```dotenv
-LITELLM_MODEL_BOOTSTRAP_MANIFEST=/bootstrap/qwen-models.json
+LITELLM_MODEL_BOOTSTRAP_MANIFESTS=/bootstrap/bootstrap-models.json,/bootstrap/qwen-models.json
 ```
+
+`LITELLM_MODEL_BOOTSTRAP_MANIFESTS` accepts a comma-separated list and takes
+precedence over the backward-compatible singular
+`LITELLM_MODEL_BOOTSTRAP_MANIFEST`. This prevents changes in the baseline file
+from being silently ignored while the Qwen-only file is selected.
 
 Then recreate the reconciler:
 
@@ -309,10 +324,10 @@ docker compose --env-file deploy/litellm/.env \
   -f deploy/litellm/compose.yaml up -d --force-recreate model-bootstrap
 ```
 
-The reconciler remains create-only. If an alias such as `agent-planner`
-already exists, selecting the Qwen manifest will not replace its credential or
-other settings; update/delete that deployment deliberately through the Admin
-UI before expecting it to be recreated.
+If an alias such as `agent-planner` already exists, selecting the Qwen manifest
+patches the declared `litellm_params`, including the Credential, provider,
+upstream model, and `drop_params`. It does not delete unrelated deployments or
+replace unrelated `model_info` settings.
 
 The manifest is reloaded on every reconciliation pass. A missing bind mount,
 invalid JSON, unknown Team, or temporarily unavailable LiteLLM API is logged

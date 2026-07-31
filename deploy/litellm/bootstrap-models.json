@@ -2,9 +2,10 @@
   {
     "model_name": "agent-planner",
     "litellm_params": {
-      "model": "dashscope/qwen3.7-plus",
-      "api_key": "os.environ/DASHSCOPE_API_KEY",
-      "api_base": "os.environ/DASHSCOPE_API_BASE"
+      "custom_llm_provider": "custom_openai",
+      "model": "qwen3.7-plus",
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -13,9 +14,10 @@
   {
     "model_name": "agent-planner-fallback",
     "litellm_params": {
-      "model": "dashscope/qwen3.6-plus",
-      "api_key": "os.environ/DASHSCOPE_API_KEY",
-      "api_base": "os.environ/DASHSCOPE_API_BASE"
+      "custom_llm_provider": "custom_openai",
+      "model": "qwen3.7-plus",
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -24,9 +26,10 @@
   {
     "model_name": "agent-writer",
     "litellm_params": {
-      "model": "dashscope/qwen3.5-plus",
-      "api_key": "os.environ/DASHSCOPE_API_KEY",
-      "api_base": "os.environ/DASHSCOPE_API_BASE"
+      "custom_llm_provider": "custom_openai",
+      "model": "qwen3.7-max",
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -35,9 +38,10 @@
   {
     "model_name": "agent-fast",
     "litellm_params": {
-      "model": "dashscope/qwen3.6-flash",
-      "api_key": "os.environ/DASHSCOPE_API_KEY",
-      "api_base": "os.environ/DASHSCOPE_API_BASE"
+      "custom_llm_provider": "custom_openai",
+      "model": "qwen3.6-flash",
+      "litellm_credential_name": "AgentPlan-QwenH",
+      "drop_params": true
     },
     "model_info": {
       "id": null
@@ -46,9 +50,9 @@
   {
     "model_name": "agent-embedding",
     "litellm_params": {
-      "model": "dashscope/text-embedding-v4",
-      "api_key": "os.environ/DASHSCOPE_API_KEY",
-      "api_base": "os.environ/DASHSCOPE_API_BASE"
+      "custom_llm_provider": "dashscope",
+      "model": "dashscope/qwen3.7-text-embedding",
+      "litellm_credential_name": "Dashscope-EDU"
     },
     "model_info": {
       "id": null

@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import pathlib
@@ -28,6 +29,26 @@ class BootstrapModelsTest(unittest.TestCase):
             "HTTP 403 Forbidden from http://litellm:4000/model/new: "
             '{"detail":{"error":"Not a premium user"}}',
         )
+
+    def test_configured_manifest_paths_supports_multiple_files(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "LITELLM_MODEL_BOOTSTRAP_MANIFESTS": (
+                    "/bootstrap/bootstrap-models.json,"
+                    " /bootstrap/qwen-models.json"
+                ),
+                "LITELLM_MODEL_BOOTSTRAP_MANIFEST": "/bootstrap/ignored.json",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                bootstrap_models.configured_manifest_paths(),
+                [
+                    "/bootstrap/bootstrap-models.json",
+                    "/bootstrap/qwen-models.json",
+                ],
+            )
 
     def test_main_retries_manifest_load_failure_without_exiting(self):
         class StopLoop(Exception):
@@ -71,26 +92,121 @@ class BootstrapModelsTest(unittest.TestCase):
                 "model_info": {"id": None},
             },
         ]
-        existing = {"agent-planner"}
+        existing = [
+            {
+                "model_name": "agent-planner",
+                "litellm_params": {"model": "openai/model"},
+                "model_info": {"id": "planner-id"},
+            },
+        ]
         created_by_api = []
 
         def create(_base_url, _master_key, method, path, payload=None, timeout=10):
             self.assertEqual((method, path), ("POST", "/model/new"))
             self.assertEqual(timeout, 10)
-            existing.add(payload["model_name"])
+            existing.append(
+                {
+                    **payload,
+                    "model_info": {"id": "writer-id"},
+                }
+            )
             created_by_api.append(payload["model_name"])
             return {}
 
         with mock.patch.object(
             bootstrap_models,
-            "existing_model_names",
-            side_effect=lambda *_args: set(existing),
+            "existing_models",
+            side_effect=lambda *_args: copy.deepcopy(existing),
         ), mock.patch.object(bootstrap_models, "request_json", side_effect=create):
-            created = bootstrap_models.reconcile("http://litellm", "master", models)
-            self.assertEqual(created, ["agent-writer"])
-            created = bootstrap_models.reconcile("http://litellm", "master", models)
-            self.assertEqual(created, [])
+            created, updated = bootstrap_models.reconcile(
+                "http://litellm",
+                "master",
+                models,
+            )
+            self.assertEqual((created, updated), (["agent-writer"], []))
+            created, updated = bootstrap_models.reconcile(
+                "http://litellm",
+                "master",
+                models,
+            )
+            self.assertEqual((created, updated), ([], []))
         self.assertEqual(created_by_api, ["agent-writer"])
+
+    def test_reconcile_updates_changed_litellm_params(self):
+        models = [
+            {
+                "model_name": "agent-planner",
+                "litellm_params": {
+                    "model": "custom/model",
+                    "litellm_credential_name": "credential",
+                    "drop_params": True,
+                },
+                "model_info": {"id": None},
+            },
+        ]
+        existing = [
+            {
+                "model_name": "agent-planner",
+                "litellm_params": {
+                    "model": "custom/model",
+                    "litellm_credential_name": "credential",
+                },
+                "model_info": {"id": "deployment-id"},
+            },
+        ]
+        requests = []
+
+        def update(_base_url, _master_key, method, path, payload=None, timeout=10):
+            requests.append((method, path, payload))
+            return {}
+
+        with mock.patch.object(
+            bootstrap_models,
+            "existing_models",
+            return_value=existing,
+        ), mock.patch.object(
+            bootstrap_models,
+            "request_json",
+            side_effect=update,
+        ):
+            created, updated = bootstrap_models.reconcile(
+                "http://litellm",
+                "master",
+                models,
+            )
+
+        self.assertEqual((created, updated), ([], ["agent-planner"]))
+        self.assertEqual(
+            requests,
+            [
+                (
+                    "PATCH",
+                    "/model/deployment-id/update",
+                    {
+                        "litellm_params": {
+                            "model": "custom/model",
+                            "litellm_credential_name": "credential",
+                            "drop_params": True,
+                        },
+                    },
+                ),
+            ],
+        )
+
+    def test_hidden_environment_secret_does_not_trigger_repeated_update(self):
+        self.assertFalse(
+            bootstrap_models.litellm_params_need_update(
+                {
+                    "litellm_params": {
+                        "model": "openai/gpt-4.1-mini",
+                    },
+                },
+                {
+                    "model": "openai/gpt-4.1-mini",
+                    "api_key": "os.environ/OPENAI_API_KEY",
+                },
+            )
+        )
 
     def test_reconcile_resolves_team_name_to_team_id(self):
         models = [
@@ -118,16 +234,16 @@ class BootstrapModelsTest(unittest.TestCase):
 
         with mock.patch.object(
             bootstrap_models,
-            "existing_model_names",
-            return_value=set(),
+            "existing_models",
+            return_value=[],
         ), mock.patch.object(bootstrap_models, "request_json", side_effect=request):
-            created = bootstrap_models.reconcile(
+            created, updated = bootstrap_models.reconcile(
                 "http://litellm",
                 "master",
                 models,
             )
 
-        self.assertEqual(created, ["agent-planner"])
+        self.assertEqual((created, updated), (["agent-planner"], []))
         self.assertEqual(
             [(method, path) for method, path, _payload in requests],
             [("GET", "/team/list"), ("POST", "/model/new")],
@@ -158,8 +274,8 @@ class BootstrapModelsTest(unittest.TestCase):
 
         with mock.patch.object(
             bootstrap_models,
-            "existing_model_names",
-            return_value=set(),
+            "existing_models",
+            return_value=[],
         ), mock.patch.object(
             bootstrap_models,
             "team_ids_by_name",
@@ -169,13 +285,16 @@ class BootstrapModelsTest(unittest.TestCase):
             "request_json",
             side_effect=create,
         ):
-            created = bootstrap_models.reconcile(
+            created, updated = bootstrap_models.reconcile(
                 "http://litellm",
                 "master",
                 models,
             )
 
-        self.assertEqual(created, ["agent-planner", "agent-planner"])
+        self.assertEqual(
+            (created, updated),
+            (["agent-planner", "agent-planner"], []),
+        )
         self.assertEqual(
             created_credentials,
             ["AgentPlan-Qwen", "AgentPlan-Qwen2"],
@@ -199,8 +318,8 @@ class BootstrapModelsTest(unittest.TestCase):
 
         with mock.patch.object(
             bootstrap_models,
-            "existing_model_names",
-            return_value=set(),
+            "existing_models",
+            return_value=[],
         ), mock.patch.object(
             bootstrap_models,
             "team_ids_by_name",
@@ -209,13 +328,13 @@ class BootstrapModelsTest(unittest.TestCase):
             "request_json",
             side_effect=create,
         ):
-            created = bootstrap_models.reconcile(
+            created, updated = bootstrap_models.reconcile(
                 "http://litellm",
                 "master",
                 models,
             )
 
-        self.assertEqual(created, ["agent-planner"])
+        self.assertEqual((created, updated), (["agent-planner"], []))
         list_teams.assert_not_called()
         self.assertNotIn("team_name", payloads[0])
         self.assertNotIn("team_id", payloads[0]["model_info"])
@@ -231,8 +350,8 @@ class BootstrapModelsTest(unittest.TestCase):
         ]
         with mock.patch.object(
             bootstrap_models,
-            "existing_model_names",
-            return_value=set(),
+            "existing_models",
+            return_value=[],
         ), mock.patch.object(
             bootstrap_models,
             "team_ids_by_name",
@@ -384,10 +503,11 @@ class BootstrapModelsTest(unittest.TestCase):
             params = model["litellm_params"]
             self.assertIsInstance(params["litellm_credential_name"], str)
             self.assertTrue(params["litellm_credential_name"])
+            self.assertIs(params["drop_params"], True)
             self.assertNotIn("api_key", params)
             self.assertNotIn("api_base", params)
 
-    def test_seed_manifest_uses_distinct_dashscope_models(self):
+    def test_seed_manifest_uses_expected_provider_contracts(self):
         path = pathlib.Path(__file__).resolve().parent / "bootstrap-models.json"
         models = bootstrap_models.load_manifest(path)
         self.assertEqual(
@@ -409,21 +529,18 @@ class BootstrapModelsTest(unittest.TestCase):
             if not model["model_name"].endswith("-legacy")
             and model["model_name"] != "agent-embedding"
         ]
-        upstream_models = {
-            model["litellm_params"]["model"] for model in qwen_models
-        }
-        self.assertEqual(len(upstream_models), 4)
         for model in qwen_models:
             params = model["litellm_params"]
-            self.assertTrue(params["model"].startswith("dashscope/qwen"))
+            self.assertTrue(params["model"].startswith("qwen"))
             self.assertEqual(
-                params["api_key"],
-                "os.environ/DASHSCOPE_API_KEY",
+                params["custom_llm_provider"],
+                "custom_openai",
             )
             self.assertEqual(
-                params["api_base"],
-                "os.environ/DASHSCOPE_API_BASE",
+                params["litellm_credential_name"],
+                "AgentPlan-QwenH",
             )
+            self.assertIs(params["drop_params"], True)
 
         embedding = next(
             model for model in models
@@ -432,9 +549,9 @@ class BootstrapModelsTest(unittest.TestCase):
         self.assertEqual(
             embedding["litellm_params"],
             {
-                "model": "dashscope/text-embedding-v4",
-                "api_key": "os.environ/DASHSCOPE_API_KEY",
-                "api_base": "os.environ/DASHSCOPE_API_BASE",
+                "custom_llm_provider": "dashscope",
+                "model": "dashscope/qwen3.7-text-embedding",
+                "litellm_credential_name": "Dashscope-EDU",
             },
         )
 
