@@ -5,14 +5,30 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
+from io import BytesIO
 from io import StringIO
 from unittest import mock
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import bootstrap_models
 
 
 class BootstrapModelsTest(unittest.TestCase):
+    def test_describe_http_error_includes_litellm_response_body(self):
+        error = HTTPError(
+            "http://litellm:4000/model/new",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(b'{"detail":{"error":"Not a premium user"}}'),
+        )
+        self.assertEqual(
+            bootstrap_models.describe_error(error),
+            "HTTP 403 Forbidden from http://litellm:4000/model/new: "
+            '{"detail":{"error":"Not a premium user"}}',
+        )
+
     def test_main_retries_manifest_load_failure_without_exiting(self):
         class StopLoop(Exception):
             pass
@@ -320,7 +336,7 @@ class BootstrapModelsTest(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_manifest_allows_empty_team_name_with_team_id(self):
+    def test_empty_team_name_overrides_stale_team_id(self):
         models = [
             {
                 "model_name": "agent-planner",
@@ -336,6 +352,10 @@ class BootstrapModelsTest(unittest.TestCase):
             self.assertEqual(bootstrap_models.load_manifest(path), models)
         finally:
             os.unlink(path)
+
+        payload = bootstrap_models.model_create_payload(models[0], {})
+        self.assertNotIn("team_name", payload)
+        self.assertNotIn("team_id", payload["model_info"])
 
     def test_manifest_rejects_nonempty_team_name_with_team_id(self):
         models = [
@@ -361,7 +381,6 @@ class BootstrapModelsTest(unittest.TestCase):
         self.assertGreater(len(models), 0)
         for model in models:
             self.assertIsInstance(model["team_name"], str)
-            self.assertTrue(model["team_name"])
             params = model["litellm_params"]
             self.assertIsInstance(params["litellm_credential_name"], str)
             self.assertTrue(params["litellm_credential_name"])

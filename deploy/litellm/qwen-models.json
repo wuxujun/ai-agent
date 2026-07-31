@@ -8,7 +8,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -20,7 +20,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -32,7 +32,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -44,7 +44,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -56,7 +56,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -68,7 +68,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -80,7 +80,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -92,7 +92,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -104,7 +104,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -116,7 +116,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -128,7 +128,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -140,7 +140,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -152,7 +152,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -164,7 +164,7 @@
       "litellm_credential_name": "AgentPlan-QwenH"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -176,7 +176,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -188,7 +188,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -200,7 +200,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -212,7 +212,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -224,7 +224,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -236,7 +236,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -248,7 +248,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -260,7 +260,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -272,7 +272,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -284,7 +284,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -296,7 +296,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -308,7 +308,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -320,7 +320,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -332,7 +332,7 @@
       "litellm_credential_name": "AgentPlan-QwenH2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -344,7 +344,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -356,7 +356,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -368,7 +368,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -380,7 +380,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -392,7 +392,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -404,7 +404,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -416,7 +416,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -428,7 +428,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -440,7 +440,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -452,7 +452,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -464,7 +464,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -476,7 +476,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -488,7 +488,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -500,7 +500,7 @@
       "litellm_credential_name": "AgentPlan-Qwen"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -512,7 +512,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -524,7 +524,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -536,7 +536,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -548,7 +548,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -560,7 +560,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -572,7 +572,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -584,7 +584,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -596,7 +596,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -608,7 +608,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -620,7 +620,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -632,7 +632,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -644,7 +644,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -656,7 +656,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   },
   {
@@ -668,7 +668,7 @@
       "litellm_credential_name": "AgentPlan-Qwen2"
     },
     "model_info": {
-      "team_id": "94d4c8a8-ecc6-4d96-81d3-555c742b07c0"
+      "id": null
     }
   }
 

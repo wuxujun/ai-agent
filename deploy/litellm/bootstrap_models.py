@@ -86,6 +86,17 @@ def request_json(base_url, master_key, method, path, payload=None, timeout=10):
     return json.loads(raw) if raw else {}
 
 
+def describe_error(error):
+    if not isinstance(error, urllib.error.HTTPError):
+        return str(error)
+    body = error.read(4096)
+    detail = body.decode("utf-8", errors="replace").strip()
+    message = f"HTTP {error.code} {error.reason} from {error.url}"
+    if detail:
+        message += f": {detail}"
+    return message
+
+
 def existing_model_names(base_url, master_key, timeout=10):
     response = request_json(base_url, master_key, "GET", "/model/info", timeout=timeout)
     data = response.get("data")
@@ -133,9 +144,14 @@ def team_ids_by_name(base_url, master_key, timeout=10):
 
 def model_create_payload(model, team_ids):
     payload = copy.deepcopy(model)
+    team_name_configured = "team_name" in payload
     team_name = configured_team_name(payload)
     payload.pop("team_name", None)
     if team_name is None:
+        # An explicitly empty/null team_name opts out of Team scoping even if
+        # a stale model_info.team_id remains in the manifest.
+        if team_name_configured:
+            payload["model_info"].pop("team_id", None)
         return payload
     team_id = team_ids.get(team_name)
     if team_id is None:
@@ -192,7 +208,8 @@ def main():
                 print("created missing LiteLLM models: " + ", ".join(created), flush=True)
         except (OSError, ValueError, urllib.error.URLError) as error:
             print(
-                f"LiteLLM model bootstrap failed for {manifest}: {error}",
+                f"LiteLLM model bootstrap failed for {manifest}: "
+                f"{describe_error(error)}",
                 file=sys.stderr,
                 flush=True,
             )

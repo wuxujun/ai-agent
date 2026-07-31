@@ -266,7 +266,9 @@ exact and unique alias match, removes `team_name`, and sends the resolved ID as
 
 Omit `team_name`, or set it to `null`, `""`, or whitespace, to create a global
 model without resolving or assigning a Team. The bootstrap-only `team_name`
-field is always removed before the `/model/new` request.
+field is always removed before the `/model/new` request. An explicitly empty or
+null `team_name` also removes a stale `model_info.team_id`; omitting
+`team_name` entirely preserves an explicitly configured `model_info.team_id`.
 
 The manifest may repeat a `model_name` to create a LiteLLM model group with
 multiple deployments, for example one deployment per Credential. Repeated
@@ -318,6 +320,11 @@ with the manifest path and retried without terminating the container. If Docker
 shows `Restarting`, confirm the deployed `bootstrap_models.py` contains this
 retry behavior and recreate `model-bootstrap`; an older script loaded the
 manifest before entering its retry loop.
+
+HTTP failures include the LiteLLM endpoint and up to 4 KiB of its response
+body. Use that detail to distinguish an invalid Credential from a Team
+Premium/Enterprise restriction instead of diagnosing from the status code
+alone.
 
 The default aliases use distinct DashScope Qwen models that support structured
 output:
