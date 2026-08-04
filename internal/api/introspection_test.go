@@ -28,7 +28,7 @@ func TestIntrospectionAuthMapsNestedUserIDAndCachesByTokenHash(t *testing.T) {
 		if req.Body != nil {
 			t.Fatalf("GET introspection request must not contain a body")
 		}
-		return http.StatusOK, `{"code":0,"success":true,"message":"ok","error":"","requestID":"request-id","data":{"active":true,"userid":"project_a"},"iss":"https://issuer.example","aud":["ai-agent"],"exp":` + expirationAfter(time.Minute) + `}`
+		return http.StatusOK, `{"code":0,"success":true,"message":"ok","error":"","requestID":"request-id","data":{"active":true,"userid":"project_a","aud":["ai-agent"],"exp":` + expirationAfter(time.Minute) + `},"iss":"https://issuer.example"}`
 	})
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.API.APIKey = "admin-static-key"
@@ -99,9 +99,11 @@ func TestIntrospectionAuthRejectsInvalidResponsesAndFailsClosed(t *testing.T) {
 	}{
 		{name: "inactive", status: 200, body: `{"code":0,"success":true,"data":{"active":false,"userid":"project_a"}}`, wantStatus: http.StatusUnauthorized},
 		{name: "missing active", status: 200, body: `{"code":0,"success":true,"data":{"userid":"project_a"}}`, wantStatus: http.StatusUnauthorized},
-		{name: "unknown tenant", status: 200, body: `{"code":0,"success":true,"data":{"active":true,"userid":"project_b"},"iss":"https://issuer.example","aud":"ai-agent","exp":` + expirationAfter(time.Minute) + `}`, wantStatus: http.StatusUnauthorized},
-		{name: "expired", status: 200, body: `{"code":0,"success":true,"data":{"active":true,"userid":"project_a"},"iss":"https://issuer.example","aud":"ai-agent","exp":` + expirationAfter(-time.Minute) + `}`, wantStatus: http.StatusUnauthorized},
-		{name: "wrong issuer", status: 200, body: `{"code":0,"success":true,"data":{"active":true,"userid":"project_a"},"iss":"https://attacker.example","aud":"ai-agent","exp":` + expirationAfter(time.Minute) + `}`, wantStatus: http.StatusUnauthorized},
+		{name: "unknown tenant", status: 200, body: `{"code":0,"success":true,"data":{"active":true,"userid":"project_b","aud":"ai-agent","exp":` + expirationAfter(time.Minute) + `},"iss":"https://issuer.example"}`, wantStatus: http.StatusUnauthorized},
+		{name: "expired", status: 200, body: `{"code":0,"success":true,"data":{"active":true,"userid":"project_a","aud":"ai-agent","exp":` + expirationAfter(-time.Minute) + `},"iss":"https://issuer.example"}`, wantStatus: http.StatusUnauthorized},
+		{name: "wrong audience", status: 200, body: `{"code":0,"success":true,"data":{"active":true,"userid":"project_a","aud":"other-service","exp":` + expirationAfter(time.Minute) + `},"iss":"https://issuer.example"}`, wantStatus: http.StatusUnauthorized},
+		{name: "missing expiration", status: 200, body: `{"code":0,"success":true,"data":{"active":true,"userid":"project_a","aud":"ai-agent"},"iss":"https://issuer.example"}`, wantStatus: http.StatusUnauthorized},
+		{name: "wrong issuer", status: 200, body: `{"code":0,"success":true,"data":{"active":true,"userid":"project_a","aud":"ai-agent","exp":` + expirationAfter(time.Minute) + `},"iss":"https://attacker.example"}`, wantStatus: http.StatusUnauthorized},
 		{name: "malformed response", status: 200, body: `{`, wantStatus: http.StatusServiceUnavailable},
 		{name: "oversized response", status: 200, body: `{"active":true,"padding":"` + strings.Repeat("x", maxIntrospectionResponseBytes) + `"}`, wantStatus: http.StatusServiceUnavailable},
 		{name: "upstream failure", status: 500, body: `failure`, wantStatus: http.StatusServiceUnavailable},

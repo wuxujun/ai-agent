@@ -122,15 +122,27 @@ func (v *introspectionVerifier) verify(ctx context.Context, rawToken string) (st
 			return "", errInvalidCredential
 		}
 	}
-	if v.config.Audience != "" && !introspectionAudienceContains(claims["aud"], v.config.Audience) {
+	if v.config.Audience != "" && !introspectionAudienceContains(introspectionResponseClaim(claims, "aud"), v.config.Audience) {
 		return "", errInvalidCredential
 	}
-	expiresAt, hasExpiration, validExpiration := introspectionExpiration(claims["exp"])
+	expiresAt, hasExpiration, validExpiration := introspectionExpiration(introspectionResponseClaim(claims, "exp"))
 	if !validExpiration || (v.config.RequireExpiration && !hasExpiration) || (hasExpiration && !expiresAt.After(time.Now())) {
 		return "", errInvalidCredential
 	}
 	v.cacheTenant(tokenHash, tenantID, expiresAt, hasExpiration)
 	return tenantID, nil
+}
+
+// introspectionResponseClaim reads provider metadata from the nested data
+// object used by the configured authentication endpoint. Top-level claims are
+// retained as a compatibility fallback for existing providers.
+func introspectionResponseClaim(claims map[string]any, name string) any {
+	if data, ok := claims["data"].(map[string]any); ok {
+		if value, exists := data[name]; exists {
+			return value
+		}
+	}
+	return claims[name]
 }
 
 // introspectionClaim resolves a dot-separated JSON object path such as

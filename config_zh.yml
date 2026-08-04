@@ -41,7 +41,8 @@ api:
       # 支持使用点路径读取嵌套 JSON 响应字段。
       tenant_claim: "data.userid"
       active_claim: "data.active"
-      # 可选的响应声明约束；配置后必须完全匹配。
+      # 可选响应声明约束。aud、exp 分别读取 data.aud、data.exp，并兼容顶层字段；
+      # 配置后必须完全匹配。
       issuer: ""
       audience: ""
       require_expiration: false

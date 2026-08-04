@@ -41,7 +41,8 @@ api:
       # Dot-separated paths are supported for nested JSON response fields.
       tenant_claim: "data.userid"
       active_claim: "data.active"
-      # Optional expected response claims. Non-empty values must match.
+      # Optional expected response claims. aud and exp are read from data.aud
+      # and data.exp (with top-level fallback). Non-empty values must match.
       issuer: ""
       audience: ""
       require_expiration: false
