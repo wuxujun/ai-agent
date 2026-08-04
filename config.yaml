@@ -423,6 +423,11 @@ log:
   # Env override: AI_AGENT_LOG_FILE_ENABLED
   file_enabled: true
 
+  # Write one structured JSON record per HTTP request to access-YYYY-MM-DD.log.
+  # Authorization, X-API-Key, cookies, query strings, and bodies are never logged.
+  # Env override: AI_AGENT_LOG_ACCESS_ENABLED
+  access_enabled: true
+
   # Directory for rotated log files.
   # Env override: AI_AGENT_LOG_DIRECTORY
   directory: "logs"

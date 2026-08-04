@@ -44,6 +44,14 @@
 
 通过环境变量设置目标操作系统 (`GOOS`) 与目标架构 (`GOARCH`)。
 
+正式构建必须通过 linker 注入应用版本，确保所有 JSON 日志包含准确的
+`app_version`；未注入的本地构建会显示 `dev`：
+
+```bash
+VERSION=v1.0.0
+go build -ldflags="-s -w -X github.com/wuxujun/ai-agent/internal/buildinfo.Version=${VERSION}" -o server ./cmd/server
+```
+
 ### 1. macOS (Darwin)
 
 ```bash

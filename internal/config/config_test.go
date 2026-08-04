@@ -66,7 +66,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Telemetry.Exporter != "otlp" {
 		t.Errorf("expected telemetry.exporter default to be otlp, got %q", cfg.Telemetry.Exporter)
 	}
-	if !cfg.Log.Console || !cfg.Log.FileEnabled || cfg.Log.Directory != "logs" || cfg.Log.RetentionDays != 30 {
+	if !cfg.Log.Console || !cfg.Log.FileEnabled || !cfg.Log.AccessEnabled || cfg.Log.Directory != "logs" || cfg.Log.RetentionDays != 30 {
 		t.Errorf("unexpected log defaults: %+v", cfg.Log)
 	}
 	if cfg.RAG.MaxPromptMemories != 3 || cfg.RAG.MaxMemoryBytes != 2500 || cfg.RAG.MaxMemoryPromptBytes != 8000 || cfg.RAG.MaxRawFallbackBytes != 4000 {
@@ -900,9 +900,10 @@ func TestDiffConfigs_IncludesNewFields(t *testing.T) {
 	newCfg.Embedding.Model = "new-embedding-model"
 	newCfg.LLM.ContextCompressionTokenThreshold = 50000
 	newCfg.RAG.MaxMemoryPromptBytes = 8000
+	newCfg.Log.AccessEnabled = true
 
 	changes := diffConfigs(oldCfg, newCfg)
-	var foundEmbeddingModel, foundTokenThreshold, foundMemoryBudget bool
+	var foundEmbeddingModel, foundTokenThreshold, foundMemoryBudget, foundAccessEnabled bool
 	for _, change := range changes {
 		if change == "embedding.model: \"\" → \"new-embedding-model\"" {
 			foundEmbeddingModel = true
@@ -912,6 +913,9 @@ func TestDiffConfigs_IncludesNewFields(t *testing.T) {
 		}
 		if change == "rag.max_memory_prompt_bytes: 0 → 8000" {
 			foundMemoryBudget = true
+		}
+		if change == "log.access_enabled: false → true" {
+			foundAccessEnabled = true
 		}
 	}
 
@@ -923,6 +927,9 @@ func TestDiffConfigs_IncludesNewFields(t *testing.T) {
 	}
 	if !foundMemoryBudget {
 		t.Errorf("diffConfigs did not report change in rag.max_memory_prompt_bytes; changes: %v", changes)
+	}
+	if !foundAccessEnabled {
+		t.Errorf("diffConfigs did not report change in log.access_enabled; changes: %v", changes)
 	}
 }
 

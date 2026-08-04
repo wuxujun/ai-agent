@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
-VERSION="1.0.0"
+VERSION="${VERSION:-1.0.0}"
 BUILD_DIR="dist"
 
-echo "=== 正在清理构建目录... ==="
-rm -rf ${BUILD_DIR}
+if [ -e "${BUILD_DIR}" ]; then
+  echo "构建目录 ${BUILD_DIR} 已存在，请确认内容后手动移除或改名。" >&2
+  exit 1
+fi
 
 PLATFORMS=(
   "darwin/amd64"
@@ -30,7 +32,7 @@ for PLATFORM in "${PLATFORMS[@]}"; do
   mkdir -p "${TARGET_DIR}"
   
   CGO_ENABLED=0 GOOS=${GOOS} GOARCH=${GOARCH} go build \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/wuxujun/ai-agent/internal/buildinfo.Version=${VERSION}" \
     -o "${TARGET_DIR}/${EXEC_NAME}" \
     ./cmd/server
     

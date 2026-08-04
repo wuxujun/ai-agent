@@ -1,11 +1,14 @@
 package logger
 
 import (
+	stdlog "log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wuxujun/ai-agent/internal/buildinfo"
 )
 
 func TestConfigureRoutesRecordsToExactLevelFiles(t *testing.T) {
@@ -45,7 +48,7 @@ func TestConfigureRoutesRecordsToExactLevelFiles(t *testing.T) {
 			t.Fatalf("read %s log: %v", tt.level, err)
 		}
 		text := string(content)
-		if !strings.Contains(text, tt.want) || !strings.Contains(text, `"component":"routing-test"`) {
+		if !strings.Contains(text, tt.want) || !strings.Contains(text, `"component":"routing-test"`) || !strings.Contains(text, `"app_version":"`+buildinfo.Current()+`"`) {
 			t.Errorf("%s log missing its record or component: %s", tt.level, text)
 		}
 		for _, other := range tests {
@@ -102,6 +105,7 @@ func TestReportComponentWritesOnlyTaskReportFile(t *testing.T) {
 	})
 
 	Component("normal").Info("normal record")
+	stdlog.Print("standard library record")
 	ReportComponent("api").Info("task report record", "task_id", "task-1")
 
 	date := time.Now().Format(time.DateOnly)
@@ -109,7 +113,7 @@ func TestReportComponentWritesOnlyTaskReportFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reportText := string(reportContent); !strings.Contains(reportText, "task report record") || !strings.Contains(reportText, `"component":"api"`) {
+	if reportText := string(reportContent); !strings.Contains(reportText, "task report record") || !strings.Contains(reportText, `"component":"api"`) || !strings.Contains(reportText, `"app_version":"`+buildinfo.Current()+`"`) {
 		t.Fatalf("task report file missing report record: %s", reportText)
 	}
 
@@ -121,9 +125,49 @@ func TestReportComponentWritesOnlyTaskReportFile(t *testing.T) {
 		if strings.Contains(string(content), "task report record") {
 			t.Fatalf("task report leaked into %s log: %s", level, content)
 		}
+		if level == "info" && (!strings.Contains(string(content), "standard library record") || !strings.Contains(string(content), `"app_version":"`+buildinfo.Current()+`"`)) {
+			t.Fatalf("standard library log was not bridged with app version: %s", content)
+		}
 	}
 	if strings.Contains(string(reportContent), "normal record") {
 		t.Fatalf("normal log leaked into task report: %s", reportContent)
+	}
+}
+
+func TestAccessComponentWritesOnlyAccessFile(t *testing.T) {
+	directory := t.TempDir()
+	if err := Configure(Options{Level: "debug", FileEnabled: true, AccessEnabled: true, Directory: directory}); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = Close()
+		Reinit("info")
+	})
+
+	Component("normal").Info("normal record")
+	ReportComponent("api").Info("task report record")
+	AccessComponent("access").Info("http request", "method", "GET", "status", 200)
+
+	date := time.Now().Format(time.DateOnly)
+	accessContent, err := os.ReadFile(filepath.Join(directory, "access-"+date+".log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessText := string(accessContent)
+	if !strings.Contains(accessText, "http request") || !strings.Contains(accessText, `"component":"access"`) || !strings.Contains(accessText, `"app_version":"`+buildinfo.Current()+`"`) {
+		t.Fatalf("access file missing request record: %s", accessText)
+	}
+	if strings.Contains(accessText, "normal record") || strings.Contains(accessText, "task report record") {
+		t.Fatalf("non-access record leaked into access file: %s", accessText)
+	}
+	for _, filename := range []string{"info-" + date + ".log", "task-report-" + date + ".log"} {
+		content, readErr := os.ReadFile(filepath.Join(directory, filename))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if strings.Contains(string(content), "http request") {
+			t.Fatalf("access record leaked into %s: %s", filename, content)
+		}
 	}
 }
 

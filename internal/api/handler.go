@@ -23,6 +23,7 @@ import (
 
 var log = logger.Component("api")
 var taskReportLog = logger.ReportComponent("api")
+var accessLog = logger.AccessComponent("access")
 
 func truncateTaskReportText(value string, limit int) string {
 	runes := []rune(value)
@@ -92,6 +93,8 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		activeTasks: make(map[string]*activeRun),
 	}
 
+	r.Use(AccessLogMiddleware())
+	r.Use(RecoveryMiddleware())
 	r.Use(ErrorMiddleware())
 	r.Use(SpanAttributesMiddleware())
 

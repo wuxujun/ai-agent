@@ -136,6 +136,7 @@ type Config struct {
 		Level         string `mapstructure:"level"`
 		Console       bool   `mapstructure:"console"`
 		FileEnabled   bool   `mapstructure:"file_enabled"`
+		AccessEnabled bool   `mapstructure:"access_enabled"`
 		Directory     string `mapstructure:"directory"`
 		RetentionDays int    `mapstructure:"retention_days"`
 	} `mapstructure:"log"`
@@ -433,6 +434,7 @@ func setupViper() {
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("log.console", true)
 	viper.SetDefault("log.file_enabled", true)
+	viper.SetDefault("log.access_enabled", true)
 	viper.SetDefault("log.directory", "logs")
 	viper.SetDefault("log.retention_days", 30)
 	viper.SetDefault("telemetry.enabled", true)
@@ -881,6 +883,9 @@ func diffConfigs(old, new *Config) []string {
 	if old.Log.FileEnabled != new.Log.FileEnabled {
 		changes = append(changes, fmt.Sprintf("log.file_enabled: %t → %t", old.Log.FileEnabled, new.Log.FileEnabled))
 	}
+	if old.Log.AccessEnabled != new.Log.AccessEnabled {
+		changes = append(changes, fmt.Sprintf("log.access_enabled: %t → %t", old.Log.AccessEnabled, new.Log.AccessEnabled))
+	}
 	addIf("log.directory", old.Log.Directory, new.Log.Directory)
 	addIfInt("log.retention_days", old.Log.RetentionDays, new.Log.RetentionDays)
 	addIf("skill.root", old.Skill.Root, new.Skill.Root)
@@ -1233,8 +1238,8 @@ func (c *Config) Validate() error {
 	if logConfigured && !c.Log.Console && !c.Log.FileEnabled {
 		return fmt.Errorf("at least one of log.console or log.file_enabled must be enabled")
 	}
-	if c.Log.FileEnabled && strings.TrimSpace(c.Log.Directory) == "" {
-		return fmt.Errorf("log.directory must not be empty when file logging is enabled")
+	if (c.Log.FileEnabled || c.Log.AccessEnabled) && strings.TrimSpace(c.Log.Directory) == "" {
+		return fmt.Errorf("log.directory must not be empty when file or access logging is enabled")
 	}
 	if c.Log.RetentionDays < 0 {
 		return fmt.Errorf("log.retention_days must be >= 0")

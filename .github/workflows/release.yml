@@ -57,6 +57,8 @@ jobs:
           cache: true
 
       - name: Package Release Directory Structure
+        env:
+          APP_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           mkdir -p build_stage/${{ matrix.artifact_name }}
           EXEC_NAME="server"
@@ -66,7 +68,7 @@ jobs:
 
           # 编译 Go 二进制文件
           CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build \
-            -ldflags="-s -w" \
+            -ldflags="-s -w -X github.com/wuxujun/ai-agent/internal/buildinfo.Version=${APP_VERSION}" \
             -o build_stage/${{ matrix.artifact_name }}/${EXEC_NAME} \
             ./cmd/server
 

@@ -428,6 +428,11 @@ log:
   # 环境变量覆盖：AI_AGENT_LOG_FILE_ENABLED
   file_enabled: true
 
+  # 每个 HTTP 请求写入一条 JSON 记录到 access-YYYY-MM-DD.log。
+  # 不记录 Authorization、X-API-Key、Cookie、查询字符串和请求/响应正文。
+  # 环境变量覆盖：AI_AGENT_LOG_ACCESS_ENABLED
+  access_enabled: true
+
   # 轮转日志文件目录。
   # 环境变量覆盖：AI_AGENT_LOG_DIRECTORY
   directory: "logs"

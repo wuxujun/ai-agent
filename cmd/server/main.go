@@ -329,8 +329,6 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Logger())
-	r.Use(gin.Recovery())
 	r.Use(otelgin.Middleware("ai-agent"))
 	r.Use(func(c *gin.Context) {
 		c.Request = c.Request.WithContext(llmcore.WithRuntime(c.Request.Context(), llmRuntime))
@@ -506,6 +504,7 @@ func configureLogger(cfg *config.Config) error {
 		Level:         cfg.Log.Level,
 		Console:       cfg.Log.Console,
 		FileEnabled:   cfg.Log.FileEnabled,
+		AccessEnabled: cfg.Log.AccessEnabled,
 		Directory:     cfg.Log.Directory,
 		RetentionDays: cfg.Log.RetentionDays,
 	})

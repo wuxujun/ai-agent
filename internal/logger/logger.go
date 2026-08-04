@@ -1,5 +1,5 @@
 // Package logger provides structured JSON logging to the console, to
-// level-specific daily files, and to an isolated task-report daily file.
+// level-specific daily files, and to isolated task-report and access files.
 package logger
 
 import (
@@ -13,16 +13,20 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/wuxujun/ai-agent/internal/buildinfo"
 )
 
 type ctxKey struct{}
 
-// Options controls console and file logging. RetentionDays is based on the
-// date in the rotated filename; zero keeps files indefinitely.
+// Options controls console, level-specific file, and access logging.
+// RetentionDays is based on the date in the rotated filename; zero keeps files
+// indefinitely.
 type Options struct {
 	Level         string
 	Console       bool
 	FileEnabled   bool
+	AccessEnabled bool
 	Directory     string
 	RetentionDays int
 }
@@ -31,6 +35,7 @@ type handlerState struct {
 	mu            sync.RWMutex
 	handler       slog.Handler
 	reportHandler slog.Handler
+	accessHandler slog.Handler
 	closer        io.Closer
 }
 
@@ -40,6 +45,7 @@ type handlerState struct {
 type dynamicHandler struct {
 	state      *atomic.Pointer[handlerState]
 	report     bool
+	access     bool
 	operations []handlerOperation
 }
 
@@ -48,12 +54,20 @@ type handlerOperation struct {
 	attrs []slog.Attr
 }
 
+func newJSONHandler(writer io.Writer, options *slog.HandlerOptions) slog.Handler {
+	return slog.NewJSONHandler(writer, options).WithAttrs([]slog.Attr{
+		slog.String("app_version", buildinfo.Current()),
+	})
+}
+
 func (h *dynamicHandler) current() *handlerState { return h.state.Load() }
 
 func (h *dynamicHandler) resolved(s *handlerState) slog.Handler {
 	target := s.handler
 	if h.report {
 		target = s.reportHandler
+	} else if h.access {
+		target = s.accessHandler
 	}
 	for _, operation := range h.operations {
 		if operation.group != "" {
@@ -261,15 +275,18 @@ func (g closeGroup) Close() error {
 var state atomic.Pointer[handlerState]
 var defaultLogger *slog.Logger
 var reportLogger *slog.Logger
+var accessLogger *slog.Logger
 
 func init() {
 	initial := &handlerState{
-		handler:       slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelFromEnv()}),
-		reportHandler: slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}),
+		handler:       newJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelFromEnv()}),
+		reportHandler: newJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}),
+		accessHandler: newJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}),
 	}
 	state.Store(initial)
 	defaultLogger = slog.New(&dynamicHandler{state: &state})
 	reportLogger = slog.New(&dynamicHandler{state: &state, report: true})
+	accessLogger = slog.New(&dynamicHandler{state: &state, access: true})
 	slog.SetDefault(defaultLogger)
 }
 
@@ -283,52 +300,68 @@ func Configure(options Options) error {
 	handlerOptions := &slog.HandlerOptions{Level: level}
 	var handlers multiHandler
 	var closers closeGroup
-	reportHandler := slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	reportHandler := newJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	accessHandler := newJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
 	if options.Console {
-		handlers = append(handlers, slog.NewJSONHandler(os.Stdout, handlerOptions))
+		handlers = append(handlers, newJSONHandler(os.Stdout, handlerOptions))
 	}
-	if options.FileEnabled {
+	if options.FileEnabled || options.AccessEnabled {
 		directory := strings.TrimSpace(options.Directory)
 		if directory == "" {
-			return fmt.Errorf("log directory must not be empty when file logging is enabled")
+			return fmt.Errorf("log directory must not be empty when file or access logging is enabled")
 		}
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			return fmt.Errorf("create log directory: %w", err)
 		}
-		for _, spec := range []struct {
-			name  string
-			level slog.Level
-		}{{"debug", slog.LevelDebug}, {"info", slog.LevelInfo}, {"warn", slog.LevelWarn}, {"error", slog.LevelError}} {
-			writer := &dailyWriter{directory: directory, levelName: spec.name, retentionDays: options.RetentionDays, now: time.Now}
-			// Rotate now so configuration failures are reported during startup,
-			// rather than being silently delayed until the first record.
-			writer.mu.Lock()
-			err := writer.rotate(time.Now().Format(time.DateOnly))
-			writer.mu.Unlock()
+		if options.FileEnabled {
+			for _, spec := range []struct {
+				name  string
+				level slog.Level
+			}{{"debug", slog.LevelDebug}, {"info", slog.LevelInfo}, {"warn", slog.LevelWarn}, {"error", slog.LevelError}} {
+				writer := &dailyWriter{directory: directory, levelName: spec.name, retentionDays: options.RetentionDays, now: time.Now}
+				// Rotate now so configuration failures are reported during startup,
+				// rather than being silently delayed until the first record.
+				writer.mu.Lock()
+				err := writer.rotate(time.Now().Format(time.DateOnly))
+				writer.mu.Unlock()
+				if err != nil {
+					_ = closeGroup(closers).Close()
+					return err
+				}
+				closers = append(closers, writer)
+				jsonHandler := newJSONHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug})
+				handlers = append(handlers, exactLevelHandler{level: spec.level, minimum: level, handler: jsonHandler})
+			}
+
+			reportWriter := &dailyWriter{directory: directory, levelName: "task-report", retentionDays: options.RetentionDays, now: time.Now}
+			reportWriter.mu.Lock()
+			err := reportWriter.rotate(time.Now().Format(time.DateOnly))
+			reportWriter.mu.Unlock()
 			if err != nil {
 				_ = closeGroup(closers).Close()
 				return err
 			}
-			closers = append(closers, writer)
-			jsonHandler := slog.NewJSONHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug})
-			handlers = append(handlers, exactLevelHandler{level: spec.level, minimum: level, handler: jsonHandler})
+			closers = append(closers, reportWriter)
+			reportHandler = newJSONHandler(reportWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
 		}
 
-		reportWriter := &dailyWriter{directory: directory, levelName: "task-report", retentionDays: options.RetentionDays, now: time.Now}
-		reportWriter.mu.Lock()
-		err := reportWriter.rotate(time.Now().Format(time.DateOnly))
-		reportWriter.mu.Unlock()
-		if err != nil {
-			_ = closeGroup(closers).Close()
-			return err
+		if options.AccessEnabled {
+			accessWriter := &dailyWriter{directory: directory, levelName: "access", retentionDays: options.RetentionDays, now: time.Now}
+			accessWriter.mu.Lock()
+			err := accessWriter.rotate(time.Now().Format(time.DateOnly))
+			accessWriter.mu.Unlock()
+			if err != nil {
+				_ = closeGroup(closers).Close()
+				return err
+			}
+			closers = append(closers, accessWriter)
+			accessHandler = newJSONHandler(accessWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
 		}
-		closers = append(closers, reportWriter)
-		reportHandler = slog.NewJSONHandler(reportWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
 	}
 	if len(handlers) == 0 {
 		return fmt.Errorf("at least one log output must be enabled")
 	}
-	newState := &handlerState{handler: handlers, reportHandler: reportHandler, closer: closers}
+	newState := &handlerState{handler: handlers, reportHandler: reportHandler, accessHandler: accessHandler, closer: closers}
 	old := state.Swap(newState)
 	if old != nil {
 		old.mu.Lock()
@@ -343,8 +376,9 @@ func Configure(options Options) error {
 // Reinit preserves the existing API for callers that only change log level.
 func Reinit(level string) {
 	newState := &handlerState{
-		handler:       slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(level)}),
-		reportHandler: slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}),
+		handler:       newJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(level)}),
+		reportHandler: newJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}),
+		accessHandler: newJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}),
 	}
 	old := state.Swap(newState)
 	if old != nil {
@@ -392,6 +426,13 @@ func Component(name string) *slog.Logger { return L().With(slog.String("componen
 // daily task-report file.
 func ReportComponent(name string) *slog.Logger {
 	return reportLogger.With(slog.String("component", name))
+}
+
+// AccessComponent returns a logger isolated from console, level-specific, and
+// task-report outputs. When access logging is enabled, records are written only
+// to the daily access file.
+func AccessComponent(name string) *slog.Logger {
+	return accessLogger.With(slog.String("component", name))
 }
 func With(args ...any) *slog.Logger { return L().With(args...) }
 func TaskLogger(component, taskID string) *slog.Logger {

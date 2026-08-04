@@ -5,10 +5,15 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"go.opentelemetry.io/otel/attribute"
@@ -59,6 +64,79 @@ func SpanAttributesMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// AccessLogMiddleware writes one structured record after every request. It
+// deliberately excludes headers, query strings, and bodies so credentials and
+// payloads cannot leak into the access file.
+func AccessLogMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		startedAt := time.Now()
+		requestID := strings.TrimSpace(c.GetHeader("X-Request-ID"))
+		if !validRequestID(requestID) {
+			requestID = uuid.NewString()
+		}
+		c.Header("X-Request-ID", requestID)
+
+		c.Next()
+
+		responseBytes := c.Writer.Size()
+		if responseBytes < 0 {
+			responseBytes = 0
+		}
+		attrs := []any{
+			slog.String("request_id", requestID),
+			slog.String("method", c.Request.Method),
+			slog.String("path", c.Request.URL.Path),
+			slog.Int("status", c.Writer.Status()),
+			slog.Float64("latency_ms", float64(time.Since(startedAt))/float64(time.Millisecond)),
+			slog.String("client_ip", c.ClientIP()),
+			slog.Int("response_bytes", responseBytes),
+			slog.String("user_agent", c.Request.UserAgent()),
+		}
+		if route := c.FullPath(); route != "" {
+			attrs = append(attrs, slog.String("route", route))
+		}
+		if value, exists := c.Get(principalKey); exists {
+			if principal, ok := value.(Principal); ok && principal.TenantID != "" {
+				attrs = append(attrs, slog.String("tenant_id", principal.TenantID))
+			}
+		}
+		spanContext := trace.SpanFromContext(c.Request.Context()).SpanContext()
+		if spanContext.IsValid() {
+			attrs = append(attrs, slog.String("trace_id", spanContext.TraceID().String()))
+		}
+		accessLog.InfoContext(c.Request.Context(), "http request", attrs...)
+	}
+}
+
+// RecoveryMiddleware converts panics into a structured error without dumping
+// request headers or bodies. It must run inside AccessLogMiddleware so the
+// recovered request is still recorded with its final 500 status.
+func RecoveryMiddleware() gin.HandlerFunc {
+	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
+		log.Error("panic recovered",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"error", fmt.Sprint(recovered),
+			"stack", string(debug.Stack()),
+		)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	})
+}
+
+func validRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || strings.ContainsRune("-_.:", char) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func AuthMiddleware() gin.HandlerFunc {

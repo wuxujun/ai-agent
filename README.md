@@ -180,10 +180,18 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `answer_pipeline` | `enabled`, `enforcement`, required audit stages |
 | `langfuse` | credentials, runtime fetching, and optional startup prompt bootstrap |
 | `telemetry` | `enabled`, `endpoint`, `exporter` (`otlp` / `stdout`) |
-| `log` | `level`, `console`, `file_enabled`, `directory`, `retention_days` |
+| `log` | `level`, `console`, `file_enabled`, `access_enabled`, `directory`, `retention_days` |
 | `search` | `url`, `api_key` (Firecrawl or compatible) |
 | `tool` | `timeout_seconds` |
 | `skill` | `root` (skill discovery directory) |
+
+Every structured log record includes `app_version`. Local `go run` and builds
+without version injection use `dev`. Release builds should embed the version:
+
+```bash
+VERSION=v1.0.0
+go build -ldflags="-X github.com/wuxujun/ai-agent/internal/buildinfo.Version=${VERSION}" -o server ./cmd/server
+```
 
 ### Multi-Agent Orchestration Mode
 
