@@ -36,6 +36,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.API.Addr != "127.0.0.1:8080" {
 		t.Errorf("expected api.addr default to be 127.0.0.1:8080, got %q", cfg.API.Addr)
 	}
+	if cfg.API.Auth.Mode != "api_key" || cfg.API.Auth.Bearer.ValidationMode != "jwks" || cfg.API.Auth.JWT.TenantClaim != "code" || len(cfg.API.Auth.JWT.AllowedAlgorithms) != 1 || cfg.API.Auth.JWT.AllowedAlgorithms[0] != "RS256" || !cfg.API.Auth.JWT.RequireKnownTenant || cfg.API.Auth.Introspection.TenantClaim != "code" || cfg.API.Auth.Introspection.ActiveClaim != "active" || !cfg.API.Auth.Introspection.RequireKnownTenant {
+		t.Errorf("unexpected API authentication defaults: %+v", cfg.API.Auth)
+	}
 	if cfg.Store.Type != "sqlite" {
 		t.Errorf("expected store.type default to be sqlite, got %q", cfg.Store.Type)
 	}
@@ -696,8 +699,68 @@ func TestValidateAPITenants(t *testing.T) {
 	}
 }
 
+func TestValidateJWTAuthentication(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.API.Auth = APIAuthConfig{Mode: "hybrid", JWT: APIJWTConfig{
+		Issuer:                    "https://issuer.example",
+		Audience:                  "ai-agent",
+		JWKSURL:                   "https://issuer.example/.well-known/jwks.json",
+		TenantClaim:               "code",
+		AllowedAlgorithms:         []string{"RS256"},
+		RequireKnownTenant:        true,
+		ClockSkewSeconds:          30,
+		JWKSCacheTTLSeconds:       300,
+		JWKSRequestTimeoutSeconds: 5,
+	}}
+	cfg.API.Tenants = map[string]APITenantConfig{"tenant-a": {DailyLLMCallBudget: 10}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid JWT authentication rejected: %v", err)
+	}
+
+	cfg.API.Auth.JWT.AllowedAlgorithms = []string{"none"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported algorithm") {
+		t.Fatalf("unsafe JWT algorithm error = %v", err)
+	}
+	cfg.API.Auth.JWT.AllowedAlgorithms = []string{"RS256"}
+	cfg.API.Auth.JWT.Audience = ""
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "audience") {
+		t.Fatalf("missing JWT audience error = %v", err)
+	}
+}
+
+func TestValidateIntrospectionAuthentication(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.API.Auth = APIAuthConfig{Mode: "introspection", Introspection: APIIntrospectionConfig{
+		URL:                "https://auth.example/oauth/introspect",
+		TenantClaim:        "code",
+		ActiveClaim:        "active",
+		RequireKnownTenant: true,
+		TimeoutSeconds:     3,
+		CacheTTLSeconds:    10,
+	}}
+	cfg.API.Tenants = map[string]APITenantConfig{"tenant-a": {DailyLLMCallBudget: 10}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid introspection authentication rejected: %v", err)
+	}
+
+	cfg.API.Auth.Introspection.URL = "http://auth.example/oauth/introspect"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "absolute https") {
+		t.Fatalf("insecure introspection URL error = %v", err)
+	}
+	cfg.API.Auth.Introspection.URL = "https://auth.example/oauth/introspect"
+	cfg.API.Auth.Introspection.TimeoutSeconds = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "timeout_seconds") {
+		t.Fatalf("invalid introspection timeout error = %v", err)
+	}
+}
+
 func TestCloneConfigDetachesTenantPipelineStages(t *testing.T) {
 	source := &Config{}
+	source.API.Auth.JWT.AllowedAlgorithms = []string{"RS256"}
 	source.API.Tenants = map[string]APITenantConfig{
 		"tenant-a": {APIKey: "key", AnswerPipelineRequiredStages: []string{"safety_guard_output"}},
 	}
@@ -707,6 +770,10 @@ func TestCloneConfigDetachesTenantPipelineStages(t *testing.T) {
 	cloned.API.Tenants["tenant-a"] = tenant
 	if got := source.API.Tenants["tenant-a"].AnswerPipelineRequiredStages[0]; got != "safety_guard_output" {
 		t.Fatalf("tenant pipeline stages share backing array: %q", got)
+	}
+	cloned.API.Auth.JWT.AllowedAlgorithms[0] = "RS512"
+	if got := source.API.Auth.JWT.AllowedAlgorithms[0]; got != "RS256" {
+		t.Fatalf("JWT allowed algorithms share backing array: %q", got)
 	}
 }
 

@@ -14,8 +14,48 @@ api:
   # 环境变量覆盖：AI_AGENT_API_KEY
   api_key: ""
 
+  # 认证模式：api_key、jwt、introspection 或 hybrid。
+  # hybrid 同时接受现有静态密钥和一种配置好的 Bearer 校验策略。
+  auth:
+    mode: "introspection"
+    bearer:
+      # hybrid 模式使用的 Bearer 策略：jwks 或 introspection。
+      validation_mode: "jwks"
+    jwt:
+      # jwt/hybrid 模式下必填。只有签名、签发者、受众、过期时间和
+      # 生效时间均通过校验后，才会读取 tenant_claim。
+      issuer: "https://auth.thinktown.com"
+      audience: "ai-agent"
+      jwks_url: "https://auth.thinktown.com"
+      tenant_claim: "user_code"
+      allowed_algorithms: ["RS256"]
+      # JWT 中的租户声明必须已存在于 api.tenants。
+      require_known_tenant: true
+      clock_skew_seconds: 30
+      jwks_cache_ttl_seconds: 300
+      jwks_request_timeout_seconds: 5
+    introspection:
+      # 第三方 GET 端点。原始 Token 只通过
+      # Authorization: Bearer <token> 请求头转发，并且必须使用 HTTPS。
+      url: "https://api.thinktown.com/api/auth/check"
+      # 支持使用点路径读取嵌套 JSON 响应字段。
+      tenant_claim: "data.userid"
+      active_claim: "data.active"
+      # 可选的响应声明约束；配置后必须完全匹配。
+      issuer: ""
+      audience: ""
+      require_expiration: false
+      require_known_tenant: true
+      # 公网端点保持 false；只有可信内网地址才显式开启。
+      allow_private_network: false
+      timeout_seconds: 3
+      # 设为 0 可关闭缓存；成功结果仅以 Token 哈希作为缓存键。
+      cache_ttl_seconds: 10
+
   # 可选的受信任租户身份。API Key 应由密钥管理系统注入运行时配置，
   # 不得提交到代码仓库。
+  # jwt/introspection/hybrid 模式允许策略租户省略 api_key；admin 始终由本地配置决定，
+  # 不会直接信任 JWT 中自报的管理员字段。
   # 上面的旧版 api_key 仍作为“default”管理员身份。
   # tenants:
   #   project_a:

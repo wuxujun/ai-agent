@@ -82,11 +82,6 @@ func (v *apiResumeVerifier) Finalize(context.Context, string, []multiagent.StepE
 func setupTestRouter(t *testing.T, st store.Store, eng *orchestrator.Engine) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	if config.Get().API.APIKey != "" && config.Get().API.APIKey != "my-test-secret-api-key" {
-		t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
-			cfg.API.APIKey = ""
-		}))
-	}
 	r := gin.New()
 	api.RegisterRoutes(r, st, eng, nil)
 	return r
@@ -908,6 +903,7 @@ func TestApproveByApprovalIDNotFoundReturns404(t *testing.T) {
 
 func TestAuthMiddleware(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
 		cfg.API.APIKey = "my-test-secret-api-key"
 	}))
 
@@ -952,6 +948,7 @@ func TestAuthMiddleware(t *testing.T) {
 
 func TestTenantAuthenticationAndTaskIsolation(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
 		cfg.API.APIKey = "my-test-secret-api-key"
 		cfg.API.Tenants = map[string]config.APITenantConfig{
 			"tenant-a": {APIKey: "tenant-a-test-key", DailyLLMCallBudget: 2},
@@ -1061,6 +1058,8 @@ func TestTenantAuthenticationAndTaskIsolation(t *testing.T) {
 func TestAuthMiddleware_FailClosed(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.API.APIKey = ""
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.Tenants = nil
 	}))
 
 	st := store.NewMemoryStore()

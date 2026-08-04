@@ -14,8 +14,48 @@ api:
   # Env override: AI_AGENT_API_KEY
   api_key: ""
 
+  # Authentication mode: api_key, jwt, introspection, or hybrid.
+  # hybrid accepts existing static keys and one configured Bearer strategy.
+  auth:
+    mode: "introspection"
+    bearer:
+      # Bearer strategy used by hybrid mode: jwks or introspection.
+      validation_mode: "jwks"
+    jwt:
+      # Required in jwt/hybrid mode. The JWT signature, issuer, audience,
+      # expiration, and not-before time are validated before tenant_claim is read.
+      issuer: "https://auth.thinktown.com"
+      audience: "ai-agent"
+      jwks_url: "https://auth.thinktown.com"
+      tenant_claim: "user_code"
+      allowed_algorithms: ["RS256"]
+      # Reject a valid JWT unless its tenant claim exists under api.tenants.
+      require_known_tenant: true
+      clock_skew_seconds: 30
+      jwks_cache_ttl_seconds: 300
+      jwks_request_timeout_seconds: 5
+    introspection:
+      # Third-party GET endpoint. The incoming token is forwarded only through
+      # Authorization: Bearer <token>. HTTPS is mandatory.
+      url: "https://api.thinktown.com/api/auth/check"
+      # Dot-separated paths are supported for nested JSON response fields.
+      tenant_claim: "data.userid"
+      active_claim: "data.active"
+      # Optional expected response claims. Non-empty values must match.
+      issuer: ""
+      audience: ""
+      require_expiration: false
+      require_known_tenant: true
+      # Keep false for public endpoints. Enable only for a trusted internal URL.
+      allow_private_network: false
+      timeout_seconds: 3
+      # Set 0 to disable caching. Successful results are keyed by token hash.
+      cache_ttl_seconds: 10
+
   # Optional trusted tenant principals. API keys should be injected into the
   # runtime config from a secret manager and must not be committed.
+  # In jwt/introspection/hybrid mode api_key may be omitted for a policy-only tenant; admin
+  # remains a local decision and is never taken from an untrusted JWT claim.
   # The legacy api_key above remains the "default" administrator principal.
   # tenants:
   #   project_a:

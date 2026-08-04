@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -19,6 +20,7 @@ type Config struct {
 	API struct {
 		Addr    string                     `mapstructure:"addr"`
 		APIKey  string                     `mapstructure:"api_key"`
+		Auth    APIAuthConfig              `mapstructure:"auth"`
 		Tenants map[string]APITenantConfig `mapstructure:"tenants"`
 	} `mapstructure:"api"`
 
@@ -173,6 +175,44 @@ type APITenantConfig struct {
 	DailyLLMCostBudgetUSD        float64  `mapstructure:"daily_llm_cost_budget_usd"`
 	AnswerPipelineEnforcement    string   `mapstructure:"answer_pipeline_enforcement"`
 	AnswerPipelineRequiredStages []string `mapstructure:"answer_pipeline_required_stages"`
+}
+
+type APIAuthConfig struct {
+	// Mode controls accepted credentials: api_key, jwt, introspection, or hybrid.
+	Mode          string                 `mapstructure:"mode"`
+	Bearer        APIBearerConfig        `mapstructure:"bearer"`
+	JWT           APIJWTConfig           `mapstructure:"jwt"`
+	Introspection APIIntrospectionConfig `mapstructure:"introspection"`
+}
+
+type APIBearerConfig struct {
+	// ValidationMode selects jwks or introspection for Bearer tokens in hybrid mode.
+	ValidationMode string `mapstructure:"validation_mode"`
+}
+
+type APIJWTConfig struct {
+	Issuer                    string   `mapstructure:"issuer"`
+	Audience                  string   `mapstructure:"audience"`
+	JWKSURL                   string   `mapstructure:"jwks_url"`
+	TenantClaim               string   `mapstructure:"tenant_claim"`
+	AllowedAlgorithms         []string `mapstructure:"allowed_algorithms"`
+	RequireKnownTenant        bool     `mapstructure:"require_known_tenant"`
+	ClockSkewSeconds          int      `mapstructure:"clock_skew_seconds"`
+	JWKSCacheTTLSeconds       int      `mapstructure:"jwks_cache_ttl_seconds"`
+	JWKSRequestTimeoutSeconds int      `mapstructure:"jwks_request_timeout_seconds"`
+}
+
+type APIIntrospectionConfig struct {
+	URL                 string `mapstructure:"url"`
+	TenantClaim         string `mapstructure:"tenant_claim"`
+	ActiveClaim         string `mapstructure:"active_claim"`
+	Issuer              string `mapstructure:"issuer"`
+	Audience            string `mapstructure:"audience"`
+	RequireExpiration   bool   `mapstructure:"require_expiration"`
+	RequireKnownTenant  bool   `mapstructure:"require_known_tenant"`
+	AllowPrivateNetwork bool   `mapstructure:"allow_private_network"`
+	TimeoutSeconds      int    `mapstructure:"timeout_seconds"`
+	CacheTTLSeconds     int    `mapstructure:"cache_ttl_seconds"`
 }
 
 // MCPServerConfig describes one operator-configured MCP Streamable HTTP
@@ -341,6 +381,21 @@ func setupViper() {
 	// Default values
 	viper.SetDefault("api.addr", "127.0.0.1:8080")
 	viper.SetDefault("api.api_key", "")
+	viper.SetDefault("api.auth.mode", "api_key")
+	viper.SetDefault("api.auth.bearer.validation_mode", "jwks")
+	viper.SetDefault("api.auth.jwt.tenant_claim", "code")
+	viper.SetDefault("api.auth.jwt.allowed_algorithms", []string{"RS256"})
+	viper.SetDefault("api.auth.jwt.require_known_tenant", true)
+	viper.SetDefault("api.auth.jwt.clock_skew_seconds", 30)
+	viper.SetDefault("api.auth.jwt.jwks_cache_ttl_seconds", 300)
+	viper.SetDefault("api.auth.jwt.jwks_request_timeout_seconds", 5)
+	viper.SetDefault("api.auth.introspection.tenant_claim", "code")
+	viper.SetDefault("api.auth.introspection.active_claim", "active")
+	viper.SetDefault("api.auth.introspection.require_expiration", false)
+	viper.SetDefault("api.auth.introspection.require_known_tenant", true)
+	viper.SetDefault("api.auth.introspection.allow_private_network", false)
+	viper.SetDefault("api.auth.introspection.timeout_seconds", 3)
+	viper.SetDefault("api.auth.introspection.cache_ttl_seconds", 10)
 	viper.SetDefault("store.type", "sqlite")
 	viper.SetDefault("store.dsn", "data/agent.db")
 	viper.SetDefault("store.vector_search", "in_process")
@@ -409,6 +464,26 @@ func setupViper() {
 	// Explicit bindings for standard env variables
 	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
 	_ = viper.BindEnv("api.api_key", "AI_AGENT_API_KEY")
+	_ = viper.BindEnv("api.auth.mode", "AI_AGENT_API_AUTH_MODE")
+	_ = viper.BindEnv("api.auth.bearer.validation_mode", "AI_AGENT_API_BEARER_VALIDATION_MODE")
+	_ = viper.BindEnv("api.auth.jwt.issuer", "AI_AGENT_API_JWT_ISSUER")
+	_ = viper.BindEnv("api.auth.jwt.audience", "AI_AGENT_API_JWT_AUDIENCE")
+	_ = viper.BindEnv("api.auth.jwt.jwks_url", "AI_AGENT_API_JWT_JWKS_URL")
+	_ = viper.BindEnv("api.auth.jwt.tenant_claim", "AI_AGENT_API_JWT_TENANT_CLAIM")
+	_ = viper.BindEnv("api.auth.jwt.require_known_tenant", "AI_AGENT_API_JWT_REQUIRE_KNOWN_TENANT")
+	_ = viper.BindEnv("api.auth.jwt.clock_skew_seconds", "AI_AGENT_API_JWT_CLOCK_SKEW_SECONDS")
+	_ = viper.BindEnv("api.auth.jwt.jwks_cache_ttl_seconds", "AI_AGENT_API_JWT_JWKS_CACHE_TTL_SECONDS")
+	_ = viper.BindEnv("api.auth.jwt.jwks_request_timeout_seconds", "AI_AGENT_API_JWT_JWKS_REQUEST_TIMEOUT_SECONDS")
+	_ = viper.BindEnv("api.auth.introspection.url", "AI_AGENT_API_INTROSPECTION_URL")
+	_ = viper.BindEnv("api.auth.introspection.tenant_claim", "AI_AGENT_API_INTROSPECTION_TENANT_CLAIM")
+	_ = viper.BindEnv("api.auth.introspection.active_claim", "AI_AGENT_API_INTROSPECTION_ACTIVE_CLAIM")
+	_ = viper.BindEnv("api.auth.introspection.issuer", "AI_AGENT_API_INTROSPECTION_ISSUER")
+	_ = viper.BindEnv("api.auth.introspection.audience", "AI_AGENT_API_INTROSPECTION_AUDIENCE")
+	_ = viper.BindEnv("api.auth.introspection.require_expiration", "AI_AGENT_API_INTROSPECTION_REQUIRE_EXPIRATION")
+	_ = viper.BindEnv("api.auth.introspection.require_known_tenant", "AI_AGENT_API_INTROSPECTION_REQUIRE_KNOWN_TENANT")
+	_ = viper.BindEnv("api.auth.introspection.allow_private_network", "AI_AGENT_API_INTROSPECTION_ALLOW_PRIVATE_NETWORK")
+	_ = viper.BindEnv("api.auth.introspection.timeout_seconds", "AI_AGENT_API_INTROSPECTION_TIMEOUT_SECONDS")
+	_ = viper.BindEnv("api.auth.introspection.cache_ttl_seconds", "AI_AGENT_API_INTROSPECTION_CACHE_TTL_SECONDS")
 	_ = viper.BindEnv("llm.openai_api_key", "OPENAI_API_KEY")
 	_ = viper.BindEnv("llm.gemini_api_key", "GEMINI_API_KEY")
 	_ = viper.BindEnv("llm.google_api_key", "GOOGLE_API_KEY")
@@ -542,6 +617,7 @@ func cloneConfig(source *Config) *Config {
 		return &Config{}
 	}
 	cloned := *source
+	cloned.API.Auth.JWT.AllowedAlgorithms = append([]string(nil), source.API.Auth.JWT.AllowedAlgorithms...)
 	cloned.API.Tenants = make(map[string]APITenantConfig, len(source.API.Tenants))
 	for tenantID, tenant := range source.API.Tenants {
 		tenant.AnswerPipelineRequiredStages = append([]string(nil), tenant.AnswerPipelineRequiredStages...)
@@ -705,6 +781,9 @@ func diffConfigs(old, new *Config) []string {
 	// API
 	addIf("api.addr", old.API.Addr, new.API.Addr)
 	addIf("api.api_key", old.API.APIKey, new.API.APIKey)
+	if !reflect.DeepEqual(old.API.Auth, new.API.Auth) {
+		changes = append(changes, "api.auth: changed")
+	}
 	if !reflect.DeepEqual(old.API.Tenants, new.API.Tenants) {
 		changes = append(changes, "api.tenants: changed")
 	}
@@ -1060,6 +1139,46 @@ func routeStringMatches(allowed []string, actual string) bool {
 	return false
 }
 
+func (c *Config) validateJWTAuth() error {
+	jwtConfig := c.API.Auth.JWT
+	if strings.TrimSpace(jwtConfig.Issuer) == "" || strings.TrimSpace(jwtConfig.Audience) == "" || strings.TrimSpace(jwtConfig.JWKSURL) == "" || strings.TrimSpace(jwtConfig.TenantClaim) == "" {
+		return fmt.Errorf("api.auth.jwt issuer, audience, jwks_url, and tenant_claim are required")
+	}
+	parsedJWKSURL, err := url.Parse(jwtConfig.JWKSURL)
+	if err != nil || parsedJWKSURL.Host == "" || parsedJWKSURL.User != nil || parsedJWKSURL.Fragment != "" || (parsedJWKSURL.Scheme != "https" && parsedJWKSURL.Scheme != "http") {
+		return fmt.Errorf("api.auth.jwt.jwks_url must be an absolute http or https URL without userinfo or fragment")
+	}
+	if len(jwtConfig.AllowedAlgorithms) == 0 {
+		return fmt.Errorf("api.auth.jwt.allowed_algorithms must not be empty")
+	}
+	for _, algorithm := range jwtConfig.AllowedAlgorithms {
+		switch strings.ToUpper(strings.TrimSpace(algorithm)) {
+		case "RS256", "RS384", "RS512":
+		default:
+			return fmt.Errorf("api.auth.jwt.allowed_algorithms contains unsupported algorithm %q", algorithm)
+		}
+	}
+	if jwtConfig.ClockSkewSeconds < 0 || jwtConfig.JWKSCacheTTLSeconds <= 0 || jwtConfig.JWKSRequestTimeoutSeconds <= 0 {
+		return fmt.Errorf("api.auth.jwt clock skew must be >= 0 and JWKS cache/request timeouts must be > 0")
+	}
+	return nil
+}
+
+func (c *Config) validateIntrospectionAuth() error {
+	introspection := c.API.Auth.Introspection
+	if strings.TrimSpace(introspection.URL) == "" || strings.TrimSpace(introspection.TenantClaim) == "" || strings.TrimSpace(introspection.ActiveClaim) == "" {
+		return fmt.Errorf("api.auth.introspection url, tenant_claim, and active_claim are required")
+	}
+	parsedURL, err := url.Parse(introspection.URL)
+	if err != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.Fragment != "" {
+		return fmt.Errorf("api.auth.introspection.url must be an absolute https URL without userinfo or fragment")
+	}
+	if introspection.TimeoutSeconds <= 0 || introspection.CacheTTLSeconds < 0 {
+		return fmt.Errorf("api.auth.introspection timeout_seconds must be > 0 and cache_ttl_seconds must be >= 0")
+	}
+	return nil
+}
+
 // Validate rejects configuration that would otherwise fail only on the first
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
@@ -1189,21 +1308,56 @@ func (c *Config) Validate() error {
 	if c.LLM.PlannerTraceMaxItems < 0 || c.LLM.PlannerObservationMaxChars < 0 || c.LLM.PlannerEvidenceMaxItems < 0 || c.LLM.PlannerEvidenceLineMaxChars < 0 || c.LLM.PlannerTraceMaxChars < 0 {
 		return fmt.Errorf("planner trace budget values must be >= 0")
 	}
+	authMode := strings.ToLower(strings.TrimSpace(c.API.Auth.Mode))
+	if authMode == "" {
+		authMode = "api_key"
+	}
+	switch authMode {
+	case "api_key":
+	case "jwt":
+		if err := c.validateJWTAuth(); err != nil {
+			return err
+		}
+	case "introspection":
+		if err := c.validateIntrospectionAuth(); err != nil {
+			return err
+		}
+	case "hybrid":
+		switch strings.ToLower(strings.TrimSpace(c.API.Auth.Bearer.ValidationMode)) {
+		case "", "jwks":
+			if err := c.validateJWTAuth(); err != nil {
+				return err
+			}
+		case "introspection":
+			if err := c.validateIntrospectionAuth(); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("api.auth.bearer.validation_mode must be jwks or introspection")
+		}
+	default:
+		return fmt.Errorf("api.auth.mode must be one of api_key, jwt, introspection, or hybrid")
+	}
 	seenTenantKeys := make(map[string]string, len(c.API.Tenants))
 	for tenantID, tenant := range c.API.Tenants {
-		if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(tenant.APIKey) == "" {
-			return fmt.Errorf("api tenant id and api_key must not be empty")
+		if strings.TrimSpace(tenantID) == "" {
+			return fmt.Errorf("api tenant id must not be empty")
+		}
+		if strings.TrimSpace(tenant.APIKey) == "" && authMode == "api_key" {
+			return fmt.Errorf("api tenant %q api_key must not be empty in api_key mode", tenantID)
 		}
 		if tenant.DailyLLMCallBudget < 0 || tenant.DailyLLMCostBudgetUSD < 0 {
 			return fmt.Errorf("api tenant %q budgets must be >= 0", tenantID)
 		}
-		if previous, exists := seenTenantKeys[tenant.APIKey]; exists {
-			return fmt.Errorf("api tenants %q and %q use the same api_key", previous, tenantID)
+		if tenant.APIKey != "" {
+			if previous, exists := seenTenantKeys[tenant.APIKey]; exists {
+				return fmt.Errorf("api tenants %q and %q use the same api_key", previous, tenantID)
+			}
+			if c.API.APIKey != "" && tenant.APIKey == c.API.APIKey {
+				return fmt.Errorf("api tenant %q duplicates api.api_key", tenantID)
+			}
+			seenTenantKeys[tenant.APIKey] = tenantID
 		}
-		if c.API.APIKey != "" && tenant.APIKey == c.API.APIKey {
-			return fmt.Errorf("api tenant %q duplicates api.api_key", tenantID)
-		}
-		seenTenantKeys[tenant.APIKey] = tenantID
 		if tenant.DailyLLMCostBudgetUSD > 0 {
 			if err := c.ValidateLLMCostBudgetCoverage(); err != nil {
 				return err

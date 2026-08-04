@@ -31,6 +31,7 @@ func (p *apiReauditPipeline) Process(_ context.Context, task *types.Task, _ stri
 
 func TestAuditEndpointsEnforceTenantScopeAndPersistReaudit(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
 		cfg.API.APIKey = "my-test-secret-api-key"
 		cfg.API.Tenants = map[string]config.APITenantConfig{
 			"tenant-a": {APIKey: "tenant-a-audit-key"},

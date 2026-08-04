@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -62,12 +64,24 @@ func SpanAttributesMiddleware() gin.HandlerFunc {
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := config.Get()
-		expectedKey := cfg.API.APIKey
-		if expectedKey == "" && len(cfg.API.Tenants) == 0 {
+		authMode := strings.ToLower(strings.TrimSpace(cfg.API.Auth.Mode))
+		if authMode == "" {
+			authMode = "api_key"
+		}
+		apiKeyEnabled := authMode == "api_key" || authMode == "hybrid"
+		bearerEnabled := authMode == "jwt" || authMode == "introspection" || authMode == "hybrid"
+		xAPIKey := strings.TrimSpace(c.GetHeader("X-API-Key"))
+		bearerToken := bearerCredential(c.GetHeader("Authorization"))
+		if gin.Mode() == gin.TestMode && xAPIKey == "" && bearerToken == "" && !hasConfiguredAPIKey(cfg) {
+			principal := Principal{TenantID: "default", Admin: true}
+			setPrincipal(c, principal)
+			c.Next()
+			return
+		}
+		if apiKeyEnabled && !bearerEnabled && !hasConfiguredAPIKey(cfg) {
 			if gin.Mode() == gin.TestMode {
 				principal := Principal{TenantID: "default", Admin: true}
-				c.Set(principalKey, principal)
-				c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), principalContextKey{}, principal))
+				setPrincipal(c, principal)
 				c.Next()
 				return
 			}
@@ -76,43 +90,94 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Check X-API-Key header
-		clientKey := c.GetHeader("X-API-Key")
-		if clientKey == "" {
-			// Fallback to Authorization Bearer header
-			authHeader := c.GetHeader("Authorization")
-			const bearerPrefix = "Bearer "
-			if len(authHeader) > len(bearerPrefix) && authHeader[:len(bearerPrefix)] == bearerPrefix {
-				clientKey = authHeader[len(bearerPrefix):]
+		if apiKeyEnabled {
+			candidate := xAPIKey
+			if candidate == "" {
+				candidate = bearerToken
+			}
+			if principal, matched := matchStaticAPIKey(cfg, candidate); matched {
+				setPrincipal(c, principal)
+				c.Next()
+				return
+			}
+		}
+		if bearerEnabled && xAPIKey == "" && bearerToken != "" {
+			tenantID, requireKnownTenant, err := verifyBearerCredential(c.Request.Context(), cfg, authMode, bearerToken)
+			if err == nil {
+				tenant, known := cfg.API.Tenants[tenantID]
+				if known || !requireKnownTenant {
+					setPrincipal(c, Principal{TenantID: tenantID, Admin: known && tenant.Admin})
+					c.Next()
+					return
+				}
+			}
+			if errors.Is(err, errAuthenticationUnavailable) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authentication service unavailable"})
+				c.Abort()
+				return
 			}
 		}
 
-		// Use constant-time comparison to prevent timing attacks.
-		// subtle.ConstantTimeCompare requires equal-length slices; the length
-		// check is also done in constant time via subtle.ConstantTimeEq so that
-		// response latency does not leak key length information.
-		principal := Principal{}
-		matched := false
-		if constantTimeKeyMatch(clientKey, expectedKey) {
-			principal = Principal{TenantID: "default", Admin: true}
-			matched = true
-		}
-		for tenantID, tenant := range cfg.API.Tenants {
-			if constantTimeKeyMatch(clientKey, tenant.APIKey) {
-				principal = Principal{TenantID: tenantID, Admin: tenant.Admin}
-				matched = true
-			}
-		}
-		if !matched {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized: invalid or missing API key"})
-			c.Abort()
-			return
-		}
-
-		c.Set(principalKey, principal)
-		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), principalContextKey{}, principal))
-		c.Next()
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized: invalid or missing credential"})
+		c.Abort()
 	}
+}
+
+func verifyBearerCredential(ctx context.Context, cfg *config.Config, authMode, bearerToken string) (string, bool, error) {
+	validationMode := authMode
+	if authMode == "hybrid" {
+		validationMode = strings.ToLower(strings.TrimSpace(cfg.API.Auth.Bearer.ValidationMode))
+		if validationMode == "" {
+			validationMode = "jwks"
+		}
+	}
+	switch validationMode {
+	case "jwt", "jwks":
+		tenantID, err := verifierFor(cfg.API.Auth.JWT).verify(ctx, bearerToken)
+		return tenantID, cfg.API.Auth.JWT.RequireKnownTenant, err
+	case "introspection":
+		tenantID, err := introspectorFor(cfg.API.Auth.Introspection).verify(ctx, bearerToken)
+		return tenantID, cfg.API.Auth.Introspection.RequireKnownTenant, err
+	default:
+		return "", true, errInvalidCredential
+	}
+}
+
+func hasConfiguredAPIKey(cfg *config.Config) bool {
+	if strings.TrimSpace(cfg.API.APIKey) != "" {
+		return true
+	}
+	for _, tenant := range cfg.API.Tenants {
+		if strings.TrimSpace(tenant.APIKey) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func bearerCredential(header string) string {
+	const prefix = "Bearer "
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(header[len(prefix):])
+}
+
+func matchStaticAPIKey(cfg *config.Config, candidate string) (Principal, bool) {
+	if constantTimeKeyMatch(candidate, cfg.API.APIKey) {
+		return Principal{TenantID: "default", Admin: true}, true
+	}
+	for tenantID, tenant := range cfg.API.Tenants {
+		if constantTimeKeyMatch(candidate, tenant.APIKey) {
+			return Principal{TenantID: tenantID, Admin: tenant.Admin}, true
+		}
+	}
+	return Principal{}, false
+}
+
+func setPrincipal(c *gin.Context, principal Principal) {
+	c.Set(principalKey, principal)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), principalContextKey{}, principal))
 }
 
 func constantTimeKeyMatch(actual, expected string) bool {
