@@ -125,7 +125,6 @@ func (v *introspectionVerifier) verify(ctx context.Context, rawToken string) (st
 	if v.config.Audience != "" && !introspectionAudienceContains(claims["aud"], v.config.Audience) {
 		return "", errInvalidCredential
 	}
-
 	expiresAt, hasExpiration, validExpiration := introspectionExpiration(claims["exp"])
 	if !validExpiration || (v.config.RequireExpiration && !hasExpiration) || (hasExpiration && !expiresAt.After(time.Now())) {
 		return "", errInvalidCredential

@@ -35,8 +35,8 @@ api:
       jwks_cache_ttl_seconds: 300
       jwks_request_timeout_seconds: 5
     introspection:
-      # 第三方 GET 端点。原始 Token 只通过
-      # Authorization: Bearer <token> 请求头转发，并且必须使用 HTTPS。
+      # 第三方 GET 端点只验证 Authorization: Bearer Token。X-API-Key 仅与本地
+      # API Key 比较，绝不转发给第三方。第三方端点必须使用 HTTPS。
       url: "https://api.thinktown.com/api/auth/check"
       # 支持使用点路径读取嵌套 JSON 响应字段。
       tenant_claim: "data.userid"
@@ -45,7 +45,7 @@ api:
       issuer: ""
       audience: ""
       require_expiration: false
-      require_known_tenant: true
+      require_known_tenant: false
       # 公网端点保持 false；只有可信内网地址才显式开启。
       allow_private_network: false
       timeout_seconds: 3

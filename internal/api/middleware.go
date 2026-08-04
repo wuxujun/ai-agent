@@ -90,18 +90,26 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		if apiKeyEnabled {
-			candidate := xAPIKey
-			if candidate == "" {
-				candidate = bearerToken
+		// X-API-Key is always a local credential. Never forward it to JWT or
+		// introspection providers, even when external Bearer auth is enabled.
+		if xAPIKey != "" {
+			if principal, matched := matchStaticAPIKey(cfg, xAPIKey); matched {
+				setPrincipal(c, principal)
+				c.Next()
+				return
 			}
-			if principal, matched := matchStaticAPIKey(cfg, candidate); matched {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized: invalid or missing credential"})
+			c.Abort()
+			return
+		}
+		if apiKeyEnabled && bearerToken != "" {
+			if principal, matched := matchStaticAPIKey(cfg, bearerToken); matched {
 				setPrincipal(c, principal)
 				c.Next()
 				return
 			}
 		}
-		if bearerEnabled && xAPIKey == "" && bearerToken != "" {
+		if bearerEnabled && bearerToken != "" {
 			tenantID, requireKnownTenant, err := verifyBearerCredential(c.Request.Context(), cfg, authMode, bearerToken)
 			if err == nil {
 				tenant, known := cfg.API.Tenants[tenantID]

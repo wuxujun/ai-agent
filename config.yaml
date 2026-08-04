@@ -35,8 +35,8 @@ api:
       jwks_cache_ttl_seconds: 300
       jwks_request_timeout_seconds: 5
     introspection:
-      # Third-party GET endpoint. The incoming token is forwarded only through
-      # Authorization: Bearer <token>. HTTPS is mandatory.
+      # Third-party GET endpoint for Authorization: Bearer tokens. X-API-Key is
+      # validated only against local API keys and is never forwarded. HTTPS is mandatory.
       url: "https://api.thinktown.com/api/auth/check"
       # Dot-separated paths are supported for nested JSON response fields.
       tenant_claim: "data.userid"
@@ -45,7 +45,7 @@ api:
       issuer: ""
       audience: ""
       require_expiration: false
-      require_known_tenant: true
+      require_known_tenant: false
       # Keep false for public endpoints. Enable only for a trusted internal URL.
       allow_private_network: false
       timeout_seconds: 3

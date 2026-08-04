@@ -33,8 +33,7 @@ func TestIntrospectionAuthMapsNestedUserIDAndCachesByTokenHash(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.API.APIKey = "admin-static-key"
 		cfg.API.Auth = config.APIAuthConfig{
-			Mode:          "hybrid",
-			Bearer:        config.APIBearerConfig{ValidationMode: "introspection"},
+			Mode:          "introspection",
 			Introspection: introspectionConfig,
 		}
 		cfg.API.Tenants = map[string]config.APITenantConfig{"project_a": {Admin: false}}
@@ -57,12 +56,26 @@ func TestIntrospectionAuthMapsNestedUserIDAndCachesByTokenHash(t *testing.T) {
 		t.Fatalf("introspection requests = %d, want one cached request", requests.Load())
 	}
 
+	invalidStaticRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	invalidStaticRequest.Header.Set("X-API-Key", "not-a-local-key")
+	invalidStaticResponse := httptest.NewRecorder()
+	router.ServeHTTP(invalidStaticResponse, invalidStaticRequest)
+	if invalidStaticResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid local X-API-Key response = %d %s", invalidStaticResponse.Code, invalidStaticResponse.Body.String())
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("introspection requests = %d after X-API-Key; X-API-Key must stay local", requests.Load())
+	}
+
 	staticRequest := httptest.NewRequest(http.MethodGet, "/", nil)
 	staticRequest.Header.Set("X-API-Key", "admin-static-key")
 	staticResponse := httptest.NewRecorder()
 	router.ServeHTTP(staticResponse, staticRequest)
 	if staticResponse.Code != http.StatusOK || !strings.Contains(staticResponse.Body.String(), `"admin":true`) {
-		t.Fatalf("hybrid static key response = %d %s", staticResponse.Code, staticResponse.Body.String())
+		t.Fatalf("local static key response = %d %s", staticResponse.Code, staticResponse.Body.String())
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("introspection requests = %d after valid X-API-Key; X-API-Key must stay local", requests.Load())
 	}
 }
 
