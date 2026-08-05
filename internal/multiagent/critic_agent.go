@@ -44,34 +44,36 @@ func (c *CriticAgent) Critique(ctx context.Context, task *types.Task, plan planc
 		}
 	}
 	cfg := coreLLMConfig(agentCfg, config.LLMScenePlanCritic)
-	var systemPrompt string
+	var resolvedPrompt resolvedAgentPrompt
 	var err error
 	if selectorOverride != nil {
-		systemPrompt, err = resolveAgentPromptStrict(ctx, agentCfg, "multiagent_critic_prompt")
+		resolvedPrompt, err = resolveAgentPromptStrict(ctx, agentCfg, "multiagent_critic_prompt")
 		if err != nil {
 			return nil, types.TokenUsage{}, fmt.Errorf("resolve critic evaluation prompt: %w", err)
 		}
 	} else {
-		systemPrompt, err = resolveAgentPromptForTask(ctx, agentCfg, "multiagent_critic_prompt", plancritic.DefaultSystemPrompt)
+		resolvedPrompt, err = resolveAgentPromptDetailsForTask(ctx, agentCfg, "multiagent_critic_prompt", plancritic.DefaultSystemPrompt)
 		if err != nil {
 			return nil, types.TokenUsage{}, fmt.Errorf("resolve CriticAgent prompt: %w", err)
 		}
 	}
-	return plancritic.NewLLMCriticWithConfig(cfg, systemPrompt).Critique(ctx, task, plan)
+	callCtx := llmcore.WithPromptBinding(ctx, resolvedPrompt.Binding)
+	return plancritic.NewLLMCriticWithConfig(cfg, resolvedPrompt.Content).Critique(callCtx, task, plan)
 }
 
-func resolveAgentPromptStrict(ctx context.Context, agentCfg AgentConfig, defaultName string) (string, error) {
+func resolveAgentPromptStrict(ctx context.Context, agentCfg AgentConfig, defaultName string) (resolvedAgentPrompt, error) {
 	promptName := strings.TrimSpace(agentCfg.PromptName)
 	if promptName == "" {
 		promptName = strings.TrimSpace(agentCfg.LangfusePrompt)
 	}
 	if promptName == "" {
 		if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
-			return "", fmt.Errorf("prompt selector override requires prompt_name when system_prompt is configured")
+			return resolvedAgentPrompt{}, fmt.Errorf("prompt selector override requires prompt_name when system_prompt is configured")
 		}
 		promptName = defaultName
 	}
-	return promptmanager.GetManager().GetStrict(ctx, promptName, agentPromptSelector(agentCfg))
+	resolved, err := promptmanager.GetManager().ResolveStrict(ctx, promptName, agentPromptSelector(agentCfg))
+	return resolvedAgentPromptFromResolution(resolved), err
 }
 
 func coreLLMConfig(agentCfg AgentConfig, defaultScene string) llmcore.Config {

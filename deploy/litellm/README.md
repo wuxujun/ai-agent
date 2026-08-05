@@ -42,6 +42,33 @@ in `.env.example` when production concurrency requires more capacity. Swap
 cannot exceed each service's memory ceiling. A limit that is too low can cause
 Docker to restart an out-of-memory container.
 
+### Langfuse LLM generations
+
+The proxy enables LiteLLM's `langfuse_otel` callback alongside SMTP alerts.
+Configure the same Langfuse project used by the application OTel Collector:
+
+```dotenv
+LANGFUSE_PUBLIC_KEY=pk-lf-replace-me
+LANGFUSE_SECRET_KEY=sk-lf-replace-me
+LANGFUSE_OTEL_HOST=https://langfuse.example.com
+```
+
+`LANGFUSE_OTEL_HOST` is the base host only. LiteLLM appends
+`/api/public/otel`; do not include that path in this variable. Successful and
+failed model calls are exported as Langfuse Generations with request/response,
+token usage, timing, model, and application-provided task metadata. This data
+can contain user and prompt content, so configure Langfuse retention and access
+control accordingly.
+
+After changing these values or the callback list, recreate only LiteLLM; the
+model reconciler does not need to be restarted:
+
+```bash
+docker compose --env-file deploy/litellm/.env \
+  -f deploy/litellm/compose.yaml \
+  up -d --no-deps --force-recreate litellm
+```
+
 ### OpenAI provider
 
 Configure OpenAI directly or route OpenAI models through a compatible private

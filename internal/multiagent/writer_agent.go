@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -64,10 +65,12 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 
 	teamSnapshot := teamConfigFromContext(ctx)
 	activeTeam := teamSnapshot.Team
-	systemPrompt, promptErr := resolveAgentPromptForTask(ctx, activeTeam.Writer, "multiagent_writer_prompt", writerSystemPrompt)
+	resolvedPrompt, promptErr := resolveAgentPromptDetailsForTask(ctx, activeTeam.Writer, "multiagent_writer_prompt", writerSystemPrompt)
 	if promptErr != nil {
 		return nil, fmt.Errorf("resolve WriterAgent prompt: %w", promptErr)
 	}
+	callCtx := llmcore.WithPromptBinding(ctx, resolvedPrompt.Binding)
+	systemPrompt := resolvedPrompt.Content
 	if hasConfiguredPrompt(activeTeam.Writer) {
 		log.Info("Using team-configured system prompt for WriterAgent", "team", teamSnapshot.ActiveTeam, "agent_name", activeTeam.Writer.Name, "prompt_name", activeTeam.Writer.PromptName)
 	}
@@ -75,7 +78,7 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 		cfg = GetLLMConfig(activeTeam.Writer, config.LLMSceneMultiAgentWriter)
 	}
 
-	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, w.jsonSchema(), &output)
+	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, w.jsonSchema(), &output)
 	if err != nil {
 		return nil, fmt.Errorf("WriterAgent LLM call failed: %w", err)
 	}

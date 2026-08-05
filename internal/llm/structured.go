@@ -297,6 +297,7 @@ func (r *Runtime) callStructured(ctx context.Context, cfg Config, visited map[st
 	ctx, span := otel.Tracer("ai-agent/llm").Start(ctx, "llm.structured_call")
 	defer span.End()
 	span.SetAttributes(attribute.String("llm.scene", cfg.Scene), attribute.String("llm.provider", cfg.Provider), attribute.String("llm.model", cfg.Model))
+	applyLangfuseSpanAttributes(ctx, span, cfg)
 	if err := ReserveTaskLLMCallForConfig(ctx, cfg); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

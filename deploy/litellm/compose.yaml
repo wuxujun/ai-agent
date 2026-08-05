@@ -52,6 +52,10 @@ services:
       SMTP_USE_SSL: ${SMTP_USE_SSL:-True}
       EMAIL_INCLUDE_API_KEY: ${LITELLM_EMAIL_INCLUDE_API_KEY:-False}
       PROXY_BASE_URL: ${PROXY_BASE_URL:-http://127.0.0.1:4000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?set LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?set LANGFUSE_SECRET_KEY}
+      # LiteLLM appends /api/public/otel itself; configure only the Langfuse host.
+      LANGFUSE_OTEL_HOST: ${LANGFUSE_OTEL_HOST:?set LANGFUSE_OTEL_HOST}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     extra_hosts:

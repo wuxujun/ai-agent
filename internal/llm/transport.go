@@ -91,6 +91,9 @@ func (nativeStructuredCaller) CallVisionJSON(ctx context.Context, cfg Config, sy
 }
 
 func callStructuredHTTP(ctx context.Context, cfg Config, body map[string]any, responseKind string, dest any) (types.TokenUsage, error) {
+	if metadata := liteLLMMetadata(ctx, cfg); len(metadata) > 0 {
+		body["metadata"] = metadata
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return types.TokenUsage{}, err

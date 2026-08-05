@@ -3,6 +3,7 @@ package promptmanager
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,12 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+type promptRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f promptRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestPromptManagerGet(t *testing.T) {
 	// Setup mock Langfuse server
@@ -368,6 +375,38 @@ func TestResolutionFailureCreatesVisibleErrorSpan(t *testing.T) {
 	if attributes["agent.prompt.name"] != "teams/test/critic" ||
 		attributes["agent.prompt.outcome"] != "fetch_error" {
 		t.Fatalf("resolution span attributes=%v", attributes)
+	}
+}
+
+func TestPromptFetchCreatesSafeHTTPSpan(t *testing.T) {
+	manager := &PromptManager{
+		cache: make(map[string]cachedPrompt),
+		client: &http.Client{Transport: promptRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"name":"teams/test/writer","version":9,"labels":["production"],"prompt":"sensitive body"}`)),
+				Request:    request,
+			}, nil
+		})},
+	}
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, parent := provider.Tracer("test").Start(context.Background(), "parent")
+	resolved, err := manager.fetchFromLangfuse(ctx, "teams/test/writer", Selector{Label: "production"}, "https://langfuse.test", "public", "secret")
+	parent.End()
+	if err != nil || resolved.Version != 9 {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	span := findEndedSpan(t, recorder.Ended(), "langfuse.prompt.fetch")
+	attributes := spanAttributes(span)
+	if attributes["http.request.method"] != http.MethodGet || attributes["http.response.status_code"] != "200" || attributes["langfuse.observation.metadata.prompt_name"] != "teams/test/writer" {
+		t.Fatalf("fetch span attributes=%v", attributes)
+	}
+	for _, value := range attributes {
+		if strings.Contains(value, "sensitive body") || strings.Contains(value, "secret") {
+			t.Fatalf("fetch span leaked sensitive data: %v", attributes)
+		}
 	}
 }
 

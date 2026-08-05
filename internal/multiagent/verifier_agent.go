@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -105,11 +106,13 @@ func (v *VerifierAgent) Verify(ctx context.Context, goal, answer string, evidenc
 		"required": []string{"supported", "issues"},
 	}
 	var result VerificationResult
-	systemPrompt, promptErr := resolveAgentPromptForTask(ctx, agentCfg, "multiagent_verifier_prompt", verifierSystemPrompt)
+	resolvedPrompt, promptErr := resolveAgentPromptDetailsForTask(ctx, agentCfg, "multiagent_verifier_prompt", verifierSystemPrompt)
 	if promptErr != nil {
 		return nil, fmt.Errorf("resolve VerifierAgent prompt: %w", promptErr)
 	}
-	usage, err := callLLMJSON(ctx, cfg, systemPrompt, prompt, schema, &result)
+	callCtx := llmcore.WithPromptBinding(ctx, resolvedPrompt.Binding)
+	systemPrompt := resolvedPrompt.Content
+	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, prompt, schema, &result)
 	result.TokenUsage = usage
 	if err == nil {
 		err = validateVerificationResult(&result)
@@ -121,13 +124,15 @@ func (v *VerifierAgent) Draft(ctx context.Context, goal string, evidence []StepE
 	agentCfg := teamConfigFromContext(ctx).Team.Verifier
 	draftCfg := draftAgentConfig(agentCfg)
 	cfg := GetLLMConfig(draftCfg, config.LLMSceneMultiAgentWriter)
-	systemPrompt, promptErr := resolveAgentPromptForTask(ctx, draftCfg, "multiagent_final_verifier_draft_prompt", finalVerifierDraftSystemPrompt)
+	resolvedPrompt, promptErr := resolveAgentPromptDetailsForTask(ctx, draftCfg, "multiagent_final_verifier_draft_prompt", finalVerifierDraftSystemPrompt)
 	if promptErr != nil {
 		return nil, fmt.Errorf("resolve VerifierAgent draft prompt: %w", promptErr)
 	}
+	callCtx := llmcore.WithPromptBinding(ctx, resolvedPrompt.Binding)
+	systemPrompt := resolvedPrompt.Content
 	prompt := (&WriterAgent{}).buildPrompt(goal, evidence, memories)
 	var candidate VerificationDraft
-	draftUsage, err := callLLMJSON(ctx, cfg, systemPrompt, prompt, finalAnswerCandidateSchema(), &candidate)
+	draftUsage, err := callLLMJSON(callCtx, cfg, systemPrompt, prompt, finalAnswerCandidateSchema(), &candidate)
 	candidate.TokenUsage = draftUsage
 	if err != nil {
 		return nil, fmt.Errorf("generate verification candidate: %w", err)

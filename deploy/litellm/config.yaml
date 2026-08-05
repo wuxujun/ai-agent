@@ -12,7 +12,7 @@ litellm_settings:
   request_timeout: 120
   turn_off_message_logging: false
   set_verbose: false
-  callbacks: ["smtp_email"]
+  callbacks: ["smtp_email", "langfuse_otel"]
 router_settings:
   timeout: 120
   stream_timeout: 120

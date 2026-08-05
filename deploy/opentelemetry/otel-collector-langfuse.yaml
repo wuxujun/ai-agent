@@ -26,6 +26,14 @@ exporters:
     tls:
       insecure: true
 
+  # LANGFUSE_OTEL_AUTHORIZATION is the complete Basic authorization value.
+  # Credentials stay in the environment and are never committed here.
+  otlphttp/langfuse:
+    endpoint: ${env:LANGFUSE_OTEL_ENDPOINT}
+    headers:
+      Authorization: ${env:LANGFUSE_OTEL_AUTHORIZATION}
+      x-langfuse-ingestion-version: "4"
+
 service:
   pipelines:
     metrics:
@@ -36,4 +44,4 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug, otlp/jaeger, otlp/tempo]
+      exporters: [debug, otlp/jaeger, otlp/tempo, otlphttp/langfuse]

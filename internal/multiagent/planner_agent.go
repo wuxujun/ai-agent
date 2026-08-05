@@ -166,10 +166,12 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 
 	teamSnapshot := teamConfigFromContext(ctx)
 	activeTeam := teamSnapshot.Team
-	systemPrompt, promptErr := resolveAgentPromptForTask(ctx, activeTeam.Planner, "multiagent_planner_prompt", plannerSystemPrompt)
+	resolvedPrompt, promptErr := resolveAgentPromptDetailsForTask(ctx, activeTeam.Planner, "multiagent_planner_prompt", plannerSystemPrompt)
 	if promptErr != nil {
 		return nil, fmt.Errorf("resolve PlannerAgent prompt: %w", promptErr)
 	}
+	callCtx := llmcore.WithPromptBinding(ctx, resolvedPrompt.Binding)
+	systemPrompt := resolvedPrompt.Content
 	if hasConfiguredPrompt(activeTeam.Planner) {
 		log.Info("Using team-configured system prompt for PlannerAgent", "team", teamSnapshot.ActiveTeam, "agent_name", activeTeam.Planner.Name, "prompt_name", activeTeam.Planner.PromptName)
 	}
@@ -177,7 +179,7 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentPlanner)
 	}
 
-	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, p.jsonSchema(), &plan)
+	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, p.jsonSchema(), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent LLM call failed: %w", err)
 	}
@@ -260,25 +262,29 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 	teamSnapshot := teamConfigFromContext(ctx)
 	activeTeam := teamSnapshot.Team
 	var systemPrompt string
+	var promptBinding llmcore.PromptBinding
 	if hasConfiguredPrompt(activeTeam.Planner) {
-		resolvedPrompt, promptErr := resolveAgentPromptForTask(ctx, activeTeam.Planner, "multiagent_planner_prompt", plannerSystemPrompt)
+		resolvedPrompt, promptErr := resolveAgentPromptDetailsForTask(ctx, activeTeam.Planner, "multiagent_planner_prompt", plannerSystemPrompt)
 		if promptErr != nil {
 			return nil, fmt.Errorf("resolve ReplannerAgent prompt: %w", promptErr)
 		}
-		systemPrompt = resolvedPrompt + "\n\nCRITICAL: One of the previous execution steps has FAILED. You must analyze the execution history, explain in thought_summary why it failed, and generate revised next steps to achieve the goal. Do not repeat the exact same failed step unless you use different arguments or parameters."
+		promptBinding = resolvedPrompt.Binding
+		systemPrompt = resolvedPrompt.Content + "\n\nCRITICAL: One of the previous execution steps has FAILED. You must analyze the execution history, explain in thought_summary why it failed, and generate revised next steps to achieve the goal. Do not repeat the exact same failed step unless you use different arguments or parameters."
 		log.Info("Using team-configured system prompt for ReplannerAgent", "team", teamSnapshot.ActiveTeam, "agent_name", activeTeam.Planner.Name, "prompt_name", activeTeam.Planner.PromptName)
 	} else {
-		resolvedPrompt, promptErr := resolveAgentPromptForTask(ctx, AgentConfig{}, "multiagent_replanner_prompt", replannerSystemPrompt)
+		resolvedPrompt, promptErr := resolveAgentPromptDetailsForTask(ctx, AgentConfig{}, "multiagent_replanner_prompt", replannerSystemPrompt)
 		if promptErr != nil {
 			return nil, fmt.Errorf("resolve ReplannerAgent prompt: %w", promptErr)
 		}
-		systemPrompt = resolvedPrompt
+		promptBinding = resolvedPrompt.Binding
+		systemPrompt = resolvedPrompt.Content
 	}
+	callCtx := llmcore.WithPromptBinding(ctx, promptBinding)
 	if activeTeam.Planner.Provider != "" || activeTeam.Planner.Model != "" || activeTeam.Planner.LLMScene != "" {
 		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentReplanner)
 	}
 
-	usage, err := callLLMJSON(ctx, cfg, systemPrompt, userPrompt, p.replanJsonSchema(), &plan)
+	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, p.replanJsonSchema(), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent Replan LLM call failed: %w", err)
 	}

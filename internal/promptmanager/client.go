@@ -12,6 +12,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/logger"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -259,7 +260,7 @@ func (pm *PromptManager) ResolveStrict(ctx context.Context, name string, selecto
 	return resolved, nil
 }
 
-func (pm *PromptManager) fetchFromLangfuse(ctx context.Context, name string, selector Selector, host, pubKey, secKey string) (ResolvedPrompt, error) {
+func (pm *PromptManager) fetchFromLangfuse(ctx context.Context, name string, selector Selector, host, pubKey, secKey string) (resolved ResolvedPrompt, resultErr error) {
 	if host == "" {
 		host = "https://cloud.langfuse.com"
 	}
@@ -268,6 +269,24 @@ func (pm *PromptManager) fetchFromLangfuse(ctx context.Context, name string, sel
 	if err != nil {
 		return ResolvedPrompt{}, err
 	}
+	started := time.Now()
+	ctx, span := promptTracer(ctx).Start(ctx, "langfuse.prompt.fetch", trace.WithAttributes(
+		attribute.String("langfuse.observation.metadata.prompt_name", strings.TrimSpace(name)),
+		attribute.String("langfuse.observation.metadata.prompt_selector", selector.String()),
+		attribute.String("http.request.method", http.MethodGet),
+	))
+	statusCode := 0
+	defer func() {
+		span.SetAttributes(
+			attribute.Int("http.response.status_code", statusCode),
+			attribute.Int64("langfuse.observation.metadata.duration_ms", time.Since(started).Milliseconds()),
+		)
+		if resultErr != nil {
+			span.RecordError(resultErr)
+			span.SetStatus(codes.Error, "prompt fetch failed")
+		}
+		span.End()
+	}()
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return ResolvedPrompt{}, err
@@ -281,6 +300,7 @@ func (pm *PromptManager) fetchFromLangfuse(ctx context.Context, name string, sel
 		return ResolvedPrompt{}, err
 	}
 	defer resp.Body.Close()
+	statusCode = resp.StatusCode
 
 	if resp.StatusCode != http.StatusOK {
 		return ResolvedPrompt{}, &HTTPStatusError{Method: http.MethodGet, URL: endpoint, StatusCode: resp.StatusCode}
@@ -305,6 +325,13 @@ func (pm *PromptManager) fetchFromLangfuse(ctx context.Context, name string, sel
 	}, nil
 }
 
+func promptTracer(ctx context.Context) trace.Tracer {
+	if trace.SpanContextFromContext(ctx).IsValid() {
+		return trace.SpanFromContext(ctx).TracerProvider().Tracer("ai-agent/promptmanager")
+	}
+	return otel.Tracer("ai-agent/promptmanager")
+}
+
 func fallbackPrompt(name string, selector Selector, content string) ResolvedPrompt {
 	return ResolvedPrompt{Name: strings.TrimSpace(name), Selector: selector, Source: "fallback", Content: content}
 }
@@ -324,6 +351,11 @@ func recordPromptResolution(ctx context.Context, resolved ResolvedPrompt, outcom
 		attribute.String("agent.prompt.source", resolved.Source),
 		attribute.String("agent.prompt.outcome", outcome),
 		attribute.Int("agent.prompt.version", resolved.Version),
+		attribute.String("langfuse.observation.metadata.prompt_name", resolved.Name),
+		attribute.String("langfuse.observation.metadata.prompt_selector", resolved.Selector.String()),
+		attribute.String("langfuse.observation.metadata.prompt_source", resolved.Source),
+		attribute.String("langfuse.observation.metadata.prompt_outcome", outcome),
+		attribute.Int("langfuse.observation.metadata.prompt_version", resolved.Version),
 	}
 	if len(resolved.Labels) > 0 {
 		attrs = append(attrs, attribute.StringSlice("agent.prompt.labels", resolved.Labels))
@@ -340,6 +372,9 @@ func recordPromptResolutionError(ctx context.Context, name string, selector Sele
 		attribute.String("agent.prompt.name", strings.TrimSpace(name)),
 		attribute.String("agent.prompt.selector", selector.String()),
 		attribute.String("agent.prompt.outcome", outcome),
+		attribute.String("langfuse.observation.metadata.prompt_name", strings.TrimSpace(name)),
+		attribute.String("langfuse.observation.metadata.prompt_selector", selector.String()),
+		attribute.String("langfuse.observation.metadata.prompt_outcome", outcome),
 	}
 	trace.SpanFromContext(ctx).AddEvent("agent.prompt.resolve_failed", trace.WithAttributes(attrs...))
 	recordPromptResolutionSpan(ctx, attrs, true, outcome)

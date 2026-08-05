@@ -2,10 +2,14 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: otel-collector
-    command: ["--config=/etc/otelcol/config.yaml"]
+    command: ["--config=${OTEL_COLLECTOR_CONFIG_PATH:-/etc/otelcol/config.yaml}"]
     restart: unless-stopped
+    environment:
+      LANGFUSE_OTEL_ENDPOINT: ${LANGFUSE_OTEL_ENDPOINT:-}
+      LANGFUSE_OTEL_AUTHORIZATION: ${LANGFUSE_OTEL_AUTHORIZATION:-}
     volumes:
       - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+      - ./otel-collector-langfuse.yaml:/etc/otelcol/config-langfuse.yaml:ro
     ports:
       - "127.0.0.1:4317:4317"
       - "127.0.0.1:4318:4318"

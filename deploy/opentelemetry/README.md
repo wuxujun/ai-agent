@@ -7,6 +7,7 @@
 - Tempo：保存 traces，并为 Grafana 提供 TraceQL 查询。
 - Jaeger：提供独立的 trace 查询界面，便于调试和对比。
 - Grafana：预置 Prometheus、Tempo 数据源和 `AI Agent Overview` 仪表盘。
+- Langfuse：接收 Collector 转发的应用 Trace，与 LiteLLM Generation 关联。
 
 所有宿主机端口都只绑定到 `127.0.0.1`，不对局域网或公网开放。
 
@@ -19,6 +20,26 @@
 ## 快速启动
 
 从项目根目录执行：
+
+先根据 Langfuse 项目公钥和私钥生成 Basic 凭证，并写入
+`deploy/opentelemetry/.env`。不要提交生成后的 `.env`：
+
+```bash
+printf '%s' 'pk-lf-public-key:sk-lf-secret-key' | base64
+```
+
+配置示例：
+
+```dotenv
+OTEL_COLLECTOR_CONFIG_PATH=/etc/otelcol/config-langfuse.yaml
+LANGFUSE_OTEL_ENDPOINT=https://langfuse.example.com/api/public/otel
+LANGFUSE_OTEL_AUTHORIZATION="Basic BASE64_RESULT"
+```
+
+`OTEL_COLLECTOR_CONFIG_PATH` explicitly selects the Langfuse-enabled Collector
+configuration. If it is omitted, Collector uses the local Jaeger/Tempo-only
+configuration, and lifecycle commands such as `docker compose down` remain
+usable without loading Langfuse credentials.
 
 ```bash
 cp deploy/opentelemetry/.env.example deploy/opentelemetry/.env
@@ -94,7 +115,8 @@ go run ./cmd/server
 ```
 
 应用运行在宿主机时，会通过 OTLP/HTTP 将 traces 和 metrics 发送到 Collector。
-产生一些 API 请求后，等待约 15 秒，再打开 Grafana 或 Prometheus 查看数据。
+Trace 会同时发送到 Jaeger、Tempo 和 Langfuse；metrics 仍进入 Prometheus。
+产生一些 API 请求后，等待约 15 秒，再打开 Grafana、Prometheus 或 Langfuse 查看数据。
 
 也可以使用环境变量覆盖项目配置：
 
@@ -146,6 +168,19 @@ docker compose \
   logs -f otel-collector tempo
 ```
 
+如果 Langfuse 没有 Trace，先检查 Collector exporter 日志中的 HTTP 状态：
+
+```bash
+docker compose \
+  --env-file deploy/opentelemetry/.env \
+  -f deploy/opentelemetry/docker-compose.yml \
+  logs otel-collector
+```
+
+`401`/`403` 通常表示 Basic 凭证不正确；`404` 通常表示 endpoint 缺少
+`/api/public/otel` 或反向代理没有转发该路径。Collector 不会在 Span 中记录
+Authorization 值。
+
 ## 停止与重新启动
 
 停止并移除容器和 Compose 网络：
@@ -155,6 +190,13 @@ docker compose \
   --env-file deploy/opentelemetry/.env \
   -f deploy/opentelemetry/docker-compose.yml \
   down
+```
+
+`down` may also be run without `--env-file`; the Compose file no longer uses
+required-variable interpolation for Langfuse settings:
+
+```bash
+docker compose -f deploy/opentelemetry/docker-compose.yml down
 ```
 
 此命令不会删除命名卷。Prometheus、Tempo、Jaeger 和 Grafana 数据会保留，下一次执行

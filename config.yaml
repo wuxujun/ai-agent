@@ -161,7 +161,7 @@ llm:
   
   # Request timeout in seconds.
   # Env override: AI_AGENT_LLM_TIMEOUT_SECONDS
-  timeout_seconds: 30
+  timeout_seconds: 90
   # Readiness probe level: config_only, gateway, or inference.
   # gateway preserves the default behavior: LiteLLM liveness and model access
   # are checked, while direct providers remain configured but unverified.
@@ -205,7 +205,7 @@ llm:
     provider: "litellm"
     api_key: ""
     base_url: "http://127.0.0.1:4000/v1/chat/completions"
-    timeout_seconds: 30
+    timeout_seconds: 120
     # Optional pricing used only for estimated cost metrics.
     # input_cost_per_million_usd: 2.0
     # output_cost_per_million_usd: 8.0

@@ -30,6 +30,10 @@ func TestLiteLLMStructuredOutputContract(t *testing.T) {
 		if body["model"] != "agent-writer" || body["response_format"] == nil {
 			t.Errorf("unexpected request body: %+v", body)
 		}
+		metadata, ok := body["metadata"].(map[string]any)
+		if !ok || metadata["generation_name"] != "contract" {
+			t.Errorf("missing LiteLLM observability metadata: %+v", body["metadata"])
+		}
 		messages, ok := body["messages"].([]any)
 		if !ok || len(messages) == 0 {
 			t.Errorf("missing request messages: %+v", body)

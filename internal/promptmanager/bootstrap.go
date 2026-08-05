@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // HTTPStatusError preserves the response status needed to distinguish a
@@ -122,11 +125,29 @@ func validateBootstrapResolution(resolved ResolvedPrompt, name string, selector 
 	return nil
 }
 
-func (pm *PromptManager) createTextPrompt(ctx context.Context, name, content string, labels []string, host, pubKey, secKey string) (ResolvedPrompt, error) {
+func (pm *PromptManager) createTextPrompt(ctx context.Context, name, content string, labels []string, host, pubKey, secKey string) (resolved ResolvedPrompt, resultErr error) {
 	endpoint, err := buildPromptCollectionURL(host)
 	if err != nil {
 		return ResolvedPrompt{}, err
 	}
+	started := time.Now()
+	ctx, span := promptTracer(ctx).Start(ctx, "langfuse.prompt.create", trace.WithAttributes(
+		attribute.String("langfuse.observation.metadata.prompt_name", strings.TrimSpace(name)),
+		attribute.StringSlice("langfuse.observation.metadata.prompt_labels", labels),
+		attribute.String("http.request.method", http.MethodPost),
+	))
+	statusCode := 0
+	defer func() {
+		span.SetAttributes(
+			attribute.Int("http.response.status_code", statusCode),
+			attribute.Int64("langfuse.observation.metadata.duration_ms", time.Since(started).Milliseconds()),
+		)
+		if resultErr != nil {
+			span.RecordError(resultErr)
+			span.SetStatus(codes.Error, "prompt create failed")
+		}
+		span.End()
+	}()
 	body, err := json.Marshal(struct {
 		Type   string   `json:"type"`
 		Name   string   `json:"name"`
@@ -151,6 +172,7 @@ func (pm *PromptManager) createTextPrompt(ctx context.Context, name, content str
 		return ResolvedPrompt{}, err
 	}
 	defer resp.Body.Close()
+	statusCode = resp.StatusCode
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return ResolvedPrompt{}, &HTTPStatusError{Method: http.MethodPost, URL: endpoint, StatusCode: resp.StatusCode}
 	}

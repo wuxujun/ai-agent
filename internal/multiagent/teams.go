@@ -92,6 +92,16 @@ func resolveAgentPrompt(ctx context.Context, agentCfg AgentConfig, defaultName, 
 }
 
 func resolveAgentPromptForTask(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string) (string, error) {
+	resolved, err := resolveAgentPromptDetailsForTask(ctx, agentCfg, defaultName, defaultPrompt)
+	return resolved.Content, err
+}
+
+type resolvedAgentPrompt struct {
+	Content string
+	Binding llmcore.PromptBinding
+}
+
+func resolveAgentPromptDetailsForTask(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string) (resolvedAgentPrompt, error) {
 	fallback := defaultPrompt
 	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
 		fallback = agentCfg.SystemPrompt
@@ -102,13 +112,20 @@ func resolveAgentPromptForTask(ctx context.Context, agentCfg AgentConfig, defaul
 	}
 	if promptName != "" {
 		resolved, err := promptmanager.GetManager().ResolvePinned(ctx, promptName, agentPromptSelector(agentCfg), fallback)
-		return resolved.Content, err
+		return resolvedAgentPromptFromResolution(resolved), err
 	}
 	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
-		return agentCfg.SystemPrompt, nil
+		return resolvedAgentPrompt{Content: agentCfg.SystemPrompt}, nil
 	}
 	resolved, err := promptmanager.GetManager().ResolvePinned(ctx, defaultName, agentPromptSelector(agentCfg), defaultPrompt)
-	return resolved.Content, err
+	return resolvedAgentPromptFromResolution(resolved), err
+}
+
+func resolvedAgentPromptFromResolution(resolved promptmanager.ResolvedPrompt) resolvedAgentPrompt {
+	return resolvedAgentPrompt{
+		Content: resolved.Content,
+		Binding: llmcore.PromptBinding{Name: resolved.Name, Version: resolved.Version, Source: resolved.Source},
+	}
 }
 
 func resolveAgentPromptWithFetcher(ctx context.Context, agentCfg AgentConfig, defaultName, defaultPrompt string, fetch func(context.Context, string, string) string) string {

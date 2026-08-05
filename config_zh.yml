@@ -168,7 +168,7 @@ llm:
   
   # 请求超时时间，单位为秒。
   # 环境变量覆盖：AI_AGENT_LLM_TIMEOUT_SECONDS
-  timeout_seconds: 30
+  timeout_seconds: 90
   # 就绪探测级别：config_only、gateway 或 inference。
   # gateway 保持默认行为：检查 LiteLLM 存活状态和模型访问能力，
   # 直接提供商仅确认已配置，不执行真实验证。
@@ -212,7 +212,7 @@ llm:
     provider: "litellm"
     api_key: ""
     base_url: "http://127.0.0.1:4000/v1/chat/completions"
-    timeout_seconds: 30
+    timeout_seconds: 120
     # 可选价格，仅用于预估费用指标。
     # input_cost_per_million_usd: 2.0
     # output_cost_per_million_usd: 8.0
