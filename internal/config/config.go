@@ -117,6 +117,7 @@ type Config struct {
 		JITFetchMaxItems       int    `mapstructure:"jit_fetch_max_items"`
 		JITRAGFetchMaxBytes    int    `mapstructure:"jit_rag_fetch_max_bytes"`
 		JITMemoryFetchMaxBytes int    `mapstructure:"jit_memory_fetch_max_bytes"`
+		SessionRecentTaskLimit int    `mapstructure:"session_recent_task_limit"`
 		MaxPromptMemories      int    `mapstructure:"max_prompt_memories"`
 		MaxMemoryBytes         int    `mapstructure:"max_memory_bytes"`
 		MaxMemoryPromptBytes   int    `mapstructure:"max_memory_prompt_bytes"`
@@ -451,6 +452,7 @@ func setupViper() {
 	viper.SetDefault("rag.jit_fetch_max_items", 3)
 	viper.SetDefault("rag.jit_rag_fetch_max_bytes", 6000)
 	viper.SetDefault("rag.jit_memory_fetch_max_bytes", 2000)
+	viper.SetDefault("rag.session_recent_task_limit", 5)
 	viper.SetDefault("rag.max_prompt_memories", 3)
 	viper.SetDefault("rag.max_memory_bytes", 2500)
 	viper.SetDefault("rag.max_memory_prompt_bytes", 8000)
@@ -856,6 +858,7 @@ func diffConfigs(old, new *Config) []string {
 	addIfInt("rag.jit_fetch_max_items", old.RAG.JITFetchMaxItems, new.RAG.JITFetchMaxItems)
 	addIfInt("rag.jit_rag_fetch_max_bytes", old.RAG.JITRAGFetchMaxBytes, new.RAG.JITRAGFetchMaxBytes)
 	addIfInt("rag.jit_memory_fetch_max_bytes", old.RAG.JITMemoryFetchMaxBytes, new.RAG.JITMemoryFetchMaxBytes)
+	addIfInt("rag.session_recent_task_limit", old.RAG.SessionRecentTaskLimit, new.RAG.SessionRecentTaskLimit)
 	addIfInt("rag.max_prompt_memories", old.RAG.MaxPromptMemories, new.RAG.MaxPromptMemories)
 	addIfInt("rag.max_memory_bytes", old.RAG.MaxMemoryBytes, new.RAG.MaxMemoryBytes)
 	addIfInt("rag.max_memory_prompt_bytes", old.RAG.MaxMemoryPromptBytes, new.RAG.MaxMemoryPromptBytes)
@@ -1244,7 +1247,7 @@ func (c *Config) Validate() error {
 	if c.Log.RetentionDays < 0 {
 		return fmt.Errorf("log.retention_days must be >= 0")
 	}
-	if c.RAG.MaxPromptMemories < 0 || c.RAG.MaxMemoryBytes < 0 || c.RAG.MaxMemoryPromptBytes < 0 || c.RAG.MaxRawFallbackBytes < 0 {
+	if c.RAG.MaxPromptMemories < 0 || c.RAG.MaxMemoryBytes < 0 || c.RAG.MaxMemoryPromptBytes < 0 || c.RAG.MaxRawFallbackBytes < 0 || c.RAG.SessionRecentTaskLimit < 0 {
 		return fmt.Errorf("rag prompt budget values must be >= 0")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.RAG.ContextMode)) {

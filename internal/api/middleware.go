@@ -59,8 +59,12 @@ func ErrorMiddleware() gin.HandlerFunc {
 func SpanAttributesMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		span := trace.SpanFromContext(c.Request.Context())
-		if taskID := c.Param("id"); taskID != "" {
-			span.SetAttributes(attribute.String("agent.task.id", taskID))
+		if id := c.Param("id"); id != "" {
+			if strings.HasPrefix(c.FullPath(), "/api/sessions/") {
+				span.SetAttributes(attribute.String("agent.session.id", id))
+			} else {
+				span.SetAttributes(attribute.String("agent.task.id", id))
+			}
 		}
 		c.Next()
 	}

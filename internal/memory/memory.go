@@ -11,8 +11,8 @@ import (
 )
 
 // TaskMemoryID is stable across tasks that produced the same answer for the
-// same normalized goal and tenant. This prevents repeated executions from
-// creating duplicate long-term memories merely because task IDs differ.
+// same normalized goal, tenant and session. This prevents repeated executions
+// from creating duplicate long-term memories merely because task IDs differ.
 func TaskMemoryID(task *types.Task) string {
 	if task == nil {
 		return ""
@@ -20,7 +20,11 @@ func TaskMemoryID(task *types.Task) string {
 	normalize := func(value string) string {
 		return strings.ToLower(strings.Join(strings.Fields(value), " "))
 	}
-	identity := strings.Join([]string{normalize(task.TenantID), normalize(task.Goal), normalize(task.FinalAnswer)}, "\x00")
+	identityParts := []string{normalize(task.TenantID), normalize(task.Goal), normalize(task.FinalAnswer)}
+	if task.SessionID != "" {
+		identityParts = []string{normalize(task.TenantID), normalize(task.SessionID), normalize(task.Goal), normalize(task.FinalAnswer)}
+	}
+	identity := strings.Join(identityParts, "\x00")
 	digest := sha256.Sum256([]byte(identity))
 	return fmt.Sprintf("mem-content-%x", digest[:16])
 }
@@ -66,6 +70,7 @@ func CreateMemoryFromTask(ctx context.Context, task *types.Task) (*types.Memory,
 	return &types.Memory{
 		ID:          TaskMemoryID(task),
 		TenantID:    task.TenantID,
+		SessionID:   task.SessionID,
 		TaskID:      task.ID,
 		Goal:        task.Goal,
 		FinalAnswer: task.FinalAnswer,

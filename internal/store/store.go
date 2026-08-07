@@ -2,12 +2,19 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 type tenantScopeContextKey struct{}
+type sessionScopeContextKey struct{}
+
+var (
+	ErrSessionNotFound = errors.New("session not found")
+	ErrSessionArchived = errors.New("session is archived")
+)
 
 func WithTenantScope(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantScopeContextKey{}, tenantID)
@@ -16,6 +23,17 @@ func WithTenantScope(ctx context.Context, tenantID string) context.Context {
 func tenantScope(ctx context.Context) (string, bool) {
 	tenantID, ok := ctx.Value(tenantScopeContextKey{}).(string)
 	return tenantID, ok
+}
+
+// WithSessionScope restricts memory retrieval to one session. Tenant scope
+// remains mandatory and is applied independently by each backend.
+func WithSessionScope(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, sessionScopeContextKey{}, sessionID)
+}
+
+func sessionScope(ctx context.Context) (string, bool) {
+	sessionID, ok := ctx.Value(sessionScopeContextKey{}).(string)
+	return sessionID, ok && sessionID != ""
 }
 
 func memoryTenantMatches(scope, tenantID string) bool {
@@ -27,7 +45,8 @@ func memoryTenantMatches(scope, tenantID string) bool {
 // coerced by each implementation to its own default (50), and Offset=0 means
 // the first page.
 type ListFilter struct {
-	TenantID string
+	TenantID  string
+	SessionID string
 	// Status, if non-empty, restricts results to tasks with this status
 	// (e.g. "created", "running", "completed", "failed").
 	Status types.TaskStatus
@@ -41,9 +60,27 @@ type ListFilter struct {
 }
 
 type ListMemoryFilter struct {
+	TenantID  string
+	SessionID string
+	Limit     int
+	Offset    int
+}
+
+type ListSessionFilter struct {
 	TenantID string
+	Status   types.SessionStatus
 	Limit    int
 	Offset   int
+}
+
+// SessionStore is implemented by persistent stores that support multi-task
+// conversations. Sequence allocation must be atomic across instances.
+type SessionStore interface {
+	CreateSession(ctx context.Context, session *types.Session) error
+	GetSession(ctx context.Context, id, tenantID string) (*types.Session, error)
+	ListSessions(ctx context.Context, filter ListSessionFilter) ([]*types.Session, error)
+	UpdateSession(ctx context.Context, session *types.Session) error
+	NextSessionTaskSequence(ctx context.Context, id, tenantID string) (int64, error)
 }
 
 // Store defines the interface for task, trace, and long-term memory storage.
@@ -54,7 +91,8 @@ type Store interface {
 	// GetTask retrieves a task by ID. Returns sql.ErrNoRows if not found.
 	GetTask(ctx context.Context, id string) (*types.Task, error)
 
-	// ListTasks returns tasks matching f, ordered by id ASC.
+	// ListTasks returns tasks matching f. Session-filtered results are ordered by
+	// sequence number; other results retain the backend's stable task ordering.
 	// Callers should use ListFilter{} (zero value) to list all tasks with the
 	// default page size. Pagination is achieved by incrementing f.Offset.
 	ListTasks(ctx context.Context, f ListFilter) ([]*types.Task, error)

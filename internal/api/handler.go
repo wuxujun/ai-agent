@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +66,7 @@ type activeRun struct {
 
 type CreateTaskRequest struct {
 	ID         string `json:"id"`
+	SessionID  string `json:"session_id"`
 	Goal       string `json:"goal"`
 	Workspace  string `json:"workspace"`
 	MaxSteps   int    `json:"max_steps"`
@@ -126,6 +129,16 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		memories.GET("", h.listMemories)
 		memories.DELETE("", AdminMiddleware(), h.deleteAllMemories)
 		memories.DELETE("/:id", h.deleteMemory)
+	}
+	sessions := api.Group("/sessions")
+	{
+		sessions.POST("", h.createSession)
+		sessions.GET("", h.listSessions)
+		sessions.GET("/:id", h.getSession)
+		sessions.PATCH("/:id", h.updateSession)
+		sessions.POST("/:id/archive", h.archiveSession)
+		sessions.GET("/:id/tasks", h.listSessionTasks)
+		sessions.GET("/:id/memories", h.listSessionMemories)
 	}
 	api.GET("/metrics", AdminMiddleware(), h.getMetrics)
 	api.GET("/usage", h.getTenantUsage)
@@ -252,6 +265,11 @@ func (h *Handler) createTask(c *gin.Context) {
 	if req.MaxSteps <= 0 {
 		req.MaxSteps = 5
 	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.SessionID != "" && !validRequestID(req.SessionID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid session id"})
+		return
+	}
 	if req.ToolBudget <= 0 {
 		req.ToolBudget = 5
 	}
@@ -291,6 +309,7 @@ func (h *Handler) createTask(c *gin.Context) {
 	task := &types.Task{
 		ID:               taskID,
 		TenantID:         principalFromGin(c).TenantID,
+		SessionID:        req.SessionID,
 		Goal:             req.Goal,
 		Workspace:        req.Workspace,
 		MaxSteps:         req.MaxSteps,
@@ -299,6 +318,27 @@ func (h *Handler) createTask(c *gin.Context) {
 		LLMCallBudget:    req.LLMCallBudget,
 		LLMCostBudgetUSD: req.LLMCostBudgetUSD,
 		Status:           types.StatusCreated,
+	}
+	if task.SessionID != "" {
+		sessions, ok := h.store.(store.SessionStore)
+		if !ok {
+			c.JSON(http.StatusNotImplemented, gin.H{"error": "session storage is not supported"})
+			return
+		}
+		sequence, err := sessions.NextSessionTaskSequence(ctx, task.SessionID, task.TenantID)
+		if errors.Is(err, store.ErrSessionNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		if errors.Is(err, store.ErrSessionArchived) {
+			c.JSON(http.StatusConflict, gin.H{"error": "session is archived"})
+			return
+		}
+		if err != nil {
+			c.Error(err)
+			return
+		}
+		task.SequenceNo = sequence
 	}
 
 	if err := h.store.SaveFullTask(ctx, task); err != nil {
@@ -944,6 +984,7 @@ func (h *Handler) listTasks(c *gin.Context) {
 			f.Offset = v
 		}
 	}
+	f.SessionID = c.Query("session_id")
 
 	tasks, err := h.store.ListTasks(ctx, f)
 	if err != nil {
@@ -962,6 +1003,7 @@ func (h *Handler) listTasks(c *gin.Context) {
 type memoryListItem struct {
 	ID                  string    `json:"id"`
 	TenantID            string    `json:"tenant_id"`
+	SessionID           string    `json:"session_id,omitempty"`
 	TaskID              string    `json:"task_id"`
 	Goal                string    `json:"goal"`
 	FinalAnswer         string    `json:"final_answer"`
@@ -983,6 +1025,7 @@ func (h *Handler) listMemories(c *gin.Context) {
 	} else {
 		filter.TenantID = principal.TenantID
 	}
+	filter.SessionID = c.Query("session_id")
 	if value, err := strconv.Atoi(c.Query("limit")); err == nil && value > 0 {
 		filter.Limit = value
 	}
@@ -999,7 +1042,7 @@ func (h *Handler) listMemories(c *gin.Context) {
 	items := make([]memoryListItem, 0, len(memories))
 	for _, mem := range memories {
 		items = append(items, memoryListItem{
-			ID: mem.ID, TenantID: mem.TenantID, TaskID: mem.TaskID,
+			ID: mem.ID, TenantID: mem.TenantID, SessionID: mem.SessionID, TaskID: mem.TaskID,
 			Goal: mem.Goal, FinalAnswer: mem.FinalAnswer, KeyFindings: mem.KeyFindings,
 			Timestamp: mem.Timestamp, EmbeddingDimensions: len(mem.Embedding),
 		})

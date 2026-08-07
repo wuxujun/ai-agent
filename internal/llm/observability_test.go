@@ -43,3 +43,11 @@ func TestLiteLLMMetadataDoesNotModifyDirectProviderRequests(t *testing.T) {
 		t.Fatal("an invalid binding must not replace an existing valid context binding")
 	}
 }
+
+func TestLiteLLMMetadataUsesConversationSessionID(t *testing.T) {
+	ctx := WithTaskBudget(context.Background(), &types.Task{ID: "task-123", SessionID: "session-456", TenantID: "tenant-789"})
+	metadata := liteLLMMetadata(ctx, Config{Provider: "litellm", Scene: "writer"})
+	if metadata["session_id"] != "session-456" || metadata["task_id"] != "task-123" {
+		t.Fatalf("unexpected task/session metadata: %+v", metadata)
+	}
+}

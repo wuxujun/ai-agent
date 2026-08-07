@@ -52,9 +52,23 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 
 func (p *PostgresStore) init() error {
 	schema := `
+CREATE TABLE IF NOT EXISTS sessions (
+	id VARCHAR(255) PRIMARY KEY,
+	tenant_id TEXT NOT NULL,
+	title TEXT NOT NULL,
+	status VARCHAR(50) NOT NULL,
+	next_sequence BIGINT NOT NULL DEFAULT 0,
+	created_at TIMESTAMP NOT NULL,
+	updated_at TIMESTAMP NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
 	id VARCHAR(255) PRIMARY KEY,
 	tenant_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
+	sequence_no BIGINT NOT NULL DEFAULT 0,
+	created_at TIMESTAMP,
+	updated_at TIMESTAMP,
 	goal TEXT NOT NULL,
 	status VARCHAR(50) NOT NULL,
 	max_steps INT NOT NULL,
@@ -93,6 +107,7 @@ CREATE TABLE IF NOT EXISTS traces (
 CREATE TABLE IF NOT EXISTS memories (
 	id VARCHAR(255) PRIMARY KEY,
 	tenant_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
 	task_id VARCHAR(255) NOT NULL,
 	goal TEXT NOT NULL,
 	final_answer TEXT NOT NULL,
@@ -123,6 +138,12 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	// Postgres supports IF NOT EXISTS on ADD COLUMN since 9.6.
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget INT NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sequence_no BIGINT NOT NULL DEFAULT 0`)
+	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP`)
+	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP`)
+	_, _ = p.db.Exec(`UPDATE tasks SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`)
+	_, _ = p.db.Exec(`UPDATE tasks SET updated_at = created_at WHERE updated_at IS NULL`)
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_call_budget INT NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_cost_budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_calls INT NOT NULL DEFAULT 0`)
@@ -130,11 +151,15 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS memories_json TEXT NOT NULL DEFAULT '[]'`)
 	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS answer_audit_json JSONB NOT NULL DEFAULT '{}'::jsonb`)
 	_, _ = p.db.Exec(`ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = p.db.Exec(`ALTER TABLE memories ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS error_text TEXT NOT NULL DEFAULT ''`)
 	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS prompt_tokens INT NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS completion_tokens INT NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS total_tokens INT NOT NULL DEFAULT 0`)
 	_, _ = p.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
+	_, _ = p.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_tenant_updated ON sessions(tenant_id, updated_at DESC)`)
+	_, _ = p.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_session_sequence ON tasks(tenant_id, session_id, sequence_no)`)
+	_, _ = p.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_session_timestamp ON memories(tenant_id, session_id, timestamp DESC)`)
 	return nil
 }
 
@@ -192,6 +217,7 @@ func (p *PostgresStore) Close() error {
 
 // SaveTask inserts or updates task metadata.
 func (p *PostgresStore) SaveTask(ctx context.Context, task *types.Task) error {
+	normalizeTaskTimestamps(task)
 	unresolved, err := json.Marshal(task.Unresolved)
 	if err != nil {
 		return err
@@ -207,11 +233,15 @@ func (p *PostgresStore) SaveTask(ctx context.Context, task *types.Task) error {
 	}
 
 	_, err = p.db.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 ON CONFLICT(id) DO UPDATE SET
 goal=EXCLUDED.goal,
 tenant_id=EXCLUDED.tenant_id,
+session_id=EXCLUDED.session_id,
+sequence_no=EXCLUDED.sequence_no,
+created_at=EXCLUDED.created_at,
+updated_at=EXCLUDED.updated_at,
 status=EXCLUDED.status,
 max_steps=EXCLUDED.max_steps,
 step_count=EXCLUDED.step_count,
@@ -228,7 +258,7 @@ memories_json=EXCLUDED.memories_json,
 answer_audit_json=EXCLUDED.answer_audit_json,
 final_answer=EXCLUDED.final_answer
 `,
-		task.ID, task.TenantID, task.Goal, string(task.Status), task.MaxSteps, task.StepCount,
+		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, string(task.Status), task.MaxSteps, task.StepCount,
 		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer,
 	)
 	return err
@@ -310,6 +340,7 @@ func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces
 
 // SaveFullTask saves the task metadata and all associated traces inside a telemetry transaction.
 func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) error {
+	normalizeTaskTimestamps(task)
 	ctx, span := tracer.Start(ctx, "store.postgres.save_full_task")
 	defer span.End()
 
@@ -344,11 +375,15 @@ func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) erro
 	}
 
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 ON CONFLICT(id) DO UPDATE SET
 goal=EXCLUDED.goal,
 tenant_id=EXCLUDED.tenant_id,
+session_id=EXCLUDED.session_id,
+sequence_no=EXCLUDED.sequence_no,
+created_at=EXCLUDED.created_at,
+updated_at=EXCLUDED.updated_at,
 status=EXCLUDED.status,
 max_steps=EXCLUDED.max_steps,
 step_count=EXCLUDED.step_count,
@@ -364,7 +399,7 @@ llm_estimated_cost_usd=EXCLUDED.llm_estimated_cost_usd,
 memories_json=EXCLUDED.memories_json,
 answer_audit_json=EXCLUDED.answer_audit_json,
 final_answer=EXCLUDED.final_answer`,
-		task.ID, task.TenantID, task.Goal, task.Status, task.MaxSteps, task.StepCount,
+		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, task.Status, task.MaxSteps, task.StepCount,
 		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer,
 	)
 	if err != nil {
@@ -468,7 +503,7 @@ func (p *PostgresStore) GetTask(ctx context.Context, id string) (*types.Task, er
 	span.SetAttributes(attribute.String("agent.task.id", id))
 
 	row := p.db.QueryRowContext(ctx, `
-SELECT id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
+SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
 FROM tasks WHERE id = $1
 `, id)
 
@@ -478,7 +513,7 @@ FROM tasks WHERE id = $1
 	var auditJSON string
 
 	err := row.Scan(
-		&task.ID, &task.TenantID, &task.Goal, &task.Status, &task.MaxSteps, &task.StepCount,
+		&task.ID, &task.TenantID, &task.SessionID, &task.SequenceNo, &task.CreatedAt, &task.UpdatedAt, &task.Goal, &task.Status, &task.MaxSteps, &task.StepCount,
 		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer,
 	)
 	if err != nil {
@@ -548,6 +583,10 @@ func (p *PostgresStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.T
 		args = append(args, string(f.Status))
 		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
 	}
+	if f.SessionID != "" {
+		args = append(args, f.SessionID)
+		conditions = append(conditions, fmt.Sprintf("session_id = $%d", len(args)))
+	}
 	where := ""
 	if len(conditions) > 0 {
 		where = "WHERE " + strings.Join(conditions, " AND ")
@@ -556,13 +595,17 @@ func (p *PostgresStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.T
 	limitArg := len(args) + 2
 	args = append(args, f.Offset, limit)
 
+	orderBy := "id ASC"
+	if f.SessionID != "" {
+		orderBy = "sequence_no ASC, id ASC"
+	}
 	query := fmt.Sprintf(`
-	SELECT id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
+	SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
 FROM tasks
 %s
-ORDER BY id ASC
+ORDER BY %s
 LIMIT $%d OFFSET $%d
-`, where, limitArg, offsetArg)
+`, where, orderBy, limitArg, offsetArg)
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -577,7 +620,7 @@ LIMIT $%d OFFSET $%d
 		var memoriesJSON string
 		var auditJSON string
 		if err := rows.Scan(
-			&t.ID, &t.TenantID, &t.Goal, &t.Status, &t.MaxSteps, &t.StepCount,
+			&t.ID, &t.TenantID, &t.SessionID, &t.SequenceNo, &t.CreatedAt, &t.UpdatedAt, &t.Goal, &t.Status, &t.MaxSteps, &t.StepCount,
 			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer,
 		); err != nil {
 			return nil, err
@@ -606,6 +649,97 @@ func (p *PostgresStore) ExistsTask(ctx context.Context, id string) (bool, error)
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (p *PostgresStore) CreateSession(ctx context.Context, session *types.Session) error {
+	now := time.Now().UTC()
+	if session.Status == "" {
+		session.Status = types.SessionStatusActive
+	}
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = now
+	}
+	session.UpdatedAt = now
+	_, err := p.db.ExecContext(ctx, `INSERT INTO sessions (id, tenant_id, title, status, next_sequence, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`, session.ID, session.TenantID, session.Title, session.Status, session.NextSequence, session.CreatedAt, session.UpdatedAt)
+	return err
+}
+
+func (p *PostgresStore) GetSession(ctx context.Context, id, tenantID string) (*types.Session, error) {
+	var session types.Session
+	err := p.db.QueryRowContext(ctx, `SELECT id, tenant_id, title, status, next_sequence, created_at, updated_at FROM sessions WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(&session.ID, &session.TenantID, &session.Title, &session.Status, &session.NextSequence, &session.CreatedAt, &session.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSessionNotFound
+	}
+	return &session, err
+}
+
+func (p *PostgresStore) ListSessions(ctx context.Context, filter ListSessionFilter) ([]*types.Session, error) {
+	query := `SELECT id, tenant_id, title, status, next_sequence, created_at, updated_at FROM sessions`
+	args := []any{}
+	conditions := []string{}
+	if filter.TenantID != "" {
+		args = append(args, filter.TenantID)
+		conditions = append(conditions, fmt.Sprintf(`tenant_id = $%d`, len(args)))
+	}
+	if filter.Status != "" {
+		args = append(args, filter.Status)
+		conditions = append(conditions, fmt.Sprintf(`status = $%d`, len(args)))
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
+	}
+	args = append(args, resolveLimit(filter.Limit, 50, 500), filter.Offset)
+	query += fmt.Sprintf(` ORDER BY updated_at DESC, id ASC LIMIT $%d OFFSET $%d`, len(args)-1, len(args))
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*types.Session{}
+	for rows.Next() {
+		var session types.Session
+		if err := rows.Scan(&session.ID, &session.TenantID, &session.Title, &session.Status, &session.NextSequence, &session.CreatedAt, &session.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, &session)
+	}
+	return items, rows.Err()
+}
+
+func (p *PostgresStore) UpdateSession(ctx context.Context, session *types.Session) error {
+	session.UpdatedAt = time.Now().UTC()
+	result, err := p.db.ExecContext(ctx, `UPDATE sessions SET title = $1, status = $2, updated_at = $3 WHERE id = $4 AND tenant_id = $5`, session.Title, session.Status, session.UpdatedAt, session.ID, session.TenantID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
+func (p *PostgresStore) NextSessionTaskSequence(ctx context.Context, id, tenantID string) (int64, error) {
+	var sequence int64
+	err := p.db.QueryRowContext(ctx, `UPDATE sessions SET next_sequence = next_sequence + 1, updated_at = $1 WHERE id = $2 AND tenant_id = $3 AND status = $4 RETURNING next_sequence`, time.Now().UTC(), id, tenantID, types.SessionStatusActive).Scan(&sequence)
+	if err == nil {
+		return sequence, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	var status types.SessionStatus
+	err = p.db.QueryRowContext(ctx, `SELECT status FROM sessions WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrSessionNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return 0, ErrSessionArchived
 }
 
 func (p *PostgresStore) DeleteTask(ctx context.Context, id string) (bool, error) {
@@ -678,11 +812,12 @@ func (p *PostgresStore) SaveMemory(ctx context.Context, mem *types.Memory) error
 			vecValue = pgVectorLiteral(mem.Embedding)
 		}
 		_, err = p.db.ExecContext(ctx, `
-INSERT INTO memories (id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json, embedding_vector)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector)
+INSERT INTO memories (id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json, embedding_vector)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)
 ON CONFLICT(id) DO UPDATE SET
 task_id=EXCLUDED.task_id,
 tenant_id=EXCLUDED.tenant_id,
+session_id=EXCLUDED.session_id,
 goal=EXCLUDED.goal,
 final_answer=EXCLUDED.final_answer,
 key_findings=EXCLUDED.key_findings,
@@ -690,34 +825,43 @@ timestamp=EXCLUDED.timestamp,
 embedding_json=EXCLUDED.embedding_json,
 embedding_vector=EXCLUDED.embedding_vector
 `,
-			mem.ID, mem.TenantID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON), vecValue,
+			mem.ID, mem.TenantID, mem.SessionID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON), vecValue,
 		)
 		return err
 	}
 
 	_, err = p.db.ExecContext(ctx, `
-INSERT INTO memories (id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO memories (id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT(id) DO UPDATE SET
 task_id=EXCLUDED.task_id,
 tenant_id=EXCLUDED.tenant_id,
+session_id=EXCLUDED.session_id,
 goal=EXCLUDED.goal,
 final_answer=EXCLUDED.final_answer,
 key_findings=EXCLUDED.key_findings,
 timestamp=EXCLUDED.timestamp,
 embedding_json=EXCLUDED.embedding_json
 `,
-		mem.ID, mem.TenantID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON),
+		mem.ID, mem.TenantID, mem.SessionID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON),
 	)
 	return err
 }
 
 func (p *PostgresStore) ListMemories(ctx context.Context, filter ListMemoryFilter) ([]*types.Memory, error) {
-	query := `SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
+	query := `SELECT id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
 	args := []any{}
+	conditions := []string{}
 	if filter.TenantID != "" {
-		query += ` WHERE tenant_id = $1 OR ($1 = 'default' AND tenant_id = '')`
 		args = append(args, filter.TenantID)
+		conditions = append(conditions, fmt.Sprintf(`(tenant_id = $%d OR ($%d = 'default' AND tenant_id = ''))`, len(args), len(args)))
+	}
+	if filter.SessionID != "" {
+		args = append(args, filter.SessionID)
+		conditions = append(conditions, fmt.Sprintf(`session_id = $%d`, len(args)))
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	args = append(args, resolveLimit(filter.Limit, 50, 500), filter.Offset)
 	query += fmt.Sprintf(` ORDER BY timestamp DESC, id ASC LIMIT $%d OFFSET $%d`, len(args)-1, len(args))
@@ -730,7 +874,7 @@ func (p *PostgresStore) ListMemories(ctx context.Context, filter ListMemoryFilte
 	for rows.Next() {
 		var mem types.Memory
 		var embeddingJSON string
-		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embeddingJSON); err != nil {
+		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.SessionID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embeddingJSON); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(embeddingJSON), &mem.Embedding); err != nil {
@@ -870,54 +1014,33 @@ func (p *PostgresStore) queryMemoriesPGVector(ctx context.Context, embedding []f
 	vectorValue := pgVectorLiteral(embedding)
 	indexDim := configuredPGVectorDimension()
 
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	scopedTenant, scoped := tenantScope(ctx)
+	args := []any{vectorValue}
+	conditions := []string{`embedding_vector IS NOT NULL`}
+	distance := `embedding_vector <=> $1::vector`
 	if indexDim > 0 && dim == indexDim {
-		query := fmt.Sprintf(`
-SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
-FROM memories
-WHERE embedding_vector IS NOT NULL AND vector_dims(embedding_vector) = %d
-ORDER BY (embedding_vector::vector(%d)) <=> $1::vector(%d)
-LIMIT $2
-`, indexDim, indexDim, indexDim)
-		args := []any{vectorValue, limit}
-		if scoped {
-			query = fmt.Sprintf(`
-SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
-FROM memories
-WHERE embedding_vector IS NOT NULL AND vector_dims(embedding_vector) = %d
-  AND (tenant_id = $2 OR ($2 = 'default' AND tenant_id = ''))
-ORDER BY (embedding_vector::vector(%d)) <=> $1::vector(%d)
-LIMIT $3
-`, indexDim, indexDim, indexDim)
-			args = []any{vectorValue, scopedTenant, limit}
-		}
-		rows, err = p.db.QueryContext(ctx, query, args...)
+		conditions = append(conditions, fmt.Sprintf(`vector_dims(embedding_vector) = %d`, indexDim))
+		distance = fmt.Sprintf(`(embedding_vector::vector(%d)) <=> $1::vector(%d)`, indexDim, indexDim)
 	} else {
-		query := `
-SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
-FROM memories
-WHERE embedding_vector IS NOT NULL AND vector_dims(embedding_vector) = $2
-ORDER BY embedding_vector <=> $1::vector
-LIMIT $3
-`
-		args := []any{vectorValue, dim, limit}
-		if scoped {
-			query = `
-SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
-FROM memories
-WHERE embedding_vector IS NOT NULL AND vector_dims(embedding_vector) = $2
-  AND (tenant_id = $3 OR ($3 = 'default' AND tenant_id = ''))
-ORDER BY embedding_vector <=> $1::vector
-LIMIT $4
-`
-			args = []any{vectorValue, dim, scopedTenant, limit}
-		}
-		rows, err = p.db.QueryContext(ctx, query, args...)
+		args = append(args, dim)
+		conditions = append(conditions, fmt.Sprintf(`vector_dims(embedding_vector) = $%d`, len(args)))
 	}
+	if scopedTenant, scoped := tenantScope(ctx); scoped {
+		args = append(args, scopedTenant)
+		conditions = append(conditions, fmt.Sprintf(`(tenant_id = $%d OR ($%d = 'default' AND tenant_id = ''))`, len(args), len(args)))
+	}
+	if scopedSession, scoped := sessionScope(ctx); scoped {
+		args = append(args, scopedSession)
+		conditions = append(conditions, fmt.Sprintf(`session_id = $%d`, len(args)))
+	}
+	args = append(args, limit)
+	query := fmt.Sprintf(`
+SELECT id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json
+FROM memories
+WHERE %s
+ORDER BY %s
+LIMIT $%d
+`, strings.Join(conditions, ` AND `), distance, len(args))
+	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -927,7 +1050,7 @@ LIMIT $4
 	for rows.Next() {
 		var mem types.Memory
 		var embJSON string
-		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
+		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.SessionID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(embJSON), &mem.Embedding); err != nil {
@@ -1032,11 +1155,19 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 		attribute.Bool("agent.store.pgvector_used", false),
 		attribute.Int("agent.store.memory_candidate_limit", candidateLimit),
 	)
-	querySQL := `SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
+	querySQL := `SELECT id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
 	args := []any{}
+	conditions := []string{}
 	if scopedTenant, scoped := tenantScope(ctx); scoped {
-		querySQL += ` WHERE tenant_id = $1 OR ($1 = 'default' AND tenant_id = '')`
 		args = append(args, scopedTenant)
+		conditions = append(conditions, fmt.Sprintf(`(tenant_id = $%d OR ($%d = 'default' AND tenant_id = ''))`, len(args), len(args)))
+	}
+	if scopedSession, scoped := sessionScope(ctx); scoped {
+		args = append(args, scopedSession)
+		conditions = append(conditions, fmt.Sprintf(`session_id = $%d`, len(args)))
+	}
+	if len(conditions) > 0 {
+		querySQL += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	args = append(args, candidateLimit)
 	querySQL += fmt.Sprintf(` ORDER BY timestamp DESC LIMIT $%d`, len(args))
@@ -1059,7 +1190,7 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 	for rows.Next() {
 		var mem types.Memory
 		var embJSON string
-		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
+		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.SessionID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "scan memory failed")
 			return nil, err

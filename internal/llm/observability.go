@@ -39,27 +39,27 @@ func promptBindingFromContext(ctx context.Context) (PromptBinding, bool) {
 	return binding, ok && binding.Name != "" && binding.Version > 0 && binding.Source == "langfuse"
 }
 
-func taskIdentityFromContext(ctx context.Context) (taskID, tenantID string) {
+func taskIdentityFromContext(ctx context.Context) (taskID, sessionID, tenantID string) {
 	if ctx == nil {
-		return "", ""
+		return "", "", ""
 	}
 	state, _ := ctx.Value(taskBudgetContextKey{}).(*taskBudgetState)
 	if state == nil {
-		return "", ""
+		return "", "", ""
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.task == nil {
-		return "", state.tenantID
+		return "", "", state.tenantID
 	}
-	return state.task.ID, state.task.TenantID
+	return state.task.ID, state.task.SessionID, state.task.TenantID
 }
 
 // applyLangfuseSpanAttributes makes application spans filterable after they
 // are fanned out through the generic OTel Collector. It does not turn the span
 // into a Generation; LiteLLM's langfuse_otel callback owns Generation details.
 func applyLangfuseSpanAttributes(ctx context.Context, span trace.Span, cfg Config) {
-	taskID, tenantID := taskIdentityFromContext(ctx)
+	taskID, sessionID, tenantID := taskIdentityFromContext(ctx)
 	attrs := []attribute.KeyValue{
 		attribute.String("langfuse.version", buildinfo.Current()),
 		attribute.String("langfuse.environment", config.Get().Telemetry.Environment),
@@ -67,10 +67,14 @@ func applyLangfuseSpanAttributes(ctx context.Context, span trace.Span, cfg Confi
 		attribute.String("langfuse.observation.metadata.provider", cfg.Provider),
 	}
 	if taskID != "" {
+		if sessionID == "" {
+			sessionID = taskID
+		}
 		attrs = append(attrs,
 			attribute.String("langfuse.trace.name", "ai-agent.task"),
-			attribute.String("langfuse.session.id", taskID),
+			attribute.String("langfuse.session.id", sessionID),
 			attribute.String("langfuse.trace.metadata.task_id", taskID),
+			attribute.String("langfuse.trace.metadata.session_id", sessionID),
 			attribute.String("langfuse.observation.metadata.task_id", taskID),
 		)
 	}
@@ -107,9 +111,12 @@ func liteLLMMetadata(ctx context.Context, cfg Config) map[string]any {
 		metadata["trace_id"] = spanContext.TraceID().String()
 		metadata["parent_observation_id"] = spanContext.SpanID().String()
 	}
-	taskID, tenantID := taskIdentityFromContext(ctx)
+	taskID, sessionID, tenantID := taskIdentityFromContext(ctx)
 	if taskID != "" {
-		metadata["session_id"] = taskID
+		if sessionID == "" {
+			sessionID = taskID
+		}
+		metadata["session_id"] = sessionID
 		metadata["task_id"] = taskID
 	}
 	if tenantID != "" {

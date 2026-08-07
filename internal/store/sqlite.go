@@ -53,9 +53,23 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) init() error {
 	schema := `
+CREATE TABLE IF NOT EXISTS sessions (
+	id TEXT PRIMARY KEY,
+	tenant_id TEXT NOT NULL,
+	title TEXT NOT NULL,
+	status TEXT NOT NULL,
+	next_sequence INTEGER NOT NULL DEFAULT 0,
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
 	id TEXT PRIMARY KEY,
 	tenant_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
+	sequence_no INTEGER NOT NULL DEFAULT 0,
+	created_at DATETIME,
+	updated_at DATETIME,
 	goal TEXT NOT NULL,
 	status TEXT NOT NULL,
 	max_steps INTEGER NOT NULL,
@@ -93,6 +107,7 @@ CREATE TABLE IF NOT EXISTS traces (
 CREATE TABLE IF NOT EXISTS memories (
 	id TEXT PRIMARY KEY,
 	tenant_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
 	task_id TEXT NOT NULL,
 	goal TEXT NOT NULL,
 	final_answer TEXT NOT NULL,
@@ -133,6 +148,12 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	// column already exists, which we ignore.
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN token_budget INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN sequence_no INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN created_at DATETIME`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN updated_at DATETIME`)
+	_, _ = s.db.Exec(`UPDATE tasks SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`)
+	_, _ = s.db.Exec(`UPDATE tasks SET updated_at = created_at WHERE updated_at IS NULL`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_call_budget INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_cost_budget_usd REAL NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_calls INTEGER NOT NULL DEFAULT 0`)
@@ -140,7 +161,11 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN memories_json TEXT NOT NULL DEFAULT '[]'`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN answer_audit_json TEXT NOT NULL DEFAULT '{}'`)
 	_, _ = s.db.Exec(`ALTER TABLE memories ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE memories ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_tenant_updated ON sessions(tenant_id, updated_at DESC)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_session_sequence ON tasks(tenant_id, session_id, sequence_no)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_session_timestamp ON memories(tenant_id, session_id, timestamp DESC)`)
 	// Index for time-bounded memory retrieval (QueryMemories uses ORDER BY timestamp DESC)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp DESC)`)
 	return nil
@@ -198,6 +223,7 @@ func (s *SQLiteStore) Close() error {
 }
 
 func (s *SQLiteStore) SaveTask(ctx context.Context, task *types.Task) error {
+	normalizeTaskTimestamps(task)
 	unresolved, err := json.Marshal(task.Unresolved)
 	if err != nil {
 		return err
@@ -213,11 +239,15 @@ func (s *SQLiteStore) SaveTask(ctx context.Context, task *types.Task) error {
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 goal=excluded.goal,
 tenant_id=excluded.tenant_id,
+session_id=excluded.session_id,
+sequence_no=excluded.sequence_no,
+created_at=excluded.created_at,
+updated_at=excluded.updated_at,
 status=excluded.status,
 max_steps=excluded.max_steps,
 step_count=excluded.step_count,
@@ -234,7 +264,7 @@ memories_json=excluded.memories_json,
 answer_audit_json=excluded.answer_audit_json,
 final_answer=excluded.final_answer
 `,
-		task.ID, task.TenantID, task.Goal, task.Status, task.MaxSteps, task.StepCount,
+		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, task.Status, task.MaxSteps, task.StepCount,
 		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer,
 	)
 	return err
@@ -314,6 +344,7 @@ func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces [
 }
 
 func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error {
+	normalizeTaskTimestamps(task)
 	ctx, span := tracer.Start(ctx, "store.save_full_task")
 	defer span.End()
 
@@ -348,11 +379,15 @@ func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 	}
 
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 goal=excluded.goal,
 tenant_id=excluded.tenant_id,
+session_id=excluded.session_id,
+sequence_no=excluded.sequence_no,
+created_at=excluded.created_at,
+updated_at=excluded.updated_at,
 status=excluded.status,
 max_steps=excluded.max_steps,
 step_count=excluded.step_count,
@@ -369,7 +404,7 @@ memories_json=excluded.memories_json,
 answer_audit_json=excluded.answer_audit_json,
 final_answer=excluded.final_answer
 `,
-		task.ID, task.TenantID, task.Goal, task.Status, task.MaxSteps, task.StepCount,
+		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, task.Status, task.MaxSteps, task.StepCount,
 		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer,
 	)
 	if err != nil {
@@ -471,7 +506,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*types.Task, erro
 	span.SetAttributes(attribute.String("agent.task.id", id))
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
+SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
 FROM tasks WHERE id = ?
 `, id)
 
@@ -481,7 +516,7 @@ FROM tasks WHERE id = ?
 	var auditJSON string
 
 	err := row.Scan(
-		&task.ID, &task.TenantID, &task.Goal, &task.Status, &task.MaxSteps, &task.StepCount,
+		&task.ID, &task.TenantID, &task.SessionID, &task.SequenceNo, &task.CreatedAt, &task.UpdatedAt, &task.Goal, &task.Status, &task.MaxSteps, &task.StepCount,
 		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer,
 	)
 	if err != nil {
@@ -555,7 +590,7 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Tas
 	// Build query dynamically so we only add a WHERE clause when needed.
 	// Using a fixed column list avoids SELECT * surprises on schema changes.
 	const base = `
-	SELECT id, tenant_id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
+	SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer
 FROM tasks`
 
 	var (
@@ -571,11 +606,19 @@ FROM tasks`
 		conditions = append(conditions, "status = ?")
 		args = append(args, string(f.Status))
 	}
+	if f.SessionID != "" {
+		conditions = append(conditions, "session_id = ?")
+		args = append(args, f.SessionID)
+	}
 	query = base
 	if len(conditions) > 0 {
 		query += "\nWHERE " + strings.Join(conditions, " AND ")
 	}
-	query += "\nORDER BY id ASC\nLIMIT ? OFFSET ?"
+	if f.SessionID != "" {
+		query += "\nORDER BY sequence_no ASC, id ASC\nLIMIT ? OFFSET ?"
+	} else {
+		query += "\nORDER BY id ASC\nLIMIT ? OFFSET ?"
+	}
 	args = append(args, limit, f.Offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -592,7 +635,7 @@ FROM tasks`
 		var memoriesJSON string
 		var auditJSON string
 		if err := rows.Scan(
-			&t.ID, &t.TenantID, &t.Goal, &t.Status, &t.MaxSteps, &t.StepCount,
+			&t.ID, &t.TenantID, &t.SessionID, &t.SequenceNo, &t.CreatedAt, &t.UpdatedAt, &t.Goal, &t.Status, &t.MaxSteps, &t.StepCount,
 			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer,
 		); err != nil {
 			return nil, err
@@ -627,6 +670,97 @@ func (s *SQLiteStore) ExistsTask(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (s *SQLiteStore) CreateSession(ctx context.Context, session *types.Session) error {
+	now := time.Now().UTC()
+	if session.Status == "" {
+		session.Status = types.SessionStatusActive
+	}
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = now
+	}
+	session.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions (id, tenant_id, title, status, next_sequence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, session.ID, session.TenantID, session.Title, session.Status, session.NextSequence, session.CreatedAt, session.UpdatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetSession(ctx context.Context, id, tenantID string) (*types.Session, error) {
+	var session types.Session
+	err := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, title, status, next_sequence, created_at, updated_at FROM sessions WHERE id = ? AND tenant_id = ?`, id, tenantID).Scan(&session.ID, &session.TenantID, &session.Title, &session.Status, &session.NextSequence, &session.CreatedAt, &session.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSessionNotFound
+	}
+	return &session, err
+}
+
+func (s *SQLiteStore) ListSessions(ctx context.Context, filter ListSessionFilter) ([]*types.Session, error) {
+	query := `SELECT id, tenant_id, title, status, next_sequence, created_at, updated_at FROM sessions`
+	args := []any{}
+	conditions := []string{}
+	if filter.TenantID != "" {
+		conditions = append(conditions, `tenant_id = ?`)
+		args = append(args, filter.TenantID)
+	}
+	if filter.Status != "" {
+		conditions = append(conditions, `status = ?`)
+		args = append(args, filter.Status)
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
+	}
+	query += ` ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?`
+	args = append(args, resolveLimit(filter.Limit, 50, 500), filter.Offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*types.Session{}
+	for rows.Next() {
+		var session types.Session
+		if err := rows.Scan(&session.ID, &session.TenantID, &session.Title, &session.Status, &session.NextSequence, &session.CreatedAt, &session.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, &session)
+	}
+	return items, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateSession(ctx context.Context, session *types.Session) error {
+	session.UpdatedAt = time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET title = ?, status = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, session.Title, session.Status, session.UpdatedAt, session.ID, session.TenantID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) NextSessionTaskSequence(ctx context.Context, id, tenantID string) (int64, error) {
+	var sequence int64
+	err := s.db.QueryRowContext(ctx, `UPDATE sessions SET next_sequence = next_sequence + 1, updated_at = ? WHERE id = ? AND tenant_id = ? AND status = ? RETURNING next_sequence`, time.Now().UTC(), id, tenantID, types.SessionStatusActive).Scan(&sequence)
+	if err == nil {
+		return sequence, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	var status types.SessionStatus
+	err = s.db.QueryRowContext(ctx, `SELECT status FROM sessions WHERE id = ? AND tenant_id = ?`, id, tenantID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrSessionNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return 0, ErrSessionArchived
 }
 
 func (s *SQLiteStore) DeleteTask(ctx context.Context, id string) (bool, error) {
@@ -691,28 +825,37 @@ func (s *SQLiteStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO memories (id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO memories (id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 task_id=excluded.task_id,
 tenant_id=excluded.tenant_id,
+session_id=excluded.session_id,
 goal=excluded.goal,
 final_answer=excluded.final_answer,
 key_findings=excluded.key_findings,
 timestamp=excluded.timestamp,
 embedding_json=excluded.embedding_json
 `,
-		mem.ID, mem.TenantID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON),
+		mem.ID, mem.TenantID, mem.SessionID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON),
 	)
 	return err
 }
 
 func (s *SQLiteStore) ListMemories(ctx context.Context, filter ListMemoryFilter) ([]*types.Memory, error) {
-	query := `SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
+	query := `SELECT id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
 	args := []any{}
+	conditions := []string{}
 	if filter.TenantID != "" {
-		query += ` WHERE tenant_id = ? OR (? = 'default' AND tenant_id = '')`
+		conditions = append(conditions, `(tenant_id = ? OR (? = 'default' AND tenant_id = ''))`)
 		args = append(args, filter.TenantID, filter.TenantID)
+	}
+	if filter.SessionID != "" {
+		conditions = append(conditions, `session_id = ?`)
+		args = append(args, filter.SessionID)
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	query += ` ORDER BY timestamp DESC, id ASC LIMIT ? OFFSET ?`
 	args = append(args, resolveLimit(filter.Limit, 50, 500), filter.Offset)
@@ -725,7 +868,7 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, filter ListMemoryFilter)
 	for rows.Next() {
 		var mem types.Memory
 		var embeddingJSON string
-		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embeddingJSON); err != nil {
+		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.SessionID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embeddingJSON); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(embeddingJSON), &mem.Embedding); err != nil {
@@ -783,11 +926,19 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query string, embedding
 		attribute.Int("agent.store.memory_candidate_limit", candidateLimit),
 	)
 
-	querySQL := `SELECT id, tenant_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
+	querySQL := `SELECT id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json FROM memories`
 	args := []any{}
+	conditions := []string{}
 	if scopedTenant, scoped := tenantScope(ctx); scoped {
-		querySQL += ` WHERE tenant_id = ? OR (? = 'default' AND tenant_id = '')`
+		conditions = append(conditions, `(tenant_id = ? OR (? = 'default' AND tenant_id = ''))`)
 		args = append(args, scopedTenant, scopedTenant)
+	}
+	if scopedSession, scoped := sessionScope(ctx); scoped {
+		conditions = append(conditions, `session_id = ?`)
+		args = append(args, scopedSession)
+	}
+	if len(conditions) > 0 {
+		querySQL += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	querySQL += ` ORDER BY timestamp DESC LIMIT ?`
 	args = append(args, candidateLimit)
@@ -815,7 +966,7 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query string, embedding
 	for rows.Next() {
 		var mem types.Memory
 		var embJSON string
-		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
+		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.SessionID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "scan memory failed")
 			return nil, err

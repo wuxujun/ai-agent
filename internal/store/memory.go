@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 type MemoryStore struct {
 	mu          sync.RWMutex
 	tasks       map[string]*types.Task
+	sessions    map[string]*types.Session
 	memories    map[string]*types.Memory
 	leases      map[string]memoryLease
 	indexing    map[string]bool // Tracks tasks currently undergoing async indexing
@@ -33,6 +35,7 @@ type memoryLease struct {
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		tasks:       make(map[string]*types.Task),
+		sessions:    make(map[string]*types.Session),
 		memories:    make(map[string]*types.Memory),
 		leases:      make(map[string]memoryLease),
 		indexing:    make(map[string]bool),
@@ -93,7 +96,16 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 
 	cloned := types.CloneTask(task)
 
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now().UTC()
+		cloned.CreatedAt = task.CreatedAt
+	}
+	task.UpdatedAt = time.Now().UTC()
+	cloned.UpdatedAt = task.UpdatedAt
 	m.tasks[task.ID] = cloned
+	if session := m.sessions[task.SessionID]; session != nil {
+		session.UpdatedAt = task.UpdatedAt
+	}
 
 	shouldIndex := task.Status == types.StatusCompleted && !alreadyIndexed && !alreadyIndexing
 	if shouldIndex {
@@ -163,11 +175,20 @@ func (m *MemoryStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Tas
 		if f.TenantID != "" && t.TenantID != f.TenantID {
 			continue
 		}
+		if f.SessionID != "" && t.SessionID != f.SessionID {
+			continue
+		}
 		if f.Status != "" && t.Status != f.Status {
 			continue
 		}
 		tasks = append(tasks, types.CloneTask(t))
 	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if f.SessionID != "" && tasks[i].SequenceNo != tasks[j].SequenceNo {
+			return tasks[i].SequenceNo < tasks[j].SequenceNo
+		}
+		return tasks[i].ID < tasks[j].ID
+	})
 
 	// Apply pagination
 	limit := resolveLimit(f.Limit, 50, 500)
@@ -242,6 +263,9 @@ func (m *MemoryStore) ListMemories(_ context.Context, filter ListMemoryFilter) (
 	items := make([]*types.Memory, 0, len(m.memories))
 	for _, mem := range m.memories {
 		if filter.TenantID != "" && !memoryTenantMatches(filter.TenantID, mem.TenantID) {
+			continue
+		}
+		if filter.SessionID != "" && mem.SessionID != filter.SessionID {
 			continue
 		}
 		cloned := *mem
@@ -322,6 +346,9 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 		if scopedTenant, scoped := tenantScope(ctx); scoped && !memoryTenantMatches(scopedTenant, mem.TenantID) {
 			continue
 		}
+		if scopedSession, scoped := sessionScope(ctx); scoped && mem.SessionID != scopedSession {
+			continue
+		}
 		score, mismatch := memoryRelevanceScore(query, embedding, mem)
 		if mismatch {
 			mismatchedEmbeddings++
@@ -355,6 +382,95 @@ func (m *MemoryStore) QueryMemories(ctx context.Context, query string, embedding
 		attribute.Int("agent.store.embedding_dimension_mismatch_count", mismatchedEmbeddings),
 	)
 	return res, nil
+}
+
+func (m *MemoryStore) CreateSession(_ context.Context, session *types.Session) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessions == nil {
+		m.sessions = make(map[string]*types.Session)
+	}
+	if _, exists := m.sessions[session.ID]; exists {
+		return fmt.Errorf("session already exists")
+	}
+	now := time.Now().UTC()
+	clone := *session
+	if clone.Status == "" {
+		clone.Status = types.SessionStatusActive
+	}
+	if clone.CreatedAt.IsZero() {
+		clone.CreatedAt = now
+	}
+	clone.UpdatedAt = now
+	m.sessions[clone.ID] = &clone
+	*session = clone
+	return nil
+}
+
+func (m *MemoryStore) GetSession(_ context.Context, id, tenantID string) (*types.Session, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	session := m.sessions[id]
+	if session == nil || (tenantID != "" && session.TenantID != tenantID) {
+		return nil, ErrSessionNotFound
+	}
+	clone := *session
+	return &clone, nil
+}
+
+func (m *MemoryStore) ListSessions(_ context.Context, filter ListSessionFilter) ([]*types.Session, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	items := make([]*types.Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		if filter.TenantID != "" && session.TenantID != filter.TenantID {
+			continue
+		}
+		if filter.Status != "" && session.Status != filter.Status {
+			continue
+		}
+		clone := *session
+		items = append(items, &clone)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
+	limit := resolveLimit(filter.Limit, 50, 500)
+	if filter.Offset >= len(items) {
+		return []*types.Session{}, nil
+	}
+	items = items[filter.Offset:]
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (m *MemoryStore) UpdateSession(_ context.Context, session *types.Session) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing := m.sessions[session.ID]
+	if existing == nil || existing.TenantID != session.TenantID {
+		return ErrSessionNotFound
+	}
+	existing.Title = session.Title
+	existing.Status = session.Status
+	existing.UpdatedAt = time.Now().UTC()
+	*session = *existing
+	return nil
+}
+
+func (m *MemoryStore) NextSessionTaskSequence(_ context.Context, id, tenantID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	session := m.sessions[id]
+	if session == nil || session.TenantID != tenantID {
+		return 0, ErrSessionNotFound
+	}
+	if session.Status != types.SessionStatusActive {
+		return 0, ErrSessionArchived
+	}
+	session.NextSequence++
+	session.UpdatedAt = time.Now().UTC()
+	return session.NextSequence, nil
 }
 
 func keywordOverlap(query, text string) float32 {

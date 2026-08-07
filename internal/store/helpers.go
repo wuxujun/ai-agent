@@ -3,10 +3,22 @@ package store
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+func normalizeTaskTimestamps(task *types.Task) {
+	if task == nil {
+		return
+	}
+	now := time.Now().UTC()
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = now
+	}
+	task.UpdatedAt = now
+}
 
 // defaultMemoryCandidateLimit is the cap applied to candidate memory rows when
 // store.memory_candidate_limit is 0 or negative in config. Mirrors the original

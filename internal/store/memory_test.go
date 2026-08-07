@@ -192,3 +192,55 @@ func TestMemoryStoreTimeDecay(t *testing.T) {
 		t.Errorf("expected mem-new-weak first when decay is enabled, got %s", res2[0].ID)
 	}
 }
+
+func TestMemoryStoreSessionScopeIsolation(t *testing.T) {
+	st := NewMemoryStore()
+	now := time.Now()
+	for _, mem := range []*types.Memory{
+		{ID: "a", TenantID: "tenant", SessionID: "session-a", TaskID: "task-a", Goal: "shared topic", Timestamp: now},
+		{ID: "b", TenantID: "tenant", SessionID: "session-b", TaskID: "task-b", Goal: "shared topic", Timestamp: now},
+	} {
+		if err := st.SaveMemory(t.Context(), mem); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := WithSessionScope(WithTenantScope(t.Context(), "tenant"), "session-a")
+	items, err := st.QueryMemories(ctx, "shared", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].SessionID != "session-a" {
+		t.Fatalf("session memory leakage: %+v", items)
+	}
+}
+
+func TestMemoryStoreSessionSequenceIsAtomic(t *testing.T) {
+	st := NewMemoryStore()
+	if err := st.CreateSession(t.Context(), &types.Session{ID: "session", TenantID: "tenant", Title: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	const count = 20
+	results := make(chan int64, count)
+	var wg sync.WaitGroup
+	for range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sequence, err := st.NextSessionTaskSequence(t.Context(), "session", "tenant")
+			if err != nil {
+				t.Errorf("allocate sequence: %v", err)
+				return
+			}
+			results <- sequence
+		}()
+	}
+	wg.Wait()
+	close(results)
+	seen := map[int64]bool{}
+	for sequence := range results {
+		seen[sequence] = true
+	}
+	if len(seen) != count {
+		t.Fatalf("sequence values are not unique: %v", seen)
+	}
+}

@@ -373,6 +373,11 @@ rag:
   jit_rag_fetch_max_bytes: 6000
   jit_memory_fetch_max_bytes: 2000
 
+  # 立即注入同一会话最近完成的任务，即使异步 Embedding 尚未完成。
+  # 设置为 0 可关闭直接会话历史。
+  # 环境变量覆盖：AI_AGENT_RAG_SESSION_RECENT_TASK_LIMIT
+  session_recent_task_limit: 5
+
   # Planner Prompt 中最多包含的重排后 Memory 数量。
   # 环境变量覆盖：AI_AGENT_RAG_MAX_PROMPT_MEMORIES
   max_prompt_memories: 3

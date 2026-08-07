@@ -366,6 +366,11 @@ rag:
   jit_rag_fetch_max_bytes: 6000
   jit_memory_fetch_max_bytes: 2000
 
+  # Completed tasks from the same session injected immediately, even before
+  # asynchronous embedding indexing finishes. 0 disables this direct history.
+  # Env override: AI_AGENT_RAG_SESSION_RECENT_TASK_LIMIT
+  session_recent_task_limit: 5
+
   # Maximum number of reranked memories included in a planner prompt.
   # Env override: AI_AGENT_RAG_MAX_PROMPT_MEMORIES
   max_prompt_memories: 3

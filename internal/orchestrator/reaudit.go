@@ -25,6 +25,9 @@ func (e *Engine) Reaudit(ctx context.Context, task *types.Task, force bool) (*ty
 		return nil, fmt.Errorf("task has no answer to audit")
 	}
 	ctx = store.WithTenantScope(ctx, task.TenantID)
+	if task.SessionID != "" {
+		ctx = store.WithSessionScope(ctx, task.SessionID)
+	}
 	if e.Store != nil {
 		if ledger, ok := e.Store.(types.TenantUsageLedger); ok {
 			ctx = llmcore.WithTenantUsageLedger(ctx, ledger)

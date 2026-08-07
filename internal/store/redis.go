@@ -86,6 +86,7 @@ var deleteMemoryScript = redis.NewScript(`
 		return 0
 	end
 	local tenant = memory["tenant_id"] or ""
+	local session = memory["session_id"] or ""
 	local scope = ARGV[2]
 	if scope ~= "" and tenant ~= scope and not (scope == "default" and tenant == "") then
 		return 0
@@ -93,6 +94,9 @@ var deleteMemoryScript = redis.NewScript(`
 	redis.call('DEL', KEYS[1])
 	redis.call('ZREM', KEYS[2], ARGV[1])
 	redis.call('ZREM', ARGV[3] .. tenant, ARGV[1])
+	if session ~= "" then
+		redis.call('ZREM', ARGV[4] .. tenant .. ":" .. session, ARGV[1])
+	end
 	return 1
 `)
 
@@ -207,6 +211,7 @@ func (r *RedisStore) Close() error {
 
 // SaveFullTask serializes the entire task struct into JSON and saves it in Redis.
 func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
+	normalizeTaskTimestamps(task)
 	ctx, span := tracer.Start(ctx, "store.redis.save_full_task")
 	defer span.End()
 
@@ -323,6 +328,9 @@ func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task
 	}
 	start := int64(f.Offset)
 	stop := start + int64(limit) - 1
+	if f.SessionID != "" {
+		start, stop = 0, -1
+	}
 	ids, err := r.client.ZRange(ctx, index, start, stop).Result()
 	if err != nil {
 		span.RecordError(err)
@@ -358,7 +366,28 @@ func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task
 		if err := json.Unmarshal([]byte(valStr), &t); err != nil {
 			continue
 		}
+		if f.SessionID != "" && t.SessionID != f.SessionID {
+			continue
+		}
+		if f.Status != "" && t.Status != f.Status {
+			continue
+		}
 		tasks = append(tasks, &t)
+	}
+	if f.SessionID != "" {
+		sort.Slice(tasks, func(i, j int) bool {
+			if tasks[i].SequenceNo == tasks[j].SequenceNo {
+				return tasks[i].ID < tasks[j].ID
+			}
+			return tasks[i].SequenceNo < tasks[j].SequenceNo
+		})
+		if f.Offset >= len(tasks) {
+			return []*types.Task{}, nil
+		}
+		tasks = tasks[f.Offset:]
+		if len(tasks) > limit {
+			tasks = tasks[:limit]
+		}
 	}
 
 	span.SetAttributes(attribute.Int("agent.store.task_count", len(tasks)))
@@ -459,6 +488,167 @@ func (r *RedisStore) ExistsTask(ctx context.Context, id string) (bool, error) {
 	return n > 0, nil
 }
 
+func (r *RedisStore) sessionKey(id string) string { return "session:" + id }
+
+func (r *RedisStore) CreateSession(ctx context.Context, session *types.Session) error {
+	now := time.Now().UTC()
+	if session.Status == "" {
+		session.Status = types.SessionStatusActive
+	}
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = now
+	}
+	session.UpdatedAt = now
+	data, err := json.Marshal(session)
+	if err != nil {
+		return err
+	}
+	created, err := r.client.SetNX(ctx, r.sessionKey(session.ID), data, 0).Result()
+	if err != nil {
+		return err
+	}
+	if !created {
+		return fmt.Errorf("session already exists")
+	}
+	return r.client.ZAdd(ctx, "sessions:tenant:"+session.TenantID, redis.Z{Score: float64(session.UpdatedAt.UnixNano()), Member: session.ID}).Err()
+}
+
+func (r *RedisStore) GetSession(ctx context.Context, id, tenantID string) (*types.Session, error) {
+	data, err := r.client.Get(ctx, r.sessionKey(id)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, ErrSessionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var session types.Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, err
+	}
+	if session.TenantID != tenantID {
+		return nil, ErrSessionNotFound
+	}
+	return &session, nil
+}
+
+func (r *RedisStore) ListSessions(ctx context.Context, filter ListSessionFilter) ([]*types.Session, error) {
+	if filter.TenantID == "" {
+		return []*types.Session{}, nil
+	}
+	ids, err := r.client.ZRevRange(ctx, "sessions:tenant:"+filter.TenantID, 0, -1).Result()
+	if err != nil || len(ids) == 0 {
+		return []*types.Session{}, err
+	}
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = r.sessionKey(id)
+	}
+	values, err := r.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	items := []*types.Session{}
+	for _, raw := range values {
+		text, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		var session types.Session
+		if json.Unmarshal([]byte(text), &session) != nil || (filter.Status != "" && session.Status != filter.Status) {
+			continue
+		}
+		items = append(items, &session)
+	}
+	limit := resolveLimit(filter.Limit, 50, 500)
+	if filter.Offset >= len(items) {
+		return []*types.Session{}, nil
+	}
+	items = items[filter.Offset:]
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (r *RedisStore) UpdateSession(ctx context.Context, session *types.Session) error {
+	return r.client.Watch(ctx, func(tx *redis.Tx) error {
+		data, err := tx.Get(ctx, r.sessionKey(session.ID)).Bytes()
+		if errors.Is(err, redis.Nil) {
+			return ErrSessionNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var existing types.Session
+		if err := json.Unmarshal(data, &existing); err != nil {
+			return err
+		}
+		if existing.TenantID != session.TenantID {
+			return ErrSessionNotFound
+		}
+		existing.Title = session.Title
+		existing.Status = session.Status
+		existing.UpdatedAt = time.Now().UTC()
+		encoded, err := json.Marshal(&existing)
+		if err != nil {
+			return err
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(ctx, r.sessionKey(existing.ID), encoded, 0)
+			pipe.ZAdd(ctx, "sessions:tenant:"+existing.TenantID, redis.Z{Score: float64(existing.UpdatedAt.UnixNano()), Member: existing.ID})
+			return nil
+		})
+		if err == nil {
+			*session = existing
+		}
+		return err
+	}, r.sessionKey(session.ID))
+}
+
+func (r *RedisStore) NextSessionTaskSequence(ctx context.Context, id, tenantID string) (int64, error) {
+	var sequence int64
+	for attempt := 0; attempt < 5; attempt++ {
+		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
+			data, err := tx.Get(ctx, r.sessionKey(id)).Bytes()
+			if errors.Is(err, redis.Nil) {
+				return ErrSessionNotFound
+			}
+			if err != nil {
+				return err
+			}
+			var session types.Session
+			if err := json.Unmarshal(data, &session); err != nil {
+				return err
+			}
+			if session.TenantID != tenantID {
+				return ErrSessionNotFound
+			}
+			if session.Status != types.SessionStatusActive {
+				return ErrSessionArchived
+			}
+			session.NextSequence++
+			session.UpdatedAt = time.Now().UTC()
+			encoded, err := json.Marshal(&session)
+			if err != nil {
+				return err
+			}
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, r.sessionKey(id), encoded, 0)
+				pipe.ZAdd(ctx, "sessions:tenant:"+tenantID, redis.Z{Score: float64(session.UpdatedAt.UnixNano()), Member: id})
+				return nil
+			})
+			if err == nil {
+				sequence = session.NextSequence
+			}
+			return err
+		}, r.sessionKey(id))
+		if !errors.Is(err, redis.TxFailedErr) {
+			return sequence, err
+		}
+	}
+	return 0, redis.TxFailedErr
+}
+
 func (r *RedisStore) DeleteTask(ctx context.Context, id string) (bool, error) {
 	memoryID := "mem-" + id
 	deleted, err := deleteTaskScript.Run(ctx, r.client, []string{
@@ -524,12 +714,23 @@ func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	if err := r.client.ZAdd(ctx, "memories:tenant:"+mem.TenantID, redis.Z{Score: float64(mem.Timestamp.UnixNano()), Member: mem.ID}).Err(); err != nil {
 		return fmt.Errorf("failed to index tenant memory: %w", err)
 	}
+	if mem.SessionID != "" {
+		if err := r.client.ZAdd(ctx, "memories:session:"+mem.TenantID+":"+mem.SessionID, redis.Z{Score: float64(mem.Timestamp.UnixNano()), Member: mem.ID}).Err(); err != nil {
+			return fmt.Errorf("failed to index session memory: %w", err)
+		}
+	}
 
 	return nil
 }
 
 func (r *RedisStore) ListMemories(ctx context.Context, filter ListMemoryFilter) ([]*types.Memory, error) {
-	ids, err := r.client.ZRevRange(ctx, "memories:index", 0, -1).Result()
+	index := "memories:index"
+	if filter.SessionID != "" && filter.TenantID != "" {
+		index = "memories:session:" + filter.TenantID + ":" + filter.SessionID
+	} else if filter.TenantID != "" && filter.TenantID != "default" {
+		index = "memories:tenant:" + filter.TenantID
+	}
+	ids, err := r.client.ZRevRange(ctx, index, 0, -1).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -557,6 +758,9 @@ func (r *RedisStore) ListMemories(ctx context.Context, filter ListMemoryFilter) 
 		if filter.TenantID != "" && !memoryTenantMatches(filter.TenantID, mem.TenantID) {
 			continue
 		}
+		if filter.SessionID != "" && mem.SessionID != filter.SessionID {
+			continue
+		}
 		items = append(items, &mem)
 	}
 	limit := resolveLimit(filter.Limit, 50, 500)
@@ -573,7 +777,7 @@ func (r *RedisStore) ListMemories(ctx context.Context, filter ListMemoryFilter) 
 func (r *RedisStore) DeleteMemory(ctx context.Context, id, tenantID string) (bool, error) {
 	deleted, err := deleteMemoryScript.Run(ctx, r.client,
 		[]string{r.memoryKey(id), "memories:index"},
-		id, tenantID, "memories:tenant:",
+		id, tenantID, "memories:tenant:", "memories:session:",
 	).Int64()
 	if err != nil {
 		return false, err
@@ -616,7 +820,10 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 
 	// 1. Get recent memory IDs from ZSET index (newest first)
 	index := "memories:index"
-	if scopedTenant, scoped := tenantScope(ctx); scoped && scopedTenant != "default" {
+	if scopedSession, scoped := sessionScope(ctx); scoped {
+		scopedTenant, _ := tenantScope(ctx)
+		index = "memories:session:" + scopedTenant + ":" + scopedSession
+	} else if scopedTenant, scoped := tenantScope(ctx); scoped && scopedTenant != "default" {
 		index = "memories:tenant:" + scopedTenant
 	}
 	ids, err := r.client.ZRevRange(ctx, index, 0, int64(candidateLimit-1)).Result()
@@ -673,6 +880,9 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 			continue
 		}
 		if scopedTenant, scoped := tenantScope(ctx); scoped && !memoryTenantMatches(scopedTenant, mem.TenantID) {
+			continue
+		}
+		if scopedSession, scoped := sessionScope(ctx); scoped && mem.SessionID != scopedSession {
 			continue
 		}
 

@@ -73,6 +73,35 @@ func TestJITModeSkipsPlanningPrefetch(t *testing.T) {
 	}
 }
 
+func TestJITModeInjectsRecentCompletedTaskFromSameSession(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = ""
+		cfg.RAG.SessionRecentTaskLimit = 5
+	}))
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	previous := &types.Task{ID: "previous", TenantID: "tenant", SessionID: "session-a", SequenceNo: 1, Goal: "earlier goal", FinalAnswer: "shared answer", Status: types.StatusCompleted, MaxSteps: 1, ToolBudget: 1}
+	if err := st.SaveFullTask(ctx, previous); err != nil {
+		t.Fatal(err)
+	}
+	engine := &orchestrator.Engine{
+		Mode:  orchestrator.ModeLegacy,
+		Store: st,
+		Planner: &staticMockPlanner{decision: &planner.PlanDecision{
+			Stop: true, FinalAnswer: "done", Actions: []planner.ActionCall{{Action: "none", Parameters: map[string]any{}}},
+		}},
+		Executor: &mockExecutor{},
+	}
+	task := &types.Task{ID: "current", TenantID: "tenant", SessionID: "session-a", SequenceNo: 2, Goal: "continue", Status: types.StatusCreated, MaxSteps: 1, ToolBudget: 1}
+	if err := engine.Next(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if len(task.Memories) != 1 || task.Memories[0].TaskID != previous.ID || task.Memories[0].FinalAnswer != "shared answer" {
+		t.Fatalf("recent session task was not injected: %+v", task.Memories)
+	}
+}
+
 func TestRagMemoryCrossTaskKnowledgeSharing(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "prefetch"

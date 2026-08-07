@@ -6,6 +6,7 @@ import "time"
 type Memory struct {
 	ID          string    `json:"id"`
 	TenantID    string    `json:"tenant_id"`
+	SessionID   string    `json:"session_id,omitempty"`
 	TaskID      string    `json:"task_id"`
 	Goal        string    `json:"goal"`
 	FinalAnswer string    `json:"final_answer"`

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -608,7 +609,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		effectiveMode = ModeEino
 	}
 	resumingMultiAgent := effectiveMode == ModeMultiAgent && e.CanResumeTask(task)
-	engineLog.Info("running next execution step", "task_id", task.ID, "mode", string(effectiveMode))
+	engineLog.Info("running next execution step", "task_id", task.ID, "session_id", task.SessionID, "mode", string(effectiveMode))
 	defer func() {
 		if types.IsTerminalTaskStatus(task.Status) {
 			tools.ClearRetrievalContext(task.ID)
@@ -619,6 +620,9 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		return nil
 	}
 	ctx = store.WithTenantScope(ctx, task.TenantID)
+	if task.SessionID != "" {
+		ctx = store.WithSessionScope(ctx, task.SessionID)
+	}
 	if e.Store != nil {
 		if ledger, ok := e.Store.(types.TenantUsageLedger); ok {
 			ctx = llmcore.WithTenantUsageLedger(ctx, ledger)
@@ -669,8 +673,11 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	}
 
 	prefetchContext := strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "prefetch")
-	if !resumingMultiAgent && prefetchContext && task.StepCount == 0 && len(task.Memories) == 0 {
-		var retrievedMems []types.Memory
+	if !resumingMultiAgent && task.StepCount == 0 && len(task.Memories) == 0 && task.SessionID != "" {
+		task.Memories = e.recentSessionMemories(ctx, task, config.Get().RAG.SessionRecentTaskLimit)
+	}
+	if !resumingMultiAgent && prefetchContext && task.StepCount == 0 {
+		retrievedMems := append([]types.Memory(nil), task.Memories...)
 		retrievalQuery := task.Goal
 		var ragUsage types.TokenUsage
 		if llmcore.AllowedForTask(config.LLMSceneRAGQueryRewriter, task) {
@@ -752,6 +759,36 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		e.guardOutput(ctx, task)
 	}
 	return err
+}
+
+// recentSessionMemories provides read-after-completion semantics even while
+// asynchronous embedding/indexing for a previous task is still in flight.
+func (e *Engine) recentSessionMemories(ctx context.Context, task *types.Task, limit int) []types.Memory {
+	if e.Store == nil || task == nil || task.SessionID == "" || limit <= 0 {
+		return nil
+	}
+	tasks, err := e.Store.ListTasks(ctx, store.ListFilter{TenantID: task.TenantID, SessionID: task.SessionID, Status: types.StatusCompleted, Limit: 500})
+	if err != nil {
+		engineLog.Warn("failed to load recent session tasks", "task_id", task.ID, "session_id", task.SessionID, "error", err)
+		return nil
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].SequenceNo == tasks[j].SequenceNo {
+			return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
+		}
+		return tasks[i].SequenceNo > tasks[j].SequenceNo
+	})
+	items := make([]types.Memory, 0, limit)
+	for _, previous := range tasks {
+		if previous.ID == task.ID || strings.TrimSpace(previous.FinalAnswer) == "" {
+			continue
+		}
+		items = append(items, types.Memory{ID: "session-task-" + previous.ID, TenantID: previous.TenantID, SessionID: previous.SessionID, TaskID: previous.ID, Goal: previous.Goal, FinalAnswer: previous.FinalAnswer, KeyFindings: memory.SummarizeTask(previous), Timestamp: previous.UpdatedAt})
+		if len(items) >= limit {
+			break
+		}
+	}
+	return items
 }
 
 func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
