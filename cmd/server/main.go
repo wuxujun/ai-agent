@@ -48,6 +48,27 @@ import (
 
 var slog = logger.Component("server")
 
+// approvalBusLogInfo contains only non-secret Redis connection metadata that
+// is safe to emit to application logs. In particular, redis.Options separates
+// the endpoint from URL userinfo, so usernames and passwords never reach the
+// logger.
+type approvalBusLogInfo struct {
+	Address string
+	DB      int
+	TLS     bool
+}
+
+func newApprovalBusLogInfo(opts *redis.Options) approvalBusLogInfo {
+	if opts == nil {
+		return approvalBusLogInfo{}
+	}
+	return approvalBusLogInfo{
+		Address: opts.Addr,
+		DB:      opts.DB,
+		TLS:     opts.TLSConfig != nil,
+	}
+}
+
 func main() {
 	// Load environment variables from .env file if available
 	if err := godotenv.Load(); err != nil {
@@ -350,14 +371,22 @@ func main() {
 	if busDSN != "" {
 		busOpts, parseErr := redis.ParseURL(busDSN)
 		if parseErr != nil {
-			slog.Warn("approval bus: failed to parse Redis URL, bus disabled", "error", parseErr)
+			// url.Parse errors may include the original URL, including userinfo.
+			// Keep the diagnostic generic so malformed credential-bearing DSNs do
+			// not leak through the error string.
+			slog.Warn("approval bus: Redis URL is invalid, bus disabled")
 		} else {
 			busClient := redis.NewClient(busOpts)
 			approvalBus := orchestrator.NewApprovalBus(busClient)
 			approvalBus.Start(context.Background())
 			eng.ApprovalBus = approvalBus
 			apiHandler.SetApprovalBus(approvalBus)
-			slog.Info("approval bus started", "redis_url", busDSN)
+			busLogInfo := newApprovalBusLogInfo(busOpts)
+			slog.Info("approval bus started",
+				"redis_address", busLogInfo.Address,
+				"redis_db", busLogInfo.DB,
+				"redis_tls", busLogInfo.TLS,
+			)
 
 			// Listen for remote cancel signals and fire local context cancels.
 			go func() {
