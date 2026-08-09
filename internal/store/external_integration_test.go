@@ -2,14 +2,18 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -114,6 +118,149 @@ func TestExternalPostgresPGVectorRanking(t *testing.T) {
 	}
 	if extensionVersion == "" {
 		t.Fatal("pgvector extension version is empty")
+	}
+}
+
+func TestExternalPostgresMigrationUpgradesLegacySchema(t *testing.T) {
+	requireExternalIntegration(t)
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	parsedDSN, err := url.Parse(dsn)
+	if err != nil || parsedDSN.Scheme == "" {
+		t.Fatalf("TEST_POSTGRES_DSN must be a URL for isolated schema testing: %v", err)
+	}
+	admin, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schemaName := "integration_legacy_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	quotedSchema := pq.QuoteIdentifier(schemaName)
+	if _, err := admin.ExecContext(t.Context(), `CREATE SCHEMA `+quotedSchema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = admin.ExecContext(cleanupCtx, `DROP SCHEMA `+quotedSchema+` CASCADE`)
+	}()
+	legacyDSN := *parsedDSN
+	query := legacyDSN.Query()
+	query.Set("search_path", schemaName)
+	legacyDSN.RawQuery = query.Encode()
+	legacyDB, err := sql.Open("postgres", legacyDSN.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySchema := `
+CREATE TABLE tasks (
+    id VARCHAR(255) PRIMARY KEY, goal TEXT NOT NULL, status VARCHAR(50) NOT NULL,
+    max_steps INT NOT NULL, step_count INT NOT NULL, workspace TEXT NOT NULL,
+    hypothesis TEXT NOT NULL, unresolved_json TEXT NOT NULL, tool_budget INT NOT NULL,
+    final_answer TEXT NOT NULL
+);
+CREATE TABLE traces (
+    id SERIAL PRIMARY KEY, task_id VARCHAR(255) NOT NULL, step INT NOT NULL,
+    goal TEXT NOT NULL, action TEXT NOT NULL, query TEXT NOT NULL,
+    observation TEXT NOT NULL, evidence_json TEXT NOT NULL
+);
+CREATE TABLE memories (
+    id VARCHAR(255) PRIMARY KEY, task_id VARCHAR(255) NOT NULL, goal TEXT NOT NULL,
+    final_answer TEXT NOT NULL, key_findings TEXT NOT NULL, timestamp TIMESTAMP NOT NULL,
+    embedding_json TEXT NOT NULL
+);
+INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, final_answer)
+VALUES ('legacy-task', 'legacy goal', 'created', 1, 0, '', '', '[]', 1, '');`
+	if _, err := legacyDB.ExecContext(t.Context(), legacySchema); err != nil {
+		_ = legacyDB.Close()
+		t.Fatal(err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := NewPostgresStore(legacyDSN.String())
+	if err != nil {
+		t.Fatalf("NewPostgresStore() legacy migration: %v", err)
+	}
+	defer st.Close()
+	assertPostgresColumns(t, st.db, "tasks", "tenant_id", "session_id", "sequence_no", "created_at", "updated_at", "token_budget", "llm_call_budget", "memories_json", "answer_audit_json")
+	assertPostgresColumns(t, st.db, "traces", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens")
+	assertPostgresColumns(t, st.db, "memories", "tenant_id", "session_id")
+	var createdAt, updatedAt sql.NullTime
+	if err := st.db.QueryRowContext(t.Context(), `SELECT created_at, updated_at FROM tasks WHERE id = 'legacy-task'`).Scan(&createdAt, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !createdAt.Valid || !updatedAt.Valid {
+		t.Fatalf("legacy timestamps were not backfilled: created=%v updated=%v", createdAt, updatedAt)
+	}
+}
+
+func TestExternalStoresPersistPausedTaskAcrossClients(t *testing.T) {
+	requireExternalIntegration(t)
+	tests := []struct {
+		name    string
+		enabled bool
+		open    func() (externalIntegrationStore, error)
+	}{
+		{
+			name:    "postgres",
+			enabled: os.Getenv("TEST_POSTGRES_DSN") != "",
+			open: func() (externalIntegrationStore, error) {
+				return NewPostgresStore(os.Getenv("TEST_POSTGRES_DSN"))
+			},
+		},
+		{
+			name:    "redis",
+			enabled: os.Getenv("TEST_REDIS_URL") != "",
+			open: func() (externalIntegrationStore, error) {
+				return NewRedisStoreFromURL(os.Getenv("TEST_REDIS_URL"))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.enabled {
+				t.Skip("backend DSN is not set")
+			}
+			first, err := tt.open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskID := "integration-restart-" + uuid.NewString()
+			task := &types.Task{
+				ID: taskID, TenantID: taskID + "-tenant", Goal: "resume after restart",
+				Status: types.StatusPaused, MaxSteps: 2, ToolBudget: 1,
+				Trace: []types.StepTrace{{Step: 1, Action: "multiagent_workflow_checkpoint", Observation: `{"version":1,"state":"paused"}`}},
+			}
+			if err := first.SaveFullTask(t.Context(), task); err != nil {
+				_ = first.Close()
+				t.Fatal(err)
+			}
+			if err := first.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			second, err := tt.open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_, _ = second.DeleteTask(cleanupCtx, taskID)
+				_ = second.Close()
+			}()
+			restored, err := second.GetTask(t.Context(), taskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restored.Status != types.StatusPaused || len(restored.Trace) != 1 || restored.Trace[0].Action != "multiagent_workflow_checkpoint" {
+				t.Fatalf("restored paused task = %+v", restored)
+			}
+		})
 	}
 }
 
@@ -247,9 +394,23 @@ func runExternalStoreContract(t *testing.T, st externalIntegrationStore, cleanup
 	if err := st.ReleaseTaskLease(ctx, ids.lease, "owner-a"); err != nil {
 		t.Fatal(err)
 	}
-	acquired, err = st.AcquireTaskLease(ctx, ids.lease, "owner-b", 5*time.Second)
+	acquired, err = st.AcquireTaskLease(ctx, ids.lease, "owner-b", 150*time.Millisecond)
 	if err != nil || !acquired {
 		t.Fatalf("owner-b AcquireTaskLease after release = %v, %v", acquired, err)
+	}
+	expiryDeadline := time.Now().Add(3 * time.Second)
+	for {
+		acquired, err = st.AcquireTaskLease(ctx, ids.lease, "owner-a", time.Second)
+		if err != nil {
+			t.Fatalf("owner-a AcquireTaskLease after expiry: %v", err)
+		}
+		if acquired {
+			break
+		}
+		if time.Now().After(expiryDeadline) {
+			t.Fatal("expired lease was not available to a new owner")
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	session, err := st.GetSession(ctx, ids.sessionA, ids.tenantA)
@@ -262,6 +423,31 @@ func runExternalStoreContract(t *testing.T, st externalIntegrationStore, cleanup
 	}
 	if _, err := st.NextSessionTaskSequence(ctx, ids.sessionA, ids.tenantA); !errors.Is(err, ErrSessionArchived) {
 		t.Fatalf("archived NextSessionTaskSequence error = %v", err)
+	}
+}
+
+func assertPostgresColumns(t *testing.T, db *sql.DB, table string, expected ...string) {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), `SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1`, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			t.Fatal(err)
+		}
+		columns[column] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range expected {
+		if !columns[column] {
+			t.Errorf("%s.%s was not migrated", table, column)
+		}
 	}
 }
 
