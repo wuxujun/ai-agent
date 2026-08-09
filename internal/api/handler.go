@@ -656,7 +656,12 @@ func (h *Handler) runAll(c *gin.Context) {
 			if tr.AgentRole != "" {
 				roleStr = fmt.Sprintf(" [%s]", tr.AgentRole)
 			}
-			taskReportLog.Info(fmt.Sprintf("Step %d%s - Action: %s | Query: %s", tr.Step, roleStr, tr.Action, tr.Query))
+			taskReportLog.Info("task step",
+				"step", tr.Step,
+				"agent_role", strings.TrimSpace(roleStr),
+				"action", tr.Action,
+				"query", tr.Query,
+			)
 			if tr.Observation != "" {
 				obs := truncateTaskReportText(tr.Observation, 300)
 				taskReportLog.Info("  Observation:", "content", obs)

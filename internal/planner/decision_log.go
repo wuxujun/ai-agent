@@ -48,7 +48,7 @@ func safeParametersForLog(parameters map[string]any) map[string]any {
 			result[key] = "[REDACTED]"
 			continue
 		}
-		if lowerKey == "content" {
+		if isSensitivePlannedParameter(lowerKey) {
 			result[key] = fmt.Sprintf("<%d chars>", len([]rune(fmt.Sprint(value))))
 			continue
 		}
@@ -65,6 +65,15 @@ func safeParametersForLog(parameters map[string]any) map[string]any {
 		result[key] = truncateLogValue(sanitize.Secrets(text), plannedParameterLogLimit)
 	}
 	return result
+}
+
+func isSensitivePlannedParameter(key string) bool {
+	switch key {
+	case "args", "command", "content", "input", "output", "prompt", "query", "url":
+		return true
+	default:
+		return false
+	}
 }
 
 func truncateLogValue(value string, limit int) string {

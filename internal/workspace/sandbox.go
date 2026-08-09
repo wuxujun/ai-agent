@@ -1,14 +1,19 @@
-package agent
+package workspace
 
 import (
 	"context"
 	"fmt"
 )
 
+// ToolRegistry is the lookup contract used by the legacy runtime.
+// Deprecated: use internal/tools.Registry with internal/orchestrator.Engine.
 type ToolRegistry interface {
 	Get(name string) (Tool, bool)
 }
 
+// Orchestrator is an early standalone orchestration prototype.
+// Deprecated: use internal/orchestrator.Engine. This type does not apply the
+// current tool policy, approval, persistence, budget, or workspace safeguards.
 type Orchestrator struct {
 	planner   Planner
 	responder Responder
@@ -16,6 +21,8 @@ type Orchestrator struct {
 	maxSteps  int
 }
 
+// NewOrchestrator constructs the legacy standalone orchestrator.
+// Deprecated: use internal/orchestrator.Engine.
 func NewOrchestrator(planner Planner, responder Responder, tools ToolRegistry) *Orchestrator {
 	return &Orchestrator{
 		planner:   planner,

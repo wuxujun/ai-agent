@@ -145,7 +145,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
-		attribute.String("agent.task.goal", task.Goal),
+		attribute.Int("agent.task.goal_chars", len([]rune(task.Goal))),
 	)
 
 	teamsCfg := GetTeamsConfig()
@@ -266,7 +266,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		log.Info("Workflow complete", "task_id", task.ID, "status", task.Status, "runtime", RuntimeDAG)
 		span.SetAttributes(
 			attribute.String("agent.task.final_status", string(task.Status)),
-			attribute.String("agent.task.final_answer", task.FinalAnswer),
+			attribute.Int("agent.task.final_answer_chars", len([]rune(task.FinalAnswer))),
 		)
 		return err
 	}
@@ -317,7 +317,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		}
 		span.SetAttributes(
 			attribute.String("agent.task.final_status", string(task.Status)),
-			attribute.String("agent.task.final_answer", task.FinalAnswer),
+			attribute.Int("agent.task.final_answer_chars", len([]rune(task.FinalAnswer))),
 		)
 		return dagErr
 	}
@@ -544,7 +544,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	log.Info("Workflow complete", "task_id", task.ID, "status", task.Status)
 	span.SetAttributes(
 		attribute.String("agent.task.final_status", string(task.Status)),
-		attribute.String("agent.task.final_answer", task.FinalAnswer),
+		attribute.Int("agent.task.final_answer_chars", len([]rune(task.FinalAnswer))),
 	)
 	return nil
 }

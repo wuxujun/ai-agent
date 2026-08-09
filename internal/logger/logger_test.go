@@ -1,15 +1,132 @@
 package logger
 
 import (
+	"bytes"
+	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	stdlog "log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/buildinfo"
 )
+
+func TestDynamicHandlerRedactsSensitiveContentAndCredentials(t *testing.T) {
+	var output bytes.Buffer
+	state := &handlerState{handler: slog.NewJSONHandler(&output, nil)}
+	var pointer atomic.Pointer[handlerState]
+	pointer.Store(state)
+	handler := &dynamicHandler{state: &pointer}
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "safe message", 0)
+	record.AddAttrs(
+		slog.String("goal", "private customer question"),
+		slog.String("redis_url", "redis://user:password@example:6379/0"),
+		slog.String("service_token", "another-secret"),
+		slog.Int("total_tokens", 42),
+		slog.Group("nested", slog.String("query", "private search"), slog.String("status", "ok")),
+	)
+	if err := handler.Handle(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	derived := handler.WithAttrs([]slog.Attr{slog.String("goal", "derived private goal")})
+	derivedRecord := slog.NewRecord(time.Now(), slog.LevelInfo, "derived message", 0)
+	if err := derived.Handle(context.Background(), derivedRecord); err != nil {
+		t.Fatal(err)
+	}
+	logged := output.String()
+	for _, forbidden := range []string{"private customer question", "private search", "user:password", "another-secret", "derived private goal"} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("sensitive value leaked into log: %s", logged)
+		}
+	}
+	for _, expected := range []string{`"goal":"<25 chars>"`, `"redis_url":"[REDACTED]"`, `"service_token":"[REDACTED]"`, `"total_tokens":42`, `"query":"<14 chars>"`, `"status":"ok"`, `"goal":"<20 chars>"`} {
+		if !strings.Contains(logged, expected) {
+			t.Fatalf("safe log metadata %q missing: %s", expected, logged)
+		}
+	}
+}
+
+func TestContentAndCredentialFieldPolicy(t *testing.T) {
+	contentKeys := []string{"arguments", "body", "command", "content", "endpoint", "final_answer", "goal", "input", "instruction", "observation", "output", "params", "payload", "prompt", "query", "request", "response", "thought", "uri", "url", "user_input"}
+	for _, key := range contentKeys {
+		attr := safeLogAttr(slog.Any(key, map[string]any{"private": "customer data"}))
+		if got := attr.Value.String(); !strings.HasPrefix(got, "<") || !strings.HasSuffix(got, " chars>") {
+			t.Errorf("content field %q was not summarized: %q", key, got)
+		}
+	}
+	secretKeys := []string{"api_key", "authorization", "cookie", "credential", "database_dsn", "password", "private_key", "redis_url", "service_secret", "set_cookie", "session_token"}
+	for _, key := range secretKeys {
+		if got := safeLogAttr(slog.String(key, "secret-value")).Value.String(); got != "[REDACTED]" {
+			t.Errorf("credential field %q = %q", key, got)
+		}
+	}
+}
+
+// TestProductionLogMessagesAreStatic prevents user-controlled values from
+// bypassing attribute redaction by being formatted into the log message.
+func TestProductionLogMessagesAreStatic(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
+	files := token.NewFileSet()
+	for _, root := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(repositoryRoot, root), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			parsed, err := parser.ParseFile(files, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(parsed, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok || len(call.Args) == 0 {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || !isLogLevelMethod(selector.Sel.Name) {
+					return true
+				}
+				receiver, ok := selector.X.(*ast.Ident)
+				if !ok || !isLoggerIdentifier(receiver.Name) {
+					return true
+				}
+				literal, ok := call.Args[0].(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					position := files.Position(call.Args[0].Pos())
+					t.Errorf("dynamic log message at %s:%d; use a static message and structured attributes", position.Filename, position.Line)
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func isLogLevelMethod(name string) bool {
+	return name == "Debug" || name == "Info" || name == "Warn" || name == "Error"
+}
+
+func isLoggerIdentifier(name string) bool {
+	lower := strings.ToLower(name)
+	return lower == "logger" || lower == "slog" || lower == "log" || strings.HasSuffix(lower, "log")
+}
 
 func TestConfigureRoutesRecordsToExactLevelFiles(t *testing.T) {
 	directory := t.TempDir()

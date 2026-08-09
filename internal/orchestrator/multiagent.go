@@ -19,7 +19,7 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
-		attribute.String("agent.task.goal", task.Goal),
+		attribute.Int("agent.task.goal_chars", len([]rune(task.Goal))),
 		attribute.String("agent.orchestrator", "multiagent"),
 	)
 
@@ -45,7 +45,7 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 
 	span.SetAttributes(
 		attribute.String("agent.task.status_after", string(task.Status)),
-		attribute.String("agent.task.final_answer", task.FinalAnswer),
+		attribute.Int("agent.task.final_answer_chars", len([]rune(task.FinalAnswer))),
 		attribute.Int("agent.task.step_count_after", task.StepCount),
 	)
 

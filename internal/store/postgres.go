@@ -130,37 +130,60 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	PRIMARY KEY (tenant_id, period_start)
 );
 `
-	_, err := p.db.Exec(schema)
+	tx, err := p.db.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("postgres begin schema migration: %w", err)
 	}
-	// Idempotent migrations for existing databases that predate these columns.
-	// Postgres supports IF NOT EXISTS on ADD COLUMN since 9.6.
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget INT NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sequence_no BIGINT NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP`)
-	_, _ = p.db.Exec(`UPDATE tasks SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`)
-	_, _ = p.db.Exec(`UPDATE tasks SET updated_at = created_at WHERE updated_at IS NULL`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_call_budget INT NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_cost_budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_calls INT NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS memories_json TEXT NOT NULL DEFAULT '[]'`)
-	_, _ = p.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS answer_audit_json JSONB NOT NULL DEFAULT '{}'::jsonb`)
-	_, _ = p.db.Exec(`ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = p.db.Exec(`ALTER TABLE memories ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS error_text TEXT NOT NULL DEFAULT ''`)
-	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS prompt_tokens INT NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS completion_tokens INT NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`ALTER TABLE traces ADD COLUMN IF NOT EXISTS total_tokens INT NOT NULL DEFAULT 0`)
-	_, _ = p.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
-	_, _ = p.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_tenant_updated ON sessions(tenant_id, updated_at DESC)`)
-	_, _ = p.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_session_sequence ON tasks(tenant_id, session_id, sequence_no)`)
-	_, _ = p.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_session_timestamp ON memories(tenant_id, session_id, timestamp DESC)`)
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.Exec(schema); err != nil {
+		return fmt.Errorf("postgres create schema: %w", err)
+	}
+
+	// PostgreSQL supports IF NOT EXISTS for these idempotent upgrades. Every
+	// statement is still checked: permission, lock, type, data, or index errors
+	// must abort and roll back the whole migration instead of surfacing later on
+	// the first task read/write.
+	statements := []postgresMigrationStatement{
+		{name: "add task token budget", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget INT NOT NULL DEFAULT 0`},
+		{name: "add task tenant", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`},
+		{name: "add task session", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`},
+		{name: "add task sequence", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sequence_no BIGINT NOT NULL DEFAULT 0`},
+		{name: "add task created_at", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP`},
+		{name: "add task updated_at", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP`},
+		{name: "backfill task created_at", query: `UPDATE tasks SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`},
+		{name: "backfill task updated_at", query: `UPDATE tasks SET updated_at = created_at WHERE updated_at IS NULL`},
+		{name: "add task LLM call budget", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_call_budget INT NOT NULL DEFAULT 0`},
+		{name: "add task LLM cost budget", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_cost_budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0`},
+		{name: "add task LLM calls", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_calls INT NOT NULL DEFAULT 0`},
+		{name: "add task LLM estimated cost", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0`},
+		{name: "add task memories", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS memories_json TEXT NOT NULL DEFAULT '[]'`},
+		{name: "add task answer audit", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS answer_audit_json JSONB NOT NULL DEFAULT '{}'::jsonb`},
+		{name: "add memory tenant", query: `ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`},
+		{name: "add memory session", query: `ALTER TABLE memories ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`},
+		{name: "add trace agent role", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS agent_role TEXT NOT NULL DEFAULT ''`},
+		{name: "add trace error", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS error_text TEXT NOT NULL DEFAULT ''`},
+		{name: "add trace prompt tokens", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS prompt_tokens INT NOT NULL DEFAULT 0`},
+		{name: "add trace completion tokens", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS completion_tokens INT NOT NULL DEFAULT 0`},
+		{name: "add trace total tokens", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS total_tokens INT NOT NULL DEFAULT 0`},
+		{name: "create trace step index", query: `CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`},
+		{name: "create session tenant index", query: `CREATE INDEX IF NOT EXISTS idx_sessions_tenant_updated ON sessions(tenant_id, updated_at DESC)`},
+		{name: "create task session index", query: `CREATE INDEX IF NOT EXISTS idx_tasks_session_sequence ON tasks(tenant_id, session_id, sequence_no)`},
+		{name: "create memory session index", query: `CREATE INDEX IF NOT EXISTS idx_memories_session_timestamp ON memories(tenant_id, session_id, timestamp DESC)`},
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement.query); err != nil {
+			return fmt.Errorf("postgres migration %s: %w", statement.name, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("postgres commit schema migration: %w", err)
+	}
 	return nil
+}
+
+type postgresMigrationStatement struct {
+	name  string
+	query string
 }
 
 func (p *PostgresStore) ReserveTenantLLMCall(ctx context.Context, tenantID string, periodStart time.Time, budget types.TenantLLMBudget) (types.TenantLLMUsage, bool, error) {

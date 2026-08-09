@@ -1096,7 +1096,7 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
-		attribute.String("agent.task.goal", task.Goal),
+		attribute.Int("agent.task.goal_chars", len([]rune(task.Goal))),
 	)
 
 	if e.Metrics != nil {
@@ -1146,7 +1146,7 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	}
 
 	engineLog.Info("task finished", "task_id", task.ID, "status", string(task.Status), "final_answer", task.FinalAnswer)
-	span.SetAttributes(attribute.String("agent.task.final_answer", task.FinalAnswer))
+	span.SetAttributes(attribute.Int("agent.task.final_answer_chars", len([]rune(task.FinalAnswer))))
 	return nil
 }
 

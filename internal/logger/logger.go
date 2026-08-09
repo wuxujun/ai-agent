@@ -54,6 +54,50 @@ type handlerOperation struct {
 	attrs []slog.Attr
 }
 
+var sensitiveContentKeys = map[string]struct{}{
+	"arguments":    {},
+	"body":         {},
+	"command":      {},
+	"content":      {},
+	"endpoint":     {},
+	"final_answer": {},
+	"goal":         {},
+	"hypothesis":   {},
+	"input":        {},
+	"instruction":  {},
+	"keyword":      {},
+	"observation":  {},
+	"output":       {},
+	"params":       {},
+	"payload":      {},
+	"prompt":       {},
+	"query":        {},
+	"request":      {},
+	"response":     {},
+	"search_query": {},
+	"thought":      {},
+	"unresolved":   {},
+	"uri":          {},
+	"user_input":   {},
+	"url":          {},
+	"post_url":     {},
+	"base_url":     {},
+}
+
+var secretLogKeys = map[string]struct{}{
+	"api_key":       {},
+	"authorization": {},
+	"cookie":        {},
+	"credential":    {},
+	"dsn":           {},
+	"password":      {},
+	"private_key":   {},
+	"redis_url":     {},
+	"set_cookie":    {},
+	"secret":        {},
+	"token":         {},
+}
+
 func newJSONHandler(writer io.Writer, options *slog.HandlerOptions) slog.Handler {
 	return slog.NewJSONHandler(writer, options).WithAttrs([]slog.Attr{
 		slog.String("app_version", buildinfo.Current()),
@@ -90,12 +134,67 @@ func (h *dynamicHandler) Handle(ctx context.Context, record slog.Record) error {
 	s := h.current()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return h.resolved(s).Handle(ctx, record)
+	return h.resolved(s).Handle(ctx, safeLogRecord(record))
 }
+
+func safeLogRecord(record slog.Record) slog.Record {
+	safe := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+	record.Attrs(func(attr slog.Attr) bool {
+		safe.AddAttrs(safeLogAttr(attr))
+		return true
+	})
+	return safe
+}
+
+func safeLogAttr(attr slog.Attr) slog.Attr {
+	attr.Value = attr.Value.Resolve()
+	key := strings.ToLower(strings.TrimSpace(attr.Key))
+	if isSecretLogKey(key) {
+		return slog.String(attr.Key, "[REDACTED]")
+	}
+	if _, content := sensitiveContentKeys[key]; content {
+		return slog.String(attr.Key, fmt.Sprintf("<%d chars>", TextLength(fmt.Sprint(attr.Value.Any()))))
+	}
+	if attr.Value.Kind() == slog.KindGroup {
+		members := attr.Value.Group()
+		for i := range members {
+			members[i] = safeLogAttr(members[i])
+		}
+		return slog.Group(attr.Key, attrsToAny(members)...)
+	}
+	return attr
+}
+
+func isSecretLogKey(key string) bool {
+	if _, exact := secretLogKeys[key]; exact {
+		return true
+	}
+	return strings.Contains(key, "api_key") ||
+		strings.Contains(key, "authorization") ||
+		strings.Contains(key, "password") ||
+		strings.Contains(key, "secret") ||
+		strings.HasSuffix(key, "_token") ||
+		strings.HasSuffix(key, "dsn")
+}
+
+func attrsToAny(attrs []slog.Attr) []any {
+	values := make([]any, len(attrs))
+	for i := range attrs {
+		values[i] = attrs[i]
+	}
+	return values
+}
+
+// TextLength returns a Unicode character count for safe content metadata.
+func TextLength(value string) int { return len([]rune(value)) }
 
 func (h *dynamicHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	cloned := *h
-	cloned.operations = append(append([]handlerOperation(nil), h.operations...), handlerOperation{attrs: append([]slog.Attr(nil), attrs...)})
+	safeAttrs := make([]slog.Attr, len(attrs))
+	for i := range attrs {
+		safeAttrs[i] = safeLogAttr(attrs[i])
+	}
+	cloned.operations = append(append([]handlerOperation(nil), h.operations...), handlerOperation{attrs: safeAttrs})
 	return &cloned
 }
 

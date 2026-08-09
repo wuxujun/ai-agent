@@ -40,12 +40,21 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 
-	// Set pragmas for extra robustness
-	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
-	_, _ = db.Exec("PRAGMA busy_timeout=5000;")
+	// Set pragmas for extra robustness. A failed pragma means the connection is
+	// not in the operating mode expected by the store, so fail startup instead
+	// of silently continuing with weaker locking behavior.
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite configure journal mode: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite configure busy timeout: %w", err)
+	}
 
 	s := &SQLiteStore{db: db}
 	if err := s.init(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -130,45 +139,110 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	PRIMARY KEY (tenant_id, period_start)
 );
 `
-	if _, err := s.db.Exec(schema); err != nil {
-		return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("sqlite begin schema migration: %w", err)
 	}
-	// Migrate: add agent_role column to traces if it doesn't exist yet.
-	// SQLite returns an error if the column already exists; we ignore it.
-	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN agent_role TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN error_text TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE traces ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0`)
-	// Migrate: token_budget and memories_json on tasks. These were added to
-	// close two silent breaks: TokenBudget was never persisted (so the planner
-	// token budget gate was always a dead branch) and task.Memories survived
-	// only in the in-memory store (so cross-process recovery dropped the RAG
-	// context). Both ALTERs are idempotent — SQLite returns an error if the
-	// column already exists, which we ignore.
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN token_budget INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN sequence_no INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN created_at DATETIME`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN updated_at DATETIME`)
-	_, _ = s.db.Exec(`UPDATE tasks SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`)
-	_, _ = s.db.Exec(`UPDATE tasks SET updated_at = created_at WHERE updated_at IS NULL`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_call_budget INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_cost_budget_usd REAL NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_calls INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN llm_estimated_cost_usd REAL NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN memories_json TEXT NOT NULL DEFAULT '[]'`)
-	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN answer_audit_json TEXT NOT NULL DEFAULT '{}'`)
-	_, _ = s.db.Exec(`ALTER TABLE memories ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.Exec(`ALTER TABLE memories ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`)
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_tenant_updated ON sessions(tenant_id, updated_at DESC)`)
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_session_sequence ON tasks(tenant_id, session_id, sequence_no)`)
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_session_timestamp ON memories(tenant_id, session_id, timestamp DESC)`)
-	// Index for time-bounded memory retrieval (QueryMemories uses ORDER BY timestamp DESC)
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp DESC)`)
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.Exec(schema); err != nil {
+		return fmt.Errorf("sqlite create schema: %w", err)
+	}
+
+	columns := []sqliteColumnMigration{
+		{table: "traces", column: "agent_role", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "traces", column: "error_text", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "traces", column: "prompt_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "traces", column: "completion_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "traces", column: "total_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "tasks", column: "token_budget", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "tasks", column: "tenant_id", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "tasks", column: "session_id", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "tasks", column: "sequence_no", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "tasks", column: "created_at", definition: "DATETIME"},
+		{table: "tasks", column: "updated_at", definition: "DATETIME"},
+		{table: "tasks", column: "llm_call_budget", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "tasks", column: "llm_cost_budget_usd", definition: "REAL NOT NULL DEFAULT 0"},
+		{table: "tasks", column: "llm_calls", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "tasks", column: "llm_estimated_cost_usd", definition: "REAL NOT NULL DEFAULT 0"},
+		{table: "tasks", column: "memories_json", definition: "TEXT NOT NULL DEFAULT '[]'"},
+		{table: "tasks", column: "answer_audit_json", definition: "TEXT NOT NULL DEFAULT '{}'"},
+		{table: "memories", column: "tenant_id", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "memories", column: "session_id", definition: "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, migration := range columns {
+		if err := ensureSQLiteColumn(tx, migration); err != nil {
+			return err
+		}
+	}
+
+	statements := []sqliteMigrationStatement{
+		{name: "backfill task created_at", query: `UPDATE tasks SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`},
+		{name: "backfill task updated_at", query: `UPDATE tasks SET updated_at = created_at WHERE updated_at IS NULL`},
+		{name: "create trace step index", query: `CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`},
+		{name: "create session tenant index", query: `CREATE INDEX IF NOT EXISTS idx_sessions_tenant_updated ON sessions(tenant_id, updated_at DESC)`},
+		{name: "create task session index", query: `CREATE INDEX IF NOT EXISTS idx_tasks_session_sequence ON tasks(tenant_id, session_id, sequence_no)`},
+		{name: "create memory session index", query: `CREATE INDEX IF NOT EXISTS idx_memories_session_timestamp ON memories(tenant_id, session_id, timestamp DESC)`},
+		{name: "create memory timestamp index", query: `CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp DESC)`},
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement.query); err != nil {
+			return fmt.Errorf("sqlite migration %s: %w", statement.name, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite commit schema migration: %w", err)
+	}
 	return nil
+}
+
+type sqliteColumnMigration struct {
+	table      string
+	column     string
+	definition string
+}
+
+type sqliteMigrationStatement struct {
+	name  string
+	query string
+}
+
+func ensureSQLiteColumn(tx *sql.Tx, migration sqliteColumnMigration) error {
+	rows, err := tx.Query(`PRAGMA table_info(` + quoteSQLiteIdentifier(migration.table) + `)`)
+	if err != nil {
+		return fmt.Errorf("sqlite inspect %s.%s: %w", migration.table, migration.column, err)
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("sqlite inspect %s.%s: %w", migration.table, migration.column, err)
+		}
+		if name == migration.column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("sqlite inspect %s.%s: %w", migration.table, migration.column, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("sqlite inspect %s.%s: %w", migration.table, migration.column, err)
+	}
+	if found {
+		return nil
+	}
+	query := `ALTER TABLE ` + quoteSQLiteIdentifier(migration.table) + ` ADD COLUMN ` + quoteSQLiteIdentifier(migration.column) + ` ` + migration.definition
+	if _, err := tx.Exec(query); err != nil {
+		return fmt.Errorf("sqlite add column %s.%s: %w", migration.table, migration.column, err)
+	}
+	return nil
+}
+
+func quoteSQLiteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func (s *SQLiteStore) ReserveTenantLLMCall(ctx context.Context, tenantID string, periodStart time.Time, budget types.TenantLLMBudget) (types.TenantLLMUsage, bool, error) {
