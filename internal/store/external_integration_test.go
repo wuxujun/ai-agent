@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -57,6 +58,61 @@ func TestExternalStoresSessionLeaseAndIsolation(t *testing.T) {
 			_, _ = pipe.Exec(ctx)
 		})
 	})
+}
+
+func TestExternalPostgresPGVectorRanking(t *testing.T) {
+	requireExternalIntegration(t)
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	restore := config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.Store.VectorSearch = "pgvector"
+		cfg.Store.PGVectorDimensions = 3
+	})
+	defer restore()
+
+	st, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	prefix := "integration-pgvector-" + uuid.NewString()
+	tenantID := prefix + "-tenant"
+	sessionID := prefix + "-session"
+	memoryNear := prefix + "-near"
+	memoryFar := prefix + "-far"
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = st.DeleteMemory(cleanupCtx, memoryNear, tenantID)
+		_, _ = st.DeleteMemory(cleanupCtx, memoryFar, tenantID)
+	})
+
+	now := time.Now().UTC()
+	for _, memory := range []*types.Memory{
+		{ID: memoryNear, TenantID: tenantID, SessionID: sessionID, Goal: "near vector", Timestamp: now, Embedding: []float32{1, 0, 0}},
+		{ID: memoryFar, TenantID: tenantID, SessionID: sessionID, Goal: "far vector", Timestamp: now, Embedding: []float32{0, 1, 0}},
+	} {
+		if err := st.SaveMemory(t.Context(), memory); err != nil {
+			t.Fatalf("SaveMemory(%s): %v", memory.ID, err)
+		}
+	}
+	queryCtx := WithSessionScope(WithTenantScope(t.Context(), tenantID), sessionID)
+	memories, err := st.QueryMemories(queryCtx, "", []float32{1, 0, 0}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memories) != 2 || memories[0].ID != memoryNear || memories[1].ID != memoryFar {
+		t.Fatalf("pgvector ranking = %+v", memories)
+	}
+	var extensionVersion string
+	if err := st.db.QueryRowContext(t.Context(), `SELECT extversion FROM pg_extension WHERE extname = 'vector'`).Scan(&extensionVersion); err != nil {
+		t.Fatalf("pgvector extension not enabled: %v", err)
+	}
+	if extensionVersion == "" {
+		t.Fatal("pgvector extension version is empty")
+	}
 }
 
 type externalIntegrationIDs struct {

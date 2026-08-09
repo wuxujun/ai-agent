@@ -41,3 +41,48 @@ jobs:
           -v "$PWD:/repo"
           ghcr.io/gitleaks/gitleaks:v8.27.2
           git --redact --verbose --config /repo/.gitleaks.toml /repo
+
+  external-integration:
+    name: PostgreSQL, pgvector, and Redis integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        env:
+          POSTGRES_DB: ai_agent_test
+          POSTGRES_USER: ai_agent
+          POSTGRES_PASSWORD: integration-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_agent -d ai_agent_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7.4.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      AI_AGENT_RUN_EXTERNAL_INTEGRATION: "true"
+      TEST_POSTGRES_DSN: postgres://ai_agent:integration-only-password@127.0.0.1:5432/ai_agent_test?sslmode=disable
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: External backend contracts
+        run: >-
+          go test -race -v -count=1 -timeout=3m
+          ./internal/store ./internal/orchestrator
+          -run '^(TestExternalStoresSessionLeaseAndIsolation|TestExternalPostgresPGVectorRanking|TestApprovalBusAcrossRedisClients)$'
