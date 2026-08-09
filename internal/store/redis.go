@@ -100,6 +100,32 @@ var deleteMemoryScript = redis.NewScript(`
 	return 1
 `)
 
+// nextSessionSequenceScript validates the tenant and session status before
+// incrementing a dedicated counter. Keeping the counter in its own Redis key
+// avoids optimistic-transaction exhaustion under contention and avoids relying
+// on Session.NextSequence, which is intentionally excluded from JSON APIs.
+var nextSessionSequenceScript = redis.NewScript(`
+	local raw = redis.call('GET', KEYS[1])
+	if not raw then
+		return -1
+	end
+	local ok, session = pcall(cjson.decode, raw)
+	if not ok then
+		return redis.error_reply('invalid session JSON')
+	end
+	if (session['tenant_id'] or '') ~= ARGV[1] then
+		return -1
+	end
+	if (session['status'] or '') ~= 'active' then
+		return -2
+	end
+	local sequence = redis.call('INCR', KEYS[2])
+	session['updated_at'] = ARGV[2]
+	redis.call('SET', KEYS[1], cjson.encode(session))
+	redis.call('ZADD', KEYS[3], ARGV[3], ARGV[4])
+	return sequence
+`)
+
 var reserveTenantLLMCallScript = redis.NewScript(`
 	local calls = tonumber(redis.call('HGET', KEYS[1], 'calls') or '0')
 	local cost = tonumber(redis.call('HGET', KEYS[1], 'cost') or '0')
@@ -490,6 +516,8 @@ func (r *RedisStore) ExistsTask(ctx context.Context, id string) (bool, error) {
 
 func (r *RedisStore) sessionKey(id string) string { return "session:" + id }
 
+func (r *RedisStore) sessionSequenceKey(id string) string { return "session:sequence:" + id }
+
 func (r *RedisStore) CreateSession(ctx context.Context, session *types.Session) error {
 	now := time.Now().UTC()
 	if session.Status == "" {
@@ -606,47 +634,23 @@ func (r *RedisStore) UpdateSession(ctx context.Context, session *types.Session) 
 }
 
 func (r *RedisStore) NextSessionTaskSequence(ctx context.Context, id, tenantID string) (int64, error) {
-	var sequence int64
-	for attempt := 0; attempt < 5; attempt++ {
-		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
-			data, err := tx.Get(ctx, r.sessionKey(id)).Bytes()
-			if errors.Is(err, redis.Nil) {
-				return ErrSessionNotFound
-			}
-			if err != nil {
-				return err
-			}
-			var session types.Session
-			if err := json.Unmarshal(data, &session); err != nil {
-				return err
-			}
-			if session.TenantID != tenantID {
-				return ErrSessionNotFound
-			}
-			if session.Status != types.SessionStatusActive {
-				return ErrSessionArchived
-			}
-			session.NextSequence++
-			session.UpdatedAt = time.Now().UTC()
-			encoded, err := json.Marshal(&session)
-			if err != nil {
-				return err
-			}
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, r.sessionKey(id), encoded, 0)
-				pipe.ZAdd(ctx, "sessions:tenant:"+tenantID, redis.Z{Score: float64(session.UpdatedAt.UnixNano()), Member: id})
-				return nil
-			})
-			if err == nil {
-				sequence = session.NextSequence
-			}
-			return err
-		}, r.sessionKey(id))
-		if !errors.Is(err, redis.TxFailedErr) {
-			return sequence, err
-		}
+	now := time.Now().UTC()
+	sequence, err := nextSessionSequenceScript.Run(ctx, r.client, []string{
+		r.sessionKey(id),
+		r.sessionSequenceKey(id),
+		"sessions:tenant:" + tenantID,
+	}, tenantID, now.Format(time.RFC3339Nano), now.UnixNano(), id).Int64()
+	if err != nil {
+		return 0, err
 	}
-	return 0, redis.TxFailedErr
+	switch sequence {
+	case -1:
+		return 0, ErrSessionNotFound
+	case -2:
+		return 0, ErrSessionArchived
+	default:
+		return sequence, nil
+	}
 }
 
 func (r *RedisStore) DeleteTask(ctx context.Context, id string) (bool, error) {

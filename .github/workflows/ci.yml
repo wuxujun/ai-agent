@@ -34,6 +34,11 @@ jobs:
           OPENAI_API_KEY: test-openai-key
           GEMINI_API_KEY: test-gemini-key
           LITELLM_MASTER_KEY: test-master-key
+          LITELLM_SALT_KEY: test-salt-key-at-least-32-characters
+          LITELLM_UI_PASSWORD: test-ui-password
+          LANGFUSE_PUBLIC_KEY: test-langfuse-public-key
+          LANGFUSE_SECRET_KEY: test-langfuse-secret-key
+          LANGFUSE_OTEL_HOST: http://langfuse.invalid
         run: docker compose -f deploy/litellm/compose.yaml config --quiet
       - name: Secret scan
         run: >-

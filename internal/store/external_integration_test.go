@@ -53,6 +53,8 @@ func TestExternalStoresSessionLeaseAndIsolation(t *testing.T) {
 			pipe := st.client.TxPipeline()
 			pipe.Del(ctx, st.sessionKey(ids.sessionA))
 			pipe.Del(ctx, st.sessionKey(ids.sessionB))
+			pipe.Del(ctx, st.sessionSequenceKey(ids.sessionA))
+			pipe.Del(ctx, st.sessionSequenceKey(ids.sessionB))
 			pipe.ZRem(ctx, "sessions:tenant:"+ids.tenantA, ids.sessionA)
 			pipe.ZRem(ctx, "sessions:tenant:"+ids.tenantB, ids.sessionB)
 			_, _ = pipe.Exec(ctx)
