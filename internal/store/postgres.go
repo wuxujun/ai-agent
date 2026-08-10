@@ -26,6 +26,8 @@ type PostgresStore struct {
 	pgvectorMu      sync.Mutex
 	pgvectorReady   bool
 	pgvectorIdxDim  int
+	paradeDBMu      sync.Mutex
+	paradeDBReady   bool
 	memoryIndexGate memoryIndexGate
 }
 
@@ -43,6 +45,12 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	}
 	if usePostgresPGVector() {
 		if err := p.ensurePGVector(context.Background()); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if usePostgresParadeDB() {
+		if err := p.ensureParadeDB(context.Background()); err != nil {
 			db.Close()
 			return nil, err
 		}
@@ -1086,7 +1094,16 @@ LIMIT $%d
 
 func usePostgresPGVector() bool {
 	cfg := config.Get()
-	return cfg != nil && strings.EqualFold(cfg.Store.VectorSearch, "pgvector")
+	if cfg == nil {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(cfg.Store.VectorSearch))
+	return mode == "pgvector" || mode == "paradedb"
+}
+
+func usePostgresParadeDB() bool {
+	cfg := config.Get()
+	return cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Store.VectorSearch), "paradedb")
 }
 
 func configuredPGVectorDimension() int {
@@ -1110,6 +1127,166 @@ func pgVectorLiteral(embedding []float32) string {
 	return b.String()
 }
 
+// ensureParadeDB enables pg_search and creates the covering BM25 index used by
+// hybrid memory retrieval. Explicit paradedb mode fails startup when the
+// extension is unavailable instead of silently advertising hybrid search.
+func (p *PostgresStore) ensureParadeDB(ctx context.Context) error {
+	p.paradeDBMu.Lock()
+	defer p.paradeDBMu.Unlock()
+	if p.paradeDBReady {
+		return nil
+	}
+	if _, err := p.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS pg_search`); err != nil {
+		return fmt.Errorf("enable ParadeDB pg_search extension: %w", err)
+	}
+	if _, err := p.db.ExecContext(ctx, `
+CREATE INDEX IF NOT EXISTS idx_memories_bm25
+ON memories USING bm25 (id, tenant_id, session_id, goal, final_answer, key_findings, timestamp)
+WITH (key_field='id')
+`); err != nil {
+		return fmt.Errorf("create ParadeDB memory BM25 index: %w", err)
+	}
+	p.paradeDBReady = true
+	return nil
+}
+
+func (p *PostgresStore) queryMemoriesBM25(ctx context.Context, query string, limit int) ([]*types.Memory, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || limit <= 0 {
+		return []*types.Memory{}, nil
+	}
+	if err := p.ensureParadeDB(ctx); err != nil {
+		return nil, err
+	}
+	args := []any{query}
+	conditions := []string{`(goal ||| $1 OR final_answer ||| $1 OR key_findings ||| $1)`}
+	if scopedTenant, scoped := tenantScope(ctx); scoped {
+		args = append(args, scopedTenant)
+		conditions = append(conditions, fmt.Sprintf(`(tenant_id = $%d OR ($%d = 'default' AND tenant_id = ''))`, len(args), len(args)))
+	}
+	if scopedSession, scoped := sessionScope(ctx); scoped {
+		args = append(args, scopedSession)
+		conditions = append(conditions, fmt.Sprintf(`session_id = $%d`, len(args)))
+	}
+	args = append(args, limit)
+	querySQL := fmt.Sprintf(`
+SELECT id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json,
+       paradedb.score(id) AS bm25_score
+FROM memories
+WHERE %s
+ORDER BY bm25_score DESC, timestamp DESC
+LIMIT $%d
+`, strings.Join(conditions, ` AND `), len(args))
+	rows, err := p.db.QueryContext(ctx, querySQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*types.Memory
+	for rows.Next() {
+		var mem types.Memory
+		var embJSON string
+		var score float32
+		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.SessionID, &mem.TaskID, &mem.Goal, &mem.FinalAnswer, &mem.KeyFindings, &mem.Timestamp, &embJSON, &score); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(embJSON), &mem.Embedding); err != nil {
+			continue
+		}
+		result = append(result, &mem)
+	}
+	return result, rows.Err()
+}
+
+// fuseMemoryRankings combines incomparable BM25 and cosine scores using
+// reciprocal-rank fusion. Results present in both lists are promoted without
+// requiring score normalization tied to either search implementation.
+func fuseMemoryRankings(rankings [][]*types.Memory, limit int, decayRate float64, now time.Time) []*types.Memory {
+	if limit <= 0 {
+		return []*types.Memory{}
+	}
+	const rrfK = 60.0
+	type fusedResult struct {
+		mem   *types.Memory
+		score float64
+	}
+	byID := make(map[string]*fusedResult)
+	for _, ranking := range rankings {
+		seen := make(map[string]bool, len(ranking))
+		for rank, mem := range ranking {
+			if mem == nil || mem.ID == "" || seen[mem.ID] {
+				continue
+			}
+			seen[mem.ID] = true
+			item := byID[mem.ID]
+			if item == nil {
+				item = &fusedResult{mem: mem}
+				byID[mem.ID] = item
+			}
+			item.score += 1.0 / (rrfK + float64(rank+1))
+		}
+	}
+	fused := make([]fusedResult, 0, len(byID))
+	for _, item := range byID {
+		if decayRate > 0 {
+			item.score = float64(memory.ApplyTimeDecay(float32(item.score), item.mem.Timestamp, now, decayRate))
+		}
+		fused = append(fused, *item)
+	}
+	sort.Slice(fused, func(i, j int) bool {
+		if fused[i].score == fused[j].score {
+			if fused[i].mem.Timestamp.Equal(fused[j].mem.Timestamp) {
+				return fused[i].mem.ID < fused[j].mem.ID
+			}
+			return fused[i].mem.Timestamp.After(fused[j].mem.Timestamp)
+		}
+		return fused[i].score > fused[j].score
+	})
+	if limit > len(fused) {
+		limit = len(fused)
+	}
+	result := make([]*types.Memory, 0, limit)
+	for i := 0; i < limit; i++ {
+		result = append(result, fused[i].mem)
+	}
+	return result
+}
+
+func (p *PostgresStore) queryMemoriesParadeDB(ctx context.Context, query string, embedding []float32, limit int, decayRate float64) ([]*types.Memory, error) {
+	candidateLimit := limit * 4
+	if candidateLimit < limit {
+		candidateLimit = limit
+	}
+	if configuredLimit := resolveMemoryCandidateLimit(); candidateLimit > configuredLimit {
+		candidateLimit = configuredLimit
+	}
+	var rankings [][]*types.Memory
+	var searchErrors []error
+	if strings.TrimSpace(query) != "" {
+		memories, err := p.queryMemoriesBM25(ctx, query, candidateLimit)
+		if err != nil {
+			searchErrors = append(searchErrors, fmt.Errorf("BM25: %w", err))
+		} else {
+			rankings = append(rankings, memories)
+		}
+	}
+	if len(embedding) > 0 {
+		memories, err := p.queryMemoriesPGVector(ctx, embedding, candidateLimit)
+		if err != nil {
+			searchErrors = append(searchErrors, fmt.Errorf("pgvector: %w", err))
+		} else {
+			rankings = append(rankings, memories)
+		}
+	}
+	if len(rankings) == 0 && len(searchErrors) > 0 {
+		return nil, errors.Join(searchErrors...)
+	}
+	for _, err := range searchErrors {
+		log.Warn("ParadeDB hybrid retrieval path failed; using remaining ranking", "error", err)
+	}
+	return fuseMemoryRankings(rankings, limit, decayRate, time.Now()), nil
+}
+
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match in Postgres.
 // When store.vector_search is "pgvector" and an embedding is available, ranking
 // is pushed down to PostgreSQL via pgvector cosine distance. Otherwise it falls
@@ -1129,8 +1306,21 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 	if cfg := config.Get(); cfg != nil {
 		decayRate = cfg.Store.MemoryDecayRate
 	}
+	if usePostgresParadeDB() && (strings.TrimSpace(query) != "" || len(embedding) > 0) {
+		mems, err := p.queryMemoriesParadeDB(ctx, query, embedding, limit, decayRate)
+		if err == nil {
+			span.SetAttributes(
+				attribute.Bool("agent.store.paradedb_used", true),
+				attribute.Int("agent.store.memory_count", len(mems)),
+			)
+			return mems, nil
+		}
+		span.RecordError(err)
+		span.SetAttributes(attribute.Bool("agent.store.paradedb_fallback", true))
+		log.Warn("ParadeDB hybrid memory query failed; falling back to in-process ranking", "error", err)
+	}
 
-	if usePostgresPGVector() && len(embedding) > 0 {
+	if !usePostgresParadeDB() && usePostgresPGVector() && len(embedding) > 0 {
 		fetchLimit := limit
 		if decayRate > 0 {
 			fetchLimit = resolveMemoryCandidateLimit()

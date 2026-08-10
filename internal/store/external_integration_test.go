@@ -121,6 +121,59 @@ func TestExternalPostgresPGVectorRanking(t *testing.T) {
 	}
 }
 
+func TestExternalPostgresParadeDBHybridRanking(t *testing.T) {
+	requireExternalIntegration(t)
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	restore := config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.Store.VectorSearch = "paradedb"
+		cfg.Store.PGVectorDimensions = 3
+		cfg.Store.MemoryCandidateLimit = 20
+	})
+	defer restore()
+
+	st, err := NewPostgresStore(dsn)
+	if err != nil {
+		if strings.Contains(err.Error(), "pg_search") || strings.Contains(err.Error(), "bm25") {
+			t.Skipf("ParadeDB pg_search is unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	defer st.Close()
+	prefix := "integration-paradedb-" + uuid.NewString()
+	tenantID := prefix + "-tenant"
+	sessionID := prefix + "-session"
+	memories := []*types.Memory{
+		{ID: prefix + "-overlap", TenantID: tenantID, SessionID: sessionID, Goal: "rareterm exact match", Timestamp: time.Now().UTC(), Embedding: []float32{1, 0, 0}},
+		{ID: prefix + "-lexical", TenantID: tenantID, SessionID: sessionID, Goal: "rareterm lexical only", Timestamp: time.Now().UTC(), Embedding: []float32{0, 1, 0}},
+		{ID: prefix + "-semantic", TenantID: tenantID, SessionID: sessionID, Goal: "semantic only", Timestamp: time.Now().UTC(), Embedding: []float32{0.9, 0.1, 0}},
+	}
+	for _, mem := range memories {
+		if err := st.SaveMemory(t.Context(), mem); err != nil {
+			t.Fatal(err)
+		}
+		id := mem.ID
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, err := st.DeleteMemory(cleanupCtx, id, tenantID); err != nil {
+				t.Errorf("clean up ParadeDB test memory %q: %v", id, err)
+			}
+		}()
+	}
+
+	queryCtx := WithSessionScope(WithTenantScope(t.Context(), tenantID), sessionID)
+	got, err := st.QueryMemories(queryCtx, "rareterm", []float32{1, 0, 0}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].ID != prefix+"-overlap" {
+		t.Fatalf("ParadeDB hybrid ranking = %+v, want overlap first", got)
+	}
+}
+
 func TestExternalPostgresMigrationUpgradesLegacySchema(t *testing.T) {
 	requireExternalIntegration(t)
 	dsn := os.Getenv("TEST_POSTGRES_DSN")

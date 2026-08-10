@@ -173,7 +173,7 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `api` | `addr`, `api_key`, per-tenant budgets and pipeline enforcement |
 | `orchestrator` | `mode` (`eino` / `legacy` / `adk` / `multiagent`), `max_concurrent_tasks` |
 | `llm` | `provider`, `model`, per-scene overrides, circuit breaker, retry budget, cost caps |
-| `store` | `type` (`sqlite` / `postgres` / `redis` / `memory`), `dsn`, `vector_search` |
+| `store` | `type` (`sqlite` / `postgres` / `redis` / `memory`), `dsn`, `vector_search` (`in_process` / `pgvector` / `paradedb`) |
 | `rag` | `search_url`, `search_method` (`MCP` / `POST`), `context_mode` (`jit` / `prefetch`) |
 | `mcp` | `servers[]` with URL, credential environment variable, tool prefix, risk level, and failure policy (restart required) |
 | `embedding` | `model` (used for memory vector search) |

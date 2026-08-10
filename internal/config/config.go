@@ -27,10 +27,10 @@ type Config struct {
 	Store struct {
 		Type string `mapstructure:"type"`
 		DSN  string `mapstructure:"dsn"`
-		// VectorSearch controls how Store.QueryMemories ranks embeddings.
-		// "in_process" keeps the existing JSON load + Go cosine ranking path.
-		// "pgvector" enables PostgreSQL pgvector ranking when store.type is
-		// postgres. Other backends ignore this setting.
+		// VectorSearch controls how Store.QueryMemories ranks memories.
+		// "in_process" keeps the existing JSON load + Go ranking path,
+		// "pgvector" enables PostgreSQL vector ranking, and "paradedb" fuses
+		// ParadeDB BM25 and pgvector rankings. Non-Postgres backends ignore it.
 		VectorSearch string `mapstructure:"vector_search"`
 		// PGVectorDimensions optionally enables a pgvector HNSW expression
 		// index for embeddings with this exact dimension. 0 keeps pgvector in
@@ -1191,6 +1191,14 @@ func (c *Config) validateIntrospectionAuth() error {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.Store.VectorSearch)) {
+	case "", "in_process", "pgvector", "paradedb":
+	default:
+		return fmt.Errorf("store.vector_search must be one of in_process, pgvector, or paradedb")
+	}
+	if c.Store.PGVectorDimensions < 0 || c.Store.MemoryCandidateLimit < 0 || c.Store.MemoryDecayRate < 0 {
+		return fmt.Errorf("store pgvector_dimensions, memory_candidate_limit, and memory_decay_rate must be >= 0")
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Langfuse.BootstrapFailurePolicy)) {
 	case "", "fail", "warn":
 	default:

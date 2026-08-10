@@ -799,6 +799,34 @@ func TestValidateLLMReadinessSettings(t *testing.T) {
 	}
 }
 
+func TestValidateStoreSearchSettings(t *testing.T) {
+	validConfig := func() *Config {
+		cfg := &Config{}
+		cfg.LLM.Provider = "openai"
+		cfg.LLM.TimeoutSeconds = 30
+		return cfg
+	}
+	for _, mode := range []string{"", "in_process", "pgvector", "paradedb", " PARADEDB "} {
+		cfg := validConfig()
+		cfg.Store.VectorSearch = mode
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("store vector_search mode %q rejected: %v", mode, err)
+		}
+	}
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.Store.VectorSearch = "elastic" },
+		func(cfg *Config) { cfg.Store.PGVectorDimensions = -1 },
+		func(cfg *Config) { cfg.Store.MemoryCandidateLimit = -1 },
+		func(cfg *Config) { cfg.Store.MemoryDecayRate = -0.1 },
+	} {
+		cfg := validConfig()
+		mutate(cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid store settings accepted: %+v", cfg.Store)
+		}
+	}
+}
+
 func testPtr[T any](value T) *T { return &value }
 
 func TestConfigFileProviderWinsOverCredentialAutoDetection(t *testing.T) {

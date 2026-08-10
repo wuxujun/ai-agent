@@ -173,7 +173,7 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `api` | `addr`、`api_key`、租户预算与流水线执行模式 |
 | `orchestrator` | `mode`（`eino` / `legacy` / `adk` / `multiagent`）、`max_concurrent_tasks` |
 | `llm` | `provider`、`model`、按 Scene 覆盖、熔断器、重试预算、成本上限 |
-| `store` | `type`（`sqlite` / `postgres` / `redis` / `memory`）、`dsn`、`vector_search` |
+| `store` | `type`（`sqlite` / `postgres` / `redis` / `memory`）、`dsn`、`vector_search`（`in_process` / `pgvector` / `paradedb`） |
 | `rag` | `search_url`、`search_method`（`MCP` / `POST`）、`context_mode`（`jit` / `prefetch`） |
 | `mcp` | `servers[]`，包含 URL、凭据环境变量、工具前缀、风险级别和故障策略（修改后需重启） |
 | `embedding` | `model`（用于记忆向量搜索） |

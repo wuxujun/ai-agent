@@ -84,8 +84,9 @@ store:
   # Env override: AI_AGENT_STORE_DSN
   dsn: "data/agent.db"
 
-  # Vector search mode. Supported: "in_process", "pgvector".
-  # "pgvector" only applies when store.type is "postgres"; other backends ignore it.
+  # Memory search mode. Supported: "in_process", "pgvector", "paradedb".
+  # "paradedb" fuses ParadeDB BM25 and pgvector rankings. PostgreSQL modes only
+  # apply when store.type is "postgres"; other backends ignore this setting.
   # Env override: AI_AGENT_STORE_VECTOR_SEARCH
   vector_search: "in_process"
 
