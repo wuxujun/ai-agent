@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -55,6 +56,15 @@ func TestFinalAnswerForLLMBudget(t *testing.T) {
 	got := finalAnswerForLimit(&types.Task{Goal: "finish task"}, limitReasonLLMBudget)
 	if !strings.Contains(got, "LLM call or estimated cost budget") {
 		t.Fatalf("expected LLM budget reason, got %q", got)
+	}
+}
+
+func TestLimitReasonForTaskBudgetErrorClassifiesTokenReserveRejection(t *testing.T) {
+	if got := limitReasonForTaskBudgetError(&llmcore.TaskBudgetError{Kind: "token", Current: 0, Limit: 4000}); got != limitReasonTokenBudget {
+		t.Fatalf("token budget error reason = %q, want %q", got, limitReasonTokenBudget)
+	}
+	if got := limitReasonForTaskBudgetError(&llmcore.TaskBudgetError{Kind: "call", Current: 3, Limit: 3}); got != limitReasonLLMBudget {
+		t.Fatalf("call budget error reason = %q, want %q", got, limitReasonLLMBudget)
 	}
 }
 

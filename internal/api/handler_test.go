@@ -453,6 +453,37 @@ func TestCreateTaskPersistsLLMBudgets(t *testing.T) {
 	}
 }
 
+func TestCreateTaskPersistsMode(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"id":"task-mode","goal":"x","workspace":"./testdata","mode":"multiagent"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	got, err := st.GetTask(context.Background(), "task-mode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode != "multiagent" {
+		t.Fatalf("persisted mode = %q, want multiagent", got.Mode)
+	}
+}
+
+func TestCreateTaskRejectsUnsupportedMode(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"goal":"x","workspace":"./testdata","mode":"invalid"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestCreateTaskRejectsNegativeLLMBudget(t *testing.T) {
 	st := store.NewMemoryStore()
 	r := setupTestRouter(t, st, nil)

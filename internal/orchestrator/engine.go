@@ -603,11 +603,28 @@ const (
 	ModeMultiAgent Mode = "multiagent"
 )
 
-func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
-	effectiveMode := e.Mode
-	if effectiveMode == "" {
-		effectiveMode = ModeEino
+func IsSupportedMode(mode Mode) bool {
+	switch mode {
+	case ModeEino, ModeLegacy, ModeAdk, ModeStep, ModeMultiAgent:
+		return true
+	default:
+		return false
 	}
+}
+
+func (e *Engine) effectiveMode(task *types.Task) Mode {
+	mode := e.Mode
+	if task != nil && strings.TrimSpace(task.Mode) != "" {
+		mode = Mode(strings.ToLower(strings.TrimSpace(task.Mode)))
+	}
+	if mode == "" {
+		mode = ModeEino
+	}
+	return mode
+}
+
+func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
+	effectiveMode := e.effectiveMode(task)
 	resumingMultiAgent := effectiveMode == ModeMultiAgent && e.CanResumeTask(task)
 	engineLog.Info("running next execution step", "task_id", task.ID, "session_id", task.SessionID, "mode", string(effectiveMode))
 	defer func() {
@@ -649,7 +666,8 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			var budgetErr *llmcore.TaskBudgetError
 			if errors.As(err, &budgetErr) {
 				engineLog.Info("task reached LLM budget", "task_id", task.ID, "kind", budgetErr.Kind, "current", budgetErr.Current, "limit", budgetErr.Limit)
-				_ = SetTaskPartial(task, finalAnswerForLimit(task, limitReasonLLMBudget), limitReasonLLMBudget)
+				limitReason := limitReasonForTaskBudgetError(budgetErr)
+				_ = SetTaskPartial(task, finalAnswerForLimit(task, limitReason), limitReason)
 				if e.Metrics != nil {
 					e.Metrics.IncCompleted()
 				}
@@ -736,7 +754,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	}
 
-	switch e.Mode {
+	switch effectiveMode {
 	case "", ModeEino:
 		err = e.runEinoNext(ctx, task)
 	case ModeLegacy:
@@ -748,7 +766,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	case ModeMultiAgent:
 		err = e.runMultiAgentNext(ctx, task)
 	default:
-		err = fmt.Errorf("unsupported orchestrator mode: %s", e.Mode)
+		err = fmt.Errorf("unsupported orchestrator mode: %s", effectiveMode)
 	}
 	if e.AnswerPipeline == nil && err == nil && !wasCompleted && task.Status == types.StatusCompleted && strings.TrimSpace(task.FinalAnswer) != "" {
 		e.verifyCitations(ctx, task)
@@ -1043,7 +1061,7 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 			msg = "No reason provided"
 		}
 		role := types.AgentRoleSingle
-		if e.Mode == ModeMultiAgent {
+		if e.effectiveMode(task) == ModeMultiAgent {
 			role = types.AgentRoleResearcher
 			if contextRole, ok := multiagent.ApprovalAgentRoleFromContext(ctx); ok {
 				role = contextRole
@@ -1224,6 +1242,12 @@ func stepReadBestFile(ctx context.Context, task *types.Task) error {
 	engineLog.Info("legacy static path - reading best file", "task_id", task.ID)
 	if len(task.Trace) < 2 || len(task.Trace[1].Evidence) == 0 {
 		engineLog.Info("legacy static path - not enough evidence to select a file", "task_id", task.ID)
+		task.Trace = append(task.Trace, types.StepTrace{
+			Step:        task.StepCount,
+			Goal:        task.Goal,
+			Action:      "read_file",
+			Observation: "skipped: not enough evidence to select a file",
+		})
 		_ = SetTaskCompleted(task, "not enough evidence to select a file")
 		return nil
 	}

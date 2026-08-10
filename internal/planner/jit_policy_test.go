@@ -37,6 +37,22 @@ func TestEnforceJITRetrievalOverridesWorkspaceToolForExternalFact(t *testing.T) 
 	}
 }
 
+func TestPreferredJITSearchActionUsesMemoryForExplicitSessionRecall(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+	}))
+	for _, goal := range []string{
+		"根据当前会话记忆，上一项测试返回了什么？",
+		"Answer from session memory: what was the previous result?",
+	} {
+		action, ok := PreferredJITSearchAction(&types.Task{Goal: goal})
+		if !ok || action != "memory_search" {
+			t.Fatalf("goal %q routed to %q, ok=%t; want memory_search", goal, action, ok)
+		}
+	}
+}
+
 func TestEnforceJITRetrievalOverridesNextActionWithCandidateFetch(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"

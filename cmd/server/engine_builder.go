@@ -127,12 +127,12 @@ func buildEngine(ctx context.Context, cfg *config.Config, st store.Store, probe 
 		},
 		ObserveReport: mc.ObserveAnswerPipeline,
 	}
+	eng.Coordinator = multiagent.NewCoordinator(mc)
+	eng.Coordinator.Verifier = &multiagent.VerifierAgent{}
+	eng.Coordinator.SuspendForApproval = eng.SuspendForApproval
+	eng.Coordinator.ResolveMemoryConflicts = eng.ResolveMemoryConflicts
+	eng.Coordinator.PersistTask = st.SaveFullTask
 	if mode == orchestrator.ModeMultiAgent {
-		eng.Coordinator = multiagent.NewCoordinator(mc)
-		eng.Coordinator.Verifier = &multiagent.VerifierAgent{}
-		eng.Coordinator.SuspendForApproval = eng.SuspendForApproval
-		eng.Coordinator.ResolveMemoryConflicts = eng.ResolveMemoryConflicts
-		eng.Coordinator.PersistTask = st.SaveFullTask
 		slog.Info("multi-agent mode enabled", "coordinator_provider", os.Getenv("AI_AGENT_LLM_PROVIDER"))
 	}
 	return engineBuild{engine: eng, metrics: mc, runtime: runtime}, nil

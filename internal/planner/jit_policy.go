@@ -135,10 +135,27 @@ func PreferredJITSearchAction(task *types.Task) (string, bool) {
 	if task == nil || !strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") || !RequiresFactualEvidence(task) {
 		return "", false
 	}
+	if goalExplicitlyTargetsMemory(task.Goal) {
+		return "memory_search", true
+	}
 	if strings.TrimSpace(config.Get().RAG.SearchURL) != "" {
 		return "rag_search", true
 	}
 	return "memory_search", true
+}
+
+func goalExplicitlyTargetsMemory(goal string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(goal))
+	markers := []string{
+		"会话记忆", "历史记忆", "任务记忆", "对话记忆", "记忆中", "记忆里",
+		"session memory", "conversation memory", "task memory", "memory history", "from memory", "in memory",
+	}
+	for _, marker := range markers {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // RequiresFactualEvidence identifies tasks whose answer is likely to depend on
@@ -151,6 +168,9 @@ func RequiresFactualEvidence(task *types.Task) bool {
 	}
 	if goalExplicitlyTargetsWorkspace(task.Goal) {
 		return false
+	}
+	if goalExplicitlyTargetsMemory(task.Goal) {
+		return true
 	}
 	for i := len(task.Trace) - 1; i >= 0; i-- {
 		if task.Trace[i].Action != "intent_route" {

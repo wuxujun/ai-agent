@@ -1191,6 +1191,11 @@ func (c *Config) validateIntrospectionAuth() error {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.Orchestrator.Mode)) {
+	case "", "eino", "legacy", "adk", "step", "multiagent":
+	default:
+		return fmt.Errorf("orchestrator.mode must be one of eino, legacy, adk, step, or multiagent")
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Store.VectorSearch)) {
 	case "", "in_process", "pgvector", "paradedb":
 	default:

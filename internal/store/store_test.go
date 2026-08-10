@@ -80,6 +80,7 @@ func TestStores(t *testing.T) {
 				TenantID:            "tenant-a",
 				Goal:                "Build a cool agent",
 				Status:              types.StatusCreated,
+				Mode:                "multiagent",
 				MaxSteps:            10,
 				StepCount:           1,
 				Workspace:           "/tmp/workspace",
@@ -104,7 +105,7 @@ func TestStores(t *testing.T) {
 				},
 				Trace: []types.StepTrace{
 					{
-						Step:        1,
+						Step:        0,
 						Goal:        "Find file",
 						Action:      "find_files",
 						Query:       "*.go",
@@ -147,6 +148,9 @@ func TestStores(t *testing.T) {
 			}
 			if retrieved.Status != task.Status {
 				t.Errorf("expected Status %q, got %q", task.Status, retrieved.Status)
+			}
+			if retrieved.Mode != task.Mode {
+				t.Errorf("expected Mode %q, got %q", task.Mode, retrieved.Mode)
 			}
 			if retrieved.MaxSteps != task.MaxSteps {
 				t.Errorf("expected MaxSteps %d, got %d", task.MaxSteps, retrieved.MaxSteps)

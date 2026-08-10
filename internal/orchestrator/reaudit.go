@@ -43,7 +43,7 @@ func (e *Engine) Reaudit(ctx context.Context, task *types.Task, force bool) (*ty
 	if force {
 		task.AnswerAudit = nil
 	}
-	report, err := e.AnswerPipeline.Process(ctx, task, string(e.Mode))
+	report, err := e.AnswerPipeline.Process(ctx, task, string(e.effectiveMode(task)))
 	if err != nil {
 		*task = *previous
 		return nil, err

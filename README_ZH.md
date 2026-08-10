@@ -171,7 +171,7 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | 配置节 | 关键项 |
 |:---|:---|
 | `api` | `addr`、`api_key`、租户预算与流水线执行模式 |
-| `orchestrator` | `mode`（`eino` / `legacy` / `adk` / `multiagent`）、`max_concurrent_tasks` |
+| `orchestrator` | `mode`（`eino` / `legacy` / `adk` / `step` / `multiagent`）、`max_concurrent_tasks` |
 | `llm` | `provider`、`model`、按 Scene 覆盖、熔断器、重试预算、成本上限 |
 | `store` | `type`（`sqlite` / `postgres` / `redis` / `memory`）、`dsn`、`vector_search`（`in_process` / `pgvector` / `paradedb`） |
 | `rag` | `search_url`、`search_method`（`MCP` / `POST`）、`context_mode`（`jit` / `prefetch`） |
@@ -249,6 +249,68 @@ Prompt 名称不存在时，才使用 `system_prompt` 创建 text Prompt。鉴�
 
 ## 🔗 API 接口说明
 
+### Session 会话接口
+
+Session 用于在当前租户下组织多个任务，并让这些任务共享会话记忆。
+
+| 方法 | 路径 | 说明 |
+|:---|:---|:---|
+| `POST` | `/api/sessions` | 创建会话 |
+| `GET` | `/api/sessions` | 查询会话列表（`?status=active\|archived&limit=50&offset=0`） |
+| `GET` | `/api/sessions/:id` | 获取会话详情 |
+| `PATCH` | `/api/sessions/:id` | 更新会话标题或状态 |
+| `POST` | `/api/sessions/:id/archive` | 归档会话 |
+| `GET` | `/api/sessions/:id/tasks` | 查询会话任务（`?status=&limit=50&offset=0`） |
+| `GET` | `/api/sessions/:id/memories` | 查询会话记忆（`?limit=50&offset=0`） |
+
+**创建会话：**
+
+```http
+POST /api/sessions
+Content-Type: application/json
+
+{
+  "id": "session-demo-001",
+  "title": "Agent 文件调研"
+}
+```
+
+`id` 可省略，省略时由服务自动生成。`title` 默认为 `New session`，最多
+200 个字符。新建会话的状态为 `active`。
+
+**更新会话：**
+
+```http
+PATCH /api/sessions/session-demo-001
+Content-Type: application/json
+
+{
+  "title": "更新后的调研会话",
+  "status": "active"
+}
+```
+
+创建任务时设置 `session_id`，即可将任务关联到指定会话：
+
+```json
+{
+  "id": "task-001",
+  "session_id": "session-demo-001",
+  "mode": "multiagent",
+  "goal": "查找代码库中所有 TODO 注释",
+  "workspace": "./workspace",
+  "max_steps": 8,
+  "tool_budget": 10
+}
+```
+
+`mode` 为可选字段，任务级支持 `eino`、`legacy`、`adk`、`step` 和
+`multiagent`；省略时使用服务的全局编排模式。研究及 RAG 任务推荐使用
+`multiagent`，简单生成或工具任务推荐使用 `eino` 或 `legacy`。
+
+已归档的会话仍可查询，但不能创建新任务。可通过
+`PATCH /api/sessions/:id` 并提交 `{"status":"active"}` 重新激活。
+
 ### 任务接口
 
 | 方法 | 路径 | 说明 |
@@ -270,6 +332,8 @@ Prompt 名称不存在时，才使用 `system_prompt` 创建 text Prompt。鉴�
 ```json
 {
   "id": "task-001",
+  "session_id": "session-demo-001",
+  "mode": "multiagent",
   "goal": "查找代码库中所有 TODO 注释",
   "workspace": "./workspace",
   "max_steps": 8,

@@ -294,6 +294,18 @@ func TestNextRejectsUnsupportedMode(t *testing.T) {
 	}
 }
 
+func TestNextUsesTaskModeOverride(t *testing.T) {
+	p := &stubPlanner{decision: &planner.PlanDecision{Stop: true, FinalAnswer: "done"}}
+	engine := &Engine{Mode: Mode("bad-global-mode"), Planner: p}
+	task := &types.Task{ID: "task-mode", Mode: "legacy", Status: types.StatusCreated, MaxSteps: 1, ToolBudget: 1}
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != types.StatusCompleted || task.FinalAnswer != "done" {
+		t.Fatalf("task = %+v", task)
+	}
+}
+
 func TestEinoNextStopsWhenPlannerStops(t *testing.T) {
 	p := &stubPlanner{
 		decision: &planner.PlanDecision{

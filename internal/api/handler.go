@@ -69,6 +69,7 @@ type CreateTaskRequest struct {
 	SessionID  string `json:"session_id"`
 	Goal       string `json:"goal"`
 	Workspace  string `json:"workspace"`
+	Mode       string `json:"mode"`
 	MaxSteps   int    `json:"max_steps"`
 	ToolBudget int    `json:"tool_budget"`
 	// TokenBudget caps cumulative planner+executor token usage across the task.
@@ -265,6 +266,11 @@ func (h *Handler) createTask(c *gin.Context) {
 	if req.MaxSteps <= 0 {
 		req.MaxSteps = 5
 	}
+	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+	if req.Mode != "" && !orchestrator.IsSupportedMode(orchestrator.Mode(req.Mode)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mode must be one of eino, legacy, adk, step, or multiagent"})
+		return
+	}
 	req.SessionID = strings.TrimSpace(req.SessionID)
 	if req.SessionID != "" && !validRequestID(req.SessionID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid session id"})
@@ -312,6 +318,7 @@ func (h *Handler) createTask(c *gin.Context) {
 		SessionID:        req.SessionID,
 		Goal:             req.Goal,
 		Workspace:        req.Workspace,
+		Mode:             req.Mode,
 		MaxSteps:         req.MaxSteps,
 		ToolBudget:       req.ToolBudget,
 		TokenBudget:      req.TokenBudget,

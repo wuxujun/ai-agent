@@ -83,6 +83,26 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestValidateOrchestratorMode(t *testing.T) {
+	for _, mode := range []string{"", "eino", "legacy", "adk", "step", "multiagent", " MULTIAGENT "} {
+		cfg := &Config{}
+		cfg.Orchestrator.Mode = mode
+		cfg.LLM.Provider = "openai-responses"
+		cfg.LLM.TimeoutSeconds = 30
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("valid orchestrator mode %q rejected: %v", mode, err)
+		}
+	}
+
+	cfg := &Config{}
+	cfg.Orchestrator.Mode = "not-a-mode"
+	cfg.LLM.Provider = "openai-responses"
+	cfg.LLM.TimeoutSeconds = 30
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "orchestrator.mode") {
+		t.Fatalf("invalid orchestrator mode was not rejected: %v", err)
+	}
+}
+
 func TestConcreteTaskFinalizerSceneIsLoaded(t *testing.T) {
 	resetConfig()
 	defer resetConfig()

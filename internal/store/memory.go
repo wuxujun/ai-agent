@@ -107,7 +107,7 @@ func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 		session.UpdatedAt = task.UpdatedAt
 	}
 
-	shouldIndex := task.Status == types.StatusCompleted && !alreadyIndexed && !alreadyIndexing
+	shouldIndex := memory.ShouldIndexTask(task) && !alreadyIndexed && !alreadyIndexing
 	if shouldIndex {
 		m.indexing[task.ID] = true
 	}
@@ -249,6 +249,7 @@ func (m *MemoryStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	defer m.mu.Unlock()
 
 	cloned := *mem
+	cloned.Timestamp = mem.Timestamp.UTC()
 	if mem.Embedding != nil {
 		cloned.Embedding = make([]float32, len(mem.Embedding))
 		copy(cloned.Embedding, mem.Embedding)

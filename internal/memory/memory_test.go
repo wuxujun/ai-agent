@@ -126,6 +126,33 @@ func TestCreateMemoryFromTask(t *testing.T) {
 	if len(mem.Embedding) == 0 {
 		t.Errorf("expected embedding to be computed (non-empty), got length %d", len(mem.Embedding))
 	}
+	if mem.Timestamp.Location() != time.UTC {
+		t.Errorf("expected UTC memory timestamp, got %s", mem.Timestamp.Location())
+	}
+}
+
+func TestShouldIndexTaskRejectsOperationalFallbacks(t *testing.T) {
+	tests := []struct {
+		name   string
+		status types.TaskStatus
+		answer string
+		want   bool
+	}{
+		{name: "useful answer", status: types.StatusCompleted, answer: "UTC memory passed", want: true},
+		{name: "not terminal", status: types.StatusRunning, answer: "draft", want: false},
+		{name: "empty", status: types.StatusCompleted, answer: " ", want: false},
+		{name: "no evidence", status: types.StatusCompleted, answer: "未检索到足够证据，暂时无法可靠回答该事实性问题。", want: false},
+		{name: "budget stop", status: types.StatusCompleted, answer: "Stopped before a final answer could be produced because the token budget was reached.", want: false},
+		{name: "synthesis failure", status: types.StatusCompleted, answer: "Research complete but synthesis failed. See trace for gathered evidence.", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := memory.ShouldIndexTask(&types.Task{Status: tt.status, FinalAnswer: tt.answer})
+			if got != tt.want {
+				t.Fatalf("ShouldIndexTask() = %t, want %t", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestTaskMemoryIDIsStableAcrossEquivalentTasks(t *testing.T) {

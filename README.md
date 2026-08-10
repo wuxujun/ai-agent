@@ -171,7 +171,7 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | Section | Key settings |
 |:---|:---|
 | `api` | `addr`, `api_key`, per-tenant budgets and pipeline enforcement |
-| `orchestrator` | `mode` (`eino` / `legacy` / `adk` / `multiagent`), `max_concurrent_tasks` |
+| `orchestrator` | `mode` (`eino` / `legacy` / `adk` / `step` / `multiagent`), `max_concurrent_tasks` |
 | `llm` | `provider`, `model`, per-scene overrides, circuit breaker, retry budget, cost caps |
 | `store` | `type` (`sqlite` / `postgres` / `redis` / `memory`), `dsn`, `vector_search` (`in_process` / `pgvector` / `paradedb`) |
 | `rag` | `search_url`, `search_method` (`MCP` / `POST`), `context_mode` (`jit` / `prefetch`) |
@@ -261,6 +261,70 @@ when bootstrap is disabled.
 
 ## 🔗 API Reference
 
+### Sessions
+
+Sessions group multiple tasks and their shared memories under the current tenant.
+
+| Method | Path | Description |
+|:---|:---|:---|
+| `POST` | `/api/sessions` | Create a session |
+| `GET` | `/api/sessions` | List sessions (`?status=active\|archived&limit=50&offset=0`) |
+| `GET` | `/api/sessions/:id` | Get session detail |
+| `PATCH` | `/api/sessions/:id` | Update the title or status |
+| `POST` | `/api/sessions/:id/archive` | Archive a session |
+| `GET` | `/api/sessions/:id/tasks` | List session tasks (`?status=&limit=50&offset=0`) |
+| `GET` | `/api/sessions/:id/memories` | List session memories (`?limit=50&offset=0`) |
+
+**Create a session:**
+
+```http
+POST /api/sessions
+Content-Type: application/json
+
+{
+  "id": "session-demo-001",
+  "title": "Agent file research"
+}
+```
+
+The `id` is optional and is generated automatically when omitted. The `title`
+defaults to `New session` and may contain at most 200 characters. New sessions
+start with status `active`.
+
+**Update a session:**
+
+```http
+PATCH /api/sessions/session-demo-001
+Content-Type: application/json
+
+{
+  "title": "Updated research session",
+  "status": "active"
+}
+```
+
+To attach a task to the session, set `session_id` when creating the task:
+
+```json
+{
+  "id": "task-001",
+  "session_id": "session-demo-001",
+  "mode": "multiagent",
+  "goal": "Find all TODO comments in the codebase",
+  "workspace": "./workspace",
+  "max_steps": 8,
+  "tool_budget": 10
+}
+```
+
+`mode` is optional. Supported per-task values are `eino`, `legacy`, `adk`,
+`step`, and `multiagent`; when omitted, the server-wide orchestrator mode is
+used. Prefer `multiagent` for research/RAG workflows and `eino` or `legacy` for
+simple generation and tool tasks.
+
+Archived sessions remain queryable, but do not accept new tasks. Use
+`PATCH /api/sessions/:id` with `{"status":"active"}` to reactivate one.
+
 ### Tasks
 
 | Method | Path | Description |
@@ -282,6 +346,8 @@ when bootstrap is disabled.
 ```json
 {
   "id": "task-001",
+  "session_id": "session-demo-001",
+  "mode": "multiagent",
   "goal": "Find all TODO comments in the codebase",
   "workspace": "./workspace",
   "max_steps": 8,

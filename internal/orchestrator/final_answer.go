@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -13,6 +14,13 @@ const (
 	limitReasonLLMBudget            = "llm_budget"
 	limitReasonFinalizerUnavailable = "finalizer_unavailable"
 )
+
+func limitReasonForTaskBudgetError(err *llmcore.TaskBudgetError) string {
+	if err != nil && err.Kind == "token" {
+		return limitReasonTokenBudget
+	}
+	return limitReasonLLMBudget
+}
 
 func finalAnswerForLimit(task *types.Task, reason string) string {
 	if existing := strings.TrimSpace(task.FinalAnswer); existing != "" {

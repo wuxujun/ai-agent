@@ -63,10 +63,7 @@ func (e *Engine) CanResumeTask(task *types.Task) bool {
 	if e == nil || task == nil {
 		return false
 	}
-	mode := e.Mode
-	if mode == "" {
-		mode = ModeEino
-	}
+	mode := e.effectiveMode(task)
 	resumableStatus := task.Status == types.StatusPartial || task.Status == types.StatusRunning
 	resumeCheckpoint := multiagent.HasPendingVerifierDraft(task) || multiagent.HasPendingTeamConfigChange(task)
 	return mode == ModeMultiAgent && resumableStatus && resumeCheckpoint

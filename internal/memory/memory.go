@@ -29,6 +29,32 @@ func TaskMemoryID(task *types.Task) string {
 	return fmt.Sprintf("mem-content-%x", digest[:16])
 }
 
+// ShouldIndexTask reports whether a terminal task contains a reusable answer.
+// Operational fallback messages are deliberately excluded so failed retrieval
+// attempts and budget stops do not become high-ranking evidence for later tasks.
+func ShouldIndexTask(task *types.Task) bool {
+	if task == nil || task.Status != types.StatusCompleted {
+		return false
+	}
+	answer := strings.TrimSpace(task.FinalAnswer)
+	if answer == "" {
+		return false
+	}
+	lowValueMarkers := []string{
+		"未检索到足够证据",
+		"检索详情未返回可用证据",
+		"Research complete but synthesis failed",
+		"Stopped before a final answer could be produced",
+		"not enough evidence to select a file",
+	}
+	for _, marker := range lowValueMarkers {
+		if strings.Contains(answer, marker) {
+			return false
+		}
+	}
+	return true
+}
+
 // SummarizeTask extracts key findings from a completed task's traces.
 func SummarizeTask(task *types.Task) string {
 	var findings []string
@@ -75,7 +101,7 @@ func CreateMemoryFromTask(ctx context.Context, task *types.Task) (*types.Memory,
 		Goal:        task.Goal,
 		FinalAnswer: task.FinalAnswer,
 		KeyFindings: findings,
-		Timestamp:   time.Now(),
+		Timestamp:   time.Now().UTC(),
 		Embedding:   emb,
 	}, nil
 }

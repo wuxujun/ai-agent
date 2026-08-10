@@ -90,3 +90,29 @@ func TestStepNextExecutesStaticSteps(t *testing.T) {
 		t.Errorf("expected task completed, got status %s", task.Status)
 	}
 }
+
+func TestStepNextRecordsSkippedReadWhenSearchHasNoEvidence(t *testing.T) {
+	task := &types.Task{
+		ID:         "task-step-no-evidence",
+		Goal:       "find missing",
+		Status:     types.StatusRunning,
+		MaxSteps:   3,
+		StepCount:  2,
+		ToolBudget: 1,
+		Trace: []types.StepTrace{
+			{Step: 0, Action: "find_files", Observation: "found 0 candidate files"},
+			{Step: 1, Action: "search_text", Observation: "found 0 evidence items"},
+		},
+	}
+	engine := &Engine{Mode: ModeStep}
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != types.StatusCompleted || task.StepCount != 3 || len(task.Trace) != 3 {
+		t.Fatalf("task = %+v", task)
+	}
+	last := task.Trace[2]
+	if last.Step != 2 || last.Action != "read_file" || !strings.Contains(last.Observation, "skipped") {
+		t.Fatalf("skipped read trace = %+v", last)
+	}
+}

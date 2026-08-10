@@ -100,6 +100,7 @@ type Task struct {
 	UpdatedAt   time.Time  `json:"updated_at,omitempty"`
 	Goal        string     `json:"goal"`
 	Status      TaskStatus `json:"status"`
+	Mode        string     `json:"mode,omitempty"`
 	MaxSteps    int        `json:"max_steps"`
 	StepCount   int        `json:"step_count"`
 	Workspace   string     `json:"workspace"`

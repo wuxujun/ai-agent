@@ -276,7 +276,7 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("failed to save task to redis: %w", err)
 	}
 
-	if task.Status == types.StatusCompleted {
+	if memory.ShouldIndexTask(task) {
 		memoryID := memory.TaskMemoryID(task)
 		if !r.memoryIndexGate.tryStart(memoryID) {
 			return nil
@@ -697,7 +697,9 @@ func (r *RedisStore) memoryKey(id string) string {
 
 // SaveMemory persists a memory entry to Redis and index.
 func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
-	data, err := json.Marshal(mem)
+	normalized := *mem
+	normalized.Timestamp = mem.Timestamp.UTC()
+	data, err := json.Marshal(&normalized)
 	if err != nil {
 		return fmt.Errorf("failed to serialize memory: %w", err)
 	}
