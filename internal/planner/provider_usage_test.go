@@ -15,6 +15,12 @@ func mkResp(body string) *http.Response {
 	}
 }
 
+func mkStreamResp(body string) *http.Response {
+	response := mkResp(body)
+	response.Header = http.Header{"Content-Type": []string{"text/event-stream"}}
+	return response
+}
+
 // validResponsesBody returns an OpenAI Responses-API payload carrying the given
 // usage block, with a well-formed output[].content[].text so extractStructuredText
 // succeeds.
@@ -74,6 +80,29 @@ func TestParseOpenAIResponsesDerivesTotalWhenMissing(t *testing.T) {
 	}
 	if usage.TotalTokens != 130 {
 		t.Errorf("TotalTokens = %d, want 130 (derived from input+output)", usage.TotalTokens)
+	}
+}
+
+func TestParseOpenAIResponsesStreamsDeltasAndUsage(t *testing.T) {
+	body := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"stop\\\":\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"true}\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n" +
+		"data: [DONE]\n\n"
+	var chunks []string
+	text, usage, err := parseOpenAIResponses(mkStreamResp(body), func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != `{"stop":true}` {
+		t.Fatalf("text = %q", text)
+	}
+	if len(chunks) != 2 || strings.Join(chunks, "") != text {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	if usage.PromptTokens != 12 || usage.CompletionTokens != 3 || usage.TotalTokens != 15 {
+		t.Fatalf("usage = %+v", usage)
 	}
 }
 

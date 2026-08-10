@@ -37,6 +37,16 @@ type Config struct {
 		// exact-scan mode, which is still useful for avoiding JSON
 		// deserialization in Go but does not provide ANN indexing.
 		PGVectorDimensions int `mapstructure:"pgvector_dimensions"`
+		// ParadeDBCandidateMultiplier controls how many candidates each BM25
+		// and pgvector branch contributes before reciprocal-rank fusion.
+		// 0 uses the default (4).
+		ParadeDBCandidateMultiplier int `mapstructure:"paradedb_candidate_multiplier"`
+		// ParadeDBRRFK is the reciprocal-rank-fusion smoothing constant.
+		// Lower values emphasize top ranks; 0 uses the default (60).
+		ParadeDBRRFK float64 `mapstructure:"paradedb_rrf_k"`
+		// ParadeDBSlowQueryThresholdMS marks individual hybrid retrieval
+		// phases as slow. 0 disables slow-phase counting.
+		ParadeDBSlowQueryThresholdMS int `mapstructure:"paradedb_slow_query_threshold_ms"`
 		// MemoryCandidateLimit caps how many recent memory rows each Store
 		// backend loads from disk before in-process cosine/keyword ranking.
 		// Without a cap, large memory tables would scan the full table on
@@ -173,6 +183,7 @@ type Config struct {
 type APITenantConfig struct {
 	APIKey                       string   `mapstructure:"api_key"`
 	Admin                        bool     `mapstructure:"admin"`
+	WorkspaceRoot                string   `mapstructure:"workspace_root"`
 	DailyLLMCallBudget           int      `mapstructure:"daily_llm_call_budget"`
 	DailyLLMCostBudgetUSD        float64  `mapstructure:"daily_llm_cost_budget_usd"`
 	AnswerPipelineEnforcement    string   `mapstructure:"answer_pipeline_enforcement"`
@@ -185,6 +196,9 @@ type APIAuthConfig struct {
 	Bearer        APIBearerConfig        `mapstructure:"bearer"`
 	JWT           APIJWTConfig           `mapstructure:"jwt"`
 	Introspection APIIntrospectionConfig `mapstructure:"introspection"`
+	// RequireTenantWorkspaceRoot rejects non-admin task creation unless the
+	// authenticated tenant has an explicit workspace_root boundary.
+	RequireTenantWorkspaceRoot bool `mapstructure:"require_tenant_workspace_root"`
 }
 
 type APIBearerConfig struct {
@@ -384,6 +398,7 @@ func setupViper() {
 	viper.SetDefault("api.addr", "127.0.0.1:8080")
 	viper.SetDefault("api.api_key", "")
 	viper.SetDefault("api.auth.mode", "api_key")
+	viper.SetDefault("api.auth.require_tenant_workspace_root", false)
 	viper.SetDefault("api.auth.bearer.validation_mode", "jwks")
 	viper.SetDefault("api.auth.jwt.tenant_claim", "code")
 	viper.SetDefault("api.auth.jwt.allowed_algorithms", []string{"RS256"})
@@ -402,6 +417,9 @@ func setupViper() {
 	viper.SetDefault("store.dsn", "data/agent.db")
 	viper.SetDefault("store.vector_search", "in_process")
 	viper.SetDefault("store.pgvector_dimensions", 0)
+	viper.SetDefault("store.paradedb_candidate_multiplier", 4)
+	viper.SetDefault("store.paradedb_rrf_k", 60.0)
+	viper.SetDefault("store.paradedb_slow_query_threshold_ms", 250)
 	viper.SetDefault("store.memory_candidate_limit", 200)
 	viper.SetDefault("store.memory_decay_rate", 0.0)
 	viper.SetDefault("orchestrator.mode", "eino")
@@ -469,6 +487,7 @@ func setupViper() {
 	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
 	_ = viper.BindEnv("api.api_key", "AI_AGENT_API_KEY")
 	_ = viper.BindEnv("api.auth.mode", "AI_AGENT_API_AUTH_MODE")
+	_ = viper.BindEnv("api.auth.require_tenant_workspace_root", "AI_AGENT_API_REQUIRE_TENANT_WORKSPACE_ROOT")
 	_ = viper.BindEnv("api.auth.bearer.validation_mode", "AI_AGENT_API_BEARER_VALIDATION_MODE")
 	_ = viper.BindEnv("api.auth.jwt.issuer", "AI_AGENT_API_JWT_ISSUER")
 	_ = viper.BindEnv("api.auth.jwt.audience", "AI_AGENT_API_JWT_AUDIENCE")
@@ -584,6 +603,16 @@ func LoadConfig() *Config {
 // calls — always call Get() at the point of use to pick up live updates.
 func Get() *Config {
 	return LoadConfig()
+}
+
+// Revision returns the monotonically increasing in-process configuration
+// revision. It changes after initial load, effective reloads, and test
+// overrides, allowing operators to distinguish repeated no-op reload calls
+// from an earlier filesystem-watcher update.
+func Revision() uint64 {
+	mu.RLock()
+	defer mu.RUnlock()
+	return configRevision
 }
 
 // OverrideForTesting replaces the global configuration with a cloned snapshot
@@ -716,10 +745,7 @@ func Reload() (*Config, []string, error) {
 		return nil, nil, fmt.Errorf("config reload: validation failed: %w", err)
 	}
 
-	// Build a human-readable, redacted diff before swapping.
-	changes := diffConfigs(globalConfig, newCfg)
-	globalConfig = newCfg
-	configRevision++
+	changes := applyReloadedConfig(newCfg)
 
 	if len(changes) == 0 {
 		logger.Info("reload complete, no changes detected")
@@ -730,6 +756,24 @@ func Reload() (*Config, []string, error) {
 		}
 	}
 	return globalConfig, changes, nil
+}
+
+// applyReloadedConfig installs a validated snapshot while mu is held. A no-op
+// refresh replaces the snapshot but does not create a new configuration
+// revision. The generic fallback keeps no_changes accurate if a newly added
+// field has not yet gained a detailed redacted diff formatter.
+func applyReloadedConfig(newCfg *Config) []string {
+	changes := diffConfigs(globalConfig, newCfg)
+	changed := !reflect.DeepEqual(globalConfig, newCfg)
+	globalConfig = newCfg
+	if !changed {
+		return changes
+	}
+	configRevision++
+	if len(changes) == 0 {
+		changes = append(changes, "configuration changed (details unavailable)")
+	}
+	return changes
 }
 
 // Watch registers a viper OnConfigChange hook so that the config is
@@ -834,6 +878,11 @@ func diffConfigs(old, new *Config) []string {
 	addIf("store.dsn", old.Store.DSN, new.Store.DSN)
 	addIf("store.vector_search", old.Store.VectorSearch, new.Store.VectorSearch)
 	addIfInt("store.pgvector_dimensions", old.Store.PGVectorDimensions, new.Store.PGVectorDimensions)
+	addIfInt("store.paradedb_candidate_multiplier", old.Store.ParadeDBCandidateMultiplier, new.Store.ParadeDBCandidateMultiplier)
+	if old.Store.ParadeDBRRFK != new.Store.ParadeDBRRFK {
+		changes = append(changes, fmt.Sprintf("store.paradedb_rrf_k: %g → %g", old.Store.ParadeDBRRFK, new.Store.ParadeDBRRFK))
+	}
+	addIfInt("store.paradedb_slow_query_threshold_ms", old.Store.ParadeDBSlowQueryThresholdMS, new.Store.ParadeDBSlowQueryThresholdMS)
 	addIfInt("store.memory_candidate_limit", old.Store.MemoryCandidateLimit, new.Store.MemoryCandidateLimit)
 	if old.Store.MemoryDecayRate != new.Store.MemoryDecayRate {
 		changes = append(changes, fmt.Sprintf("store.memory_decay_rate: %g → %g", old.Store.MemoryDecayRate, new.Store.MemoryDecayRate))
@@ -1201,8 +1250,8 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("store.vector_search must be one of in_process, pgvector, or paradedb")
 	}
-	if c.Store.PGVectorDimensions < 0 || c.Store.MemoryCandidateLimit < 0 || c.Store.MemoryDecayRate < 0 {
-		return fmt.Errorf("store pgvector_dimensions, memory_candidate_limit, and memory_decay_rate must be >= 0")
+	if c.Store.PGVectorDimensions < 0 || c.Store.ParadeDBCandidateMultiplier < 0 || c.Store.ParadeDBRRFK < 0 || c.Store.ParadeDBSlowQueryThresholdMS < 0 || c.Store.MemoryCandidateLimit < 0 || c.Store.MemoryDecayRate < 0 {
+		return fmt.Errorf("store pgvector_dimensions, ParadeDB ranking/slow-query settings, memory_candidate_limit, and memory_decay_rate must be >= 0")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Langfuse.BootstrapFailurePolicy)) {
 	case "", "fail", "warn":
@@ -1369,6 +1418,9 @@ func (c *Config) Validate() error {
 		}
 		if tenant.DailyLLMCallBudget < 0 || tenant.DailyLLMCostBudgetUSD < 0 {
 			return fmt.Errorf("api tenant %q budgets must be >= 0", tenantID)
+		}
+		if c.API.Auth.RequireTenantWorkspaceRoot && !tenant.Admin && strings.TrimSpace(tenant.WorkspaceRoot) == "" {
+			return fmt.Errorf("api tenant %q workspace_root is required when api.auth.require_tenant_workspace_root is true", tenantID)
 		}
 		if tenant.APIKey != "" {
 			if previous, exists := seenTenantKeys[tenant.APIKey]; exists {

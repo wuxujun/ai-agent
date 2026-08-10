@@ -1,12 +1,49 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
 )
+
+func TestNativeStructuredCallerStreamsOpenAIChat(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		raw, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(raw), `"stream":true`) || !strings.Contains(string(raw), `"include_usage":true`) {
+			t.Errorf("request does not enable usage streaming: %s", raw)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answer\\\":\\\"hel\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"lo\\\"}\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	var dest struct {
+		Answer string `json:"answer"`
+	}
+	var chunks []string
+	usage, err := (nativeStructuredCaller{}).CallJSONStream(context.Background(), Config{Provider: llmprovider.LiteLLM, Model: "test", BaseURL: server.URL}, "system", "user", map[string]any{"type": "object"}, &dest, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dest.Answer != "hello" || strings.Join(chunks, "") != `{"answer":"hello"}` {
+		t.Fatalf("dest=%+v chunks=%#v", dest, chunks)
+	}
+	if usage.TotalTokens != 10 {
+		t.Fatalf("usage=%+v", usage)
+	}
+}
 
 func TestExtractStructuredResponses(t *testing.T) {
 	text, usage, err := extractStructuredResponse("responses", []byte(`{"output":[{"content":[{"text":"{\"answer\":\"ok\"}"}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`))

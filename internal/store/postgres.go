@@ -23,13 +23,27 @@ import (
 
 // PostgresStore implements Store using a PostgreSQL database.
 type PostgresStore struct {
-	db              *sql.DB
-	pgvectorMu      sync.Mutex
-	pgvectorReady   bool
-	pgvectorIdxDim  int
-	paradeDBMu      sync.Mutex
-	paradeDBReady   bool
-	memoryIndexGate memoryIndexGate
+	db               *sql.DB
+	pgvectorMu       sync.Mutex
+	pgvectorReady    bool
+	pgvectorIdxDim   int
+	paradeDBMu       sync.Mutex
+	paradeDBReady    bool
+	memoryIndexGate  memoryIndexGate
+	retrievalMetrics RetrievalMetrics
+}
+
+// RetrievalMetrics receives low-cardinality aggregate retrieval telemetry.
+// Implementations must be safe for concurrent calls.
+type RetrievalMetrics interface {
+	ObserveRetrieval(ctx context.Context, stage string, latency time.Duration, items int, slow bool, err error)
+	IncRetrievalFallback(ctx context.Context)
+}
+
+// SetRetrievalMetrics attaches the process metrics collector before the store
+// starts serving requests.
+func (p *PostgresStore) SetRetrievalMetrics(observer RetrievalMetrics) {
+	p.retrievalMetrics = observer
 }
 
 // postgresText is a final defensive boundary for text originating in tools,
@@ -1216,11 +1230,13 @@ LIMIT $%d
 // fuseMemoryRankings combines incomparable BM25 and cosine scores using
 // reciprocal-rank fusion. Results present in both lists are promoted without
 // requiring score normalization tied to either search implementation.
-func fuseMemoryRankings(rankings [][]*types.Memory, limit int, decayRate float64, now time.Time) []*types.Memory {
+func fuseMemoryRankings(rankings [][]*types.Memory, limit int, decayRate, rrfK float64, now time.Time) []*types.Memory {
 	if limit <= 0 {
 		return []*types.Memory{}
 	}
-	const rrfK = 60.0
+	if rrfK <= 0 {
+		rrfK = 60
+	}
 	type fusedResult struct {
 		mem   *types.Memory
 		score float64
@@ -1268,7 +1284,8 @@ func fuseMemoryRankings(rankings [][]*types.Memory, limit int, decayRate float64
 }
 
 func (p *PostgresStore) queryMemoriesParadeDB(ctx context.Context, query string, embedding []float32, limit int, decayRate float64) ([]*types.Memory, error) {
-	candidateLimit := limit * 4
+	multiplier, rrfK := configuredParadeDBRanking()
+	candidateLimit := limit * multiplier
 	if candidateLimit < limit {
 		candidateLimit = limit
 	}
@@ -1278,20 +1295,53 @@ func (p *PostgresStore) queryMemoriesParadeDB(ctx context.Context, query string,
 	var rankings [][]*types.Memory
 	var searchErrors []error
 	if strings.TrimSpace(query) != "" {
-		memories, err := p.queryMemoriesBM25(ctx, query, candidateLimit)
+		searchCtx, searchSpan := tracer.Start(ctx, "store.postgres.query_memories_bm25")
+		searchSpan.SetAttributes(attribute.Int("agent.store.candidate_limit", candidateLimit))
+		started := time.Now()
+		memories, err := p.queryMemoriesBM25(searchCtx, query, candidateLimit)
+		latency := time.Since(started)
+		slow := retrievalPhaseSlow(latency)
+		if p.retrievalMetrics != nil {
+			p.retrievalMetrics.ObserveRetrieval(searchCtx, "bm25", latency, len(memories), slow, err)
+		}
+		if slow {
+			log.Warn("slow ParadeDB retrieval phase", "stage", "bm25", "latency_ms", float64(latency.Microseconds())/1000, "items", len(memories))
+		}
 		if err != nil {
+			searchSpan.RecordError(err)
+			searchSpan.SetStatus(codes.Error, "BM25 retrieval failed")
 			searchErrors = append(searchErrors, fmt.Errorf("BM25: %w", err))
 		} else {
+			searchSpan.SetAttributes(attribute.Int("agent.store.candidate_count", len(memories)))
 			rankings = append(rankings, memories)
 		}
+		searchSpan.End()
 	}
 	if len(embedding) > 0 {
-		memories, err := p.queryMemoriesPGVector(ctx, embedding, candidateLimit)
+		searchCtx, searchSpan := tracer.Start(ctx, "store.postgres.query_memories_pgvector")
+		searchSpan.SetAttributes(
+			attribute.Int("agent.store.candidate_limit", candidateLimit),
+			attribute.Int("agent.query.embedding_dim", len(embedding)),
+		)
+		started := time.Now()
+		memories, err := p.queryMemoriesPGVector(searchCtx, embedding, candidateLimit)
+		latency := time.Since(started)
+		slow := retrievalPhaseSlow(latency)
+		if p.retrievalMetrics != nil {
+			p.retrievalMetrics.ObserveRetrieval(searchCtx, "pgvector", latency, len(memories), slow, err)
+		}
+		if slow {
+			log.Warn("slow ParadeDB retrieval phase", "stage", "pgvector", "latency_ms", float64(latency.Microseconds())/1000, "items", len(memories))
+		}
 		if err != nil {
+			searchSpan.RecordError(err)
+			searchSpan.SetStatus(codes.Error, "pgvector retrieval failed")
 			searchErrors = append(searchErrors, fmt.Errorf("pgvector: %w", err))
 		} else {
+			searchSpan.SetAttributes(attribute.Int("agent.store.candidate_count", len(memories)))
 			rankings = append(rankings, memories)
 		}
+		searchSpan.End()
 	}
 	if len(rankings) == 0 && len(searchErrors) > 0 {
 		return nil, errors.Join(searchErrors...)
@@ -1299,7 +1349,43 @@ func (p *PostgresStore) queryMemoriesParadeDB(ctx context.Context, query string,
 	for _, err := range searchErrors {
 		log.Warn("ParadeDB hybrid retrieval path failed; using remaining ranking", "error", err)
 	}
-	return fuseMemoryRankings(rankings, limit, decayRate, time.Now()), nil
+	_, fusionSpan := tracer.Start(ctx, "store.postgres.fuse_memory_rankings")
+	fusionSpan.SetAttributes(
+		attribute.Int("agent.store.ranking_count", len(rankings)),
+		attribute.Int("agent.query.limit", limit),
+		attribute.Float64("agent.store.paradedb_rrf_k", rrfK),
+	)
+	started := time.Now()
+	result := fuseMemoryRankings(rankings, limit, decayRate, rrfK, time.Now())
+	latency := time.Since(started)
+	slow := retrievalPhaseSlow(latency)
+	if p.retrievalMetrics != nil {
+		p.retrievalMetrics.ObserveRetrieval(ctx, "rrf", latency, len(result), slow, nil)
+	}
+	if slow {
+		log.Warn("slow ParadeDB retrieval phase", "stage", "rrf", "latency_ms", float64(latency.Microseconds())/1000, "items", len(result))
+	}
+	fusionSpan.SetAttributes(attribute.Int("agent.store.memory_count", len(result)))
+	fusionSpan.End()
+	return result, nil
+}
+
+func retrievalPhaseSlow(latency time.Duration) bool {
+	cfg := config.Get()
+	return cfg != nil && cfg.Store.ParadeDBSlowQueryThresholdMS > 0 && latency >= time.Duration(cfg.Store.ParadeDBSlowQueryThresholdMS)*time.Millisecond
+}
+
+func configuredParadeDBRanking() (int, float64) {
+	multiplier, rrfK := 4, 60.0
+	if cfg := config.Get(); cfg != nil {
+		if cfg.Store.ParadeDBCandidateMultiplier > 0 {
+			multiplier = cfg.Store.ParadeDBCandidateMultiplier
+		}
+		if cfg.Store.ParadeDBRRFK > 0 {
+			rrfK = cfg.Store.ParadeDBRRFK
+		}
+	}
+	return multiplier, rrfK
 }
 
 // QueryMemories retrieves and ranks memories based on vector similarity or keyword match in Postgres.
@@ -1322,6 +1408,11 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 		decayRate = cfg.Store.MemoryDecayRate
 	}
 	if usePostgresParadeDB() && (strings.TrimSpace(query) != "" || len(embedding) > 0) {
+		multiplier, rrfK := configuredParadeDBRanking()
+		span.SetAttributes(
+			attribute.Int("agent.store.paradedb_candidate_multiplier", multiplier),
+			attribute.Float64("agent.store.paradedb_rrf_k", rrfK),
+		)
 		mems, err := p.queryMemoriesParadeDB(ctx, query, embedding, limit, decayRate)
 		if err == nil {
 			span.SetAttributes(
@@ -1332,6 +1423,9 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 		}
 		span.RecordError(err)
 		span.SetAttributes(attribute.Bool("agent.store.paradedb_fallback", true))
+		if p.retrievalMetrics != nil {
+			p.retrievalMetrics.IncRetrievalFallback(ctx)
+		}
 		log.Warn("ParadeDB hybrid memory query failed; falling back to in-process ranking", "error", err)
 	}
 

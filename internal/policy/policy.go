@@ -134,6 +134,42 @@ func ValidateWorkspace(root string) error {
 	return nil
 }
 
+// ValidateWorkspaceWithinRoot verifies both workspace paths with the standard
+// workspace policy, then ensures workspace is the configured tenant root or a
+// descendant of it. Using filepath.Rel avoids string-prefix sibling escapes
+// such as tenant-a-other matching tenant-a.
+func ValidateWorkspaceWithinRoot(tenantRoot, workspace string) error {
+	if strings.TrimSpace(tenantRoot) == "" {
+		return errors.New("tenant workspace root must not be empty")
+	}
+	if err := ValidateWorkspace(tenantRoot); err != nil {
+		return fmt.Errorf("invalid tenant workspace root: %w", err)
+	}
+	if err := ValidateWorkspace(workspace); err != nil {
+		return err
+	}
+
+	rootAbs, err := filepath.Abs(tenantRoot)
+	if err != nil {
+		return fmt.Errorf("tenant workspace root path error: %w", err)
+	}
+	workspaceAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return fmt.Errorf("workspace path error: %w", err)
+	}
+	rel, err := filepath.Rel(filepath.Clean(rootAbs), filepath.Clean(workspaceAbs))
+	if err != nil {
+		return fmt.Errorf("cannot compare workspace with tenant root: %w", err)
+	}
+	if rel == "." {
+		return nil
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return errors.New("workspace is outside the authenticated tenant root")
+	}
+	return nil
+}
+
 // ValidateURL guards outbound HTTP requests against SSRF. It permits only
 // http/https schemes and rejects hosts that resolve to loopback, private,
 // link-local, or otherwise non-public addresses (e.g. the cloud metadata

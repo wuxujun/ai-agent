@@ -137,6 +137,9 @@ func TestExecutorPartialFailureIsNonFatal(t *testing.T) {
 	if len(traces) != 2 {
 		t.Fatalf("expected 2 traces (index-aligned with actions), got %d", len(traces))
 	}
+	if traces[0].Step != 1 || traces[1].Step != 2 {
+		t.Fatalf("parallel trace steps must be unique and ordered: %+v", traces)
+	}
 	if traces[0].Error == "" {
 		t.Error("expected failed action trace to carry an Error")
 	}

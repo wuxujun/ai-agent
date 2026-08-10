@@ -18,6 +18,10 @@ api:
   # hybrid accepts existing static keys and one configured Bearer strategy.
   auth:
     mode: "introspection"
+    # Production multi-tenant deployments should enable this. Non-admin tenants
+    # must then be listed below with an isolated workspace_root.
+    # Env override: AI_AGENT_API_REQUIRE_TENANT_WORKSPACE_ROOT
+    require_tenant_workspace_root: false
     bearer:
       # Bearer strategy used by hybrid mode: jwks or introspection.
       validation_mode: "jwks"
@@ -62,6 +66,7 @@ api:
   #   project_a:
   #     api_key: "<secret>"
   #     admin: false
+  #     workspace_root: "./workspace/tenants/project_a"
   #     daily_llm_call_budget: 100
   #     daily_llm_cost_budget_usd: 10
   #     answer_pipeline_enforcement: strict
@@ -95,7 +100,14 @@ store:
   # 0 keeps pgvector in exact-scan mode without creating an ANN index.
   # Env override: AI_AGENT_STORE_PGVECTOR_DIMENSIONS
   pgvector_dimensions: 0
-  
+  # ParadeDB hybrid retrieval tuning. Candidate count per branch is
+  # requested limit * multiplier; RRF K controls rank smoothing.
+  # Env overrides: AI_AGENT_STORE_PARADEDB_CANDIDATE_MULTIPLIER,
+  # AI_AGENT_STORE_PARADEDB_RRF_K, AI_AGENT_STORE_PARADEDB_SLOW_QUERY_THRESHOLD_MS
+  paradedb_candidate_multiplier: 4
+  paradedb_rrf_k: 60
+  paradedb_slow_query_threshold_ms: 250
+
   # Max recent memory rows loaded from disk before in-process cosine/keyword ranking.
   # 0 falls back to default (200).
   # Env override: AI_AGENT_STORE_MEMORY_CANDIDATE_LIMIT

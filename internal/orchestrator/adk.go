@@ -242,6 +242,13 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 			adkUsage.CompletionTokens += int(metadata.CandidatesTokenCount) + int(metadata.ThoughtsTokenCount)
 			adkUsage.TotalTokens += int(metadata.TotalTokenCount)
 		}
+		if event.Partial && e.TokenCallback != nil && event.LLMResponse.Content != nil {
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part.Text != "" {
+					e.TokenCallback(task.ID, part.Text)
+				}
+			}
+		}
 		if event.IsFinalResponse() {
 			if event.LLMResponse.Content != nil {
 				var sb strings.Builder

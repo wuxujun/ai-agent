@@ -844,10 +844,13 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 	}
 
 	pStart := time.Now()
-	decision, err := e.Planner.PlanNext(ctx, task, func(chunk string) {
+	answerStream := newFinalAnswerStream(func(chunk string) {
 		if e.TokenCallback != nil {
 			e.TokenCallback(task.ID, chunk)
 		}
+	})
+	decision, err := e.Planner.PlanNext(ctx, task, func(chunk string) {
+		answerStream.Write(chunk)
 	})
 	if e.Metrics != nil {
 		e.Metrics.ObservePlanner(time.Since(pStart), err)

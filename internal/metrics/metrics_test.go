@@ -2,7 +2,9 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,5 +79,45 @@ func TestCollectorTracksMultiAgentLifecycle(t *testing.T) {
 	}
 	if snapshot.MultiAgentConfigChanges != 2 || snapshot.MultiAgentConfigBlocks != 1 || snapshot.MultiAgentConfigMigrations != 1 {
 		t.Fatalf("config metrics = %+v", snapshot)
+	}
+}
+
+func TestCollectorTracksRetrievalPhasesAndFallbacks(t *testing.T) {
+	collector := NewCollector()
+	collector.ObserveRetrieval(context.Background(), "bm25", 2*time.Millisecond, 8, false, nil)
+	collector.ObserveRetrieval(context.Background(), "pgvector", 3*time.Millisecond, 6, true, errors.New("vector unavailable"))
+	collector.ObserveRetrieval(context.Background(), "rrf", time.Millisecond, 3, false, nil)
+	collector.IncRetrievalFallback(context.Background())
+
+	snapshot := collector.Snapshot()
+	if snapshot.RetrievalCalls != 3 || snapshot.RetrievalFailures != 1 || snapshot.RetrievalFallbacks != 1 || snapshot.RetrievalSlowPhases != 1 {
+		t.Fatalf("retrieval counters = %+v", snapshot)
+	}
+	if snapshot.RetrievalBM25Calls != 1 || snapshot.RetrievalPGVectorCalls != 1 || snapshot.RetrievalRRFCalls != 1 {
+		t.Fatalf("retrieval stage counters = %+v", snapshot)
+	}
+	if snapshot.RetrievalBM25Items != 8 || snapshot.RetrievalBM25LatencySum != 2*time.Millisecond || snapshot.RetrievalBM25Failures != 0 {
+		t.Fatalf("BM25 metrics = %+v", snapshot)
+	}
+	if snapshot.RetrievalPGVectorItems != 6 || snapshot.RetrievalPGVectorLatencySum != 3*time.Millisecond || snapshot.RetrievalPGVectorFailures != 1 {
+		t.Fatalf("pgvector metrics = %+v", snapshot)
+	}
+	if snapshot.RetrievalRRFItems != 3 || snapshot.RetrievalRRFLatencySum != time.Millisecond || snapshot.RetrievalRRFFailures != 0 {
+		t.Fatalf("RRF metrics = %+v", snapshot)
+	}
+	if snapshot.RetrievalItems != 17 || snapshot.RetrievalLatencySum != 6*time.Millisecond {
+		t.Fatalf("retrieval totals = %+v", snapshot)
+	}
+	if snapshot.RetrievalAverageLatencyMS != 2 || snapshot.RetrievalBM25AverageLatencyMS != 2 || snapshot.RetrievalPGVectorAverageLatencyMS != 3 || snapshot.RetrievalRRFAverageLatencyMS != 1 {
+		t.Fatalf("retrieval averages = %+v", snapshot)
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"retrieval_average_latency_ms", "retrieval_bm25_average_latency_ms", "retrieval_pgvector_average_latency_ms", "retrieval_rrf_average_latency_ms", "retrieval_slow_phases"} {
+		if !strings.Contains(string(payload), `"`+field+`"`) {
+			t.Fatalf("metrics JSON missing %q: %s", field, payload)
+		}
 	}
 }

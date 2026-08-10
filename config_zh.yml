@@ -18,6 +18,10 @@ api:
   # hybrid 同时接受现有静态密钥和一种配置好的 Bearer 校验策略。
   auth:
     mode: "introspection"
+    # 生产多租户部署建议开启。开启后，每个非管理员租户都必须在下方配置
+    # 相互隔离的 workspace_root。
+    # 环境变量覆盖：AI_AGENT_API_REQUIRE_TENANT_WORKSPACE_ROOT
+    require_tenant_workspace_root: false
     bearer:
       # hybrid 模式使用的 Bearer 策略：jwks 或 introspection。
       validation_mode: "jwks"
@@ -62,6 +66,7 @@ api:
   #   project_a:
   #     api_key: "<secret>"
   #     admin: false
+  #     workspace_root: "./workspace/tenants/project_a"
   #     daily_llm_call_budget: 100
   #     daily_llm_cost_budget_usd: 10
   #     answer_pipeline_enforcement: strict
@@ -94,7 +99,13 @@ store:
   # 设置为0时，pgvector 使用精确扫描模式，不创建 ANN 索引。
   # 环境变量覆盖：AI_AGENT_STORE_PGVECTOR_DIMENSIONS
   pgvector_dimensions: 0
-  
+  # ParadeDB 混合检索调优：每个分支候选数 = limit * multiplier，RRF K 控制排名平滑度。
+  # 环境变量覆盖：AI_AGENT_STORE_PARADEDB_CANDIDATE_MULTIPLIER、AI_AGENT_STORE_PARADEDB_RRF_K、
+  # AI_AGENT_STORE_PARADEDB_SLOW_QUERY_THRESHOLD_MS
+  paradedb_candidate_multiplier: 4
+  paradedb_rrf_k: 60
+  paradedb_slow_query_threshold_ms: 250
+
   # 进程内执行余弦/关键词排序前，从磁盘加载的最近 Memory 最大行数。
   # 设置为0时使用默认值200。
   # 环境变量覆盖：AI_AGENT_STORE_MEMORY_CANDIDATE_LIMIT

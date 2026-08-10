@@ -14,6 +14,7 @@
 - **Answer Quality Pipeline** — Parallel audits: fact freshness, numeric consistency, uncertainty calibration, and safety guard — all configurable per tenant.
 - **RAG / Memory** — JIT or prefetch retrieval via MCP or REST; vector search (in-process cosine or pgvector); long-term task memory with conflict resolution.
 - **Multi-MCP Tools** — Discover tools from multiple MCP Streamable HTTP services, namespace them per server, and isolate optional-service failures.
+- **Structured Workspace Tools** — Read-only SQLite/JSON queries plus approval-gated patch application and constrained Go test execution, all routed through the shared policy/middleware layer.
 - **Full Observability** — OpenTelemetry traces + metrics (OTLP or stdout), structured JSON logs with daily rotation, local metrics endpoint.
 - **Security** — Workspace boundary enforcement, high-risk tool approval flow, prompt-injection detection, secret sanitization, URL allowlist.
 - **Hot Reload** — Config and API keys reload without restart via `POST /api/config/reload`.
@@ -170,10 +171,10 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 
 | Section | Key settings |
 |:---|:---|
-| `api` | `addr`, `api_key`, per-tenant budgets and pipeline enforcement |
+| `api` | `addr`, authentication, tenant workspace roots, budgets and pipeline enforcement |
 | `orchestrator` | `mode` (`eino` / `legacy` / `adk` / `step` / `multiagent`), `max_concurrent_tasks` |
 | `llm` | `provider`, `model`, per-scene overrides, circuit breaker, retry budget, cost caps |
-| `store` | `type` (`sqlite` / `postgres` / `redis` / `memory`), `dsn`, `vector_search` (`in_process` / `pgvector` / `paradedb`) |
+| `store` | `type`, `dsn`, `vector_search`, `pgvector_dimensions`, ParadeDB ranking/slow-query settings, memory candidate/decay settings |
 | `rag` | `search_url`, `search_method` (`MCP` / `POST`), `context_mode` (`jit` / `prefetch`) |
 | `mcp` | `servers[]` with URL, credential environment variable, tool prefix, risk level, and failure policy (restart required) |
 | `embedding` | `model` (used for memory vector search) |
@@ -184,6 +185,13 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `search` | `url`, `api_key` (Firecrawl or compatible) |
 | `tool` | `timeout_seconds` |
 | `skill` | `root` (skill discovery directory) |
+
+For production multi-tenant deployments, set
+`api.auth.require_tenant_workspace_root: true` and configure a distinct
+`api.tenants.<tenant>.workspace_root` for every non-admin tenant. Task creation
+is then rejected with `403` if the requested workspace is outside that root.
+The compatibility default is `false`; a configured `workspace_root` is always
+enforced even when strict mode is disabled.
 
 Every structured log record includes `app_version`. Local `go run` and builds
 without version injection use `dev`. Release builds should embed the version:
@@ -341,6 +349,12 @@ Archived sessions remain queryable, but do not accept new tasks. Use
 | `DELETE` | `/api/tasks/:id` | Delete task (must cancel first if running) |
 | `DELETE` | `/api/tasks?confirm=true` | Admin: delete all tasks |
 
+SSE `token` events contain only incremental `final_answer` text. Structured
+planner thoughts, action names, and tool parameters are intentionally filtered
+and remain available only through the normal audited execution trace where applicable.
+Multi-Agent buffers answer chunks until the draft is accepted (and, in reviewed
+workflows, independently verified); rejected or low-confidence drafts are never streamed.
+
 **Create task payload:**
 
 ```json
@@ -368,7 +382,7 @@ Archived sessions remain queryable, but do not accept new tasks. Use
 | Method | Path | Description |
 |:---|:---|:---|
 | `GET` | `/api/metrics` | Local performance metrics |
-| `POST` | `/api/config/reload` | Hot-reload config (returns redacted diff) |
+| `POST` | `/api/config/reload` | Hot-reload config (returns redacted diff and monotonic `config_revision`) |
 | `POST` | `/api/prompt/init` | Admin: idempotently initialize missing `teams.yaml` prompts in Langfuse |
 | `GET` | `/ping` | Health check → `{"message":"pong"}` |
 

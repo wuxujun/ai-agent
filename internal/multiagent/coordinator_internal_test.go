@@ -9,8 +9,7 @@ import (
 )
 
 // highRiskStubTool is a tool whose Name() collides with a normally read-only
-// action ("git_diff") but reports RiskLevelHigh. It lets us assert that the
-// registry risk check in isReadOnlyAction wins over the hardcoded name list.
+// action ("git_diff") but reports RiskLevelHigh.
 type highRiskStubTool struct{ name string }
 
 func (t *highRiskStubTool) Name() string               { return t.name }
@@ -29,8 +28,8 @@ func (e *countingExecutor) Execute(context.Context, string, ResearchStep) (*Step
 }
 
 // TestIsReadOnlyActionRejectsHighRiskTool verifies the approval-bypass guard:
-// even if an action name appears in the read-only allow-list, a tool that the
-// registry reports as high-risk must NOT be treated as parallelisable, so it is
+// a tool that the registry reports as high-risk must NOT be treated as
+// parallelisable, so it is
 // routed to the serial path where SuspendForApproval is enforced.
 func TestIsReadOnlyActionRejectsHighRiskTool(t *testing.T) {
 	// Sanity: a genuinely read-only action stays parallelisable.
@@ -41,7 +40,12 @@ func TestIsReadOnlyActionRejectsHighRiskTool(t *testing.T) {
 	// Override git_diff (normally low-risk and read-only) with a high-risk tool.
 	// No other test uses git_diff as a research step, so this global override is
 	// safe within the test binary.
+	original, _ := tools.Get("git_diff")
+	if wrapped, ok := original.(interface{ Unwrap() tools.Tool }); ok {
+		original = wrapped.Unwrap()
+	}
 	tools.Register(&highRiskStubTool{name: "git_diff"})
+	t.Cleanup(func() { tools.Register(original) })
 
 	if isReadOnlyAction("git_diff") {
 		t.Errorf("high-risk git_diff must not be classified as read-only/parallelisable; approval would be bypassed")
@@ -52,7 +56,12 @@ func TestIsReadOnlyActionRejectsHighRiskTool(t *testing.T) {
 // front of the queue is partitioned as a single serial step (isParallel=false),
 // guaranteeing it flows through runBatchSerial's approval gate.
 func TestPartitionBatchForcesHighRiskSerial(t *testing.T) {
+	original, _ := tools.Get("git_diff")
+	if wrapped, ok := original.(interface{ Unwrap() tools.Tool }); ok {
+		original = wrapped.Unwrap()
+	}
 	tools.Register(&highRiskStubTool{name: "git_diff"})
+	t.Cleanup(func() { tools.Register(original) })
 
 	steps := []ResearchStep{
 		{ID: "s1", Action: "git_diff"},
@@ -68,6 +77,19 @@ func TestPartitionBatchForcesHighRiskSerial(t *testing.T) {
 	}
 	if len(remainder) != 1 || remainder[0].ID != "s2" {
 		t.Errorf("expected remaining step in remainder, got %+v", remainder)
+	}
+}
+
+func TestIsReadOnlyActionUsesRegistryRiskLevel(t *testing.T) {
+	for _, action := range []string{"json_query", "sql_query", "memory_search", "web_browser"} {
+		if !isReadOnlyAction(action) {
+			t.Errorf("low-risk registered tool %q should be parallelisable", action)
+		}
+	}
+	for _, action := range []string{"run_tests", "write_file", "missing_tool"} {
+		if isReadOnlyAction(action) {
+			t.Errorf("high-risk or unknown tool %q must stay serial", action)
+		}
 	}
 }
 

@@ -31,6 +31,32 @@ func TestValidateWorkspace(t *testing.T) {
 	}
 }
 
+func TestValidateWorkspaceWithinRoot(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantRoot := filepath.Join(cwd, "testdata", "tenant-a")
+
+	for _, tc := range []struct {
+		name      string
+		workspace string
+		wantErr   bool
+	}{
+		{name: "root", workspace: tenantRoot},
+		{name: "descendant", workspace: filepath.Join(tenantRoot, "project")},
+		{name: "sibling prefix", workspace: tenantRoot + "-other", wantErr: true},
+		{name: "other tenant", workspace: filepath.Join(cwd, "testdata", "tenant-b"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := policy.ValidateWorkspaceWithinRoot(tenantRoot, tc.workspace)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestValidateWorkspace_SymlinkEscape verifies that a workspace path that is
 // itself a symlink (or traverses a symlink) is rejected, even if the symlink
 // points to a directory that would otherwise be within the allowed zone.

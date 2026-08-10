@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -17,6 +18,26 @@ import (
 )
 
 type nativeStructuredCaller struct{}
+
+func (n nativeStructuredCaller) CallJSONStream(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any, onChunk func(string)) (types.TokenUsage, error) {
+	spec, ok := llmprovider.Lookup(cfg.Provider)
+	if !ok {
+		return types.TokenUsage{}, fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+	// The current production gateway uses the OpenAI Chat protocol. Other
+	// protocols retain their proven non-streaming structured path until their
+	// native delta contracts are implemented.
+	if spec.Protocol != llmprovider.ProtocolOpenAIChat || onChunk == nil {
+		return n.CallJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
+	}
+	body, responseKind, err := structuredRequest(cfg, systemPrompt, userPrompt, schema)
+	if err != nil {
+		return types.TokenUsage{}, err
+	}
+	body["stream"] = true
+	body["stream_options"] = map[string]any{"include_usage": true}
+	return callStructuredHTTPStream(ctx, cfg, body, responseKind, dest, onChunk)
+}
 
 func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
 	spec, ok := llmprovider.Lookup(cfg.Provider)
@@ -126,6 +147,80 @@ func callStructuredHTTP(ctx context.Context, cfg Config, body map[string]any, re
 		return usage, err
 	}
 	return usage, parseStructuredJSON(text, dest)
+}
+
+func callStructuredHTTPStream(ctx context.Context, cfg Config, body map[string]any, responseKind string, dest any, onChunk func(string)) (types.TokenUsage, error) {
+	if responseKind != "chat" {
+		return types.TokenUsage{}, fmt.Errorf("structured streaming is unsupported for response kind %s", responseKind)
+	}
+	if metadata := liteLLMMetadata(ctx, cfg); len(metadata) > 0 {
+		body["metadata"] = metadata
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return types.TokenUsage{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL, bytes.NewReader(payload))
+	if err != nil {
+		return types.TokenUsage{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	}
+	resp, err := telemetry.NewHTTPClient(cfg.Timeout).Do(req)
+	if err != nil {
+		return types.TokenUsage{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, (4<<10)+1))
+		return types.TokenUsage{}, NewHTTPStatusError(resp.StatusCode, resp.Header, raw)
+	}
+
+	var text strings.Builder
+	var usage types.TokenUsage
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64<<10), 2<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var event struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Usage map[string]any `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		if len(event.Choices) > 0 && event.Choices[0].Delta.Content != "" {
+			chunk := event.Choices[0].Delta.Content
+			text.WriteString(chunk)
+			onChunk(chunk)
+		}
+		if event.Usage != nil {
+			usage = usageFromMap(event.Usage)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return usage, err
+	}
+	if text.Len() > 4<<20 {
+		return usage, fmt.Errorf("LLM response exceeds 4 MiB limit")
+	}
+	if text.Len() == 0 {
+		return usage, fmt.Errorf("structured response text not found")
+	}
+	return usage, parseStructuredJSON(text.String(), dest)
 }
 
 func visionStructuredRequest(cfg Config, systemPrompt, userPrompt string, image VisionInput, schema map[string]any) (map[string]any, string, error) {

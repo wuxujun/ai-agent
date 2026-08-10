@@ -10,6 +10,17 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+type answerTokenCallbackKey struct{}
+
+func withAnswerTokenCallback(ctx context.Context, callback func(string)) context.Context {
+	return context.WithValue(ctx, answerTokenCallbackKey{}, callback)
+}
+
+func answerTokenCallbackFromContext(ctx context.Context) func(string) {
+	callback, _ := ctx.Value(answerTokenCallbackKey{}).(func(string))
+	return callback
+}
+
 // LLMConfig holds the configuration required to call an LLM provider.
 // It is intentionally compatible with the existing planner.LLMPlanner config.
 type LLMConfig struct {
@@ -59,4 +70,16 @@ func callLLMJSON(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt st
 	coreCfg.FallbackScene = cfg.FallbackScene
 	coreCfg.MaxRetries = cfg.MaxRetries
 	return llmcore.CallJSON(ctx, coreCfg, systemPrompt, userPrompt, schema, dest)
+}
+
+func callLLMJSONStream(ctx context.Context, cfg LLMConfig, systemPrompt, userPrompt string, schema map[string]any, dest any, onChunk func(string)) (types.TokenUsage, error) {
+	coreCfg := llmcore.ConfigForScene(cfg.Scene)
+	coreCfg.Provider = string(cfg.Provider)
+	coreCfg.APIKey = cfg.APIKey
+	coreCfg.Model = cfg.Model
+	coreCfg.BaseURL = cfg.BaseURL
+	coreCfg.Timeout = cfg.Timeout
+	coreCfg.FallbackScene = cfg.FallbackScene
+	coreCfg.MaxRetries = cfg.MaxRetries
+	return llmcore.CallJSONStream(ctx, coreCfg, systemPrompt, userPrompt, schema, dest, onChunk)
 }

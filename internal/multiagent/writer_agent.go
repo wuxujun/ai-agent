@@ -78,7 +78,15 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 		cfg = GetLLMConfig(activeTeam.Writer, config.LLMSceneMultiAgentWriter)
 	}
 
-	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, w.jsonSchema(), &output)
+	var usage types.TokenUsage
+	var err error
+	callback := answerTokenCallbackFromContext(callCtx)
+	if callback != nil {
+		answerStream := llmcore.NewJSONStringFieldStream("final_answer", callback)
+		usage, err = callLLMJSONStream(callCtx, cfg, systemPrompt, userPrompt, w.jsonSchema(), &output, answerStream.Write)
+	} else {
+		usage, err = callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, w.jsonSchema(), &output)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("WriterAgent LLM call failed: %w", err)
 	}

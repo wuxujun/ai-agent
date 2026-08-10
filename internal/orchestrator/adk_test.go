@@ -21,6 +21,22 @@ type sequenceADKLLM struct {
 	calls     int
 }
 
+type streamingADKLLM struct {
+	responses []*model.LLMResponse
+}
+
+func (m *streamingADKLLM) Name() string { return "streaming-adk-llm" }
+
+func (m *streamingADKLLM) GenerateContent(context.Context, *model.LLMRequest, bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		for _, response := range m.responses {
+			if !yield(response, nil) {
+				return
+			}
+		}
+	}
+}
+
 type fakeADKMCPTool struct{}
 
 func (fakeADKMCPTool) Name() string        { return "custom_adk_mcp_tool" }
@@ -114,6 +130,27 @@ func TestAdkNextExecutesModelAndCompletes(t *testing.T) {
 	usage := aggregateTaskTokenUsage(task)
 	if usage.PromptTokens != 20 || usage.CompletionTokens != 5 || usage.TotalTokens != 25 {
 		t.Fatalf("ADK token usage was not recorded: %+v", usage)
+	}
+}
+
+func TestAdkNextPublishesPartialModelChunks(t *testing.T) {
+	m := &streamingADKLLM{responses: []*model.LLMResponse{
+		{Content: genai.NewContentFromText("The answer ", genai.RoleModel), Partial: true},
+		{Content: genai.NewContentFromText("is streamed", genai.RoleModel), TurnComplete: true},
+	}}
+	var chunks []string
+	engine := &Engine{Mode: ModeAdk, AdkModel: m, TokenCallback: func(_ string, chunk string) {
+		chunks = append(chunks, chunk)
+	}}
+	task := &types.Task{ID: "task-adk-stream", Goal: "stream", Status: types.StatusCreated, MaxSteps: 5, ToolBudget: 5, Workspace: "./workspace"}
+	if err := engine.Next(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0] != "The answer " {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	if task.FinalAnswer != "is streamed" {
+		t.Fatalf("final answer = %q", task.FinalAnswer)
 	}
 }
 

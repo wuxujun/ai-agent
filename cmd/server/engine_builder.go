@@ -80,6 +80,9 @@ func buildEngine(ctx context.Context, cfg *config.Config, st store.Store, probe 
 	)
 
 	mc := metrics.NewCollector()
+	if postgresStore, ok := st.(*store.PostgresStore); ok {
+		postgresStore.SetRetrievalMetrics(mc)
+	}
 	runtime := llmcore.NewDefaultRuntime(mc)
 	plannerClient := planner.NewLLMPlannerForScene(config.LLMSceneTaskPlanner)
 	plannerClient.Compressor = planner.NewLLMContextCompressor(config.LLMSceneContextCompressor)

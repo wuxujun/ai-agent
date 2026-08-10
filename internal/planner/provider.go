@@ -116,7 +116,8 @@ func (p *openAIResponsesProvider) Name() ProviderType { return ProviderOpenAIRes
 func (p *openAIResponsesProvider) Plan(ctx context.Context, req PlanRequest, onChunk func(string)) (string, types.TokenUsage, error) {
 	schema := PlannerDecisionOpenAISchema()
 	reqBody := map[string]any{
-		"model": req.Model,
+		"model":  req.Model,
+		"stream": true,
 		"input": []map[string]any{
 			{
 				"role": "system",
@@ -169,11 +170,18 @@ func firstFloat(m map[string]any, keys ...string) float64 {
 }
 
 func parseOpenAIResponses(resp *http.Response, onChunk func(string)) (string, types.TokenUsage, error) {
+	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		return parseOpenAIResponsesStream(resp.Body, onChunk)
+	}
+	return parseOpenAIResponsesJSON(resp.Body, onChunk)
+}
+
+func parseOpenAIResponsesJSON(body io.Reader, onChunk func(string)) (string, types.TokenUsage, error) {
 	var m map[string]any
 	var usage types.TokenUsage
 
 	var rawBody bytes.Buffer
-	if _, err := rawBody.ReadFrom(resp.Body); err != nil {
+	if _, err := rawBody.ReadFrom(body); err != nil {
 		return "", usage, err
 	}
 	raw := rawBody.Bytes()
@@ -200,6 +208,56 @@ func parseOpenAIResponses(resp *http.Response, onChunk func(string)) (string, ty
 		onChunk(txt)
 	}
 	return txt, usage, err
+}
+
+func parseOpenAIResponsesStream(body io.Reader, onChunk func(string)) (string, types.TokenUsage, error) {
+	var textBuf strings.Builder
+	var usage types.TokenUsage
+	scanner := bufio.NewScanner(body)
+	// Structured planner decisions can exceed Scanner's small default token
+	// size when a gateway coalesces several deltas into one SSE event.
+	scanner.Buffer(make([]byte, 64<<10), 2<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var event struct {
+			Type     string `json:"type"`
+			Delta    string `json:"delta"`
+			Response *struct {
+				Usage map[string]any `json:"usage"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		if event.Type == "response.output_text.delta" && event.Delta != "" {
+			textBuf.WriteString(event.Delta)
+			if onChunk != nil {
+				onChunk(event.Delta)
+			}
+		}
+		if event.Response != nil {
+			usage.PromptTokens = int(firstFloat(event.Response.Usage, "input_tokens", "prompt_tokens"))
+			usage.CompletionTokens = int(firstFloat(event.Response.Usage, "output_tokens", "completion_tokens"))
+			usage.TotalTokens = int(firstFloat(event.Response.Usage, "total_tokens"))
+			if usage.TotalTokens == 0 {
+				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", usage, err
+	}
+	if textBuf.Len() == 0 {
+		return "", usage, errors.New("empty output text in OpenAI Responses stream")
+	}
+	return textBuf.String(), usage, nil
 }
 
 // ── OpenAI Chat Completions API ───────────────────────────────────────────────

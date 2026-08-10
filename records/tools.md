@@ -2,7 +2,7 @@
 
 > 所有工具通过 `tools.DefaultRegistry` 统一管理，在 `internal/tools/` 各文件的 `init()` 中自注册。  
 > **风险等级**：🔴 High（执行前需人工审批）/ 🟢 Low（直接执行）  
-> 最后更新：2026-07-17
+> 最后更新：2026-08-10
 
 ---
 
@@ -27,6 +27,8 @@
 | 15 | [`web_browser`](#15-web_browser) | 🟢 Low | 无头渲染网页为纯文本 | `web_browser.go` |
 | 16 | [`web_search`](#16-web_search) | 🟢 Low | 联网搜索（Firecrawl/DuckDuckGo） | `web_search.go` |
 | 17 | [`write_file`](#17-write_file) | 🔴 High | 写入/覆盖工作区文件 | `write.go` |
+| 18 | [`json_query`](#18-json_query) | 🟢 Low | 使用 JSON Pointer 只读查询 JSON | `json_query.go` |
+| 19 | [`run_tests`](#19-run_tests) | 🔴 High | 受限执行 Go 测试 | `run_tests.go` |
 
 ---
 
@@ -366,14 +368,55 @@
 
 ---
 
+### 18. `json_query`
+
+- **风险等级**：🟢 Low
+- **描述**：读取 Workspace JSON 文件并使用 RFC 6901 JSON Pointer 选取结构化值。
+- **参数**：
+
+  | 参数 | 类型 | 说明 |
+  |------|------|------|
+  | `path` | string | Workspace 相对 JSON 文件路径 |
+  | `pointer` | string | JSON Pointer，例如 `/users/0/name`；空值选取根节点 |
+
+- **约束**：
+  - 禁止绝对路径和 `..`，通过 Workspace 边界校验并使用 `O_NOFOLLOW`
+  - 输入文件最大 2 MiB
+  - 支持对象键、数组下标和 `~0` / `~1` 转义
+  - 拒绝非法 Pointer、越界下标和多个顶层 JSON 值
+- **重试策略**：无自动重试
+
+---
+
+### 19. `run_tests`
+
+- **风险等级**：🔴 **High**（执行前需人工审批）
+- **描述**：在 Workspace 中执行受限 Go 测试。
+- **参数**：
+
+  | 参数 | 类型 | 说明 |
+  |------|------|------|
+  | `package` | string | `./...` 或 `./internal/store` 等 Workspace 相对 package |
+  | `run` | string | 可选 `go test -run` 正则 |
+  | `race` | boolean | 是否启用 race detector |
+
+- **约束**：
+  - executable 固定为 `go`，子命令固定为 `test`
+  - 不接受 shell 字符串或任意附加参数
+  - package 拒绝绝对路径、`..` 和空白注入
+  - 测试失败作为 Observation 返回；超时/取消作为工具错误
+- **重试策略**：不自动重试（高风险工具）
+
+---
+
 ## 附：各 Mode 工具覆盖范围
 
 | Mode | 可用工具 | 说明 |
 |------|---------|------|
-| `eino`（默认） | 全部 17 个 | Planner schema 动态派生自 DefaultRegistry |
-| `legacy` | 全部 17 个 | 与 eino 相同，原始实现 |
-| `adk` | 4 个：`find_files`、`search_text`、`read_file`、`rag_search`（ADK封装版） | 硬编码，仅支持 Gemini |
+| `eino`（默认） | 全部 19 个 | Planner schema 动态派生自 DefaultRegistry |
+| `legacy` | 全部 19 个 | 与 eino 相同，原始实现 |
+| `adk` | 全部 19 个 | 从 DefaultRegistry 动态构建 ADK 工具，High Risk 工具要求确认 |
 | `step` | 3 个：`find_files`、`search_text`、`read_file` | 硬编码静态 3 步序列，无 LLM |
-| `multiagent` | 15 个（Planner 枚举，排除 `rag_fetch`/`memory_get`）；Researcher 动态查 Registry | Plan→Research→Write 多智能体 |
+| `multiagent` | 17 个（Planner 动态枚举，排除 `rag_fetch`/`memory_get`）；Researcher 动态查 Registry | Plan→Research→Write 多智能体 |
 
 > `rag_fetch` 和 `memory_get` 不在 Planner 枚举中，由 Coordinator/Engine 在检测到 `rag_search`/`memory_search` 步骤后自动插入。

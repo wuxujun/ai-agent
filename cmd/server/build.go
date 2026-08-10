@@ -174,4 +174,7 @@ func wireEngineEvents(eng *orchestrator.Engine) {
 			TaskID: taskID, Status: types.StatusRunning, Token: chunk,
 		})
 	}
+	if eng.Coordinator != nil {
+		eng.Coordinator.TokenCallback = eng.TokenCallback
+	}
 }

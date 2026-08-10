@@ -48,6 +48,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Store.PGVectorDimensions != 0 {
 		t.Errorf("expected store.pgvector_dimensions default to be 0, got %d", cfg.Store.PGVectorDimensions)
 	}
+	if cfg.Store.ParadeDBCandidateMultiplier != 4 || cfg.Store.ParadeDBRRFK != 60 || cfg.Store.ParadeDBSlowQueryThresholdMS != 250 {
+		t.Errorf("unexpected ParadeDB ranking defaults: %+v", cfg.Store)
+	}
 	if cfg.Orchestrator.Mode != "eino" {
 		t.Errorf("expected orchestrator.mode default to be eino, got %q", cfg.Orchestrator.Mode)
 	}
@@ -100,6 +103,39 @@ func TestValidateOrchestratorMode(t *testing.T) {
 	cfg.LLM.TimeoutSeconds = 30
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "orchestrator.mode") {
 		t.Fatalf("invalid orchestrator mode was not rejected: %v", err)
+	}
+}
+
+func TestRevisionAdvancesOnOverride(t *testing.T) {
+	resetConfig()
+	defer resetConfig()
+	_ = Get()
+	before := Revision()
+	restore := OverrideForTesting(func(cfg *Config) {
+		cfg.Orchestrator.MaxConcurrentTasks++
+	})
+	if after := Revision(); after <= before {
+		t.Fatalf("revision did not advance after override: before=%d after=%d", before, after)
+	}
+	restore()
+}
+
+func TestApplyReloadedConfigAdvancesRevisionOnlyForChanges(t *testing.T) {
+	resetConfig()
+	defer resetConfig()
+	previousRevision := configRevision
+	defer func() { configRevision = previousRevision }()
+	globalConfig = &Config{}
+	configRevision = 10
+
+	if changes := applyReloadedConfig(&Config{}); len(changes) != 0 || configRevision != 10 {
+		t.Fatalf("no-op reload changed revision or diff: revision=%d changes=%v", configRevision, changes)
+	}
+	changed := &Config{}
+	changed.Store.ParadeDBSlowQueryThresholdMS = 250
+	changes := applyReloadedConfig(changed)
+	if configRevision != 11 || len(changes) == 0 {
+		t.Fatalf("effective reload did not advance revision: revision=%d changes=%v", configRevision, changes)
 	}
 }
 
@@ -701,6 +737,17 @@ func TestValidateAPITenants(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid tenant rejected: %v", err)
 	}
+	cfg.API.Auth.RequireTenantWorkspaceRoot = true
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "workspace_root is required") {
+		t.Fatalf("missing strict tenant workspace root error = %v", err)
+	}
+	tenantA := cfg.API.Tenants["tenant-a"]
+	tenantA.WorkspaceRoot = "./workspace/tenants/tenant-a"
+	cfg.API.Tenants["tenant-a"] = tenantA
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("tenant workspace root rejected: %v", err)
+	}
+	cfg.API.Auth.RequireTenantWorkspaceRoot = false
 	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "tenant-key"}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "same api_key") {
 		t.Fatalf("duplicate tenant key error = %v", err)
@@ -836,6 +883,9 @@ func TestValidateStoreSearchSettings(t *testing.T) {
 	for _, mutate := range []func(*Config){
 		func(cfg *Config) { cfg.Store.VectorSearch = "elastic" },
 		func(cfg *Config) { cfg.Store.PGVectorDimensions = -1 },
+		func(cfg *Config) { cfg.Store.ParadeDBCandidateMultiplier = -1 },
+		func(cfg *Config) { cfg.Store.ParadeDBRRFK = -1 },
+		func(cfg *Config) { cfg.Store.ParadeDBSlowQueryThresholdMS = -1 },
 		func(cfg *Config) { cfg.Store.MemoryCandidateLimit = -1 },
 		func(cfg *Config) { cfg.Store.MemoryDecayRate = -0.1 },
 	} {

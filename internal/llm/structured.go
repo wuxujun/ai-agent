@@ -36,6 +36,19 @@ type StructuredCaller interface {
 	CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error)
 }
 
+// StreamingStructuredCaller optionally exposes raw structured JSON deltas.
+// Callers that do not implement it continue to work through CallJSON.
+type StreamingStructuredCaller interface {
+	CallJSONStream(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any, onChunk func(string)) (types.TokenUsage, error)
+}
+
+type streamingOutputError struct{ cause error }
+
+func (e *streamingOutputError) Error() string {
+	return "structured stream interrupted after output began: " + e.cause.Error()
+}
+func (e *streamingOutputError) Unwrap() error { return e.cause }
+
 type VisionInput struct {
 	MIMEType string
 	Data     []byte
@@ -214,6 +227,10 @@ func CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, 
 	return RuntimeFromContext(ctx).CallJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
 }
 
+func CallJSONStream(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any, onChunk func(string)) (types.TokenUsage, error) {
+	return RuntimeFromContext(ctx).CallJSONStream(ctx, cfg, systemPrompt, userPrompt, schema, dest, onChunk)
+}
+
 func CallVisionJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, image VisionInput, schema map[string]any, dest any) (types.TokenUsage, error) {
 	return RuntimeFromContext(ctx).CallVisionJSON(ctx, cfg, systemPrompt, userPrompt, image, schema, dest)
 }
@@ -271,6 +288,38 @@ func (r *Runtime) CallJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 		))
 	}
 	return r.callStructured(ctx, cfg, map[string]bool{}, func(callCtx context.Context, caller StructuredCaller, active Config) (types.TokenUsage, error) {
+		return caller.CallJSON(callCtx, active, systemPrompt, userPrompt, schema, dest)
+	})
+}
+
+func (r *Runtime) CallJSONStream(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any, onChunk func(string)) (types.TokenUsage, error) {
+	logicalScene := cfg.Scene
+	cfg = ResolveRoutedConfig(ctx, cfg)
+	if logicalScene != cfg.Scene {
+		trace.SpanFromContext(ctx).AddEvent("llm.route.selected", trace.WithAttributes(
+			attribute.String("llm.logical_scene", logicalScene),
+			attribute.String("llm.scene", cfg.Scene),
+		))
+	}
+	streamStarted := false
+	wrappedChunk := func(chunk string) {
+		if chunk == "" {
+			return
+		}
+		streamStarted = true
+		onChunk(chunk)
+	}
+	return r.callStructured(ctx, cfg, map[string]bool{}, func(callCtx context.Context, caller StructuredCaller, active Config) (types.TokenUsage, error) {
+		if streamStarted {
+			return types.TokenUsage{}, &streamingOutputError{cause: errors.New("retry suppressed to avoid duplicate streamed output")}
+		}
+		if streaming, ok := caller.(StreamingStructuredCaller); ok && onChunk != nil {
+			usage, err := streaming.CallJSONStream(callCtx, active, systemPrompt, userPrompt, schema, dest, wrappedChunk)
+			if err != nil && streamStarted {
+				return usage, &streamingOutputError{cause: err}
+			}
+			return usage, err
+		}
 		return caller.CallJSON(callCtx, active, systemPrompt, userPrompt, schema, dest)
 	})
 }
@@ -360,7 +409,8 @@ func (r *Runtime) callStructured(ctx context.Context, cfg Config, visited map[st
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		if cfg.FallbackScene != "" && !visited[cfg.FallbackScene] && !IsTaskBudgetError(err) {
+		var streamErr *streamingOutputError
+		if cfg.FallbackScene != "" && !visited[cfg.FallbackScene] && !IsTaskBudgetError(err) && !errors.As(err, &streamErr) {
 			visited[cfg.Scene] = true
 			visited[cfg.FallbackScene] = true
 			span.SetAttributes(attribute.Bool("llm.fallback.triggered", true), attribute.String("llm.fallback.scene", cfg.FallbackScene))

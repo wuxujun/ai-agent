@@ -14,6 +14,7 @@
 - **答案质量流水线** — 并行审计：事实时效性、数值一致性、不确定性校准、安全防护，均可按租户独立配置。
 - **RAG / 长期记忆** — JIT 或预取检索，支持 MCP 或 REST；向量搜索（进程内余弦相似度或 pgvector）；带冲突解决的长期任务记忆。
 - **多 MCP 工具** — 从多个 MCP Streamable HTTP 服务发现工具，按服务设置命名空间，并隔离可选服务故障。
+- **结构化 Workspace 工具** — 支持只读 SQLite/JSON 查询、需审批的补丁应用和受限 Go 测试执行，统一经过策略与中间件层。
 - **完整可观测性** — OpenTelemetry 链路追踪 + 指标（OTLP 或标准输出）、结构化 JSON 日志（每日轮转）、本地指标接口。
 - **安全防护** — Workspace 边界强制校验、高风险工具人工审批、Prompt 注入检测、敏感信息脱敏、URL 访问白名单。
 - **热重载配置** — 通过 `POST /api/config/reload` 无需重启即可重新加载配置与 API Key。
@@ -170,10 +171,10 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 
 | 配置节 | 关键项 |
 |:---|:---|
-| `api` | `addr`、`api_key`、租户预算与流水线执行模式 |
+| `api` | `addr`、认证、租户 Workspace 根目录、预算与流水线执行模式 |
 | `orchestrator` | `mode`（`eino` / `legacy` / `adk` / `step` / `multiagent`）、`max_concurrent_tasks` |
 | `llm` | `provider`、`model`、按 Scene 覆盖、熔断器、重试预算、成本上限 |
-| `store` | `type`（`sqlite` / `postgres` / `redis` / `memory`）、`dsn`、`vector_search`（`in_process` / `pgvector` / `paradedb`） |
+| `store` | `type`、`dsn`、`vector_search`、`pgvector_dimensions`、ParadeDB 排名/慢查询设置、Memory 候选/衰减设置 |
 | `rag` | `search_url`、`search_method`（`MCP` / `POST`）、`context_mode`（`jit` / `prefetch`） |
 | `mcp` | `servers[]`，包含 URL、凭据环境变量、工具前缀、风险级别和故障策略（修改后需重启） |
 | `embedding` | `model`（用于记忆向量搜索） |
@@ -184,6 +185,11 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `search` | `url`、`api_key`（Firecrawl 或兼容服务） |
 | `tool` | `timeout_seconds` |
 | `skill` | `root`（技能发现根目录） |
+
+生产多租户部署应设置 `api.auth.require_tenant_workspace_root: true`，并为每个
+非管理员租户配置独立的 `api.tenants.<tenant>.workspace_root`。创建任务时若请求的
+Workspace 超出该根目录，服务会返回 `403`。兼容默认值为 `false`；即使未开启严格
+模式，只要租户配置了 `workspace_root`，该边界也始终生效。
 
 ### Multi-Agent 编排模式
 
@@ -327,6 +333,11 @@ Content-Type: application/json
 | `DELETE` | `/api/tasks/:id` | 删除任务（运行中须先取消） |
 | `DELETE` | `/api/tasks?confirm=true` | 管理员：清空所有任务 |
 
+SSE `token` 事件只包含增量 `final_answer` 文本。Planner 的结构化思考、动作名称和
+工具参数会被主动过滤；需要审计时仍通过正常执行 Trace 查看允许公开的内容。
+Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流还需独立验证通过）后
+再发布；被拒绝或低置信度的草稿不会进入 SSE。
+
 **创建任务请求体示例：**
 
 ```json
@@ -354,7 +365,7 @@ Content-Type: application/json
 | 方法 | 路径 | 说明 |
 |:---|:---|:---|
 | `GET` | `/api/metrics` | 本地性能指标 |
-| `POST` | `/api/config/reload` | 热重载配置（返回脱敏变更 diff，API Key 显示为 `***`） |
+| `POST` | `/api/config/reload` | 热重载配置（返回脱敏 diff 和单调递增的 `config_revision`） |
 | `GET` | `/ping` | 健康检查 → `{"message":"pong"}` |
 
 ---

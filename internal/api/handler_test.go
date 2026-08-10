@@ -980,19 +980,20 @@ func TestAuthMiddleware(t *testing.T) {
 func TestTenantAuthenticationAndTaskIsolation(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.API.Auth.Mode = "api_key"
+		cfg.API.Auth.RequireTenantWorkspaceRoot = true
 		cfg.API.APIKey = "my-test-secret-api-key"
 		cfg.API.Tenants = map[string]config.APITenantConfig{
-			"tenant-a": {APIKey: "tenant-a-test-key", DailyLLMCallBudget: 2},
-			"tenant-b": {APIKey: "tenant-b-test-key"},
+			"tenant-a": {APIKey: "tenant-a-test-key", WorkspaceRoot: "./testdata/tenant-a", DailyLLMCallBudget: 2},
+			"tenant-b": {APIKey: "tenant-b-test-key", WorkspaceRoot: "./testdata/tenant-b"},
 		}
 	}))
 	st := store.NewMemoryStore()
 	r := setupTestRouter(t, st, nil)
 
-	create := func(key, id string) {
+	create := func(key, id, workspace string) {
 		t.Helper()
 		w := httptest.NewRecorder()
-		body := `{"id":"` + id + `","goal":"x","workspace":"./testdata"}`
+		body := `{"id":"` + id + `","goal":"x","workspace":"` + workspace + `"}`
 		req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-API-Key", key)
@@ -1001,11 +1002,20 @@ func TestTenantAuthenticationAndTaskIsolation(t *testing.T) {
 			t.Fatalf("create %s: %d %s", id, w.Code, w.Body.String())
 		}
 	}
-	create("tenant-a-test-key", "tenant-a-task")
-	create("tenant-b-test-key", "tenant-b-task")
+	create("tenant-a-test-key", "tenant-a-task", "./testdata/tenant-a/project")
+	create("tenant-b-test-key", "tenant-b-task", "./testdata/tenant-b/project")
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/api/tasks/tenant-b-task", nil)
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"id":"tenant-a-escape","goal":"x","workspace":"./testdata/tenant-b/project"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "tenant-a-test-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-tenant workspace = %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/tasks/tenant-b-task", nil)
 	req.Header.Set("X-API-Key", "tenant-a-test-key")
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
@@ -1113,7 +1123,7 @@ func TestAuthMiddleware_FailClosed(t *testing.T) {
 func TestRunTaskStep_Streaming(t *testing.T) {
 	st := store.NewMemoryStore()
 	mp := &mockPlanner{
-		tokens: []string{"token1", "token2"},
+		tokens: []string{`{"thought_summary":"must stay private","final_answer":"token1`, `token2","stop":true}`},
 	}
 	engine := &orchestrator.Engine{
 		Mode:     orchestrator.ModeLegacy,
@@ -1154,12 +1164,15 @@ func TestRunTaskStep_Streaming(t *testing.T) {
 	if !strings.Contains(body, "token1") || !strings.Contains(body, "token2") {
 		t.Errorf("expected body to contain streamed tokens, got %q", body)
 	}
+	if strings.Contains(body, "must stay private") || strings.Contains(body, "thought_summary") {
+		t.Errorf("planner internals leaked into SSE body: %q", body)
+	}
 }
 
 func TestRunAll_Streaming(t *testing.T) {
 	st := store.NewMemoryStore()
 	mp := &mockPlanner{
-		tokens: []string{"token-all"},
+		tokens: []string{`{"thought_summary":"private","final_answer":"token-`, `all","stop":true}`},
 	}
 	engine := &orchestrator.Engine{
 		Mode:     orchestrator.ModeLegacy,
@@ -1204,8 +1217,11 @@ func TestRunAll_Streaming(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "token-all") {
+	if !strings.Contains(body, `"token":"token-"`) || !strings.Contains(body, `"token":"all"`) {
 		t.Errorf("expected body to contain streamed events, got %q", body)
+	}
+	if strings.Contains(body, `"private"`) || strings.Contains(body, "thought_summary") {
+		t.Errorf("planner internals leaked into SSE body: %q", body)
 	}
 	if !strings.Contains(body, `"final_answer":"Mock final answer"`) {
 		t.Errorf("expected terminal event to contain final answer, got %q", body)

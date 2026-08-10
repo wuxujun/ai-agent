@@ -294,6 +294,22 @@ func (h *Handler) createTask(c *gin.Context) {
 		c.Error(err)
 		return
 	}
+	principal := principalFromGin(c)
+	runtimeConfig := config.Get()
+	tenant, tenantConfigured := runtimeConfig.API.Tenants[principal.TenantID]
+	if root := strings.TrimSpace(tenant.WorkspaceRoot); root != "" {
+		if err := policy.ValidateWorkspaceWithinRoot(root, req.Workspace); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+	} else if runtimeConfig.API.Auth.RequireTenantWorkspaceRoot && !principal.Admin {
+		message := "authenticated tenant has no workspace_root configured"
+		if !tenantConfigured {
+			message = "authenticated tenant is not configured with a workspace_root"
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": message})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 	defer cancel()
@@ -314,7 +330,7 @@ func (h *Handler) createTask(c *gin.Context) {
 
 	task := &types.Task{
 		ID:               taskID,
-		TenantID:         principalFromGin(c).TenantID,
+		TenantID:         principal.TenantID,
 		SessionID:        req.SessionID,
 		Goal:             req.Goal,
 		Workspace:        req.Workspace,
@@ -1129,9 +1145,10 @@ func (h *Handler) reloadConfig(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"status":     "ok",
-		"no_changes": len(changes) == 0,
-		"changes":    changes,
+		"status":          "ok",
+		"no_changes":      len(changes) == 0,
+		"changes":         changes,
+		"config_revision": config.Revision(),
 		// Return a few non-sensitive resolved values so the caller can confirm
 		// which provider and model are now active.
 		"active_provider": cfg.ResolveLLMProvider(),

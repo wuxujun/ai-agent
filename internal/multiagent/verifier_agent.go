@@ -132,7 +132,15 @@ func (v *VerifierAgent) Draft(ctx context.Context, goal string, evidence []StepE
 	systemPrompt := resolvedPrompt.Content
 	prompt := (&WriterAgent{}).buildPrompt(goal, evidence, memories)
 	var candidate VerificationDraft
-	draftUsage, err := callLLMJSON(callCtx, cfg, systemPrompt, prompt, finalAnswerCandidateSchema(), &candidate)
+	var draftUsage types.TokenUsage
+	var err error
+	callback := answerTokenCallbackFromContext(callCtx)
+	if callback != nil {
+		answerStream := llmcore.NewJSONStringFieldStream("final_answer", callback)
+		draftUsage, err = callLLMJSONStream(callCtx, cfg, systemPrompt, prompt, finalAnswerCandidateSchema(), &candidate, answerStream.Write)
+	} else {
+		draftUsage, err = callLLMJSON(callCtx, cfg, systemPrompt, prompt, finalAnswerCandidateSchema(), &candidate)
+	}
 	candidate.TokenUsage = draftUsage
 	if err != nil {
 		return nil, fmt.Errorf("generate verification candidate: %w", err)

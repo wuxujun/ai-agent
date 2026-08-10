@@ -108,6 +108,7 @@ type Coordinator struct {
 	EvidenceConflictResolver evidenceconflict.Resolver
 	SourceCredibilityScorer  sourcecredibility.Scorer
 	EventCallback            func(taskID string, status types.TaskStatus)
+	TokenCallback            func(taskID string, token string)
 	PersistTask              func(ctx context.Context, task *types.Task) error
 }
 
@@ -986,27 +987,13 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 	return result
 }
 
-// isReadOnlyAction returns true for actions that are safe to run concurrently
-// in a parallel batch: they must not mutate the workspace AND must not be
-// high-risk in the tool registry.
-//
-// The registry RiskLevel check is the authoritative guard. The parallel batch
-// path (runBatchParallel) does NOT perform approval gating — only the serial
-// path (runBatchSerial) calls SuspendForApproval. Previously this function
-// relied solely on a hardcoded read-only name list, so if a high-risk tool were
-// ever (mis)classified as read-only, it would be executed in the parallel batch
-// and silently bypass approval. By rejecting any RiskLevelHigh tool here, such a
-// tool is forced onto the serial path where approval is enforced — closing the
-// bypass regardless of how the name list evolves.
+// isReadOnlyAction returns true only for registered Low Risk tools. RiskLevel is
+// the registry's authoritative concurrency contract: new read-only tools become
+// parallelizable automatically, unknown tools stay serial, and High Risk tools
+// are forced through the serial approval path.
 func isReadOnlyAction(action string) bool {
-	if tool, ok := tools.Get(action); ok && tool.RiskLevel() == types.RiskLevelHigh {
-		return false
-	}
-	switch action {
-	case "find_files", "search_text", "read_file", "git_diff", "http_fetch", "web_search", "rag_search", "rag_fetch", "memory_search", "memory_get":
-		return true
-	}
-	return false
+	registered, ok := tools.Get(action)
+	return ok && registered.RiskLevel() == types.RiskLevelLow
 }
 
 // enforceJITResearchPlan prevents a multi-agent plan for an external factual
@@ -1395,7 +1382,12 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evid
 	start := time.Now()
 	if verifier, ok := c.FinalVerifier.(CheckpointFinalVerifier); ok {
 		draftStart := time.Now()
-		draft, err := verifier.Draft(ctx, task.Goal, evidence, task.Memories)
+		draftCtx := ctx
+		var answerChunks []string
+		if c.TokenCallback != nil {
+			draftCtx = withAnswerTokenCallback(ctx, func(token string) { answerChunks = append(answerChunks, token) })
+		}
+		draft, err := verifier.Draft(draftCtx, task.Goal, evidence, task.Memories)
 		if c.Metrics != nil {
 			outcome := "success"
 			if err != nil {
@@ -1451,6 +1443,11 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evid
 		}
 		output := finalVerificationOutput(draft, verification)
 		confidence := c.applyFinalVerificationOutput(task, output, verification.TokenUsage, time.Since(start))
+		if output.Supported && c.TokenCallback != nil {
+			for _, token := range answerChunks {
+				c.TokenCallback(task.ID, token)
+			}
+		}
 		return confidence, output.Supported, nil
 	}
 
@@ -1601,7 +1598,12 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	log.Info("Phase 3 — Writing final answer", "task_id", task.ID)
 
 	start := time.Now()
-	output, err := c.Writer.Write(ctx, task.Goal, evidence, task.Memories)
+	writeCtx := ctx
+	var answerChunks []string
+	if c.TokenCallback != nil {
+		writeCtx = withAnswerTokenCallback(ctx, func(token string) { answerChunks = append(answerChunks, token) })
+	}
+	output, err := c.Writer.Write(writeCtx, task.Goal, evidence, task.Memories)
 	elapsed := time.Since(start)
 
 	if c.Metrics != nil {
@@ -1681,6 +1683,11 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	})
 	task.StepCount++
 	task.FinalAnswer = output.FinalAnswer
+	if draftConfidence != "low" && c.TokenCallback != nil {
+		for _, token := range answerChunks {
+			c.TokenCallback(task.ID, token)
+		}
+	}
 
 	log.Info("Phase 3 done — draft written", "draft_confidence", draftConfidence, "elapsed", elapsed)
 	return draftConfidence, nil

@@ -35,57 +35,74 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 		attribute.Int("agent.executor.parallel_actions", len(d.Actions)),
 	)
 
-	// Each goroutine owns a distinct index, so writing into the pre-sized slice
-	// needs no extra synchronisation. A failed action is NOT discarded: its
-	// failure is captured in the trace (Observation + Error) so the planner can
-	// observe it next turn and adapt, while sibling successes are preserved.
+	// Low-risk actions may run concurrently. High-risk and unknown actions run
+	// serially in planner order so approved writes/tests cannot race each other.
+	// Each worker owns a distinct result index; failures remain observations so
+	// sibling successes are preserved for the next planning turn.
 	traces := make([]types.StepTrace, len(d.Actions))
+	execute := func(idx int, actionCall planner.ActionCall) {
+		tCtx, tSpan := tracer.Start(ctx, "executor.execute_action")
+		defer tSpan.End()
+		tSpan.SetAttributes(attribute.String("action", actionCall.Action))
 
-	var wg sync.WaitGroup
-	for i, ac := range d.Actions {
-		wg.Add(1)
-		go func(idx int, actionCall planner.ActionCall) {
-			defer wg.Done()
+		tr := types.StepTrace{
+			// Parallel actions must have distinct persistent step keys. Postgres
+			// upserts traces by (task_id, step), so assigning every sibling the
+			// same step silently overwrites all but one result.
+			Step:   task.StepCount + idx + 1,
+			Goal:   task.Goal,
+			Action: actionCall.Action,
+		}
 
-			tCtx, tSpan := tracer.Start(ctx, "executor.execute_action")
-			defer tSpan.End()
-			tSpan.SetAttributes(attribute.String("action", actionCall.Action))
-
-			tr := types.StepTrace{
-				Step:   task.StepCount + 1, // Will be adjusted by caller if needed
-				Goal:   task.Goal,
-				Action: actionCall.Action,
-			}
-
-			tool, ok := tools.Get(actionCall.Action)
-			if !ok {
-				err := fmt.Errorf("unsupported action: %s", actionCall.Action)
-				tSpan.RecordError(err)
-				tSpan.SetStatus(codes.Error, "unsupported action")
-				tr.Error = err.Error()
-				tr.Observation = "error: " + err.Error()
-				traces[idx] = tr
-				return
-			}
-
-			res, err := tool.Execute(tCtx, task.Workspace, actionCall.Parameters)
-			if err != nil {
-				tSpan.RecordError(err)
-				tSpan.SetStatus(codes.Error, actionCall.Action+" failed")
-				tr.Error = err.Error()
-				tr.Observation = "error: " + err.Error()
-				traces[idx] = tr
-				return
-			}
-
-			tr.Query = res.Query
-			tr.Observation = res.Observation
-			tr.Evidence = res.Evidence
-			tr.TokenUsage = res.TokenUsage
+		tool, ok := tools.Get(actionCall.Action)
+		if !ok {
+			err := fmt.Errorf("unsupported action: %s", actionCall.Action)
+			tSpan.RecordError(err)
+			tSpan.SetStatus(codes.Error, "unsupported action")
+			tr.Error = err.Error()
+			tr.Observation = "error: " + err.Error()
 			traces[idx] = tr
-		}(i, ac)
+			return
+		}
+
+		res, err := tool.Execute(tCtx, task.Workspace, actionCall.Parameters)
+		if err != nil {
+			tSpan.RecordError(err)
+			tSpan.SetStatus(codes.Error, actionCall.Action+" failed")
+			tr.Error = err.Error()
+			tr.Observation = "error: " + err.Error()
+			traces[idx] = tr
+			return
+		}
+
+		tr.Query = res.Query
+		tr.Observation = res.Observation
+		tr.Evidence = res.Evidence
+		tr.TokenUsage = res.TokenUsage
+		traces[idx] = tr
 	}
-	wg.Wait()
+
+	for start := 0; start < len(d.Actions); {
+		if !isParallelAction(d.Actions[start].Action) {
+			execute(start, d.Actions[start])
+			start++
+			continue
+		}
+		end := start + 1
+		for end < len(d.Actions) && isParallelAction(d.Actions[end].Action) {
+			end++
+		}
+		var wg sync.WaitGroup
+		for index := start; index < end; index++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				execute(idx, d.Actions[idx])
+			}(index)
+		}
+		wg.Wait()
+		start = end
+	}
 
 	failed := 0
 	for i := range traces {
@@ -110,4 +127,9 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 	}
 
 	return traces, nil
+}
+
+func isParallelAction(action string) bool {
+	tool, ok := tools.Get(action)
+	return ok && tool.RiskLevel() == types.RiskLevelLow
 }
