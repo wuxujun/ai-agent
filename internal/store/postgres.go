@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	_ "github.com/lib/pq"
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -29,6 +30,16 @@ type PostgresStore struct {
 	paradeDBMu      sync.Mutex
 	paradeDBReady   bool
 	memoryIndexGate memoryIndexGate
+}
+
+// postgresText is a final defensive boundary for text originating in tools,
+// models, files, or network responses. PostgreSQL requires valid server-encoded
+// UTF-8 even though Go strings may contain arbitrary bytes.
+func postgresText(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+	return strings.ToValidUTF8(value, "\uFFFD")
 }
 
 // NewPostgresStore creates and initializes a PostgresStore.
@@ -289,8 +300,8 @@ memories_json=EXCLUDED.memories_json,
 answer_audit_json=EXCLUDED.answer_audit_json,
 final_answer=EXCLUDED.final_answer
 `,
-		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, string(task.Status), task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer,
+		postgresText(task.ID), postgresText(task.TenantID), postgresText(task.SessionID), task.SequenceNo, task.CreatedAt, task.UpdatedAt, postgresText(task.Goal), postgresText(string(task.Status)), task.MaxSteps, task.StepCount,
+		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer),
 	)
 	return err
 }
@@ -359,8 +370,8 @@ func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces
 					 error_text, prompt_tokens, completion_tokens, total_tokens)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 				ON CONFLICT (task_id, step) DO NOTHING`,
-			taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
-			tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
+			postgresText(taskID), tr.Step, postgresText(tr.Goal), postgresText(tr.Action), postgresText(tr.Query), postgresText(tr.Observation), string(ev), postgresText(string(tr.AgentRole)),
+			postgresText(tr.Error), tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
 		); err != nil {
 			return err
 		}
@@ -430,8 +441,8 @@ llm_estimated_cost_usd=EXCLUDED.llm_estimated_cost_usd,
 memories_json=EXCLUDED.memories_json,
 answer_audit_json=EXCLUDED.answer_audit_json,
 final_answer=EXCLUDED.final_answer`,
-		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, task.Status, task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer,
+		postgresText(task.ID), postgresText(task.TenantID), postgresText(task.SessionID), task.SequenceNo, task.CreatedAt, task.UpdatedAt, postgresText(task.Goal), postgresText(string(task.Status)), task.MaxSteps, task.StepCount,
+		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer),
 	)
 	if err != nil {
 		span.RecordError(err)
@@ -473,8 +484,8 @@ final_answer=EXCLUDED.final_answer`,
 						 error_text, prompt_tokens, completion_tokens, total_tokens)
 					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 					ON CONFLICT (task_id, step) DO NOTHING`,
-				task.ID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
-				tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
+				postgresText(task.ID), tr.Step, postgresText(tr.Goal), postgresText(tr.Action), postgresText(tr.Query), postgresText(tr.Observation), string(ev), postgresText(string(tr.AgentRole)),
+				postgresText(tr.Error), tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
 			); err != nil {
 				span.RecordError(err)
 				return err
@@ -856,7 +867,7 @@ timestamp=EXCLUDED.timestamp,
 embedding_json=EXCLUDED.embedding_json,
 embedding_vector=EXCLUDED.embedding_vector
 `,
-			mem.ID, mem.TenantID, mem.SessionID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON), vecValue,
+			postgresText(mem.ID), postgresText(mem.TenantID), postgresText(mem.SessionID), postgresText(mem.TaskID), postgresText(mem.Goal), postgresText(mem.FinalAnswer), postgresText(mem.KeyFindings), mem.Timestamp, string(embJSON), vecValue,
 		)
 		return err
 	}
@@ -874,7 +885,7 @@ key_findings=EXCLUDED.key_findings,
 timestamp=EXCLUDED.timestamp,
 embedding_json=EXCLUDED.embedding_json
 `,
-		mem.ID, mem.TenantID, mem.SessionID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp, string(embJSON),
+		postgresText(mem.ID), postgresText(mem.TenantID), postgresText(mem.SessionID), postgresText(mem.TaskID), postgresText(mem.Goal), postgresText(mem.FinalAnswer), postgresText(mem.KeyFindings), mem.Timestamp, string(embJSON),
 	)
 	return err
 }

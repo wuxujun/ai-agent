@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -80,15 +82,28 @@ func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params m
 		return nil, fmt.Errorf("tool %s failed after %d attempts: %w", m.Name(), retryPolicy.MaxRetries+1, lastErr)
 	}
 
-	// 1. Truncate Observation
-	if len(result.Observation) > 4000 {
-		result.Observation = result.Observation[:4000] + "\n...[truncated by middleware]"
-	}
+	// 1. Normalize and truncate Observation. Tool output can contain arbitrary
+	// bytes, and slicing a UTF-8 sequence at byte 4000 used to leave an invalid
+	// leading byte immediately before the truncation marker. PostgreSQL rejects
+	// such trace text with SQLSTATE 22021.
+	result.Observation = truncateToolObservation(result.Observation, 4000)
 
 	// 2. Evidence standardization is handled per-tool in their Execute implementations.
 	// No middleware-level override needed at this time.
 
 	return result, nil
+}
+
+func truncateToolObservation(value string, limit int) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	cut := limit
+	for cut > 0 && !utf8.ValidString(value[:cut]) {
+		cut--
+	}
+	return value[:cut] + "\n...[truncated by middleware]"
 }
 
 func retryPolicyFor(t Tool) RetryPolicy {

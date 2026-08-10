@@ -174,6 +174,47 @@ func TestExternalPostgresParadeDBHybridRanking(t *testing.T) {
 	}
 }
 
+func TestExternalPostgresNormalizesInvalidUTF8(t *testing.T) {
+	requireExternalIntegration(t)
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	st, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	taskID := "integration-invalid-utf8-" + uuid.NewString()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := st.DeleteTask(cleanupCtx, taskID); err != nil {
+			t.Errorf("clean up invalid UTF-8 test task %q: %v", taskID, err)
+		}
+	}()
+	task := &types.Task{
+		ID:       taskID,
+		Status:   types.StatusRunning,
+		MaxSteps: 1,
+		Trace: []types.StepTrace{{
+			Step:        1,
+			Action:      "utf8_regression",
+			Observation: "before\xc2\nafter",
+		}},
+	}
+	if err := st.SaveFullTask(t.Context(), task); err != nil {
+		t.Fatalf("SaveFullTask rejected normalized UTF-8: %v", err)
+	}
+	var observation string
+	if err := st.db.QueryRowContext(t.Context(), `SELECT observation FROM traces WHERE task_id = $1 AND step = 1`, taskID).Scan(&observation); err != nil {
+		t.Fatal(err)
+	}
+	if observation != "before\uFFFD\nafter" {
+		t.Fatalf("persisted observation = %q", observation)
+	}
+}
+
 func TestExternalPostgresMigrationUpgradesLegacySchema(t *testing.T) {
 	requireExternalIntegration(t)
 	dsn := os.Getenv("TEST_POSTGRES_DSN")

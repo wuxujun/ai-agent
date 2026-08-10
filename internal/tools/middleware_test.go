@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -95,5 +96,28 @@ func TestMiddlewareDoesNotRetryToolsWithoutPolicy(t *testing.T) {
 	}
 	if tool.callCount != 1 {
 		t.Fatalf("tool without retry policy must not be retried, got %d attempts", tool.callCount)
+	}
+}
+
+func TestMiddlewareTruncatesObservationAtUTF8Boundary(t *testing.T) {
+	// 3999 ASCII bytes followed by U+00A2 makes byte 4000 equal 0xC2, exactly
+	// the invalid prefix observed in PostgreSQL SQLSTATE 22021.
+	value := strings.Repeat("a", 3999) + "¢" + strings.Repeat("b", 10)
+	got := truncateToolObservation(value, 4000)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated observation is invalid UTF-8: %q", got[len(got)-40:])
+	}
+	if !strings.HasSuffix(got, "\n...[truncated by middleware]") {
+		t.Fatalf("truncation marker missing: %q", got[len(got)-40:])
+	}
+	if strings.Contains(got, "¢") {
+		t.Fatal("partially fitting multibyte rune should not be included")
+	}
+}
+
+func TestMiddlewareNormalizesInvalidToolOutput(t *testing.T) {
+	got := truncateToolObservation("before\xc2\nafter", 4000)
+	if !utf8.ValidString(got) || !strings.Contains(got, "\uFFFD") {
+		t.Fatalf("invalid tool output was not normalized: %q", got)
 	}
 }

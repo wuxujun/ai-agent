@@ -3,6 +3,7 @@ package store
 import (
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -46,5 +47,16 @@ func TestFuseMemoryRankingsDeduplicatesAndLimits(t *testing.T) {
 	}
 	if got := fuseMemoryRankings(nil, 0, 0, now); len(got) != 0 {
 		t.Fatalf("zero-limit fused ranking = %+v, want empty", got)
+	}
+}
+
+func TestPostgresTextNormalizesInvalidUTF8(t *testing.T) {
+	valid := "already valid 中文"
+	if got := postgresText(valid); got != valid {
+		t.Fatalf("valid text changed: %q", got)
+	}
+	got := postgresText("before\xc2\nafter")
+	if !utf8.ValidString(got) || got != "before\uFFFD\nafter" {
+		t.Fatalf("postgresText() = %q", got)
 	}
 }
