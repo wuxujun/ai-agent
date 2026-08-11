@@ -61,6 +61,15 @@ type Snapshot struct {
 	MultiAgentConfigChanges           int64         `json:"multiagent_config_changes"`
 	MultiAgentConfigBlocks            int64         `json:"multiagent_config_blocks"`
 	MultiAgentConfigMigrations        int64         `json:"multiagent_config_migrations"`
+	MultiAgentDAGCalls                int64         `json:"multiagent_dag_calls"`
+	MultiAgentDAGCompletions          int64         `json:"multiagent_dag_completions"`
+	MultiAgentDAGFailures             int64         `json:"multiagent_dag_failures"`
+	MultiAgentDAGFallbacks            int64         `json:"multiagent_dag_fallbacks"`
+	MultiAgentDAGLatencySum           time.Duration `json:"multiagent_dag_latency_sum"`
+	MultiAgentLegacyCalls             int64         `json:"multiagent_legacy_calls"`
+	MultiAgentLegacyCompletions       int64         `json:"multiagent_legacy_completions"`
+	MultiAgentLegacyFailures          int64         `json:"multiagent_legacy_failures"`
+	MultiAgentLegacyLatencySum        time.Duration `json:"multiagent_legacy_latency_sum"`
 	RetrievalCalls                    int64         `json:"retrieval_calls"`
 	RetrievalFailures                 int64         `json:"retrieval_failures"`
 	RetrievalFallbacks                int64         `json:"retrieval_fallbacks"`
@@ -115,43 +124,46 @@ type Collector struct {
 	tasksCompleted api.Int64Counter
 	fallbackHits   api.Int64Counter
 
-	promptTokens             api.Int64Counter
-	completionTokens         api.Int64Counter
-	totalTokens              api.Int64Counter
-	llmSceneCalls            api.Int64Counter
-	llmSceneErrors           api.Int64Counter
-	llmSceneLatency          api.Float64Histogram
-	llmScenePromptTokens     api.Int64Counter
-	llmSceneCompletionTokens api.Int64Counter
-	llmSceneTotalTokens      api.Int64Counter
-	llmSceneEstimatedCost    api.Float64Counter
-	llmCircuitOpened         api.Int64Counter
-	llmCircuitRejected       api.Int64Counter
-	llmRetryBudgetExhausted  api.Int64Counter
-	llmTaskBudgetRejected    api.Int64Counter
-	llmFallbackSucceeded     api.Int64Counter
-	llmFallbackFailed        api.Int64Counter
-	answerPipelineRuns       api.Int64Counter
-	answerPipelineStages     api.Int64Counter
-	answerPipelineDuration   api.Float64Histogram
-	answerPipelineTokens     api.Int64Counter
-	answerPipelineWarnings   api.Int64Counter
-	answerPipelineConfidence api.Int64Counter
-	multiAgentRoutes         api.Int64Counter
-	multiAgentPhases         api.Int64Counter
-	multiAgentPhaseLatency   api.Float64Histogram
-	multiAgentCriticReviews  api.Int64Counter
-	multiAgentCriticReplans  api.Int64Counter
-	multiAgentCheckpoints    api.Int64Counter
-	multiAgentResumes        api.Int64Counter
-	multiAgentConfigChanges  api.Int64Counter
-	retrievalCalls           api.Int64Counter
-	retrievalFailures        api.Int64Counter
-	retrievalFallbacks       api.Int64Counter
-	retrievalSlowPhases      api.Int64Counter
-	retrievalItems           api.Int64Counter
-	retrievalLatency         api.Float64Histogram
-	approvalEvents           api.Int64Counter
+	promptTokens               api.Int64Counter
+	completionTokens           api.Int64Counter
+	totalTokens                api.Int64Counter
+	llmSceneCalls              api.Int64Counter
+	llmSceneErrors             api.Int64Counter
+	llmSceneLatency            api.Float64Histogram
+	llmScenePromptTokens       api.Int64Counter
+	llmSceneCompletionTokens   api.Int64Counter
+	llmSceneTotalTokens        api.Int64Counter
+	llmSceneEstimatedCost      api.Float64Counter
+	llmCircuitOpened           api.Int64Counter
+	llmCircuitRejected         api.Int64Counter
+	llmRetryBudgetExhausted    api.Int64Counter
+	llmTaskBudgetRejected      api.Int64Counter
+	llmFallbackSucceeded       api.Int64Counter
+	llmFallbackFailed          api.Int64Counter
+	answerPipelineRuns         api.Int64Counter
+	answerPipelineStages       api.Int64Counter
+	answerPipelineDuration     api.Float64Histogram
+	answerPipelineTokens       api.Int64Counter
+	answerPipelineWarnings     api.Int64Counter
+	answerPipelineConfidence   api.Int64Counter
+	multiAgentRoutes           api.Int64Counter
+	multiAgentPhases           api.Int64Counter
+	multiAgentPhaseLatency     api.Float64Histogram
+	multiAgentCriticReviews    api.Int64Counter
+	multiAgentCriticReplans    api.Int64Counter
+	multiAgentCheckpoints      api.Int64Counter
+	multiAgentResumes          api.Int64Counter
+	multiAgentConfigChanges    api.Int64Counter
+	multiAgentRuntimeCalls     api.Int64Counter
+	multiAgentRuntimeLatency   api.Float64Histogram
+	multiAgentRuntimeFallbacks api.Int64Counter
+	retrievalCalls             api.Int64Counter
+	retrievalFailures          api.Int64Counter
+	retrievalFallbacks         api.Int64Counter
+	retrievalSlowPhases        api.Int64Counter
+	retrievalItems             api.Int64Counter
+	retrievalLatency           api.Float64Histogram
+	approvalEvents             api.Int64Counter
 }
 
 func NewCollector() *Collector {
@@ -203,6 +215,9 @@ func NewCollector() *Collector {
 	multiAgentCheckpoints, _ := meter.Int64Counter("agent.multiagent.verifier.checkpoints")
 	multiAgentResumes, _ := meter.Int64Counter("agent.multiagent.verifier.resumes")
 	multiAgentConfigChanges, _ := meter.Int64Counter("agent.multiagent.team_config.changes")
+	multiAgentRuntimeCalls, _ := meter.Int64Counter("agent.multiagent.runtime.calls")
+	multiAgentRuntimeLatency, _ := meter.Float64Histogram("agent.multiagent.runtime.latency_ms")
+	multiAgentRuntimeFallbacks, _ := meter.Int64Counter("agent.multiagent.runtime.fallbacks")
 	retrievalCalls, _ := meter.Int64Counter("agent.store.retrieval.calls")
 	retrievalFailures, _ := meter.Int64Counter("agent.store.retrieval.failures")
 	retrievalFallbacks, _ := meter.Int64Counter("agent.store.retrieval.fallbacks")
@@ -212,55 +227,58 @@ func NewCollector() *Collector {
 	approvalEvents, _ := meter.Int64Counter("agent.approval.events")
 
 	return &Collector{
-		plannerCalls:             plannerCalls,
-		plannerFailures:          plannerFailures,
-		plannerLatencyMs:         plannerLatencyMs,
-		writerCalls:              writerCalls,
-		writerFailures:           writerFailures,
-		writerLatencyMs:          writerLatencyMs,
-		executorCalls:            executorCalls,
-		executorFailures:         executorFailures,
-		executorLatencyMs:        executorLatencyMs,
-		runAllCalls:              runAllCalls,
-		tasksCompleted:           tasksCompleted,
-		fallbackHits:             fallbackHits,
-		promptTokens:             promptTokens,
-		completionTokens:         completionTokens,
-		totalTokens:              totalTokens,
-		llmSceneCalls:            llmSceneCalls,
-		llmSceneErrors:           llmSceneErrors,
-		llmSceneLatency:          llmSceneLatency,
-		llmScenePromptTokens:     llmScenePromptTokens,
-		llmSceneCompletionTokens: llmSceneCompletionTokens,
-		llmSceneTotalTokens:      llmSceneTotalTokens,
-		llmSceneEstimatedCost:    llmSceneEstimatedCost,
-		llmCircuitOpened:         llmCircuitOpened,
-		llmCircuitRejected:       llmCircuitRejected,
-		llmRetryBudgetExhausted:  llmRetryBudgetExhausted,
-		llmTaskBudgetRejected:    llmTaskBudgetRejected,
-		llmFallbackSucceeded:     llmFallbackSucceeded,
-		llmFallbackFailed:        llmFallbackFailed,
-		answerPipelineRuns:       answerPipelineRuns,
-		answerPipelineStages:     answerPipelineStages,
-		answerPipelineDuration:   answerPipelineDuration,
-		answerPipelineTokens:     answerPipelineTokens,
-		answerPipelineWarnings:   answerPipelineWarnings,
-		answerPipelineConfidence: answerPipelineConfidence,
-		multiAgentRoutes:         multiAgentRoutes,
-		multiAgentPhases:         multiAgentPhases,
-		multiAgentPhaseLatency:   multiAgentPhaseLatency,
-		multiAgentCriticReviews:  multiAgentCriticReviews,
-		multiAgentCriticReplans:  multiAgentCriticReplans,
-		multiAgentCheckpoints:    multiAgentCheckpoints,
-		multiAgentResumes:        multiAgentResumes,
-		multiAgentConfigChanges:  multiAgentConfigChanges,
-		retrievalCalls:           retrievalCalls,
-		retrievalFailures:        retrievalFailures,
-		retrievalFallbacks:       retrievalFallbacks,
-		retrievalSlowPhases:      retrievalSlowPhases,
-		retrievalItems:           retrievalItems,
-		retrievalLatency:         retrievalLatency,
-		approvalEvents:           approvalEvents,
+		plannerCalls:               plannerCalls,
+		plannerFailures:            plannerFailures,
+		plannerLatencyMs:           plannerLatencyMs,
+		writerCalls:                writerCalls,
+		writerFailures:             writerFailures,
+		writerLatencyMs:            writerLatencyMs,
+		executorCalls:              executorCalls,
+		executorFailures:           executorFailures,
+		executorLatencyMs:          executorLatencyMs,
+		runAllCalls:                runAllCalls,
+		tasksCompleted:             tasksCompleted,
+		fallbackHits:               fallbackHits,
+		promptTokens:               promptTokens,
+		completionTokens:           completionTokens,
+		totalTokens:                totalTokens,
+		llmSceneCalls:              llmSceneCalls,
+		llmSceneErrors:             llmSceneErrors,
+		llmSceneLatency:            llmSceneLatency,
+		llmScenePromptTokens:       llmScenePromptTokens,
+		llmSceneCompletionTokens:   llmSceneCompletionTokens,
+		llmSceneTotalTokens:        llmSceneTotalTokens,
+		llmSceneEstimatedCost:      llmSceneEstimatedCost,
+		llmCircuitOpened:           llmCircuitOpened,
+		llmCircuitRejected:         llmCircuitRejected,
+		llmRetryBudgetExhausted:    llmRetryBudgetExhausted,
+		llmTaskBudgetRejected:      llmTaskBudgetRejected,
+		llmFallbackSucceeded:       llmFallbackSucceeded,
+		llmFallbackFailed:          llmFallbackFailed,
+		answerPipelineRuns:         answerPipelineRuns,
+		answerPipelineStages:       answerPipelineStages,
+		answerPipelineDuration:     answerPipelineDuration,
+		answerPipelineTokens:       answerPipelineTokens,
+		answerPipelineWarnings:     answerPipelineWarnings,
+		answerPipelineConfidence:   answerPipelineConfidence,
+		multiAgentRoutes:           multiAgentRoutes,
+		multiAgentPhases:           multiAgentPhases,
+		multiAgentPhaseLatency:     multiAgentPhaseLatency,
+		multiAgentCriticReviews:    multiAgentCriticReviews,
+		multiAgentCriticReplans:    multiAgentCriticReplans,
+		multiAgentCheckpoints:      multiAgentCheckpoints,
+		multiAgentResumes:          multiAgentResumes,
+		multiAgentConfigChanges:    multiAgentConfigChanges,
+		multiAgentRuntimeCalls:     multiAgentRuntimeCalls,
+		multiAgentRuntimeLatency:   multiAgentRuntimeLatency,
+		multiAgentRuntimeFallbacks: multiAgentRuntimeFallbacks,
+		retrievalCalls:             retrievalCalls,
+		retrievalFailures:          retrievalFailures,
+		retrievalFallbacks:         retrievalFallbacks,
+		retrievalSlowPhases:        retrievalSlowPhases,
+		retrievalItems:             retrievalItems,
+		retrievalLatency:           retrievalLatency,
+		approvalEvents:             approvalEvents,
 	}
 }
 
@@ -577,9 +595,52 @@ func (c *Collector) ObserveMultiAgentRoute(configured, effective, reason string)
 	))
 }
 
+// ObserveMultiAgentRuntime records the rollout denominator, outcome, and
+// latency separately for DAG and Legacy without task-level attributes.
+func (c *Collector) ObserveMultiAgentRuntime(runtime, outcome string, latency time.Duration) {
+	if runtime != "dag" {
+		runtime = "legacy"
+	}
+	if outcome != "success" && outcome != "partial" && outcome != "failure" && outcome != "canceled" {
+		outcome = "failure"
+	}
+	c.mu.Lock()
+	if runtime == "dag" {
+		c.s.MultiAgentDAGCalls++
+		c.s.MultiAgentDAGLatencySum += latency
+		if outcome == "success" {
+			c.s.MultiAgentDAGCompletions++
+		} else if outcome != "partial" {
+			c.s.MultiAgentDAGFailures++
+		}
+	} else {
+		c.s.MultiAgentLegacyCalls++
+		c.s.MultiAgentLegacyLatencySum += latency
+		if outcome == "success" {
+			c.s.MultiAgentLegacyCompletions++
+		} else if outcome != "partial" {
+			c.s.MultiAgentLegacyFailures++
+		}
+	}
+	c.mu.Unlock()
+	attrs := api.WithAttributes(attribute.String("runtime", runtime), attribute.String("outcome", outcome))
+	c.multiAgentRuntimeCalls.Add(context.Background(), 1, attrs)
+	c.multiAgentRuntimeLatency.Record(context.Background(), float64(latency.Milliseconds()), attrs)
+}
+
+func (c *Collector) ObserveMultiAgentRuntimeFallback(reason string) {
+	category := multiAgentRouteCategory(reason)
+	c.mu.Lock()
+	c.s.MultiAgentDAGFallbacks++
+	c.mu.Unlock()
+	c.multiAgentRuntimeFallbacks.Add(context.Background(), 1, api.WithAttributes(attribute.String("reason_category", category)))
+}
+
 func multiAgentRouteCategory(reason string) string {
 	reason = strings.ToLower(strings.TrimSpace(reason))
 	switch {
+	case strings.HasPrefix(reason, "dag_fallback:"):
+		return "dag_fallback"
 	case strings.HasPrefix(reason, "resume_escalation:"), strings.HasPrefix(reason, "adaptive_replan:"), strings.HasPrefix(reason, "execution_replan:"):
 		return "escalation"
 	case strings.Contains(reason, "budget_fallback:"):

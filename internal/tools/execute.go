@@ -69,10 +69,69 @@ func init() {
 // ExecuteCode executes a command (e.g. python3, bash, go) inside the workspace
 // with the provided space-separated arguments.
 func ExecuteCode(ctx context.Context, workspace string, command string, argsStr string) (string, error) {
-	var args []string
-	if strings.TrimSpace(argsStr) != "" {
-		args = strings.Fields(argsStr)
+	args, err := splitCommandArgs(argsStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid command arguments: %w", err)
 	}
 
 	return RunCommand(ctx, workspace, command, args...)
+}
+
+// splitCommandArgs parses the planner's space-separated argument string without
+// invoking a shell. Quoted groups are preserved as one argv entry, which is
+// required for commands such as python3 -c "print('ok')".
+func splitCommandArgs(input string) ([]string, error) {
+	var args []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	started := false
+	flush := func() {
+		if started {
+			args = append(args, current.String())
+			current.Reset()
+			started = false
+		}
+	}
+
+	for _, r := range input {
+		if escaped {
+			current.WriteRune(r)
+			started = true
+			escaped = false
+			continue
+		}
+		if r == '\\' && quote != '\'' {
+			escaped = true
+			started = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			} else {
+				current.WriteRune(r)
+			}
+			started = true
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+			started = true
+		case ' ', '\t', '\n', '\r':
+			flush()
+		default:
+			current.WriteRune(r)
+			started = true
+		}
+	}
+	if escaped {
+		return nil, fmt.Errorf("trailing escape")
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	flush()
+	return args, nil
 }

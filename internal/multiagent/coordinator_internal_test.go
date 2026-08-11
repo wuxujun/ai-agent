@@ -80,6 +80,53 @@ func TestPartitionBatchForcesHighRiskSerial(t *testing.T) {
 	}
 }
 
+func TestPartitionBatchKeepsDiscoveryBeforePathConsumer(t *testing.T) {
+	steps := []ResearchStep{
+		{ID: "discover", Action: "find_files", FileGlob: "*.json"},
+		{ID: "consume", Action: "read_file"},
+	}
+	batch, remainder, parallel := partitionBatch(steps, 10, 10)
+	if parallel || len(batch) != 1 || batch[0].ID != "discover" {
+		t.Fatalf("discovery batch = %+v parallel=%v", batch, parallel)
+	}
+	if len(remainder) != 1 || remainder[0].ID != "consume" {
+		t.Fatalf("remainder = %+v", remainder)
+	}
+}
+
+func TestPartitionBatchStopsBeforeDiscoveryBarrier(t *testing.T) {
+	steps := []ResearchStep{
+		{ID: "read-a", Action: "read_file", FilePath: "a"},
+		{ID: "discover", Action: "search_text", SearchQuery: "needle"},
+		{ID: "read-b", Action: "read_file"},
+	}
+	batch, remainder, parallel := partitionBatch(steps, 10, 10)
+	if !parallel || len(batch) != 1 || batch[0].ID != "read-a" {
+		t.Fatalf("leading batch = %+v parallel=%v", batch, parallel)
+	}
+	if len(remainder) != 2 || remainder[0].ID != "discover" {
+		t.Fatalf("remainder = %+v", remainder)
+	}
+}
+
+func TestNormalizeStepWorkspacePathRemovesOnlyDuplicateRelativePrefix(t *testing.T) {
+	step := ResearchStep{FilePath: "./workspace/p2.json", RepairedParameters: map[string]any{"path": "./workspace/p2.json"}}
+	normalizeStepWorkspacePath("./workspace", &step)
+	if step.FilePath != "p2.json" || step.RepairedParameters["path"] != "p2.json" {
+		t.Fatalf("normalized step = %+v", step)
+	}
+	abs := ResearchStep{FilePath: "/tmp/workspace/p2.json"}
+	normalizeStepWorkspacePath("./workspace", &abs)
+	if abs.FilePath != "/tmp/workspace/p2.json" {
+		t.Fatalf("absolute path changed to %q", abs.FilePath)
+	}
+	other := ResearchStep{FilePath: "other/p2.json"}
+	normalizeStepWorkspacePath("./workspace", &other)
+	if other.FilePath != "other/p2.json" {
+		t.Fatalf("unrelated relative path changed to %q", other.FilePath)
+	}
+}
+
 func TestIsReadOnlyActionUsesRegistryRiskLevel(t *testing.T) {
 	for _, action := range []string{"json_query", "sql_query", "memory_search", "web_browser"} {
 		if !isReadOnlyAction(action) {
@@ -206,5 +253,25 @@ func TestLookAheadTokenBudgetDefense(t *testing.T) {
 	}
 	if steps[0].ID != "s5" || steps[1].ID != "s6" {
 		t.Errorf("expected remainder steps to be s5 and s6, got %+v", steps)
+	}
+}
+
+func TestRecoverStepEvidenceFromPreviousExecutionSegment(t *testing.T) {
+	traces := []types.StepTrace{
+		{Step: 1, Action: "plan", AgentRole: RolePlanner, Observation: "ignored"},
+		{Step: 2, Action: "read_file", AgentRole: RoleExecutor, Observation: "read fixture", Evidence: []types.Evidence{{Path: "fixture.json", Lines: []string{"content"}}}},
+		{Step: 3, Action: "search_text", AgentRole: RoleResearcher, Observation: "failed", Error: "boom"},
+		{Step: 4, Action: "verify", AgentRole: RoleVerifier, Observation: "ignored"},
+	}
+
+	got := recoverStepEvidence(traces)
+	if len(got) != 2 {
+		t.Fatalf("recoverStepEvidence() len = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].StepID != "trace-2" || got[0].Action != "read_file" || len(got[0].Evidence) != 1 || got[0].Failed {
+		t.Fatalf("recovered successful evidence = %+v", got[0])
+	}
+	if got[1].StepID != "trace-3" || !got[1].Failed {
+		t.Fatalf("recovered failed evidence = %+v", got[1])
 	}
 }

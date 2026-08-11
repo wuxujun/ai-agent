@@ -382,7 +382,7 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 
 | 方法 | 路径 | 说明 |
 |:---|:---|:---|
-| `GET` | `/api/metrics` | 本地性能指标，包含持久化审批生命周期与恢复计数 |
+| `GET` | `/api/metrics` | 本地性能指标，包含持久化审批及 DAG/Legacy 灰度计数 |
 | `POST` | `/api/config/reload` | 热重载配置（返回脱敏 diff 和单调递增的 `config_revision`） |
 | `GET` | `/ping` | 健康检查 → `{"message":"pong"}` |
 

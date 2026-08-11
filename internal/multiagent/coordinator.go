@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -137,7 +138,7 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 // The selected team's workflow controls whether tool steps and final synthesis
 // are owned by Researcher/Writer or Executor/Verifier. Both paths retain the
 // same policy, approval, cancellation, and budget gates.
-func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
+func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) {
 	ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
 	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
@@ -159,6 +160,22 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 	if forced, _ := ctx.Value(forceLegacyRuntimeContextKey{}).(bool); forced {
 		runtimeMode = RuntimeLegacy
 	}
+	runtimeStarted := time.Now()
+	defer func() {
+		if c.Metrics == nil {
+			return
+		}
+		outcome := "success"
+		if runErr != nil {
+			outcome = "failure"
+			if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+				outcome = "canceled"
+			}
+		} else if task.Status != types.StatusCompleted {
+			outcome = "partial"
+		}
+		c.Metrics.ObserveMultiAgentRuntime(string(runtimeMode), outcome, time.Since(runtimeStarted))
+	}()
 	configuredGraphSummary, err := annotateWorkflowGraph(span, "multiagent.workflow.configured_graph", configuredWorkflow)
 	if err != nil {
 		task.Status = types.StatusFailed
@@ -308,6 +325,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 			span.SetAttributes(attribute.String("multiagent.runtime.fallback_reason", escalationErr.reason))
 			if c.Metrics != nil {
 				c.Metrics.ObserveMultiAgentRoute(string(WorkflowAdaptive), string(WorkflowReviewed), "dag_fallback:"+escalationErr.reason)
+				c.Metrics.ObserveMultiAgentRuntimeFallback("dag_fallback:" + escalationErr.reason)
 			}
 			log.Warn("Adaptive DAG escalated during Research; continuing with Legacy runtime", "task_id", task.ID, "reason", escalationErr.reason)
 			return c.Run(withForceLegacyRuntime(ctx), task)
@@ -328,6 +346,9 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 			attribute.String("multiagent.runtime.fallback_reason", "workflow_not_migrated"),
 		)
 		log.Warn("DAG runtime requested for a workflow that has not migrated; using legacy runtime", "task_id", task.ID, "workflow", configuredWorkflow)
+		if c.Metrics != nil {
+			c.Metrics.ObserveMultiAgentRuntimeFallback("dag_fallback:workflow_not_migrated")
+		}
 	} else {
 		span.SetAttributes(attribute.String("multiagent.runtime.effective", string(RuntimeLegacy)))
 	}
@@ -377,7 +398,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) error {
 		c.EventCallback(task.ID, task.Status)
 	}
 
-	var allEvidence []StepEvidence
+	allEvidence := recoverStepEvidence(task.Trace)
 	currentSteps := plan.Steps
 	depthIterations := 0
 	maxDepthIterations := 2
@@ -829,6 +850,9 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 	maxReplans := 3
 
 	for len(currentSteps) > 0 {
+		for i := range currentSteps {
+			normalizeStepWorkspacePath(task.Workspace, &currentSteps[i])
+		}
 		// Budget and step-count gate
 		if task.ToolBudget <= 0 || tokenBudgetExhausted(task) {
 			log.Info("Budget exhausted (tools or tokens) — stopping research early")
@@ -996,6 +1020,42 @@ func isReadOnlyAction(action string) bool {
 	return ok && registered.RiskLevel() == types.RiskLevelLow
 }
 
+// requiresSequentialDiscovery identifies read-only tools whose output commonly
+// supplies a path/query to a following step. Running their consumers in the
+// same parallel batch violates the ordered ResearchPlan contract.
+func requiresSequentialDiscovery(action string) bool {
+	return action == "find_files" || action == "search_text"
+}
+
+// normalizeStepWorkspacePath accepts the common LLM form
+// "<workspace>/<relative path>" while tools already execute relative to the
+// task workspace. Removing that duplicate prefix prevents workspace/workspace
+// lookups without weakening the tool layer's traversal checks.
+func normalizeStepWorkspacePath(workspace string, step *ResearchStep) {
+	if step == nil || strings.TrimSpace(step.FilePath) == "" || filepath.IsAbs(step.FilePath) {
+		return
+	}
+	workspace = filepath.Clean(strings.TrimSpace(workspace))
+	path := filepath.Clean(strings.TrimSpace(step.FilePath))
+	if workspace == "." || workspace == "" || path == workspace {
+		return
+	}
+	prefix := workspace + string(filepath.Separator)
+	if !strings.HasPrefix(path, prefix) {
+		return
+	}
+	relative := strings.TrimPrefix(path, prefix)
+	if relative == "" || relative == "." {
+		return
+	}
+	step.FilePath = relative
+	if step.RepairedParameters != nil {
+		if _, exists := step.RepairedParameters["path"]; exists {
+			step.RepairedParameters["path"] = relative
+		}
+	}
+}
+
 // enforceJITResearchPlan prevents a multi-agent plan for an external factual
 // lookup from drifting into workspace or execution tools before retrieval.
 // Candidate detail steps are inserted later by retrievalFetchSteps.
@@ -1080,12 +1140,12 @@ func partitionBatch(steps []ResearchStep, budgetLeft, stepsLeft int) (batch []Re
 		return nil, nil, false
 	}
 	// If first step is serial, return it alone
-	if !isReadOnlyAction(steps[0].Action) {
+	if !isReadOnlyAction(steps[0].Action) || requiresSequentialDiscovery(steps[0].Action) {
 		return steps[:1], steps[1:], false
 	}
 	// Collect consecutive read-only steps up to budget/step limits
 	end := 0
-	for end < len(steps) && isReadOnlyAction(steps[end].Action) && end < budgetLeft && end < stepsLeft {
+	for end < len(steps) && isReadOnlyAction(steps[end].Action) && !requiresSequentialDiscovery(steps[end].Action) && end < budgetLeft && end < stepsLeft {
 		end++
 	}
 	if end == 0 {
@@ -1715,6 +1775,30 @@ func totalTokensUsed(task *types.Task) int {
 		total += tr.TokenUsage.TotalTokens
 	}
 	return total
+}
+
+// recoverStepEvidence keeps successful evidence gathered before a suspended or
+// interrupted Multi-Agent run available to the resumed Writer/Verifier.
+func recoverStepEvidence(traces []types.StepTrace) []StepEvidence {
+	result := make([]StepEvidence, 0)
+	for _, trace := range traces {
+		if trace.AgentRole != RoleResearcher && trace.AgentRole != RoleExecutor {
+			continue
+		}
+		if _, registered := tools.Get(trace.Action); !registered {
+			continue
+		}
+		result = append(result, StepEvidence{
+			StepID:      fmt.Sprintf("trace-%d", trace.Step),
+			StepDesc:    "Evidence recovered from a previous execution segment",
+			Action:      trace.Action,
+			Observation: trace.Observation,
+			Evidence:    append([]types.Evidence(nil), trace.Evidence...),
+			TokenUsage:  trace.TokenUsage,
+			Failed:      trace.Error != "",
+		})
+	}
+	return result
 }
 
 // tokenBudgetExhausted reports whether the task has reached or exceeded its

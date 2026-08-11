@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	metricspkg "github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -250,13 +251,14 @@ func TestCoordinatorDAGRuntimeUsesAdaptiveResearchRoute(t *testing.T) {
 
 func TestCoordinatorResearchDAGMatchesLegacyOutcome(t *testing.T) {
 	type outcome struct {
-		status      types.TaskStatus
-		finalAnswer string
-		hypothesis  string
-		toolBudget  int
-		toolSteps   int
-		traceRoles  []AgentRole
-		traceAction []string
+		status       types.TaskStatus
+		finalAnswer  string
+		hypothesis   string
+		toolBudget   int
+		toolSteps    int
+		traceRoles   []AgentRole
+		traceAction  []string
+		runtimeCalls int64
 	}
 	run := func(t *testing.T, runtimeMode OrchestrationRuntime) outcome {
 		t.Helper()
@@ -270,7 +272,8 @@ func TestCoordinatorResearchDAGMatchesLegacyOutcome(t *testing.T) {
 		planner := &countingResearchDAGPlanner{}
 		researcher := &countingResearchDAGResearcher{}
 		writer := &countingResearchDAGWriter{}
-		coordinator := &Coordinator{Planner: planner, Researcher: researcher, Writer: writer}
+		collector := metricspkg.NewCollector()
+		coordinator := &Coordinator{Planner: planner, Researcher: researcher, Writer: writer, Metrics: collector}
 		task := &types.Task{ID: "research-equivalence-" + string(runtimeMode), Goal: "inspect", Workspace: t.TempDir(), Status: types.StatusCreated, MaxSteps: 2, ToolBudget: 2}
 		if err := coordinator.Run(context.Background(), task); err != nil {
 			t.Fatal(err)
@@ -278,6 +281,11 @@ func TestCoordinatorResearchDAGMatchesLegacyOutcome(t *testing.T) {
 		result := outcome{
 			status: task.Status, finalAnswer: task.FinalAnswer, hypothesis: task.Hypothesis,
 			toolBudget: task.ToolBudget, toolSteps: multiAgentToolStepCount(task),
+		}
+		if runtimeMode == RuntimeDAG {
+			result.runtimeCalls = collector.Snapshot().MultiAgentDAGCalls
+		} else {
+			result.runtimeCalls = collector.Snapshot().MultiAgentLegacyCalls
 		}
 		for _, trace := range task.Trace {
 			if trace.Action == WorkflowRuntimeCheckpointTraceAction {
@@ -291,6 +299,9 @@ func TestCoordinatorResearchDAGMatchesLegacyOutcome(t *testing.T) {
 
 	legacy := run(t, RuntimeLegacy)
 	dag := run(t, RuntimeDAG)
+	if legacy.runtimeCalls != 1 || dag.runtimeCalls != 1 {
+		t.Fatalf("runtime rollout calls: legacy=%d DAG=%d", legacy.runtimeCalls, dag.runtimeCalls)
+	}
 	if legacy.status != dag.status || legacy.finalAnswer != dag.finalAnswer || legacy.hypothesis != dag.hypothesis || legacy.toolBudget != dag.toolBudget || legacy.toolSteps != dag.toolSteps {
 		t.Fatalf("legacy=%+v DAG=%+v", legacy, dag)
 	}

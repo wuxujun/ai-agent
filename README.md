@@ -403,7 +403,7 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 
 | Method | Path | Description |
 |:---|:---|:---|
-| `GET` | `/api/metrics` | Local performance metrics, including durable approval lifecycle/recovery counters |
+| `GET` | `/api/metrics` | Local performance metrics, including durable approval and DAG/Legacy rollout counters |
 | `POST` | `/api/config/reload` | Hot-reload config (returns redacted diff and monotonic `config_revision`) |
 | `POST` | `/api/prompt/init` | Admin: idempotently initialize missing `teams.yaml` prompts in Langfuse |
 | `GET` | `/ping` | Health check → `{"message":"pong"}` |

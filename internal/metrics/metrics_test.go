@@ -153,3 +153,19 @@ func TestCollectorTracksApprovalCleanup(t *testing.T) {
 		t.Fatalf("cleanup metrics = %+v", snapshot)
 	}
 }
+
+func TestCollectorTracksMultiAgentRuntimeRollout(t *testing.T) {
+	collector := NewCollector()
+	collector.ObserveMultiAgentRuntime("dag", "success", 10*time.Millisecond)
+	collector.ObserveMultiAgentRuntime("dag", "failure", 20*time.Millisecond)
+	collector.ObserveMultiAgentRuntime("dag", "partial", 2*time.Millisecond)
+	collector.ObserveMultiAgentRuntime("legacy", "canceled", 5*time.Millisecond)
+	collector.ObserveMultiAgentRuntimeFallback("dag_fallback:research_replan_escalated_to_reviewed")
+	snapshot := collector.Snapshot()
+	if snapshot.MultiAgentDAGCalls != 3 || snapshot.MultiAgentDAGCompletions != 1 || snapshot.MultiAgentDAGFailures != 1 || snapshot.MultiAgentDAGFallbacks != 1 || snapshot.MultiAgentDAGLatencySum != 32*time.Millisecond {
+		t.Fatalf("DAG rollout metrics = %+v", snapshot)
+	}
+	if snapshot.MultiAgentLegacyCalls != 1 || snapshot.MultiAgentLegacyCompletions != 0 || snapshot.MultiAgentLegacyFailures != 1 || snapshot.MultiAgentLegacyLatencySum != 5*time.Millisecond {
+		t.Fatalf("Legacy rollout metrics = %+v", snapshot)
+	}
+}
