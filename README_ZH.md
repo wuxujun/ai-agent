@@ -186,6 +186,15 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `tool` | `timeout_seconds` |
 | `skill` | `root`（技能发现根目录） |
 
+设置一个 base64 编码的 32 字节 AES 密钥后，会启用审批持久化恢复。所有实例必须从密钥管理服务
+读取同一个密钥；密钥丢失后，尚未消费的审批载荷将无法恢复。
+
+```bash
+export AI_AGENT_APPROVAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+```
+
+未设置该变量时，审批继续使用进程内模式，敏感 action 参数不会写入持久化存储。
+
 生产多租户部署应设置 `api.auth.require_tenant_workspace_root: true`，并为每个
 非管理员租户配置独立的 `api.tenants.<tenant>.workspace_root`。创建任务时若请求的
 Workspace 超出该根目录，服务会返回 `403`。兼容默认值为 `false`；即使未开启严格

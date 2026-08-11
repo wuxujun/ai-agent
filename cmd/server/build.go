@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
@@ -74,8 +75,8 @@ func buildApp(cfg *config.Config, st store.Store, eng *orchestrator.Engine, mc *
 	})
 	apiHandler := api.RegisterRoutes(router, st, eng, mc)
 	busRuntime := buildApprovalBus(cfg, eng, apiHandler)
-	startPausedTaskScan(st)
 	wireEngineEvents(eng)
+	startPausedTaskScan(st, eng)
 
 	addr := cfg.API.Addr
 	if addr == "" {
@@ -132,24 +133,57 @@ func buildApprovalBus(cfg *config.Config, eng *orchestrator.Engine, apiHandler *
 	return runtime
 }
 
-func startPausedTaskScan(st store.Store) {
+func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
 	go func() {
-		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer scanCancel()
 		pausedTasks, err := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusPaused, Limit: 500})
 		if err != nil {
 			slog.Warn("startup scan: failed to list paused tasks", "error", err)
 			return
 		}
-		if len(pausedTasks) == 0 {
+		if len(pausedTasks) > 0 {
+			slog.Warn("startup: found paused tasks from previous shutdown",
+				"count", len(pausedTasks),
+				"hint", "POST /api/tasks/:id/run-all to resume",
+			)
+			for _, task := range pausedTasks {
+				slog.Info("paused task", "task_id", task.ID, "goal", task.Goal, "steps", task.StepCount)
+			}
+		}
+
+		durableStore, ok := st.(store.DurableApprovalStore)
+		if !ok || eng == nil || eng.ApprovalCodec == nil {
 			return
 		}
-		slog.Warn("startup: found paused tasks from previous shutdown",
-			"count", len(pausedTasks),
-			"hint", "POST /api/tasks/:id/run-all to resume",
-		)
-		for _, task := range pausedTasks {
-			slog.Info("paused task", "task_id", task.ID, "goal", task.Goal, "steps", task.StepCount)
+		awaitingTasks, err := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusAwaitingApproval, Limit: 500})
+		if err != nil {
+			slog.Warn("startup scan: failed to list awaiting approval tasks", "error", err)
+			return
+		}
+		owner := "startup-recovery-" + uuid.NewString()
+		for _, task := range awaitingTasks {
+			tenantID := task.TenantID
+			if tenantID == "" {
+				tenantID = "default"
+			}
+			approved, listErr := durableStore.ListTaskApprovals(scanCtx, task.ID, tenantID, types.ApprovalApproved)
+			if listErr != nil {
+				slog.Warn("startup scan: failed to list approved checkpoints", "task_id", task.ID, "error", listErr)
+				continue
+			}
+			for _, approval := range approved {
+				recovered, recoverErr := eng.RecoverApprovedApproval(scanCtx, task, approval, owner)
+				if recoverErr != nil {
+					slog.Error("startup approval recovery failed", "task_id", task.ID, "approval_id", approval.ID, "error", recoverErr)
+					continue
+				}
+				if recovered {
+					slog.Info("startup approval action recovered", "task_id", task.ID, "approval_id", approval.ID,
+						"status", types.StatusPaused, "hint", "POST /api/tasks/:id/run-all to continue")
+					break
+				}
+			}
 		}
 	}()
 }

@@ -919,6 +919,21 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 	}
 
 	if body.ApprovalID != "" {
+		var durableApproval *types.ApprovalRequest
+		var durableExists, persisted bool
+		var persistErr error
+		if h.engine != nil {
+			durableApproval, durableExists, persisted, persistErr = h.engine.PersistApprovalResolution(c.Request.Context(), taskID, body.ApprovalID, result)
+		}
+		if persistErr != nil {
+			log.Error("durable approval resolution failed", "task_id", taskID, "approval_id", body.ApprovalID, "error", persistErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist approval decision"})
+			return
+		}
+		if durableExists && !persisted {
+			c.JSON(http.StatusConflict, gin.H{"error": "approval was already resolved", "approval_id": body.ApprovalID})
+			return
+		}
 		approval, ok := orchestrator.GetApprovalByID(body.ApprovalID)
 		if !ok {
 			// ── P0: Not found locally — broadcast via Redis so executing instance picks it up ──
@@ -927,6 +942,10 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 					log.Warn("approval bus publish failed", "error", pubErr)
 				}
 				c.JSON(http.StatusAccepted, gin.H{"message": "approval signal forwarded to cluster", "approval_id": body.ApprovalID})
+				return
+			}
+			if persisted {
+				c.JSON(http.StatusAccepted, h.approvalResponseMessage(approved, durableApproval))
 				return
 			}
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
@@ -944,6 +963,31 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 	pending := orchestrator.ListPendingApprovals(taskID)
 	switch len(pending) {
 	case 0:
+		if h.engine != nil {
+			durableApproval, approvalID, durableCount, persisted, persistErr := h.engine.PersistUniqueApprovalResolution(c.Request.Context(), taskID, result)
+			if persistErr != nil {
+				log.Error("durable approval resolution failed", "task_id", taskID, "error", persistErr)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist approval decision"})
+				return
+			}
+			if durableCount > 1 {
+				c.JSON(http.StatusConflict, gin.H{"error": "multiple pending approvals; specify approval_id", "pending_count": durableCount})
+				return
+			}
+			if durableCount == 1 && !persisted {
+				c.JSON(http.StatusConflict, gin.H{"error": "approval was already resolved", "approval_id": approvalID})
+				return
+			}
+			if persisted {
+				if h.approvalBus != nil {
+					if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), approvalID, taskID, result); pubErr != nil {
+						log.Warn("approval bus publish failed", "error", pubErr)
+					}
+				}
+				c.JSON(http.StatusAccepted, h.approvalResponseMessage(approved, durableApproval))
+				return
+			}
+		}
 		// ── P0: Not found locally — broadcast via Redis ──
 		if h.approvalBus != nil {
 			if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), "", taskID, result); pubErr != nil {
@@ -956,6 +1000,18 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 		return
 	case 1:
 		approval := pending[0]
+		if h.engine != nil {
+			_, durableExists, persisted, persistErr := h.engine.PersistApprovalResolution(c.Request.Context(), taskID, approval.ID, result)
+			if persistErr != nil {
+				log.Error("durable approval resolution failed", "task_id", taskID, "approval_id", approval.ID, "error", persistErr)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist approval decision"})
+				return
+			}
+			if durableExists && !persisted {
+				c.JSON(http.StatusConflict, gin.H{"error": "approval was already resolved", "approval_id": approval.ID})
+				return
+			}
+		}
 		if !orchestrator.ResolveApproval(taskID, result) {
 			// Lost the race — another resolver beat us between List and Resolve.
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this task"})

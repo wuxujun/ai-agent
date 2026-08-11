@@ -131,6 +131,18 @@ type TaskDeletionStore interface {
 	DeleteAllTasks(ctx context.Context) (int64, error)
 }
 
+// DurableApprovalStore persists approval state independently from Task JSON.
+// Implementations must enforce tenant scope, versioned CAS transitions, and
+// owner-checked leases. Payload bytes are ciphertext produced above Store.
+type DurableApprovalStore interface {
+	CreateApproval(ctx context.Context, approval *types.DurableApproval) error
+	GetApproval(ctx context.Context, id, tenantID string) (*types.DurableApproval, error)
+	ListTaskApprovals(ctx context.Context, taskID, tenantID string, status types.DurableApprovalStatus) ([]*types.DurableApproval, error)
+	TransitionApproval(ctx context.Context, id, tenantID string, expectedVersion int64, from, to types.DurableApprovalStatus, resolutionPayload []byte) (bool, error)
+	AcquireApprovalLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error)
+	ReleaseApprovalLease(ctx context.Context, id, owner string) error
+}
+
 // MemoryManagementStore provides administrative listing and deletion without
 // expanding the core Store contract used by lightweight adapters.
 type MemoryManagementStore interface {

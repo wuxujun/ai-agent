@@ -156,6 +156,25 @@ CREATE TABLE IF NOT EXISTS task_leases (
 	expires_at BIGINT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS approvals (
+	id VARCHAR(255) PRIMARY KEY,
+	task_id VARCHAR(255) NOT NULL,
+	tenant_id TEXT NOT NULL,
+	request_json JSONB NOT NULL,
+	action_payload BYTEA NOT NULL,
+	resolution_payload BYTEA,
+	status VARCHAR(32) NOT NULL,
+	version BIGINT NOT NULL,
+	owner TEXT NOT NULL DEFAULT '',
+	lease_expires_at BIGINT NOT NULL DEFAULT 0,
+	created_at TIMESTAMP NOT NULL,
+	updated_at TIMESTAMP NOT NULL,
+	resolved_at TIMESTAMP,
+	FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_task_tenant_status
+	ON approvals(task_id, tenant_id, status, created_at);
+
 CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	tenant_id TEXT NOT NULL,
 	period_start DATE NOT NULL,

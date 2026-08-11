@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +81,10 @@ type Engine struct {
 	// P1-1: replacing the implicit global-state coupling with an explicit field
 	// so SuspendForApproval no longer depends on package-level variables.
 	Approvals *ApprovalStore
+	// ApprovalCodec encrypts sensitive action/result payloads before durable
+	// persistence. A nil codec preserves legacy in-memory approval behavior and
+	// deliberately disables durable approval writes.
+	ApprovalCodec ApprovalPayloadCodec
 
 	// ApprovalBus enables cross-instance approval and cancel signalling via
 	// Redis Pub/Sub. When nil the engine operates with in-process channels only
@@ -110,6 +115,11 @@ type Engine struct {
 	adkOnce   sync.Once
 	adkRunner any // *runner.Runner
 	adkErr    error
+}
+
+type ApprovalPayloadCodec interface {
+	Encrypt(plaintext []byte) ([]byte, error)
+	Decrypt(payload []byte) ([]byte, error)
 }
 
 func (e *Engine) llmSceneEnabled(scene string) bool {
@@ -1020,11 +1030,182 @@ func (e *Engine) approvalStore() *ApprovalStore {
 	return defaultApprovals
 }
 
+// PersistApprovalResolution records an explicit approve/reject decision before
+// any in-memory or Pub/Sub notification. found=false means durable approvals
+// are disabled or the ID does not belong to this task/tenant.
+func (e *Engine) PersistApprovalResolution(ctx context.Context, taskID, approvalID string, result types.ApprovalResult) (*types.ApprovalRequest, bool, bool, error) {
+	durableStore, ok := e.Store.(store.DurableApprovalStore)
+	if !ok || e.ApprovalCodec == nil {
+		return nil, false, false, nil
+	}
+	task, err := e.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, false, false, err
+	}
+	tenantID := task.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	record, err := durableStore.GetApproval(ctx, approvalID, tenantID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, false, nil
+	}
+	if err != nil {
+		return nil, false, false, err
+	}
+	if record.TaskID != taskID {
+		return nil, false, false, nil
+	}
+	request := record.Request
+	if record.Status != types.ApprovalPending {
+		return &request, true, false, nil
+	}
+	resolutionJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, true, false, fmt.Errorf("marshal durable approval resolution: %w", err)
+	}
+	ciphertext, err := e.ApprovalCodec.Encrypt(resolutionJSON)
+	if err != nil {
+		return nil, true, false, fmt.Errorf("encrypt durable approval resolution: %w", err)
+	}
+	target := types.ApprovalRejected
+	if result.Approved {
+		target = types.ApprovalApproved
+	}
+	matched, err := durableStore.TransitionApproval(ctx, approvalID, tenantID, record.Version, types.ApprovalPending, target, ciphertext)
+	if err != nil {
+		return nil, true, false, err
+	}
+	if !matched {
+		return &request, true, false, nil
+	}
+	return &request, true, true, nil
+}
+
+// PersistUniqueApprovalResolution resolves the only durable pending approval
+// for a task. count lets the HTTP layer distinguish absent from ambiguous.
+func (e *Engine) PersistUniqueApprovalResolution(ctx context.Context, taskID string, result types.ApprovalResult) (*types.ApprovalRequest, string, int, bool, error) {
+	durableStore, ok := e.Store.(store.DurableApprovalStore)
+	if !ok || e.ApprovalCodec == nil {
+		return nil, "", 0, false, nil
+	}
+	task, err := e.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, "", 0, false, err
+	}
+	tenantID := task.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	pending, err := durableStore.ListTaskApprovals(ctx, taskID, tenantID, types.ApprovalPending)
+	if err != nil {
+		return nil, "", 0, false, err
+	}
+	if len(pending) != 1 {
+		return nil, "", len(pending), false, nil
+	}
+	request, exists, persisted, err := e.PersistApprovalResolution(ctx, taskID, pending[0].ID, result)
+	if err != nil {
+		return nil, pending[0].ID, 1, false, err
+	}
+	if !exists {
+		return nil, pending[0].ID, 0, false, nil
+	}
+	return request, pending[0].ID, 1, persisted, nil
+}
+
+// RecoverApprovedApproval consumes and executes one approved action checkpoint.
+// The approved->consumed CAS occurs before tool execution, providing at-most-once
+// consumption across instances. A crash in the narrow post-CAS/pre-tool window
+// intentionally favors avoiding duplicate high-risk side effects over retrying.
+func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, approval *types.DurableApproval, owner string) (bool, error) {
+	durableStore, ok := e.Store.(store.DurableApprovalStore)
+	if !ok || e.ApprovalCodec == nil || e.Executor == nil || task == nil || approval == nil {
+		return false, nil
+	}
+	if task.ID != approval.TaskID || approval.Status != types.ApprovalApproved || task.Status != types.StatusAwaitingApproval {
+		return false, nil
+	}
+	acquired, err := durableStore.AcquireApprovalLease(ctx, approval.ID, owner, time.Minute)
+	if err != nil || !acquired {
+		return false, err
+	}
+	defer func() { _ = durableStore.ReleaseApprovalLease(context.Background(), approval.ID, owner) }()
+
+	latest, err := durableStore.GetApproval(ctx, approval.ID, approval.TenantID)
+	if err != nil || latest.Status != types.ApprovalApproved {
+		return false, err
+	}
+	plaintext, err := e.ApprovalCodec.Decrypt(latest.ActionPayload)
+	if err != nil {
+		return false, fmt.Errorf("decrypt approved action checkpoint: %w", err)
+	}
+	var action planner.ActionCall
+	if err := json.Unmarshal(plaintext, &action); err != nil {
+		return false, fmt.Errorf("decode approved action checkpoint: %w", err)
+	}
+	if action.Action == "" || action.Action != latest.Request.Action {
+		return false, errors.New("approved action checkpoint identity mismatch")
+	}
+	consumed, err := durableStore.TransitionApproval(ctx, latest.ID, latest.TenantID, latest.Version, types.ApprovalApproved, types.ApprovalConsumed, latest.ResolutionPayload)
+	if err != nil || !consumed {
+		return false, err
+	}
+
+	traces, executeErr := e.Executor.Execute(ctx, task, &planner.PlanDecision{Actions: []planner.ActionCall{action}})
+	task.Trace = append(task.Trace, traces...)
+	task.StepCount += len(traces)
+	task.Status = types.StatusPaused
+	if executeErr != nil {
+		task.Trace = append(task.Trace, types.StepTrace{
+			Step: task.StepCount + 1, Goal: task.Goal, Action: action.Action,
+			Observation: "approved recovery action failed", Error: executeErr.Error(),
+		})
+		task.StepCount++
+	}
+	saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	saveErr := e.Store.SaveFullTask(saveCtx, task)
+	cancel()
+	if saveErr != nil {
+		return true, fmt.Errorf("save recovered approval action: %w", saveErr)
+	}
+	if e.EventCallback != nil {
+		e.EventCallback(task.ID, types.StatusPaused)
+	}
+	return true, executeErr
+}
+
 func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error) {
 	approval := e.BuildApprovalRequest(task, action, params)
-	store := e.approvalStore()
-	approvalID, ch := store.Register(task.ID, approval)
-	defer store.Remove(approvalID)
+	approvalRegistry := e.approvalStore()
+	approvalID, ch := approvalRegistry.Register(task.ID, approval)
+	defer approvalRegistry.Remove(approvalID)
+	if durableStore, ok := e.Store.(store.DurableApprovalStore); ok && e.ApprovalCodec != nil {
+		actionJSON, err := json.Marshal(struct {
+			Action     string         `json:"action"`
+			Parameters map[string]any `json:"parameters"`
+		}{Action: action, Parameters: params})
+		if err != nil {
+			return false, nil, fmt.Errorf("marshal durable approval action: %w", err)
+		}
+		ciphertext, err := e.ApprovalCodec.Encrypt(actionJSON)
+		if err != nil {
+			return false, nil, fmt.Errorf("encrypt durable approval action: %w", err)
+		}
+		tenantID := task.TenantID
+		if tenantID == "" {
+			tenantID = "default"
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = durableStore.CreateApproval(persistCtx, &types.DurableApproval{
+			ID: approvalID, TaskID: task.ID, TenantID: tenantID, Request: *approval,
+			ActionPayload: ciphertext, Status: types.ApprovalPending,
+		})
+		cancel()
+		if err != nil {
+			return false, nil, fmt.Errorf("persist durable approval: %w", err)
+		}
+	}
 
 	task.Status = types.StatusAwaitingApproval
 	if e.Store != nil {
@@ -1071,7 +1252,7 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 			}
 		}
 		task.Trace = append(task.Trace, types.StepTrace{
-			Step:        task.StepCount,
+			Step:        task.StepCount + 1,
 			Goal:        task.Goal,
 			Action:      action,
 			Observation: fmt.Sprintf("Action rejected by user. Reason: %s", msg),

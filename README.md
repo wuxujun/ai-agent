@@ -186,6 +186,17 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `tool` | `timeout_seconds` |
 | `skill` | `root` (skill discovery directory) |
 
+Durable approval recovery is enabled when a 32-byte AES key is supplied as
+base64. Keep the same key on every instance and in the secret manager; losing
+it makes pending approval payloads unrecoverable.
+
+```bash
+export AI_AGENT_APPROVAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+```
+
+Without this variable, approvals remain process-local and sensitive action
+parameters are never written to durable storage.
+
 For production multi-tenant deployments, set
 `api.auth.require_tenant_workspace_root: true` and configure a distinct
 `api.tenants.<tenant>.workspace_root` for every non-admin tenant. Task creation

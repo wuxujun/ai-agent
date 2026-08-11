@@ -229,8 +229,8 @@ func TestSuspendForApprovalRejectionTracesFeedback(t *testing.T) {
 	if tr.Action != "write_file" {
 		t.Errorf("trace action = %q, want write_file", tr.Action)
 	}
-	if tr.Step != 0 || tr.AgentRole != types.AgentRoleExecutor {
-		t.Errorf("trace step=%d role=%q, want step=0 role=%q", tr.Step, tr.AgentRole, types.AgentRoleExecutor)
+	if tr.Step != 1 || tr.AgentRole != types.AgentRoleExecutor {
+		t.Errorf("trace step=%d role=%q, want step=1 role=%q", tr.Step, tr.AgentRole, types.AgentRoleExecutor)
 	}
 	if tr.Error == "" || tr.Observation == "" {
 		t.Errorf("expected non-empty Error and Observation in rejection trace")

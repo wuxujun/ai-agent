@@ -22,6 +22,7 @@ type MemoryStore struct {
 	sessions    map[string]*types.Session
 	memories    map[string]*types.Memory
 	leases      map[string]memoryLease
+	approvals   map[string]*types.DurableApproval
 	indexing    map[string]bool // Tracks tasks currently undergoing async indexing
 	tenantUsage map[string]types.TenantLLMUsage
 }
@@ -38,6 +39,7 @@ func NewMemoryStore() *MemoryStore {
 		sessions:    make(map[string]*types.Session),
 		memories:    make(map[string]*types.Memory),
 		leases:      make(map[string]memoryLease),
+		approvals:   make(map[string]*types.DurableApproval),
 		indexing:    make(map[string]bool),
 		tenantUsage: make(map[string]types.TenantLLMUsage),
 	}
@@ -558,6 +560,131 @@ func (m *MemoryStore) ReleaseTaskLease(ctx context.Context, id, owner string) er
 	defer m.mu.Unlock()
 	if lease, ok := m.leases[id]; ok && lease.owner == owner {
 		delete(m.leases, id)
+	}
+	return nil
+}
+
+func (m *MemoryStore) CreateApproval(ctx context.Context, approval *types.DurableApproval) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cloned := types.CloneDurableApproval(approval)
+	if err := cloned.Validate(); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if cloned.CreatedAt.IsZero() {
+		cloned.CreatedAt = now
+	}
+	cloned.UpdatedAt = now
+	if cloned.Version == 0 {
+		cloned.Version = 1
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.approvals == nil {
+		m.approvals = make(map[string]*types.DurableApproval)
+	}
+	if _, exists := m.approvals[cloned.ID]; exists {
+		return fmt.Errorf("approval %q already exists", cloned.ID)
+	}
+	m.approvals[cloned.ID] = cloned
+	return nil
+}
+
+func (m *MemoryStore) GetApproval(ctx context.Context, id, tenantID string) (*types.DurableApproval, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	approval, exists := m.approvals[id]
+	if !exists || approval.TenantID != tenantID {
+		return nil, sql.ErrNoRows
+	}
+	return types.CloneDurableApproval(approval), nil
+}
+
+func (m *MemoryStore) ListTaskApprovals(ctx context.Context, taskID, tenantID string, status types.DurableApprovalStatus) ([]*types.DurableApproval, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]*types.DurableApproval, 0)
+	for _, approval := range m.approvals {
+		if approval.TaskID == taskID && approval.TenantID == tenantID && (status == "" || approval.Status == status) {
+			result = append(result, types.CloneDurableApproval(approval))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	return result, nil
+}
+
+func (m *MemoryStore) TransitionApproval(ctx context.Context, id, tenantID string, expectedVersion int64, from, to types.DurableApprovalStatus, resolutionPayload []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if !types.CanTransitionApproval(from, to) {
+		return false, fmt.Errorf("invalid approval transition %s -> %s", from, to)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	approval, exists := m.approvals[id]
+	if !exists || approval.TenantID != tenantID || approval.Version != expectedVersion || approval.Status != from {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	approval.Status = to
+	approval.Version++
+	approval.UpdatedAt = now
+	approval.ResolutionPayload = append([]byte(nil), resolutionPayload...)
+	if to != types.ApprovalPending {
+		approval.ResolvedAt = now
+	}
+	if to == types.ApprovalConsumed || to == types.ApprovalRejected || to == types.ApprovalExpired {
+		approval.Owner = ""
+		approval.LeaseExpiresAt = time.Time{}
+	}
+	return true, nil
+}
+
+func (m *MemoryStore) AcquireApprovalLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if owner == "" || ttl <= 0 {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	approval, exists := m.approvals[id]
+	if !exists {
+		return false, sql.ErrNoRows
+	}
+	now := time.Now().UTC()
+	if approval.Owner != "" && approval.Owner != owner && approval.LeaseExpiresAt.After(now) {
+		return false, nil
+	}
+	approval.Owner = owner
+	approval.LeaseExpiresAt = now.Add(ttl)
+	return true, nil
+}
+
+func (m *MemoryStore) ReleaseApprovalLease(ctx context.Context, id, owner string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if approval := m.approvals[id]; approval != nil && approval.Owner == owner {
+		approval.Owner = ""
+		approval.LeaseExpiresAt = time.Time{}
 	}
 	return nil
 }

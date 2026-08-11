@@ -133,6 +133,9 @@ func TestStores(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to save task: %v", err)
 			}
+			if approvals, ok := s.(store.DurableApprovalStore); ok {
+				testDurableApprovalContract(t, ctx, approvals, task.ID)
+			}
 
 			// 3. Retrieve and verify the task
 			retrieved, err := s.GetTask(ctx, "task-123")
@@ -503,6 +506,51 @@ func TestStores(t *testing.T) {
 				t.Fatalf("DeleteAllMemories(managed-b) = %d, %v; want >=1, nil", count, err)
 			}
 		})
+	}
+}
+
+func testDurableApprovalContract(t *testing.T, ctx context.Context, approvals store.DurableApprovalStore, taskID string) {
+	t.Helper()
+	record := &types.DurableApproval{
+		ID: "contract-approval", TaskID: taskID, TenantID: "tenant-a",
+		Request: types.ApprovalRequest{
+			ID: "contract-approval", TaskID: taskID, Action: "write_file",
+			RiskLevel: types.RiskLevelHigh, ParameterSummary: []string{"path: redacted"},
+		},
+		ActionPayload: []byte("encrypted-action"), Status: types.ApprovalPending,
+	}
+	if err := approvals.CreateApproval(ctx, record); err != nil {
+		t.Fatalf("CreateApproval: %v", err)
+	}
+	got, err := approvals.GetApproval(ctx, record.ID, record.TenantID)
+	if err != nil || got.Version != 1 || got.Status != types.ApprovalPending {
+		t.Fatalf("GetApproval = %#v, %v", got, err)
+	}
+	if _, err := approvals.GetApproval(ctx, record.ID, "tenant-b"); err != sql.ErrNoRows {
+		t.Fatalf("cross-tenant GetApproval error = %v", err)
+	}
+	matched, err := approvals.TransitionApproval(ctx, record.ID, record.TenantID, 1, types.ApprovalPending, types.ApprovalApproved, []byte("encrypted-resolution"))
+	if err != nil || !matched {
+		t.Fatalf("TransitionApproval = %v, %v", matched, err)
+	}
+	matched, err = approvals.TransitionApproval(ctx, record.ID, record.TenantID, 1, types.ApprovalPending, types.ApprovalRejected, nil)
+	if err != nil || matched {
+		t.Fatalf("replayed TransitionApproval = %v, %v", matched, err)
+	}
+	acquired, err := approvals.AcquireApprovalLease(ctx, record.ID, "owner-a", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("AcquireApprovalLease(owner-a) = %v, %v", acquired, err)
+	}
+	acquired, err = approvals.AcquireApprovalLease(ctx, record.ID, "owner-b", time.Minute)
+	if err != nil || acquired {
+		t.Fatalf("AcquireApprovalLease(owner-b) = %v, %v", acquired, err)
+	}
+	if err := approvals.ReleaseApprovalLease(ctx, record.ID, "owner-a"); err != nil {
+		t.Fatalf("ReleaseApprovalLease: %v", err)
+	}
+	listed, err := approvals.ListTaskApprovals(ctx, taskID, record.TenantID, types.ApprovalApproved)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("ListTaskApprovals = %#v, %v", listed, err)
 	}
 }
 

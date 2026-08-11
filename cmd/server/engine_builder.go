@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/wuxujun/ai-agent/internal/answerpipeline"
+	"github.com/wuxujun/ai-agent/internal/approvalcrypto"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
 	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
@@ -101,6 +102,16 @@ func buildEngine(ctx context.Context, cfg *config.Config, st store.Store, probe 
 		Metrics:  mc,
 		Mode:     mode,
 		Store:    st,
+	}
+	if encodedKey := os.Getenv("AI_AGENT_APPROVAL_ENCRYPTION_KEY"); encodedKey != "" {
+		codec, err := approvalcrypto.NewFromBase64(encodedKey)
+		if err != nil {
+			return engineBuild{}, fmt.Errorf("configure durable approval encryption: %w", err)
+		}
+		eng.ApprovalCodec = codec
+		slog.Info("durable approvals enabled", "encryption", "aes-256-gcm")
+	} else {
+		slog.Warn("durable approvals disabled", "reason", "AI_AGENT_APPROVAL_ENCRYPTION_KEY is not configured")
 	}
 	eng.Finalizer = planner.NewLLMTaskFinalizer(config.LLMSceneTaskFinalizer)
 	eng.CitationVerifier = planner.NewLLMCitationVerifier(config.LLMSceneCitationVerifier)
