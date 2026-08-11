@@ -143,6 +143,12 @@ type DurableApprovalStore interface {
 	ReleaseApprovalLease(ctx context.Context, id, owner string) error
 }
 
+// ApprovalCleanupStore removes only terminal approval records older than a
+// cutoff. Implementations must preserve pending and recoverable checkpoints.
+type ApprovalCleanupStore interface {
+	DeleteTerminalApprovalsBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
 // MemoryManagementStore provides administrative listing and deletion without
 // expanding the core Store contract used by lightweight adapters.
 type MemoryManagementStore interface {

@@ -358,6 +358,70 @@ func TestExternalStoresPersistPausedTaskAcrossClients(t *testing.T) {
 	}
 }
 
+func TestExternalPostgresDurableApprovalCASAcrossClients(t *testing.T) {
+	requireExternalIntegration(t)
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	first, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	ctx := context.Background()
+	prefix := "approval-cas-" + uuid.NewString()
+	task := &types.Task{ID: prefix + "-task", TenantID: prefix + "-tenant", Status: types.StatusAwaitingApproval}
+	if err := first.SaveFullTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = first.db.ExecContext(context.Background(), `DELETE FROM tasks WHERE id = $1`, task.ID)
+	})
+	approval := &types.DurableApproval{
+		ID: prefix + "-approval", TaskID: task.ID, TenantID: task.TenantID,
+		Request:       types.ApprovalRequest{ID: prefix + "-approval", TaskID: task.ID, Action: "write_file", RiskLevel: types.RiskLevelHigh},
+		ActionPayload: []byte("encrypted-action"), Status: types.ApprovalApproved,
+	}
+	if err := first.CreateApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	errorsCh := make(chan error, 2)
+	for _, client := range []*PostgresStore{first, second} {
+		go func(st *PostgresStore) {
+			<-start
+			matched, transitionErr := st.TransitionApproval(ctx, approval.ID, approval.TenantID, 1, types.ApprovalApproved, types.ApprovalConsumed, nil)
+			results <- matched
+			errorsCh <- transitionErr
+		}(client)
+	}
+	close(start)
+	winners := 0
+	for range 2 {
+		if err := <-errorsCh; err != nil {
+			t.Fatal(err)
+		}
+		if <-results {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("CAS winners = %d; want exactly 1", winners)
+	}
+	stored, err := second.GetApproval(ctx, approval.ID, approval.TenantID)
+	if err != nil || stored.Status != types.ApprovalConsumed || stored.Version != 2 {
+		t.Fatalf("stored approval = %#v, %v", stored, err)
+	}
+}
+
 type externalIntegrationIDs struct {
 	tenantA  string
 	tenantB  string

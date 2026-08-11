@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/approvalcrypto"
+	"github.com/wuxujun/ai-agent/internal/config"
+	metricspkg "github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	storepkg "github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -28,7 +31,8 @@ func TestSuspendForApprovalPersistsEncryptedActionBeforeWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := NewApprovalStore()
-	engine := &Engine{Store: st, Approvals: registry, ApprovalCodec: codec}
+	collector := metricspkg.NewCollector()
+	engine := &Engine{Store: st, Approvals: registry, ApprovalCodec: codec, Metrics: collector}
 	task := &types.Task{ID: "durable-task", TenantID: "tenant-a", Goal: "write", Status: types.StatusRunning}
 	if err := st.SaveFullTask(context.Background(), task); err != nil {
 		t.Fatal(err)
@@ -111,6 +115,14 @@ func TestSuspendForApprovalPersistsEncryptedActionBeforeWaiting(t *testing.T) {
 	if err := <-resultCh; err != nil {
 		t.Fatalf("SuspendForApproval: %v", err)
 	}
+	consumedRecord, err := st.GetApproval(context.Background(), approvalID, task.TenantID)
+	if err != nil || consumedRecord.Status != types.ApprovalConsumed || consumedRecord.Version != 3 {
+		t.Fatalf("online consumed approval = %#v, %v", consumedRecord, err)
+	}
+	metricsSnapshot := collector.Snapshot()
+	if metricsSnapshot.DurableApprovalsCreated != 1 || metricsSnapshot.DurableApprovalsApproved != 1 || metricsSnapshot.DurableApprovalsConsumed != 1 {
+		t.Fatalf("durable approval lifecycle metrics = %+v", metricsSnapshot)
+	}
 }
 
 func TestRecoverApprovedApprovalConsumesBeforeSingleExecution(t *testing.T) {
@@ -183,5 +195,110 @@ func TestPersistUniqueApprovalResolution(t *testing.T) {
 	stored, err := st.GetApproval(context.Background(), approval.ID, task.TenantID)
 	if err != nil || stored.Status != types.ApprovalRejected {
 		t.Fatalf("stored approval = %#v, %v", stored, err)
+	}
+}
+
+func TestPersistApprovalResolutionExpiresStalePendingApproval(t *testing.T) {
+	restore := config.OverrideForTesting(func(cfg *config.Config) { cfg.Approval.TTLSeconds = 1 })
+	t.Cleanup(restore)
+	st := storepkg.NewMemoryStore()
+	codec, err := approvalcrypto.New(bytes.Repeat([]byte{0x42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector := metricspkg.NewCollector()
+	engine := &Engine{Store: st, ApprovalCodec: codec, Metrics: collector}
+	task := &types.Task{ID: "expired-task", TenantID: "tenant-a", Status: types.StatusAwaitingApproval}
+	if err := st.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	approval := &types.DurableApproval{
+		ID: "expired-approval", TaskID: task.ID, TenantID: task.TenantID,
+		Request:       types.ApprovalRequest{ID: "expired-approval", TaskID: task.ID, Action: "write_file", RiskLevel: types.RiskLevelHigh},
+		ActionPayload: []byte("ciphertext"), Status: types.ApprovalPending, CreatedAt: time.Now().Add(-2 * time.Second),
+	}
+	if err := st.CreateApproval(context.Background(), approval); err != nil {
+		t.Fatal(err)
+	}
+	_, exists, persisted, err := engine.PersistApprovalResolution(context.Background(), task.ID, approval.ID, types.ApprovalResult{Approved: true})
+	if !errors.Is(err, ErrApprovalExpired) || !exists || persisted {
+		t.Fatalf("PersistApprovalResolution = exists %v persisted %v err %v", exists, persisted, err)
+	}
+	stored, err := st.GetApproval(context.Background(), approval.ID, approval.TenantID)
+	if err != nil || stored.Status != types.ApprovalExpired || stored.Version != 2 {
+		t.Fatalf("expired approval = %#v, %v", stored, err)
+	}
+	if collector.Snapshot().DurableApprovalsExpired != 1 {
+		t.Fatalf("expired metrics = %+v", collector.Snapshot())
+	}
+}
+
+func TestRecoverRejectedApprovalConsumesAndRestoresFeedback(t *testing.T) {
+	t.Parallel()
+	st := storepkg.NewMemoryStore()
+	codec, err := approvalcrypto.New(bytes.Repeat([]byte{0x51}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &Engine{Store: st, ApprovalCodec: codec}
+	task := &types.Task{ID: "rejected-task", TenantID: "tenant-a", Goal: "write", Status: types.StatusAwaitingApproval}
+	if err := st.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	resolutionJSON, _ := json.Marshal(types.ApprovalResult{Approved: false, Message: "use another path"})
+	resolutionPayload, err := codec.Encrypt(resolutionJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval := &types.DurableApproval{
+		ID: "rejected-approval", TaskID: task.ID, TenantID: task.TenantID,
+		Request:           types.ApprovalRequest{ID: "rejected-approval", TaskID: task.ID, Action: "write_file", RiskLevel: types.RiskLevelHigh},
+		ActionPayload:     []byte("ciphertext"),
+		ResolutionPayload: resolutionPayload,
+		Status:            types.ApprovalRejected,
+	}
+	if err := st.CreateApproval(context.Background(), approval); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := engine.RecoverRejectedApproval(context.Background(), task, approval, "owner-a")
+	if err != nil || !recovered {
+		t.Fatalf("RecoverRejectedApproval = %v, %v", recovered, err)
+	}
+	if task.Status != types.StatusPaused || task.StepCount != 1 || len(task.Trace) != 1 || task.Trace[0].Step != 1 || task.Trace[0].Evidence[0].Lines[0] != "use another path" {
+		t.Fatalf("recovered task = %#v", task)
+	}
+	stored, err := st.GetApproval(context.Background(), approval.ID, approval.TenantID)
+	if err != nil || stored.Status != types.ApprovalConsumed {
+		t.Fatalf("stored approval = %#v, %v", stored, err)
+	}
+}
+
+func TestRunAllCancellationPreservesDurableAwaitingApproval(t *testing.T) {
+	t.Parallel()
+	st := storepkg.NewMemoryStore()
+	codec, err := approvalcrypto.New(bytes.Repeat([]byte{0x63}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &Engine{Store: st, ApprovalCodec: codec}
+	task := &types.Task{ID: "cancel-awaiting", TenantID: "tenant-a", Status: types.StatusAwaitingApproval}
+	if err := st.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	approval := &types.DurableApproval{
+		ID: "cancel-awaiting-approval", TaskID: task.ID, TenantID: task.TenantID,
+		Request:       types.ApprovalRequest{ID: "cancel-awaiting-approval", TaskID: task.ID, Action: "write_file", RiskLevel: types.RiskLevelHigh},
+		ActionPayload: []byte("ciphertext"), Status: types.ApprovalPending,
+	}
+	if err := st.CreateApproval(context.Background(), approval); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := engine.RunAll(ctx, task); err != context.Canceled {
+		t.Fatalf("RunAll error = %v", err)
+	}
+	if task.Status != types.StatusAwaitingApproval || task.FinalAnswer != "" {
+		t.Fatalf("task cancellation state = status %s answer %q", task.Status, task.FinalAnswer)
 	}
 }

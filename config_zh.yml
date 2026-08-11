@@ -126,6 +126,15 @@ orchestrator:
   # 环境变量覆盖：AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
   run_all_timeout_seconds: 600
 
+# 持久化人工审批配置
+approval:
+  # pending 审批的最长有效期，单位为秒；设置为0时禁用过期。
+  # 环境变量覆盖：AI_AGENT_APPROVAL_TTL_SECONDS
+  ttl_seconds: 86400
+  # consumed/expired 审批的保留天数；设置为0时禁用清理。
+  # 环境变量覆盖：AI_AGENT_APPROVAL_RETENTION_DAYS
+  retention_days: 30
+
 # 最终答案质量流水线
 answer_pipeline:
   # 是否启用最终答案审计流水线。

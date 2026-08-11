@@ -106,6 +106,19 @@ func TestValidateOrchestratorMode(t *testing.T) {
 	}
 }
 
+func TestValidateApprovalTTL(t *testing.T) {
+	cfg := *Get()
+	cfg.Approval.TTLSeconds = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "approval.ttl_seconds") {
+		t.Fatalf("Validate() = %v, want approval TTL error", err)
+	}
+	cfg = *Get()
+	cfg.Approval.RetentionDays = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "approval.retention_days") {
+		t.Fatalf("Validate() = %v, want approval retention error", err)
+	}
+}
+
 func TestRevisionAdvancesOnOverride(t *testing.T) {
 	resetConfig()
 	defer resetConfig()

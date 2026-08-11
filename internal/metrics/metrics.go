@@ -83,6 +83,16 @@ type Snapshot struct {
 	RetrievalRRFItems                 int64         `json:"retrieval_rrf_items"`
 	RetrievalRRFLatencySum            time.Duration `json:"retrieval_rrf_latency_sum"`
 	RetrievalRRFAverageLatencyMS      float64       `json:"retrieval_rrf_average_latency_ms"`
+	DurableApprovalsCreated           int64         `json:"durable_approvals_created"`
+	DurableApprovalsApproved          int64         `json:"durable_approvals_approved"`
+	DurableApprovalsRejected          int64         `json:"durable_approvals_rejected"`
+	DurableApprovalsConsumed          int64         `json:"durable_approvals_consumed"`
+	DurableApprovalsExpired           int64         `json:"durable_approvals_expired"`
+	DurableApprovalConflicts          int64         `json:"durable_approval_conflicts"`
+	DurableApprovalRecoverySuccesses  int64         `json:"durable_approval_recovery_successes"`
+	DurableApprovalRecoveryFailures   int64         `json:"durable_approval_recovery_failures"`
+	DurableApprovalsCleaned           int64         `json:"durable_approvals_cleaned"`
+	DurableApprovalCleanupFailures    int64         `json:"durable_approval_cleanup_failures"`
 }
 
 type Collector struct {
@@ -141,6 +151,7 @@ type Collector struct {
 	retrievalSlowPhases      api.Int64Counter
 	retrievalItems           api.Int64Counter
 	retrievalLatency         api.Float64Histogram
+	approvalEvents           api.Int64Counter
 }
 
 func NewCollector() *Collector {
@@ -198,6 +209,7 @@ func NewCollector() *Collector {
 	retrievalSlowPhases, _ := meter.Int64Counter("agent.store.retrieval.slow_phases")
 	retrievalItems, _ := meter.Int64Counter("agent.store.retrieval.items")
 	retrievalLatency, _ := meter.Float64Histogram("agent.store.retrieval.latency_ms")
+	approvalEvents, _ := meter.Int64Counter("agent.approval.events")
 
 	return &Collector{
 		plannerCalls:             plannerCalls,
@@ -248,6 +260,55 @@ func NewCollector() *Collector {
 		retrievalSlowPhases:      retrievalSlowPhases,
 		retrievalItems:           retrievalItems,
 		retrievalLatency:         retrievalLatency,
+		approvalEvents:           approvalEvents,
+	}
+}
+
+// ObserveDurableApproval records one bounded-cardinality lifecycle event.
+func (c *Collector) ObserveDurableApproval(ctx context.Context, event string) {
+	switch event {
+	case "created", "approved", "rejected", "consumed", "expired", "conflict", "recovery_success", "recovery_failure":
+	default:
+		event = "unknown"
+	}
+	c.mu.Lock()
+	switch event {
+	case "created":
+		c.s.DurableApprovalsCreated++
+	case "approved":
+		c.s.DurableApprovalsApproved++
+	case "rejected":
+		c.s.DurableApprovalsRejected++
+	case "consumed":
+		c.s.DurableApprovalsConsumed++
+	case "expired":
+		c.s.DurableApprovalsExpired++
+	case "conflict":
+		c.s.DurableApprovalConflicts++
+	case "recovery_success":
+		c.s.DurableApprovalRecoverySuccesses++
+	case "recovery_failure":
+		c.s.DurableApprovalRecoveryFailures++
+	}
+	c.mu.Unlock()
+	c.approvalEvents.Add(ctx, 1, api.WithAttributes(attribute.String("event", event)))
+}
+
+func (c *Collector) ObserveApprovalCleanup(ctx context.Context, deleted int64, err error) {
+	if deleted < 0 {
+		deleted = 0
+	}
+	c.mu.Lock()
+	c.s.DurableApprovalsCleaned += deleted
+	if err != nil {
+		c.s.DurableApprovalCleanupFailures++
+	}
+	c.mu.Unlock()
+	if deleted > 0 {
+		c.approvalEvents.Add(ctx, deleted, api.WithAttributes(attribute.String("event", "cleaned")))
+	}
+	if err != nil {
+		c.approvalEvents.Add(ctx, 1, api.WithAttributes(attribute.String("event", "cleanup_failure")))
 	}
 }
 

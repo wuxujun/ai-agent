@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/answerpipeline"
 	"github.com/wuxujun/ai-agent/internal/approvalcrypto"
@@ -104,12 +105,16 @@ func buildEngine(ctx context.Context, cfg *config.Config, st store.Store, probe 
 		Store:    st,
 	}
 	if encodedKey := os.Getenv("AI_AGENT_APPROVAL_ENCRYPTION_KEY"); encodedKey != "" {
-		codec, err := approvalcrypto.NewFromBase64(encodedKey)
+		var previousKeys []string
+		if encodedPrevious := strings.TrimSpace(os.Getenv("AI_AGENT_APPROVAL_ENCRYPTION_PREVIOUS_KEYS")); encodedPrevious != "" {
+			previousKeys = strings.Split(encodedPrevious, ",")
+		}
+		codec, err := approvalcrypto.NewFromBase64Keyring(encodedKey, previousKeys)
 		if err != nil {
 			return engineBuild{}, fmt.Errorf("configure durable approval encryption: %w", err)
 		}
 		eng.ApprovalCodec = codec
-		slog.Info("durable approvals enabled", "encryption", "aes-256-gcm")
+		slog.Info("durable approvals enabled", "encryption", "aes-256-gcm", "payload_version", 2, "previous_keys", len(previousKeys))
 	} else {
 		slog.Warn("durable approvals disabled", "reason", "AI_AGENT_APPROVAL_ENCRYPTION_KEY is not configured")
 	}

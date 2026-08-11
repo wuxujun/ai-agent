@@ -193,3 +193,51 @@ func (r *RedisStore) ReleaseApprovalLease(ctx context.Context, id, owner string)
 	}
 	return err
 }
+
+func (r *RedisStore) DeleteTerminalApprovalsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	var cursor uint64
+	var deleted int64
+	for {
+		keys, next, err := r.client.Scan(ctx, cursor, "approval:*", 200).Result()
+		if err != nil {
+			return deleted, err
+		}
+		for _, key := range keys {
+			removed := false
+			err := r.client.Watch(ctx, func(tx *redis.Tx) error {
+				raw, getErr := tx.Get(ctx, key).Bytes()
+				if getErr == redis.Nil {
+					return nil
+				}
+				if getErr != nil {
+					return getErr
+				}
+				var approval types.DurableApproval
+				if decodeErr := json.Unmarshal(raw, &approval); decodeErr != nil {
+					return fmt.Errorf("decode approval cleanup record: %w", decodeErr)
+				}
+				terminal := approval.Status == types.ApprovalConsumed || approval.Status == types.ApprovalExpired
+				if !terminal || approval.ResolvedAt.IsZero() || !approval.ResolvedAt.Before(cutoff) {
+					return nil
+				}
+				_, txErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Del(ctx, key)
+					pipe.ZRem(ctx, approvalTaskIndex(approval.TenantID, approval.TaskID), approval.ID)
+					return nil
+				})
+				removed = txErr == nil
+				return txErr
+			}, key)
+			if err != nil && err != redis.TxFailedErr {
+				return deleted, err
+			}
+			if removed {
+				deleted++
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			return deleted, nil
+		}
+	}
+}

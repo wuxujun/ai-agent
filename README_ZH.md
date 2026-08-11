@@ -182,6 +182,7 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `langfuse` | 凭证、运行时获取及可选的启动 Prompt 初始化 |
 | `telemetry` | `enabled`、`endpoint`、`exporter`（`otlp` / `stdout`） |
 | `log` | `level`、`console`、`file_enabled`、`directory`、`retention_days` |
+| `approval` | `ttl_seconds`（默认 86400）、`retention_days`（默认 30）；`0` 禁用对应维护动作 |
 | `search` | `url`、`api_key`（Firecrawl 或兼容服务） |
 | `tool` | `timeout_seconds` |
 | `skill` | `root`（技能发现根目录） |
@@ -191,6 +192,14 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 
 ```bash
 export AI_AGENT_APPROVAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+```
+
+轮换时把旧主密钥移入逗号分隔的历史密钥列表，并设置新的主密钥。新载荷只使用新密钥，旧密钥写入的
+v1/v2 载荷仍可读取。相关审批全部 consumed/expired 并超过保留期完成清理前，不应移除历史密钥。
+
+```bash
+export AI_AGENT_APPROVAL_ENCRYPTION_KEY="<新的-base64-密钥>"
+export AI_AGENT_APPROVAL_ENCRYPTION_PREVIOUS_KEYS="<旧-base64-密钥>[,<更旧-base64-密钥>]"
 ```
 
 未设置该变量时，审批继续使用进程内模式，敏感 action 参数不会写入持久化存储。
@@ -373,7 +382,7 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 
 | 方法 | 路径 | 说明 |
 |:---|:---|:---|
-| `GET` | `/api/metrics` | 本地性能指标 |
+| `GET` | `/api/metrics` | 本地性能指标，包含持久化审批生命周期与恢复计数 |
 | `POST` | `/api/config/reload` | 热重载配置（返回脱敏 diff 和单调递增的 `config_revision`） |
 | `GET` | `/ping` | 健康检查 → `{"message":"pong"}` |
 

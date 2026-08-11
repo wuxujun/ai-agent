@@ -23,6 +23,7 @@ type appRuntime struct {
 	server          appHTTPServer
 	tasks           appTaskManager
 	bus             *approvalBusRuntime
+	expiry          *approvalExpiryRuntime
 	reload          func() error
 	shutdownTimeout time.Duration
 }
@@ -99,6 +100,9 @@ waitLoop:
 	}
 	if err := runtime.bus.Close(); err != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("approval bus shutdown: %w", err))
+	}
+	if err := runtime.expiry.Close(); err != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("approval expiry shutdown: %w", err))
 	}
 	slog.Info("shutdown complete")
 	return runErr

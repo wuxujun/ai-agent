@@ -1,17 +1,54 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/wuxujun/ai-agent/internal/approvalcrypto"
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/store"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+func TestExpirePendingApprovalsTransitionsStaleRecord(t *testing.T) {
+	restore := config.OverrideForTesting(func(cfg *config.Config) { cfg.Approval.TTLSeconds = 1 })
+	t.Cleanup(restore)
+	st := store.NewMemoryStore()
+	codec, err := approvalcrypto.New(bytes.Repeat([]byte{0x51}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector := metrics.NewCollector()
+	eng := &orchestrator.Engine{Store: st, ApprovalCodec: codec, Metrics: collector}
+	task := &types.Task{ID: "expiry-scan-task", TenantID: "tenant-a", Status: types.StatusAwaitingApproval}
+	if err := st.SaveFullTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	approval := &types.DurableApproval{
+		ID: "expiry-scan-approval", TaskID: task.ID, TenantID: task.TenantID,
+		Request:       types.ApprovalRequest{ID: "expiry-scan-approval", TaskID: task.ID, Action: "write_file", RiskLevel: types.RiskLevelHigh},
+		ActionPayload: []byte("ciphertext"), Status: types.ApprovalPending, CreatedAt: time.Now().Add(-2 * time.Second),
+	}
+	if err := st.CreateApproval(context.Background(), approval); err != nil {
+		t.Fatal(err)
+	}
+	expirePendingApprovals(context.Background(), st, st, eng)
+	stored, err := st.GetApproval(context.Background(), approval.ID, approval.TenantID)
+	if err != nil || stored.Status != types.ApprovalExpired {
+		t.Fatalf("approval = %#v, %v", stored, err)
+	}
+	if collector.Snapshot().DurableApprovalsExpired != 1 {
+		t.Fatalf("metrics = %+v", collector.Snapshot())
+	}
+}
 
 func TestBuildStoreSelectsMemory(t *testing.T) {
 	cfg := &config.Config{}

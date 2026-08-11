@@ -71,6 +71,14 @@ type Config struct {
 		RunAllTimeoutSeconds int `mapstructure:"run_all_timeout_seconds"`
 	} `mapstructure:"orchestrator"`
 
+	Approval struct {
+		// TTLSeconds expires unresolved durable approvals lazily on access.
+		// Zero disables expiration.
+		TTLSeconds int `mapstructure:"ttl_seconds"`
+		// RetentionDays controls cleanup of consumed/expired records. Zero disables cleanup.
+		RetentionDays int `mapstructure:"retention_days"`
+	} `mapstructure:"approval"`
+
 	AnswerPipeline struct {
 		Enabled                bool           `mapstructure:"enabled"`
 		Enforcement            string         `mapstructure:"enforcement"`
@@ -425,6 +433,8 @@ func setupViper() {
 	viper.SetDefault("orchestrator.mode", "eino")
 	viper.SetDefault("orchestrator.max_concurrent_tasks", 10)
 	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
+	viper.SetDefault("approval.ttl_seconds", 86400)
+	viper.SetDefault("approval.retention_days", 30)
 	viper.SetDefault("answer_pipeline.enabled", true)
 	viper.SetDefault("answer_pipeline.enforcement", "observe")
 	viper.SetDefault("answer_pipeline.audit_token_reserve", 4000)
@@ -488,6 +498,8 @@ func setupViper() {
 	_ = viper.BindEnv("api.api_key", "AI_AGENT_API_KEY")
 	_ = viper.BindEnv("api.auth.mode", "AI_AGENT_API_AUTH_MODE")
 	_ = viper.BindEnv("api.auth.require_tenant_workspace_root", "AI_AGENT_API_REQUIRE_TENANT_WORKSPACE_ROOT")
+	_ = viper.BindEnv("approval.ttl_seconds", "AI_AGENT_APPROVAL_TTL_SECONDS")
+	_ = viper.BindEnv("approval.retention_days", "AI_AGENT_APPROVAL_RETENTION_DAYS")
 	_ = viper.BindEnv("api.auth.bearer.validation_mode", "AI_AGENT_API_BEARER_VALIDATION_MODE")
 	_ = viper.BindEnv("api.auth.jwt.issuer", "AI_AGENT_API_JWT_ISSUER")
 	_ = viper.BindEnv("api.auth.jwt.audience", "AI_AGENT_API_JWT_AUDIENCE")
@@ -892,6 +904,8 @@ func diffConfigs(old, new *Config) []string {
 	addIf("orchestrator.mode", old.Orchestrator.Mode, new.Orchestrator.Mode)
 	addIfInt("orchestrator.max_concurrent_tasks", old.Orchestrator.MaxConcurrentTasks, new.Orchestrator.MaxConcurrentTasks)
 	addIfInt("orchestrator.run_all_timeout_seconds", old.Orchestrator.RunAllTimeoutSeconds, new.Orchestrator.RunAllTimeoutSeconds)
+	addIfInt("approval.ttl_seconds", old.Approval.TTLSeconds, new.Approval.TTLSeconds)
+	addIfInt("approval.retention_days", old.Approval.RetentionDays, new.Approval.RetentionDays)
 	if !reflect.DeepEqual(old.AnswerPipeline, new.AnswerPipeline) {
 		changes = append(changes, "answer_pipeline: changed")
 	}
@@ -1308,6 +1322,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Log.RetentionDays < 0 {
 		return fmt.Errorf("log.retention_days must be >= 0")
+	}
+	if c.Approval.TTLSeconds < 0 {
+		return fmt.Errorf("approval.ttl_seconds must be >= 0")
+	}
+	if c.Approval.RetentionDays < 0 {
+		return fmt.Errorf("approval.retention_days must be >= 0")
 	}
 	if c.RAG.MaxPromptMemories < 0 || c.RAG.MaxMemoryBytes < 0 || c.RAG.MaxMemoryPromptBytes < 0 || c.RAG.MaxRawFallbackBytes < 0 || c.RAG.SessionRecentTaskLimit < 0 {
 		return fmt.Errorf("rag prompt budget values must be >= 0")

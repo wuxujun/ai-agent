@@ -121,3 +121,35 @@ func TestCollectorTracksRetrievalPhasesAndFallbacks(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectorTracksDurableApprovalLifecycle(t *testing.T) {
+	collector := NewCollector()
+	ctx := context.Background()
+	for _, event := range []string{"created", "approved", "rejected", "consumed", "expired", "conflict", "recovery_success", "recovery_failure", "unknown-value"} {
+		collector.ObserveDurableApproval(ctx, event)
+	}
+	snapshot := collector.Snapshot()
+	if snapshot.DurableApprovalsCreated != 1 || snapshot.DurableApprovalsApproved != 1 || snapshot.DurableApprovalsRejected != 1 || snapshot.DurableApprovalsConsumed != 1 ||
+		snapshot.DurableApprovalsExpired != 1 || snapshot.DurableApprovalConflicts != 1 || snapshot.DurableApprovalRecoverySuccesses != 1 || snapshot.DurableApprovalRecoveryFailures != 1 {
+		t.Fatalf("durable approval counters = %+v", snapshot)
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"durable_approvals_created", "durable_approvals_consumed", "durable_approval_conflicts", "durable_approval_recovery_successes", "durable_approval_recovery_failures"} {
+		if !strings.Contains(string(payload), `"`+field+`"`) {
+			t.Fatalf("metrics JSON missing %q: %s", field, payload)
+		}
+	}
+}
+
+func TestCollectorTracksApprovalCleanup(t *testing.T) {
+	collector := NewCollector()
+	collector.ObserveApprovalCleanup(context.Background(), 3, nil)
+	collector.ObserveApprovalCleanup(context.Background(), 0, errors.New("cleanup failed"))
+	snapshot := collector.Snapshot()
+	if snapshot.DurableApprovalsCleaned != 3 || snapshot.DurableApprovalCleanupFailures != 1 {
+		t.Fatalf("cleanup metrics = %+v", snapshot)
+	}
+}

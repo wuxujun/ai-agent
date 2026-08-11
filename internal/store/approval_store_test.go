@@ -4,11 +4,37 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+func TestSQLiteStore_CleanupTerminalApprovals(t *testing.T) {
+	st, err := NewSQLiteStore(filepath.Join(t.TempDir(), "approvals.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	cutoff := time.Now().Add(-time.Hour)
+	record := &types.DurableApproval{
+		ID: "sqlite-cleanup", TaskID: "sqlite-cleanup-task", TenantID: "tenant-a",
+		Request:       types.ApprovalRequest{ID: "sqlite-cleanup", TaskID: "sqlite-cleanup-task", Action: "write_file", RiskLevel: types.RiskLevelHigh},
+		ActionPayload: []byte("ciphertext"), Status: types.ApprovalExpired, ResolvedAt: cutoff.Add(-time.Minute),
+	}
+	if err := st.CreateApproval(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := st.DeleteTerminalApprovalsBefore(ctx, cutoff)
+	if err != nil || deleted != 1 {
+		t.Fatalf("DeleteTerminalApprovalsBefore = %d, %v", deleted, err)
+	}
+	if _, err := st.GetApproval(ctx, record.ID, record.TenantID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetApproval after cleanup = %v", err)
+	}
+}
 
 func TestMemoryStore_DurableApprovalLifecycle(t *testing.T) {
 	t.Parallel()
@@ -91,5 +117,39 @@ func TestMemoryStore_DurableApprovalLeaseOwnership(t *testing.T) {
 	acquired, err = st.AcquireApprovalLease(ctx, approval.ID, "owner-b", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("owner-b acquire after release = %v, %v", acquired, err)
+	}
+}
+
+func TestMemoryStore_CleanupOnlyOldTerminalApprovals(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := NewMemoryStore()
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, tc := range []struct {
+		id       string
+		status   types.DurableApprovalStatus
+		resolved time.Time
+	}{
+		{"old-consumed", types.ApprovalConsumed, cutoff.Add(-time.Hour)},
+		{"old-expired", types.ApprovalExpired, cutoff.Add(-time.Hour)},
+		{"old-rejected", types.ApprovalRejected, cutoff.Add(-time.Hour)},
+		{"new-consumed", types.ApprovalConsumed, cutoff.Add(time.Hour)},
+	} {
+		record := &types.DurableApproval{
+			ID: tc.id, TaskID: "cleanup-task", TenantID: "tenant-a",
+			Request:       types.ApprovalRequest{ID: tc.id, TaskID: "cleanup-task", Action: "write_file", RiskLevel: types.RiskLevelHigh},
+			ActionPayload: []byte("ciphertext"), Status: tc.status, ResolvedAt: tc.resolved,
+		}
+		if err := st.CreateApproval(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := st.DeleteTerminalApprovalsBefore(ctx, cutoff)
+	if err != nil || deleted != 2 {
+		t.Fatalf("DeleteTerminalApprovalsBefore = %d, %v", deleted, err)
+	}
+	remaining, err := st.ListTaskApprovals(ctx, "cleanup-task", "tenant-a", "")
+	if err != nil || len(remaining) != 2 || remaining[0].ID == "old-consumed" || remaining[0].ID == "old-expired" || remaining[1].ID == "old-consumed" || remaining[1].ID == "old-expired" {
+		t.Fatalf("remaining = %#v, %v", remaining, err)
 	}
 }

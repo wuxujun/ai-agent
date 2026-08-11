@@ -72,6 +72,8 @@ func CanTransitionApproval(from, to DurableApprovalStatus) bool {
 		return to == ApprovalApproved || to == ApprovalRejected || to == ApprovalExpired
 	case ApprovalApproved:
 		return to == ApprovalConsumed || to == ApprovalExpired
+	case ApprovalRejected:
+		return to == ApprovalConsumed
 	default:
 		return false
 	}

@@ -214,6 +214,7 @@ func run() error {
 		server: app.server,
 		tasks:  app.tasks,
 		bus:    app.bus,
+		expiry: app.expiry,
 		reload: func() error {
 			_, changes, err := config.Reload()
 			if err != nil {

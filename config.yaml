@@ -128,6 +128,14 @@ orchestrator:
   # Env override: AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
   run_all_timeout_seconds: 600
 
+approval:
+  # Maximum age of a pending durable approval in seconds. 0 disables expiry.
+  # Env override: AI_AGENT_APPROVAL_TTL_SECONDS
+  ttl_seconds: 86400
+  # Retain consumed/expired approvals for this many days. 0 disables cleanup.
+  # Env override: AI_AGENT_APPROVAL_RETENTION_DAYS
+  retention_days: 30
+
 answer_pipeline:
   enabled: true
   enforcement: observe

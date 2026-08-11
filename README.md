@@ -182,6 +182,7 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `langfuse` | credentials, runtime fetching, and optional startup prompt bootstrap |
 | `telemetry` | `enabled`, `endpoint`, `exporter` (`otlp` / `stdout`) |
 | `log` | `level`, `console`, `file_enabled`, `access_enabled`, `directory`, `retention_days` |
+| `approval` | `ttl_seconds` (default 86400), `retention_days` (default 30); `0` disables the corresponding maintenance action |
 | `search` | `url`, `api_key` (Firecrawl or compatible) |
 | `tool` | `timeout_seconds` |
 | `skill` | `root` (skill discovery directory) |
@@ -192,6 +193,16 @@ it makes pending approval payloads unrecoverable.
 
 ```bash
 export AI_AGENT_APPROVAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+```
+
+To rotate keys, move the old primary into the comma-separated previous-key
+list and install a new primary. New payloads use only the new key; v1 and v2
+payloads written by previous keys remain readable. Keep previous keys until
+all related approvals have been consumed/expired and passed retention cleanup.
+
+```bash
+export AI_AGENT_APPROVAL_ENCRYPTION_KEY="<new-base64-key>"
+export AI_AGENT_APPROVAL_ENCRYPTION_PREVIOUS_KEYS="<old-base64-key>[,<older-base64-key>]"
 ```
 
 Without this variable, approvals remain process-local and sensitive action
@@ -392,7 +403,7 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 
 | Method | Path | Description |
 |:---|:---|:---|
-| `GET` | `/api/metrics` | Local performance metrics |
+| `GET` | `/api/metrics` | Local performance metrics, including durable approval lifecycle/recovery counters |
 | `POST` | `/api/config/reload` | Hot-reload config (returns redacted diff and monotonic `config_revision`) |
 | `POST` | `/api/prompt/init` | Admin: idempotently initialize missing `teams.yaml` prompts in Langfuse |
 | `GET` | `/ping` | Health check → `{"message":"pong"}` |

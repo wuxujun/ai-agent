@@ -684,6 +684,10 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 				err = nil
 				return
 			}
+			if e.preserveDurableApprovalOnCancellation(task, err) {
+				engineLog.Info("preserving awaiting approval during cancellation", "task_id", task.ID)
+				return
+			}
 			safeFailure := sanitize.Secrets(err.Error())
 			engineLog.Error("step execution failed", "task_id", task.ID, "error", safeFailure)
 			_ = SetTaskFailed(task, safeFailure)
@@ -787,6 +791,35 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		e.guardOutput(ctx, task)
 	}
 	return err
+}
+
+func (e *Engine) preserveDurableApprovalOnCancellation(task *types.Task, err error) bool {
+	if task == nil || task.Status != types.StatusAwaitingApproval ||
+		(!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)) {
+		return false
+	}
+	durableStore, ok := e.Store.(store.DurableApprovalStore)
+	if !ok || e.ApprovalCodec == nil {
+		return false
+	}
+	tenantID := task.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pending, checkErr := durableStore.ListTaskApprovals(checkCtx, task.ID, tenantID, types.ApprovalPending)
+	return checkErr == nil && len(pending) > 0
+}
+
+func isRecoverableApprovalTask(task *types.Task) bool {
+	if task == nil {
+		return false
+	}
+	if task.Status == types.StatusAwaitingApproval {
+		return true
+	}
+	return task.Status == types.StatusFailed && strings.Contains(strings.ToLower(task.FinalAnswer), "context canceled")
 }
 
 // recentSessionMemories provides read-after-completion semantics even while
@@ -1030,6 +1063,22 @@ func (e *Engine) approvalStore() *ApprovalStore {
 	return defaultApprovals
 }
 
+var ErrApprovalExpired = errors.New("approval has expired")
+
+// ExpireDurableApproval atomically expires a stale pending approval according
+// to the hot-reloadable TTL. It is safe for concurrent maintenance workers.
+func (e *Engine) ExpireDurableApproval(ctx context.Context, durableStore store.DurableApprovalStore, record *types.DurableApproval) (bool, error) {
+	ttlSeconds := config.Get().Approval.TTLSeconds
+	if ttlSeconds <= 0 || record == nil || record.Status != types.ApprovalPending || record.CreatedAt.IsZero() || time.Now().Before(record.CreatedAt.Add(time.Duration(ttlSeconds)*time.Second)) {
+		return false, nil
+	}
+	expired, err := durableStore.TransitionApproval(ctx, record.ID, record.TenantID, record.Version, types.ApprovalPending, types.ApprovalExpired, record.ResolutionPayload)
+	if err == nil && expired && e.Metrics != nil {
+		e.Metrics.ObserveDurableApproval(ctx, "expired")
+	}
+	return expired, err
+}
+
 // PersistApprovalResolution records an explicit approve/reject decision before
 // any in-memory or Pub/Sub notification. found=false means durable approvals
 // are disabled or the ID does not belong to this task/tenant.
@@ -1057,6 +1106,11 @@ func (e *Engine) PersistApprovalResolution(ctx context.Context, taskID, approval
 		return nil, false, false, nil
 	}
 	request := record.Request
+	if expired, expireErr := e.ExpireDurableApproval(ctx, durableStore, record); expireErr != nil {
+		return nil, true, false, expireErr
+	} else if expired || record.Status == types.ApprovalExpired {
+		return &request, true, false, ErrApprovalExpired
+	}
 	if record.Status != types.ApprovalPending {
 		return &request, true, false, nil
 	}
@@ -1078,6 +1132,13 @@ func (e *Engine) PersistApprovalResolution(ctx context.Context, taskID, approval
 	}
 	if !matched {
 		return &request, true, false, nil
+	}
+	if e.Metrics != nil {
+		event := "rejected"
+		if result.Approved {
+			event = "approved"
+		}
+		e.Metrics.ObserveDurableApproval(ctx, event)
 	}
 	return &request, true, true, nil
 }
@@ -1101,6 +1162,17 @@ func (e *Engine) PersistUniqueApprovalResolution(ctx context.Context, taskID str
 	if err != nil {
 		return nil, "", 0, false, err
 	}
+	active := pending[:0]
+	for _, record := range pending {
+		expired, expireErr := e.ExpireDurableApproval(ctx, durableStore, record)
+		if expireErr != nil {
+			return nil, "", 0, false, expireErr
+		}
+		if !expired {
+			active = append(active, record)
+		}
+	}
+	pending = active
 	if len(pending) != 1 {
 		return nil, "", len(pending), false, nil
 	}
@@ -1114,6 +1186,55 @@ func (e *Engine) PersistUniqueApprovalResolution(ctx context.Context, taskID str
 	return request, pending[0].ID, 1, persisted, nil
 }
 
+func (e *Engine) consumeDurableApproval(ctx context.Context, task *types.Task, approvalID string, result types.ApprovalResult) error {
+	durableStore, ok := e.Store.(store.DurableApprovalStore)
+	if !ok || e.ApprovalCodec == nil {
+		return nil
+	}
+	tenantID := task.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	record, err := durableStore.GetApproval(ctx, approvalID, tenantID)
+	if err != nil {
+		return err
+	}
+	want := types.ApprovalRejected
+	if result.Approved {
+		want = types.ApprovalApproved
+	}
+	if record.Status == types.ApprovalPending {
+		_, exists, persisted, persistErr := e.PersistApprovalResolution(ctx, task.ID, approvalID, result)
+		if persistErr != nil {
+			return persistErr
+		}
+		if !exists || !persisted {
+			return errors.New("approval resolution lost a concurrent persistence race")
+		}
+		record, err = durableStore.GetApproval(ctx, approvalID, tenantID)
+		if err != nil {
+			return err
+		}
+	}
+	if record.Status != want {
+		return fmt.Errorf("approval has status %s, expected %s", record.Status, want)
+	}
+	consumed, err := durableStore.TransitionApproval(ctx, approvalID, tenantID, record.Version, want, types.ApprovalConsumed, record.ResolutionPayload)
+	if err != nil {
+		return err
+	}
+	if !consumed {
+		if e.Metrics != nil {
+			e.Metrics.ObserveDurableApproval(ctx, "conflict")
+		}
+		return errors.New("approval was already consumed")
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveDurableApproval(ctx, "consumed")
+	}
+	return nil
+}
+
 // RecoverApprovedApproval consumes and executes one approved action checkpoint.
 // The approved->consumed CAS occurs before tool execution, providing at-most-once
 // consumption across instances. A crash in the narrow post-CAS/pre-tool window
@@ -1123,7 +1244,7 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 	if !ok || e.ApprovalCodec == nil || e.Executor == nil || task == nil || approval == nil {
 		return false, nil
 	}
-	if task.ID != approval.TaskID || approval.Status != types.ApprovalApproved || task.Status != types.StatusAwaitingApproval {
+	if task.ID != approval.TaskID || approval.Status != types.ApprovalApproved || !isRecoverableApprovalTask(task) {
 		return false, nil
 	}
 	acquired, err := durableStore.AcquireApprovalLease(ctx, approval.ID, owner, time.Minute)
@@ -1148,8 +1269,17 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 		return false, errors.New("approved action checkpoint identity mismatch")
 	}
 	consumed, err := durableStore.TransitionApproval(ctx, latest.ID, latest.TenantID, latest.Version, types.ApprovalApproved, types.ApprovalConsumed, latest.ResolutionPayload)
-	if err != nil || !consumed {
+	if err != nil {
 		return false, err
+	}
+	if !consumed {
+		if e.Metrics != nil {
+			e.Metrics.ObserveDurableApproval(ctx, "conflict")
+		}
+		return false, nil
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveDurableApproval(ctx, "consumed")
 	}
 
 	traces, executeErr := e.Executor.Execute(ctx, task, &planner.PlanDecision{Actions: []planner.ActionCall{action}})
@@ -1172,7 +1302,77 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 	if e.EventCallback != nil {
 		e.EventCallback(task.ID, types.StatusPaused)
 	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveDurableApproval(ctx, "recovery_success")
+	}
 	return true, executeErr
+}
+
+// RecoverRejectedApproval consumes a persisted rejection and restores its
+// feedback trace without executing the action checkpoint.
+func (e *Engine) RecoverRejectedApproval(ctx context.Context, task *types.Task, approval *types.DurableApproval, owner string) (bool, error) {
+	durableStore, ok := e.Store.(store.DurableApprovalStore)
+	if !ok || e.ApprovalCodec == nil || task == nil || approval == nil {
+		return false, nil
+	}
+	if task.ID != approval.TaskID || approval.Status != types.ApprovalRejected || !isRecoverableApprovalTask(task) {
+		return false, nil
+	}
+	acquired, err := durableStore.AcquireApprovalLease(ctx, approval.ID, owner, time.Minute)
+	if err != nil || !acquired {
+		return false, err
+	}
+	defer func() { _ = durableStore.ReleaseApprovalLease(context.Background(), approval.ID, owner) }()
+	latest, err := durableStore.GetApproval(ctx, approval.ID, approval.TenantID)
+	if err != nil || latest.Status != types.ApprovalRejected {
+		return false, err
+	}
+	plaintext, err := e.ApprovalCodec.Decrypt(latest.ResolutionPayload)
+	if err != nil {
+		return false, fmt.Errorf("decrypt rejected approval result: %w", err)
+	}
+	var result types.ApprovalResult
+	if err := json.Unmarshal(plaintext, &result); err != nil {
+		return false, fmt.Errorf("decode rejected approval result: %w", err)
+	}
+	consumed, err := durableStore.TransitionApproval(ctx, latest.ID, latest.TenantID, latest.Version, types.ApprovalRejected, types.ApprovalConsumed, latest.ResolutionPayload)
+	if err != nil {
+		return false, err
+	}
+	if !consumed {
+		if e.Metrics != nil {
+			e.Metrics.ObserveDurableApproval(ctx, "conflict")
+		}
+		return false, nil
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveDurableApproval(ctx, "consumed")
+	}
+	message := result.Message
+	if message == "" {
+		message = "No reason provided"
+	}
+	task.Trace = append(task.Trace, types.StepTrace{
+		Step: task.StepCount + 1, Goal: task.Goal, Action: latest.Request.Action,
+		Observation: fmt.Sprintf("Action rejected by user. Reason: %s", message),
+		Error:       fmt.Sprintf("Action %s rejected by user: %s", latest.Request.Action, message),
+		Evidence:    []types.Evidence{{Path: "user_feedback", Lines: []string{message}, Query: "disapproval"}},
+	})
+	task.StepCount++
+	task.Status = types.StatusPaused
+	saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	saveErr := e.Store.SaveFullTask(saveCtx, task)
+	cancel()
+	if saveErr != nil {
+		return true, fmt.Errorf("save recovered rejection: %w", saveErr)
+	}
+	if e.EventCallback != nil {
+		e.EventCallback(task.ID, types.StatusPaused)
+	}
+	if e.Metrics != nil {
+		e.Metrics.ObserveDurableApproval(ctx, "recovery_success")
+	}
+	return true, nil
 }
 
 func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error) {
@@ -1204,6 +1404,9 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		cancel()
 		if err != nil {
 			return false, nil, fmt.Errorf("persist durable approval: %w", err)
+		}
+		if e.Metrics != nil {
+			e.Metrics.ObserveDurableApproval(context.Background(), "created")
 		}
 	}
 
@@ -1237,6 +1440,12 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		default:
 			return false, nil, ctx.Err()
 		}
+	}
+	consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	consumeErr := e.consumeDurableApproval(consumeCtx, task, approvalID, res)
+	consumeCancel()
+	if consumeErr != nil {
+		return false, nil, fmt.Errorf("consume durable approval: %w", consumeErr)
 	}
 
 	if !res.Approved {
@@ -1313,7 +1522,9 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 			engineLog.Warn("task canceled", "task_id", task.ID, "error", ctx.Err())
 			span.RecordError(ctx.Err())
 			span.SetStatus(codes.Error, "context canceled")
-			_ = SetTaskFailed(task, "task canceled: "+ctx.Err().Error())
+			if !e.preserveDurableApprovalOnCancellation(task, ctx.Err()) {
+				_ = SetTaskFailed(task, "task canceled: "+ctx.Err().Error())
+			}
 			return ctx.Err()
 		default:
 		}

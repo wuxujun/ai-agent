@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +28,7 @@ type builtApp struct {
 	server *http.Server
 	tasks  *api.Handler
 	bus    *approvalBusRuntime
+	expiry *approvalExpiryRuntime
 }
 
 func buildStore(cfg *config.Config) (store.Store, error) {
@@ -77,6 +80,7 @@ func buildApp(cfg *config.Config, st store.Store, eng *orchestrator.Engine, mc *
 	busRuntime := buildApprovalBus(cfg, eng, apiHandler)
 	wireEngineEvents(eng)
 	startPausedTaskScan(st, eng)
+	expiryRuntime := startApprovalExpiryScan(st, eng)
 
 	addr := cfg.API.Addr
 	if addr == "" {
@@ -86,6 +90,7 @@ func buildApp(cfg *config.Config, st store.Store, eng *orchestrator.Engine, mc *
 		server: &http.Server{Addr: addr, Handler: router},
 		tasks:  apiHandler,
 		bus:    busRuntime,
+		expiry: expiryRuntime,
 	}
 }
 
@@ -161,31 +166,160 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
 			slog.Warn("startup scan: failed to list awaiting approval tasks", "error", err)
 			return
 		}
+		failedTasks, failedErr := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusFailed, Limit: 500})
+		if failedErr != nil {
+			slog.Warn("startup scan: failed to list legacy cancellation failures", "error", failedErr)
+		} else {
+			for _, task := range failedTasks {
+				if strings.Contains(strings.ToLower(task.FinalAnswer), "context canceled") {
+					awaitingTasks = append(awaitingTasks, task)
+				}
+			}
+		}
 		owner := "startup-recovery-" + uuid.NewString()
 		for _, task := range awaitingTasks {
 			tenantID := task.TenantID
 			if tenantID == "" {
 				tenantID = "default"
 			}
-			approved, listErr := durableStore.ListTaskApprovals(scanCtx, task.ID, tenantID, types.ApprovalApproved)
-			if listErr != nil {
-				slog.Warn("startup scan: failed to list approved checkpoints", "task_id", task.ID, "error", listErr)
-				continue
-			}
-			for _, approval := range approved {
-				recovered, recoverErr := eng.RecoverApprovedApproval(scanCtx, task, approval, owner)
-				if recoverErr != nil {
-					slog.Error("startup approval recovery failed", "task_id", task.ID, "approval_id", approval.ID, "error", recoverErr)
+			for _, status := range []types.DurableApprovalStatus{types.ApprovalApproved, types.ApprovalRejected} {
+				resolved, listErr := durableStore.ListTaskApprovals(scanCtx, task.ID, tenantID, status)
+				if listErr != nil {
+					slog.Warn("startup scan: failed to list resolved checkpoints", "task_id", task.ID, "status", status, "error", listErr)
 					continue
 				}
-				if recovered {
-					slog.Info("startup approval action recovered", "task_id", task.ID, "approval_id", approval.ID,
-						"status", types.StatusPaused, "hint", "POST /api/tasks/:id/run-all to continue")
-					break
+				for _, approval := range resolved {
+					var recovered bool
+					var recoverErr error
+					if status == types.ApprovalApproved {
+						recovered, recoverErr = eng.RecoverApprovedApproval(scanCtx, task, approval, owner)
+					} else {
+						recovered, recoverErr = eng.RecoverRejectedApproval(scanCtx, task, approval, owner)
+					}
+					if recoverErr != nil {
+						if eng.Metrics != nil {
+							eng.Metrics.ObserveDurableApproval(scanCtx, "recovery_failure")
+						}
+						slog.Error("startup approval recovery failed", "task_id", task.ID, "approval_id", approval.ID, "error", recoverErr)
+						continue
+					}
+					if recovered {
+						slog.Info("startup approval recovered", "task_id", task.ID, "approval_id", approval.ID,
+							"decision", status, "status", types.StatusPaused, "hint", "POST /api/tasks/:id/run-all to continue")
+						break
+					}
 				}
 			}
 		}
 	}()
+}
+
+type approvalExpiryRuntime struct {
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+func (r *approvalExpiryRuntime) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.cancel()
+	r.wg.Wait()
+	return nil
+}
+
+func startApprovalExpiryScan(st store.Store, eng *orchestrator.Engine) *approvalExpiryRuntime {
+	durableStore, ok := st.(store.DurableApprovalStore)
+	if !ok || eng == nil || eng.ApprovalCodec == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runtime := &approvalExpiryRuntime{cancel: cancel}
+	runtime.wg.Add(1)
+	go func() {
+		defer runtime.wg.Done()
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		lastCleanup := time.Time{}
+		for {
+			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
+			expirePendingApprovals(scanCtx, st, durableStore, eng)
+			if lastCleanup.IsZero() || time.Since(lastCleanup) >= time.Hour {
+				cleanupTerminalApprovals(scanCtx, st, eng)
+				lastCleanup = time.Now()
+			}
+			scanCancel()
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return runtime
+}
+
+func cleanupTerminalApprovals(ctx context.Context, st store.Store, eng *orchestrator.Engine) {
+	retentionDays := config.Get().Approval.RetentionDays
+	if retentionDays <= 0 {
+		return
+	}
+	cleanupStore, ok := st.(store.ApprovalCleanupStore)
+	if !ok {
+		return
+	}
+	deleted, err := cleanupStore.DeleteTerminalApprovalsBefore(ctx, time.Now().UTC().AddDate(0, 0, -retentionDays))
+	if eng.Metrics != nil {
+		eng.Metrics.ObserveApprovalCleanup(ctx, deleted, err)
+	}
+	if err != nil {
+		slog.Warn("approval cleanup failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		slog.Info("approval cleanup completed", "deleted", deleted, "retention_days", retentionDays)
+	}
+}
+
+func expirePendingApprovals(ctx context.Context, st store.Store, durableStore store.DurableApprovalStore, eng *orchestrator.Engine) {
+	if config.Get().Approval.TTLSeconds <= 0 {
+		return
+	}
+	var expiredCount int
+	for offset := 0; ; offset += 500 {
+		tasks, err := st.ListTasks(ctx, store.ListFilter{Status: types.StatusAwaitingApproval, Limit: 500, Offset: offset})
+		if err != nil {
+			slog.Warn("approval expiry scan: failed to list awaiting tasks", "offset", offset, "error", err)
+			return
+		}
+		for _, task := range tasks {
+			tenantID := task.TenantID
+			if tenantID == "" {
+				tenantID = "default"
+			}
+			pending, listErr := durableStore.ListTaskApprovals(ctx, task.ID, tenantID, types.ApprovalPending)
+			if listErr != nil {
+				slog.Warn("approval expiry scan: failed to list pending approvals", "task_id", task.ID, "error", listErr)
+				continue
+			}
+			for _, approval := range pending {
+				expired, expireErr := eng.ExpireDurableApproval(ctx, durableStore, approval)
+				if expireErr != nil {
+					slog.Warn("approval expiry scan: transition failed", "task_id", task.ID, "approval_id", approval.ID, "error", expireErr)
+					continue
+				}
+				if expired {
+					expiredCount++
+				}
+			}
+		}
+		if len(tasks) < 500 {
+			break
+		}
+	}
+	if expiredCount > 0 {
+		slog.Info("approval expiry scan completed", "expired", expiredCount)
+	}
 }
 
 func wireEngineEvents(eng *orchestrator.Engine) {

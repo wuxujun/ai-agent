@@ -159,6 +159,15 @@ func (b approvalSQLBackend) releaseLease(ctx context.Context, id, owner string) 
 	return err
 }
 
+func (b approvalSQLBackend) deleteTerminalBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	result, err := b.db.ExecContext(ctx, b.bind(`DELETE FROM approvals
+WHERE status IN (?, ?) AND resolved_at IS NOT NULL AND resolved_at < ?`), types.ApprovalConsumed, types.ApprovalExpired, cutoff.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func nullableBytes(value []byte) any {
 	if len(value) == 0 {
 		return nil
@@ -216,4 +225,10 @@ func (s *SQLiteStore) ReleaseApprovalLease(ctx context.Context, id, owner string
 }
 func (p *PostgresStore) ReleaseApprovalLease(ctx context.Context, id, owner string) error {
 	return p.approvalBackend().releaseLease(ctx, id, owner)
+}
+func (s *SQLiteStore) DeleteTerminalApprovalsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.approvalBackend().deleteTerminalBefore(ctx, cutoff)
+}
+func (p *PostgresStore) DeleteTerminalApprovalsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return p.approvalBackend().deleteTerminalBefore(ctx, cutoff)
 }

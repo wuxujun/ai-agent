@@ -21,7 +21,7 @@ func TestDurableApprovalValidationAndTransitions(t *testing.T) {
 		{ApprovalPending, ApprovalApproved, true},
 		{ApprovalPending, ApprovalRejected, true},
 		{ApprovalApproved, ApprovalConsumed, true},
-		{ApprovalRejected, ApprovalConsumed, false},
+		{ApprovalRejected, ApprovalConsumed, true},
 		{ApprovalConsumed, ApprovalApproved, false},
 	} {
 		if got := CanTransitionApproval(transition.from, transition.to); got != transition.want {

@@ -926,16 +926,24 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 			durableApproval, durableExists, persisted, persistErr = h.engine.PersistApprovalResolution(c.Request.Context(), taskID, body.ApprovalID, result)
 		}
 		if persistErr != nil {
+			if errors.Is(persistErr, orchestrator.ErrApprovalExpired) {
+				c.JSON(http.StatusGone, gin.H{"error": "approval has expired", "approval_id": body.ApprovalID})
+				return
+			}
 			log.Error("durable approval resolution failed", "task_id", taskID, "approval_id", body.ApprovalID, "error", persistErr)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist approval decision"})
 			return
 		}
 		if durableExists && !persisted {
+			h.observeDurableApproval(c.Request.Context(), "conflict")
 			c.JSON(http.StatusConflict, gin.H{"error": "approval was already resolved", "approval_id": body.ApprovalID})
 			return
 		}
 		approval, ok := orchestrator.GetApprovalByID(body.ApprovalID)
 		if !ok {
+			if persisted {
+				h.startDurableApprovalRecovery(taskID, body.ApprovalID)
+			}
 			// ── P0: Not found locally — broadcast via Redis so executing instance picks it up ──
 			if h.approvalBus != nil {
 				if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), body.ApprovalID, taskID, result); pubErr != nil {
@@ -966,19 +974,26 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 		if h.engine != nil {
 			durableApproval, approvalID, durableCount, persisted, persistErr := h.engine.PersistUniqueApprovalResolution(c.Request.Context(), taskID, result)
 			if persistErr != nil {
+				if errors.Is(persistErr, orchestrator.ErrApprovalExpired) {
+					c.JSON(http.StatusGone, gin.H{"error": "approval has expired", "approval_id": approvalID})
+					return
+				}
 				log.Error("durable approval resolution failed", "task_id", taskID, "error", persistErr)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist approval decision"})
 				return
 			}
 			if durableCount > 1 {
+				h.observeDurableApproval(c.Request.Context(), "conflict")
 				c.JSON(http.StatusConflict, gin.H{"error": "multiple pending approvals; specify approval_id", "pending_count": durableCount})
 				return
 			}
 			if durableCount == 1 && !persisted {
+				h.observeDurableApproval(c.Request.Context(), "conflict")
 				c.JSON(http.StatusConflict, gin.H{"error": "approval was already resolved", "approval_id": approvalID})
 				return
 			}
 			if persisted {
+				h.startDurableApprovalRecovery(taskID, approvalID)
 				if h.approvalBus != nil {
 					if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), approvalID, taskID, result); pubErr != nil {
 						log.Warn("approval bus publish failed", "error", pubErr)
@@ -1003,11 +1018,16 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 		if h.engine != nil {
 			_, durableExists, persisted, persistErr := h.engine.PersistApprovalResolution(c.Request.Context(), taskID, approval.ID, result)
 			if persistErr != nil {
+				if errors.Is(persistErr, orchestrator.ErrApprovalExpired) {
+					c.JSON(http.StatusGone, gin.H{"error": "approval has expired", "approval_id": approval.ID})
+					return
+				}
 				log.Error("durable approval resolution failed", "task_id", taskID, "approval_id", approval.ID, "error", persistErr)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist approval decision"})
 				return
 			}
 			if durableExists && !persisted {
+				h.observeDurableApproval(c.Request.Context(), "conflict")
 				c.JSON(http.StatusConflict, gin.H{"error": "approval was already resolved", "approval_id": approval.ID})
 				return
 			}
@@ -1026,6 +1046,7 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 		for _, p := range pending {
 			ids = append(ids, p.ID)
 		}
+		h.observeDurableApproval(c.Request.Context(), "conflict")
 		c.JSON(http.StatusConflict, gin.H{
 			"error":         "multiple pending approvals; specify approval_id",
 			"pending_count": len(pending),
@@ -1034,6 +1055,85 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 		})
 		return
 	}
+}
+
+func (h *Handler) observeDurableApproval(ctx context.Context, event string) {
+	if h.metrics != nil {
+		h.metrics.ObserveDurableApproval(ctx, event)
+	}
+}
+
+func (h *Handler) startDurableApprovalRecovery(taskID, approvalID string) {
+	if h.engine == nil || taskID == "" || approvalID == "" {
+		return
+	}
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		owner := "approval-recovery-" + uuid.NewString()
+		var task *types.Task
+		for {
+			var err error
+			task, err = h.store.GetTask(ctx, taskID)
+			if err != nil {
+				h.observeDurableApproval(context.Background(), "recovery_failure")
+				log.Error("durable approval recovery task lookup failed", "task_id", taskID, "error", err)
+				return
+			}
+			acquired, leaseErr := h.store.AcquireTaskLease(ctx, taskID, owner, 30*time.Second)
+			if leaseErr != nil {
+				h.observeDurableApproval(context.Background(), "recovery_failure")
+				log.Error("durable approval recovery task lease failed", "task_id", taskID, "error", leaseErr)
+				return
+			}
+			if acquired {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				h.observeDurableApproval(context.Background(), "recovery_failure")
+				log.Warn("durable approval recovery timed out waiting for task lease", "task_id", taskID, "approval_id", approvalID)
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+		defer func() { _ = h.store.ReleaseTaskLease(context.Background(), taskID, owner) }()
+		durableStore, ok := h.store.(store.DurableApprovalStore)
+		if !ok {
+			return
+		}
+		tenantID := task.TenantID
+		if tenantID == "" {
+			tenantID = "default"
+		}
+		approval, err := durableStore.GetApproval(ctx, approvalID, tenantID)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				h.observeDurableApproval(context.Background(), "recovery_failure")
+				log.Error("durable approval recovery lookup failed", "task_id", taskID, "approval_id", approvalID, "error", err)
+			}
+			return
+		}
+		var recovered bool
+		switch approval.Status {
+		case types.ApprovalApproved:
+			recovered, err = h.engine.RecoverApprovedApproval(ctx, task, approval, owner)
+		case types.ApprovalRejected:
+			recovered, err = h.engine.RecoverRejectedApproval(ctx, task, approval, owner)
+		default:
+			return
+		}
+		if err != nil {
+			h.observeDurableApproval(context.Background(), "recovery_failure")
+			log.Error("durable approval recovery failed", "task_id", taskID, "approval_id", approvalID, "error", err)
+			return
+		}
+		if recovered {
+			log.Info("durable approval recovered", "task_id", taskID, "approval_id", approvalID, "status", types.StatusPaused)
+		}
+	}()
 }
 
 func (h *Handler) approvalResponseMessage(approved bool, approval *types.ApprovalRequest) gin.H {

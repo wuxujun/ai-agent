@@ -688,3 +688,20 @@ func (m *MemoryStore) ReleaseApprovalLease(ctx context.Context, id, owner string
 	}
 	return nil
 }
+
+func (m *MemoryStore) DeleteTerminalApprovalsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var deleted int64
+	for id, approval := range m.approvals {
+		terminal := approval.Status == types.ApprovalConsumed || approval.Status == types.ApprovalExpired
+		if terminal && !approval.ResolvedAt.IsZero() && approval.ResolvedAt.Before(cutoff) {
+			delete(m.approvals, id)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
