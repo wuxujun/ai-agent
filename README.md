@@ -371,6 +371,10 @@ Archived sessions remain queryable, but do not accept new tasks. Use
 | `DELETE` | `/api/tasks/:id` | Delete task (must cancel first if running) |
 | `DELETE` | `/api/tasks?confirm=true` | Admin: delete all tasks |
 
+`orchestrator.run_all_timeout_seconds` limits active execution time. Time spent
+awaiting a human approval is excluded; explicit cancellation and graceful
+shutdown still interrupt a paused task immediately.
+
 SSE `token` events contain only incremental `final_answer` text. Structured
 planner thoughts, action names, and tool parameters are intentionally filtered
 and remain available only through the normal audited execution trace where applicable.

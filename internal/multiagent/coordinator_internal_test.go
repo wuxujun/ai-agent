@@ -275,3 +275,55 @@ func TestRecoverStepEvidenceFromPreviousExecutionSegment(t *testing.T) {
 		t.Fatalf("recovered failed evidence = %+v", got[1])
 	}
 }
+
+func TestNormalizeStepWorkspacePath_ExecuteCodeArgs(t *testing.T) {
+	step := ResearchStep{
+		Action: "execute_code",
+		Args:   `-c "import json; json.load(open('./workspace/fixture.json'))"`,
+		RepairedParameters: map[string]any{
+			"args": `-c "import json; json.load(open('./workspace/fixture.json'))"`,
+		},
+	}
+	normalizeStepWorkspacePath("./workspace", &step)
+	want := `-c "import json; json.load(open('fixture.json'))"`
+	if step.Args != want {
+		t.Fatalf("Args = %q, want %q", step.Args, want)
+	}
+	if got := step.RepairedParameters["args"]; got != want {
+		t.Fatalf("repaired args = %q, want %q", got, want)
+	}
+
+	absolute := ResearchStep{Action: "execute_code", Args: `-c "open('/tmp/workspace/fixture.json')"`}
+	normalizeStepWorkspacePath("/tmp/workspace", &absolute)
+	if absolute.Args != `-c "open('/tmp/workspace/fixture.json')"` {
+		t.Fatalf("absolute workspace args changed: %q", absolute.Args)
+	}
+}
+
+func TestPersistTaskDetachedSurvivesCanceledExecutionContext(t *testing.T) {
+	task := &types.Task{ID: "cancel-checkpoint"}
+	called := false
+	c := &Coordinator{PersistTask: func(ctx context.Context, got *types.Task) error {
+		called = true
+		if got != task {
+			t.Fatalf("task = %p, want %p", got, task)
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("detached persistence context already canceled: %v", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("detached persistence context has no deadline")
+		}
+		return nil
+	}}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = canceled // Models the execution context that must not reach persistence.
+	if err := c.persistTaskDetached(task); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("PersistTask was not called")
+	}
+}

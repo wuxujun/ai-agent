@@ -208,6 +208,55 @@ class BootstrapModelsTest(unittest.TestCase):
             )
         )
 
+    def test_reconcile_explicitly_overrides_stale_provider_routing_params(self):
+        models = [
+            {
+                "model_name": "agent-planner",
+                "litellm_params": {
+                    "model": "gemini/gemini-3.5-flash",
+                    "api_key": "os.environ/GEMINI_API_KEY",
+                    "custom_llm_provider": "",
+                    "litellm_credential_name": "",
+                    "drop_params": False,
+                },
+                "model_info": {"id": None},
+            },
+        ]
+        existing = [
+            {
+                "model_name": "agent-planner",
+                "litellm_params": {
+                    "model": "qwen3.7-plus",
+                    "custom_llm_provider": "custom_openai",
+                    "litellm_credential_name": "AgentPlan-QwenH",
+                    "drop_params": True,
+                },
+                "model_info": {"id": "deployment-id"},
+            },
+        ]
+        requests = []
+
+        with mock.patch.object(
+            bootstrap_models,
+            "existing_models",
+            return_value=existing,
+        ), mock.patch.object(
+            bootstrap_models,
+            "request_json",
+            side_effect=lambda _base, _key, method, path, payload=None, timeout=10: requests.append(
+                (method, path, payload)
+            ) or {},
+        ):
+            created, updated = bootstrap_models.reconcile(
+                "http://litellm", "master", models
+            )
+
+        self.assertEqual((created, updated), ([], ["agent-planner"]))
+        params = requests[0][2]["litellm_params"]
+        self.assertEqual(params["custom_llm_provider"], "")
+        self.assertEqual(params["litellm_credential_name"], "")
+        self.assertIs(params["drop_params"], False)
+
     def test_reconcile_resolves_team_name_to_team_id(self):
         models = [
             {
@@ -524,58 +573,29 @@ class BootstrapModelsTest(unittest.TestCase):
                 "agent-fast-legacy",
             },
         )
-        qwen_models = [
-            model for model in models
-            if not model["model_name"].endswith("-legacy")
-            and model["model_name"] != "agent-embedding"
-        ]
-        for model in qwen_models:
-            params = model["litellm_params"]
-            self.assertTrue(params["model"].startswith("qwen"))
-            self.assertEqual(
-                params["custom_llm_provider"],
-                "custom_openai",
-            )
-            self.assertEqual(
-                params["litellm_credential_name"],
-                "AgentPlan-QwenH",
-            )
-            self.assertIs(params["drop_params"], True)
-
-        embedding = next(
-            model for model in models
-            if model["model_name"] == "agent-embedding"
-        )
-        self.assertEqual(
-            embedding["litellm_params"],
-            {
-                "custom_llm_provider": "dashscope",
-                "model": "dashscope/qwen3.7-text-embedding",
-                "litellm_credential_name": "Dashscope-EDU",
-            },
-        )
-
-        legacy = {
-            model["model_name"]: model["litellm_params"]
-            for model in models
-            if model["model_name"].endswith("-legacy")
+        expected_upstream_models = {
+            "agent-planner": "gemini/gemini-3.5-flash",
+            "agent-planner-fallback": "gemini/gemini-3.6-flash",
+            "agent-writer": "gemini/gemini-3.6-flash",
+            "agent-fast": "gemini/gemini-3.6-flash",
+            "agent-embedding": "gemini/gemini-embedding-2-preview",
+            "agent-planner-legacy": "gemini/gemini-3.6-flash",
+            "agent-planner-fallback-legacy": "gemini/gemini-3.5-flash",
+            "agent-writer-legacy": "gemini/gemini-3.1-pro-preview",
+            "agent-fast-legacy": "gemini/gemini-3-flash-preview",
         }
-        self.assertEqual(
-            legacy["agent-planner-legacy"]["model"],
-            "openai/gpt-4.1-mini",
-        )
-        self.assertEqual(
-            legacy["agent-planner-fallback-legacy"]["model"],
-            "gemini/gemini-2.5-flash",
-        )
-        self.assertEqual(
-            legacy["agent-writer-legacy"]["model"],
-            "openai/gpt-4.1-mini",
-        )
-        self.assertEqual(
-            legacy["agent-fast-legacy"]["model"],
-            "gemini/gemini-2.5-flash",
-        )
+        for model in models:
+            params = model["litellm_params"]
+            self.assertEqual(params["model"], expected_upstream_models[model["model_name"]])
+            self.assertEqual(params["api_key"], "os.environ/GEMINI_API_KEY")
+
+        for model in models:
+            if model["model_name"].endswith("-legacy"):
+                continue
+            params = model["litellm_params"]
+            self.assertEqual(params["custom_llm_provider"], "")
+            self.assertEqual(params["litellm_credential_name"], "")
+            self.assertIs(params["drop_params"], False)
 
 
 if __name__ == "__main__":

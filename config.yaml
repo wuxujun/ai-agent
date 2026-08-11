@@ -123,7 +123,8 @@ orchestrator:
   # Env override: AI_AGENT_ORCHESTRATOR_MAX_CONCURRENT_TASKS
   max_concurrent_tasks: 10
   
-  # Wall-clock budget limit for a run-all task loop in seconds.
+  # Active execution budget for a run-all task loop in seconds. Time spent
+  # awaiting human approval is excluded; cancellation and shutdown still apply.
   # 0 falls back to default (600s).
   # Env override: AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
   run_all_timeout_seconds: 600

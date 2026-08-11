@@ -113,6 +113,15 @@ type Coordinator struct {
 	PersistTask              func(ctx context.Context, task *types.Task) error
 }
 
+func (c *Coordinator) persistTaskDetached(task *types.Task) error {
+	if c.PersistTask == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return c.PersistTask(ctx, task)
+}
+
 // NewCoordinator creates a Coordinator wired to the default LLM configuration
 // derived from environment variables (same vars as the main planner).
 func NewCoordinator(mc *metrics.Collector) *Coordinator {
@@ -1032,10 +1041,26 @@ func requiresSequentialDiscovery(action string) bool {
 // task workspace. Removing that duplicate prefix prevents workspace/workspace
 // lookups without weakening the tool layer's traversal checks.
 func normalizeStepWorkspacePath(workspace string, step *ResearchStep) {
-	if step == nil || strings.TrimSpace(step.FilePath) == "" || filepath.IsAbs(step.FilePath) {
+	if step == nil {
 		return
 	}
 	workspace = filepath.Clean(strings.TrimSpace(workspace))
+	if workspace != "." && workspace != "" && !filepath.IsAbs(workspace) && step.Action == "execute_code" {
+		prefix := workspace + string(filepath.Separator)
+		step.Args = strings.ReplaceAll(step.Args, "./"+prefix, "")
+		step.Args = strings.ReplaceAll(step.Args, "'"+prefix, "'")
+		step.Args = strings.ReplaceAll(step.Args, "\""+prefix, "\"")
+		step.Args = strings.ReplaceAll(step.Args, " "+prefix, " ")
+		step.Args = strings.TrimPrefix(step.Args, prefix)
+		if step.RepairedParameters != nil {
+			if _, exists := step.RepairedParameters["args"]; exists {
+				step.RepairedParameters["args"] = step.Args
+			}
+		}
+	}
+	if strings.TrimSpace(step.FilePath) == "" || filepath.IsAbs(step.FilePath) {
+		return
+	}
 	path := filepath.Clean(strings.TrimSpace(step.FilePath))
 	if workspace == "." || workspace == "" || path == workspace {
 		return

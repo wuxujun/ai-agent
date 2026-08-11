@@ -689,6 +689,9 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 				return
 			}
 			safeFailure := sanitize.Secrets(err.Error())
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				safeFailure = "task canceled: " + safeFailure
+			}
 			engineLog.Error("step execution failed", "task_id", task.ID, "error", safeFailure)
 			_ = SetTaskFailed(task, safeFailure)
 			if ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
@@ -1431,6 +1434,8 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		e.ApprovalCallback(task.ID, approval)
 	}
 
+	resumeExecutionTimeout := PauseExecutionTimeout(ctx)
+	defer resumeExecutionTimeout()
 	var res types.ApprovalResult
 	select {
 	case res = <-ch:
@@ -1441,6 +1446,7 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 			return false, nil, ctx.Err()
 		}
 	}
+	resumeExecutionTimeout()
 	consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	consumeErr := e.consumeDurableApproval(consumeCtx, task, approvalID, res)
 	consumeCancel()

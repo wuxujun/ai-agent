@@ -1,6 +1,6 @@
 services:
   litellm:
-    image: ${LITELLM_IMAGE:-docker.litellm.ai/berriai/litellm@sha256:9ef6f45bc0104940571765e610c52a1d761b5ec85efcd193795281086ee61277}
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm@sha256:90d8de0ea6fbb3cad145d1019d00a0149ae400b1e18e2011a60f1988f143f672}
     command:
       [
         "--config",
@@ -36,7 +36,6 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_API_BASE: ${GEMINI_API_BASE:-https://generativelanguage.googleapis.com}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_API_BASE: ${GROQ_API_BASE:-https://api.groq.com/openai/v1}
       XAI_API_KEY: ${XAI_API_KEY:-}
@@ -73,7 +72,7 @@ services:
     stop_grace_period: 30s
 
   model-bootstrap:
-    image: ${LITELLM_IMAGE:-docker.litellm.ai/berriai/litellm@sha256:9ef6f45bc0104940571765e610c52a1d761b5ec85efcd193795281086ee61277}
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm@sha256:90d8de0ea6fbb3cad145d1019d00a0149ae400b1e18e2011a60f1988f143f672}
     entrypoint: ["python", "/bootstrap/bootstrap_models.py"]
     init: true
     restart: unless-stopped

@@ -46,7 +46,8 @@ def load_manifest(path):
             raise ValueError(f"bootstrap model {name} requires litellm_params.model")
         credential_name = params.get("litellm_credential_name")
         if credential_name is not None and (
-            not isinstance(credential_name, str) or not credential_name.strip()
+            not isinstance(credential_name, str)
+            or (credential_name != "" and not credential_name.strip())
         ):
             raise ValueError(
                 f"bootstrap model {name} has invalid "

@@ -531,7 +531,7 @@ func (h *Handler) runAll(c *gin.Context) {
 	// retaining request-scoped values such as the shared LLM Runtime and trace
 	// context. The task's own wall-clock timeout remains the cancellation owner.
 	bgBase := context.WithoutCancel(c.Request.Context())
-	bgCtx, bgCancel := context.WithTimeout(bgBase, timeout)
+	bgCtx, bgCancel := orchestrator.WithPausableTimeout(bgBase, timeout)
 	owner := uuid.NewString()
 	run := &activeRun{cancel: bgCancel, owner: owner}
 

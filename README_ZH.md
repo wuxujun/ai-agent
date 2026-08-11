@@ -351,6 +351,9 @@ Content-Type: application/json
 | `DELETE` | `/api/tasks/:id` | 删除任务（运行中须先取消） |
 | `DELETE` | `/api/tasks?confirm=true` | 管理员：清空所有任务 |
 
+`orchestrator.run_all_timeout_seconds` 限制活跃执行时间，等待人工审批的时间不计入；
+显式取消和优雅关闭仍会立即中断处于审批等待状态的任务。
+
 SSE `token` 事件只包含增量 `final_answer` 文本。Planner 的结构化思考、动作名称和
 工具参数会被主动过滤；需要审计时仍通过正常执行 Trace 查看允许公开的内容。
 Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流还需独立验证通过）后
