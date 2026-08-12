@@ -501,6 +501,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 				break
 			}
 			enforceJITResearchPlan(task, newPlan)
+			enforceWorkspaceResearchPlan(task, newPlan)
 			if configuredWorkflow == WorkflowAdaptive && workflow != WorkflowReviewed {
 				escalation := resolveAdaptiveWorkflow(teamCfg.Routing, task, newPlan)
 				if escalation.Effective == WorkflowReviewed {
@@ -665,6 +666,9 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	if enforceJITResearchPlan(task, plan) {
 		log.Info("Adjusted research plan to JIT retrieval route", "task_id", task.ID, "action", plan.Steps[0].Action)
 	}
+	if enforceWorkspaceResearchPlan(task, plan) {
+		log.Info("Adjusted research plan to workspace discovery route", "task_id", task.ID)
+	}
 
 	if c.Metrics != nil {
 		c.Metrics.ObserveTokens(plan.TokenUsage.PromptTokens, plan.TokenUsage.CompletionTokens, plan.TokenUsage.TotalTokens, "planner")
@@ -819,6 +823,7 @@ func (c *Coordinator) requireCriticApproval(ctx context.Context, task *types.Tas
 			return nil, fmt.Errorf("CriticAgent rejected plan and replanning returned no executable steps")
 		}
 		enforceJITResearchPlan(task, revised)
+		enforceWorkspaceResearchPlan(task, revised)
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount,
 			Goal:        task.Goal,
@@ -965,6 +970,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 				log.Error("Replanner failed — continuing with remaining steps", "error", replanErr)
 			} else if len(newPlan.Steps) > 0 {
 				enforceJITResearchPlan(task, newPlan)
+				enforceWorkspaceResearchPlan(task, newPlan)
 				if configuredWorkflow == WorkflowAdaptive && workflowFromContext(ctx) != WorkflowReviewed {
 					escalation := resolveAdaptiveWorkflow(routing, task, newPlan)
 					if escalation.Effective == WorkflowReviewed {
@@ -1110,6 +1116,30 @@ func enforceJITResearchPlan(task *types.Task, plan *ResearchPlan) bool {
 		Action:      action,
 		SearchQuery: task.Goal,
 	}}
+	return true
+}
+
+// enforceWorkspaceResearchPlan repairs the inverse of JIT drift: an explicit
+// local workspace/repository goal planned entirely as external retrieval. It is
+// intentionally narrow so mixed plans and legitimate RAG-first goals remain
+// under planner control.
+func enforceWorkspaceResearchPlan(task *types.Task, plan *ResearchPlan) bool {
+	if task == nil || plan == nil || !planner.GoalExplicitlyTargetsWorkspace(task.Goal) || len(plan.Steps) == 0 {
+		return false
+	}
+	for _, step := range plan.Steps {
+		switch step.Action {
+		case "rag_search", "rag_fetch", "memory_search", "memory_get", "web_search", "http_fetch":
+			// External-only plans are repaired below.
+		default:
+			return false
+		}
+	}
+	plan.ThoughtSummary = "Discover and inspect relevant workspace files"
+	plan.Steps = []ResearchStep{
+		{ID: "step-1", Description: "Discover files in the task workspace", Action: "find_files", FileGlob: "*"},
+		{ID: "step-2", Description: "Search workspace files for terms from the goal", Action: "search_text", SearchQuery: task.Goal},
+	}
 	return true
 }
 

@@ -166,7 +166,7 @@ func RequiresFactualEvidence(task *types.Task) bool {
 	if task == nil {
 		return false
 	}
-	if goalExplicitlyTargetsWorkspace(task.Goal) {
+	if GoalExplicitlyTargetsWorkspace(task.Goal) {
 		return false
 	}
 	if goalExplicitlyTargetsMemory(task.Goal) {
@@ -187,7 +187,7 @@ func RequiresFactualEvidence(task *types.Task) bool {
 	return goalLikelyNeedsRetrieval(task.Goal)
 }
 
-func goalExplicitlyTargetsWorkspace(goal string) bool {
+func GoalExplicitlyTargetsWorkspace(goal string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(goal))
 	markers := []string{
 		"工作区", "项目中", "项目内", "仓库中", "仓库内", "本地文件", "源代码", "代码库",

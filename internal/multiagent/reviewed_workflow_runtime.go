@@ -194,6 +194,7 @@ func (c *Coordinator) runReviewedDAGVerification(ctx context.Context, task *type
 			break
 		}
 		enforceJITResearchPlan(task, newPlan)
+		enforceWorkspaceResearchPlan(task, newPlan)
 		if c.Metrics != nil {
 			c.Metrics.ObserveTokens(newPlan.TokenUsage.PromptTokens, newPlan.TokenUsage.CompletionTokens, newPlan.TokenUsage.TotalTokens, "replanner")
 		}

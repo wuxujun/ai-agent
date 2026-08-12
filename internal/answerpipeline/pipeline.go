@@ -139,31 +139,43 @@ func verifierFindings(task *types.Task) []types.AnswerAuditFinding {
 	if task == nil {
 		return nil
 	}
-	var findings []types.AnswerAuditFinding
-	for _, trace := range task.Trace {
-		for _, evidence := range trace.Evidence {
-			if !strings.HasPrefix(evidence.Path, types.AnswerVerifierEvidencePrefix) {
-				continue
-			}
-			detail := strings.TrimSpace(strings.Join(evidence.Lines, "\n"))
-			if detail == "" {
-				continue
-			}
-			switch evidence.Query {
-			case "unsupported_claim", "evidence_gap", "contradiction":
-			default:
-				continue
-			}
-			sourceID := sanitize.Secrets(strings.TrimPrefix(evidence.Path, types.AnswerVerifierEvidencePrefix))
-			if runes := []rune(sourceID); len(runes) > 200 {
-				sourceID = string(runes[:200])
-			}
-			findings = append(findings, types.AnswerAuditFinding{
-				Kind:     evidence.Query,
-				Detail:   errorReason(fmt.Errorf("%s", detail)),
-				SourceID: sourceID,
-			})
+	// A reviewed workflow may reject one or more drafts before publishing a
+	// supported replacement. Keep those attempts in Trace for diagnostics, but
+	// derive the published answer audit only from the latest final-answer attempt.
+	// Both reviewed verification and the research writer path use these actions.
+	var finalTrace *types.StepTrace
+	for i := len(task.Trace) - 1; i >= 0; i-- {
+		if task.Trace[i].Action == "verify" || task.Trace[i].Action == "write" {
+			finalTrace = &task.Trace[i]
+			break
 		}
+	}
+	if finalTrace == nil {
+		return nil
+	}
+	var findings []types.AnswerAuditFinding
+	for _, evidence := range finalTrace.Evidence {
+		if !strings.HasPrefix(evidence.Path, types.AnswerVerifierEvidencePrefix) {
+			continue
+		}
+		detail := strings.TrimSpace(strings.Join(evidence.Lines, "\n"))
+		if detail == "" {
+			continue
+		}
+		switch evidence.Query {
+		case "unsupported_claim", "evidence_gap", "contradiction":
+		default:
+			continue
+		}
+		sourceID := sanitize.Secrets(strings.TrimPrefix(evidence.Path, types.AnswerVerifierEvidencePrefix))
+		if runes := []rune(sourceID); len(runes) > 200 {
+			sourceID = string(runes[:200])
+		}
+		findings = append(findings, types.AnswerAuditFinding{
+			Kind:     evidence.Query,
+			Detail:   errorReason(fmt.Errorf("%s", detail)),
+			SourceID: sourceID,
+		})
 	}
 	return findings
 }

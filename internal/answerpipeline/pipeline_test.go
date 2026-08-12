@@ -106,3 +106,43 @@ func TestDraftVerifierFindingsFeedUnifiedUncertaintyAudit(t *testing.T) {
 		t.Fatalf("report = %+v task audit = %+v", report, task.AnswerAudit)
 	}
 }
+
+func TestDraftVerifierFindingsIgnoreRejectedHistoricalAttempt(t *testing.T) {
+	task := &types.Task{FinalAnswer: "supported replacement", Trace: []types.StepTrace{
+		{
+			Action:      "verify",
+			Observation: "[verifier] supported=false confidence=low",
+			Evidence: []types.Evidence{{
+				Path: types.AnswerVerifierEvidencePrefix + "old-draft", Query: "contradiction", Lines: []string{"rejected claim"},
+			}},
+		},
+		{Action: "plan", Query: "adaptive_depth"},
+		{Action: "verify", Observation: "[verifier] supported=true confidence=high"},
+	}}
+
+	if findings := verifierFindings(task); len(findings) != 0 {
+		t.Fatalf("historical rejected-draft findings leaked into final audit: %+v", findings)
+	}
+}
+
+func TestDraftVerifierFindingsUseLatestFinalAttemptOnly(t *testing.T) {
+	task := &types.Task{FinalAnswer: "latest unsupported draft", Trace: []types.StepTrace{
+		{
+			Action: "verify",
+			Evidence: []types.Evidence{{
+				Path: types.AnswerVerifierEvidencePrefix + "old-draft", Query: "evidence_gap", Lines: []string{"old gap"},
+			}},
+		},
+		{
+			Action: "verify",
+			Evidence: []types.Evidence{{
+				Path: types.AnswerVerifierEvidencePrefix + "latest-draft", Query: "unsupported_claim", Lines: []string{"latest issue"},
+			}},
+		},
+	}}
+
+	findings := verifierFindings(task)
+	if len(findings) != 1 || findings[0].SourceID != "latest-draft" || findings[0].Detail != "latest issue" {
+		t.Fatalf("latest findings = %+v", findings)
+	}
+}

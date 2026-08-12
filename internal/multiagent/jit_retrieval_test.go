@@ -86,6 +86,35 @@ func TestCoordinatorRewritesDriftingFactualPlanToRAG(t *testing.T) {
 	}
 }
 
+func TestEnforceWorkspaceResearchPlanRepairsChineseExternalOnlyPlan(t *testing.T) {
+	task := &types.Task{Goal: "检查工作区中的配置文件并总结项目模式"}
+	plan := &ResearchPlan{ThoughtSummary: "search knowledge base", Steps: []ResearchStep{{
+		ID: "step-1", Action: "rag_search", SearchQuery: task.Goal,
+	}}}
+
+	if !enforceWorkspaceResearchPlan(task, plan) {
+		t.Fatal("explicit Chinese workspace goal was not repaired")
+	}
+	if len(plan.Steps) != 2 || plan.Steps[0].Action != "find_files" || plan.Steps[1].Action != "search_text" {
+		t.Fatalf("repaired plan = %+v", plan.Steps)
+	}
+	if plan.Steps[1].SearchQuery != task.Goal {
+		t.Fatalf("search query = %q, want goal", plan.Steps[1].SearchQuery)
+	}
+}
+
+func TestEnforceWorkspaceResearchPlanPreservesMixedPlan(t *testing.T) {
+	task := &types.Task{Goal: "Inspect the repository and compare it with external docs"}
+	plan := &ResearchPlan{Steps: []ResearchStep{
+		{ID: "step-1", Action: "find_files", FileGlob: "*.go"},
+		{ID: "step-2", Action: "web_search", SearchQuery: "docs"},
+	}}
+
+	if enforceWorkspaceResearchPlan(task, plan) {
+		t.Fatalf("mixed workspace plan was unexpectedly rewritten: %+v", plan.Steps)
+	}
+}
+
 func TestCoordinatorRejectsUnsupportedFactualWriterAnswer(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
 	coordinator := &Coordinator{Planner: jitPlanner{}, Researcher: emptyJITResearcher{}, Writer: fabricatedJITWriter{}}
