@@ -417,7 +417,21 @@ func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces [
 	// exists at (task_id, step) is silently skipped without error.
 	for _, tr := range traces {
 		if tr.Step <= maxPersistedStep {
-			// Already persisted in a previous save — skip to avoid redundant writes.
+			if tr.Action == "multiagent_workflow_checkpoint" {
+				ev, err := json.Marshal(tr.Evidence)
+				if err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE traces SET goal = ?, action = ?, query = ?, observation = ?, evidence_json = ?, agent_role = ?, error_text = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ? WHERE task_id = ? AND step = ?`,
+					tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole), tr.Error,
+					tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, taskID, tr.Step,
+				); err != nil {
+					return err
+				}
+			}
+			// Ordinary traces are append-only. Workflow checkpoints are the sole
+			// mutable trace because the DAG runtime keeps one row per graph/route.
 			continue
 		}
 		ev, err := json.Marshal(tr.Evidence)
@@ -531,6 +545,21 @@ final_answer=excluded.final_answer
 
 		for _, tr := range task.Trace {
 			if tr.Step <= maxPersistedStep {
+				if tr.Action == "multiagent_workflow_checkpoint" {
+					ev, err := json.Marshal(tr.Evidence)
+					if err != nil {
+						span.RecordError(err)
+						return err
+					}
+					if _, err := tx.ExecContext(ctx,
+						`UPDATE traces SET goal = ?, action = ?, query = ?, observation = ?, evidence_json = ?, agent_role = ?, error_text = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ? WHERE task_id = ? AND step = ?`,
+						tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole), tr.Error,
+						tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, task.ID, tr.Step,
+					); err != nil {
+						span.RecordError(err)
+						return err
+					}
+				}
 				continue
 			}
 			ev, err := json.Marshal(tr.Evidence)

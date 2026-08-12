@@ -727,6 +727,40 @@ func TestAppendTraces(t *testing.T) {
 	}
 }
 
+func TestAppendTracesUpdatesWorkflowCheckpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := store.NewSQLiteStore(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	task := &types.Task{
+		ID: "mutable-workflow-checkpoint", Goal: "test", Status: types.StatusRunning,
+		MaxSteps: 10, StepCount: 1, Workspace: "/tmp/ws", ToolBudget: 10,
+		Trace: []types.StepTrace{{
+			Step: 0, Action: "multiagent_workflow_checkpoint",
+			Observation: `{"states":{"plan":"running"}}`,
+		}},
+	}
+	if err := s.SaveFullTask(ctx, task); err != nil {
+		t.Fatalf("save running checkpoint: %v", err)
+	}
+
+	task.Trace[0].Observation = `{"states":{"plan":"failed"}}`
+	if err := s.SaveFullTask(ctx, task); err != nil {
+		t.Fatalf("save failed checkpoint: %v", err)
+	}
+	got, err := s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if len(got.Trace) != 1 || got.Trace[0].Observation != task.Trace[0].Observation {
+		t.Fatalf("persisted checkpoint = %+v, want %+v", got.Trace, task.Trace)
+	}
+}
+
 // TestQueryMemoriesRespectsCandidateLimit is the regression test for the silent
 // truncation in SQLiteStore.QueryMemories. Before exposing
 // store.memory_candidate_limit, the constant 200 cap meant that once the

@@ -393,7 +393,21 @@ func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces
 	// already exists at (task_id, step) is silently skipped without error.
 	for _, tr := range traces {
 		if tr.Step <= maxPersistedStep {
-			// Already persisted in a previous save — skip to avoid redundant writes.
+			if tr.Action == "multiagent_workflow_checkpoint" {
+				ev, err := json.Marshal(tr.Evidence)
+				if err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE traces SET goal = $1, action = $2, query = $3, observation = $4, evidence_json = $5, agent_role = $6, error_text = $7, prompt_tokens = $8, completion_tokens = $9, total_tokens = $10 WHERE task_id = $11 AND step = $12`,
+					postgresText(tr.Goal), postgresText(tr.Action), postgresText(tr.Query), postgresText(tr.Observation), string(ev), postgresText(string(tr.AgentRole)), postgresText(tr.Error),
+					tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, postgresText(taskID), tr.Step,
+				); err != nil {
+					return err
+				}
+			}
+			// Ordinary traces are append-only. Workflow checkpoints are the sole
+			// mutable trace because the DAG runtime keeps one row per graph/route.
 			continue
 		}
 		ev, err := json.Marshal(tr.Evidence)
@@ -508,6 +522,21 @@ final_answer=EXCLUDED.final_answer`,
 
 		for _, tr := range task.Trace {
 			if tr.Step <= maxPersistedStep {
+				if tr.Action == "multiagent_workflow_checkpoint" {
+					ev, err := json.Marshal(tr.Evidence)
+					if err != nil {
+						span.RecordError(err)
+						return err
+					}
+					if _, err := tx.ExecContext(ctx,
+						`UPDATE traces SET goal = $1, action = $2, query = $3, observation = $4, evidence_json = $5, agent_role = $6, error_text = $7, prompt_tokens = $8, completion_tokens = $9, total_tokens = $10 WHERE task_id = $11 AND step = $12`,
+						postgresText(tr.Goal), postgresText(tr.Action), postgresText(tr.Query), postgresText(tr.Observation), string(ev), postgresText(string(tr.AgentRole)), postgresText(tr.Error),
+						tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, postgresText(task.ID), tr.Step,
+					); err != nil {
+						span.RecordError(err)
+						return err
+					}
+				}
 				continue
 			}
 			ev, err := json.Marshal(tr.Evidence)
