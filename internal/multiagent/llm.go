@@ -11,6 +11,7 @@ import (
 )
 
 type answerTokenCallbackKey struct{}
+type answerRegenerationKey struct{}
 
 func withAnswerTokenCallback(ctx context.Context, callback func(string)) context.Context {
 	return context.WithValue(ctx, answerTokenCallbackKey{}, callback)
@@ -19,6 +20,15 @@ func withAnswerTokenCallback(ctx context.Context, callback func(string)) context
 func answerTokenCallbackFromContext(ctx context.Context) func(string) {
 	callback, _ := ctx.Value(answerTokenCallbackKey{}).(func(string))
 	return callback
+}
+
+func withAnswerRegeneration(ctx context.Context) context.Context {
+	return context.WithValue(ctx, answerRegenerationKey{}, true)
+}
+
+func answerRegenerationRequested(ctx context.Context) bool {
+	retry, _ := ctx.Value(answerRegenerationKey{}).(bool)
+	return retry
 }
 
 // LLMConfig holds the configuration required to call an LLM provider.

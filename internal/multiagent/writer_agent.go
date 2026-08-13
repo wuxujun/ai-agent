@@ -22,7 +22,8 @@ Rules:
 3. If the evidence partially answers it, set draft_confidence = "medium".
 4. If evidence is insufficient or absent, state this clearly and set draft_confidence = "low".
 5. evidence_summary should be a brief (≤ 50 words) summary of the key evidence used.
-6. final_answer should be complete and self-contained.`
+6. final_answer should be complete and self-contained.
+7. Never return a placeholder such as "...", "N/A", "TODO", or punctuation-only text.`
 
 // WriterAgent synthesises research evidence into a final answer using an LLM.
 type WriterAgent struct {
@@ -58,6 +59,9 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 	log.Info("Synthesising answer", "task_id", taskID, "goal", goal, "evidence_items", len(evidence))
 
 	userPrompt := w.buildPrompt(goal, evidence, memories)
+	if answerRegenerationRequested(ctx) {
+		userPrompt += "\n\nThe previous generation was rejected as empty or placeholder content. Regenerate a complete, substantive final_answer."
+	}
 
 	var output WriterOutput
 	cfg := w.Config

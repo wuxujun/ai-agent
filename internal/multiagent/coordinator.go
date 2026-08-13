@@ -1594,12 +1594,38 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evid
 	start := time.Now()
 	if verifier, ok := c.FinalVerifier.(CheckpointFinalVerifier); ok {
 		draftStart := time.Now()
-		draftCtx := ctx
+		var draft *VerificationDraft
 		var answerChunks []string
-		if c.TokenCallback != nil {
-			draftCtx = withAnswerTokenCallback(ctx, func(token string) { answerChunks = append(answerChunks, token) })
+		var draftUsage types.TokenUsage
+		var err error
+		for attempt := 1; attempt <= 2; attempt++ {
+			draftCtx := ctx
+			var attemptChunks []string
+			if attempt > 1 {
+				draftCtx = withAnswerRegeneration(draftCtx)
+			}
+			if c.TokenCallback != nil {
+				draftCtx = withAnswerTokenCallback(draftCtx, func(token string) { attemptChunks = append(attemptChunks, token) })
+			}
+			candidate, draftErr := verifier.Draft(draftCtx, task.Goal, evidence, task.Memories)
+			if candidate != nil {
+				addMultiAgentUsage(&draftUsage, candidate.TokenUsage)
+			}
+			if draftErr != nil {
+				err = draftErr
+				break
+			}
+			if qualityErr := validateVerificationDraft(candidate); qualityErr == nil {
+				draft = candidate
+				draft.TokenUsage = draftUsage
+				answerChunks = attemptChunks
+				err = nil
+				break
+			} else {
+				err = fmt.Errorf("invalid verifier draft: %w", qualityErr)
+				log.Warn("Verifier draft rejected", "task_id", task.ID, "attempt", attempt, "error", qualityErr)
+			}
 		}
-		draft, err := verifier.Draft(draftCtx, task.Goal, evidence, task.Memories)
 		if c.Metrics != nil {
 			outcome := "success"
 			if err != nil {
@@ -1608,7 +1634,8 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evid
 			c.Metrics.ObserveMultiAgentPhase("verifier_draft", outcome, time.Since(draftStart))
 		}
 		if err != nil {
-			c.recordVerifierFailure(task, err, types.TokenUsage{}, false)
+			c.recordVerifierFailure(task, err, draftUsage, false)
+			task.FinalAnswer = invalidAnswerFallback
 			return "low", false, err
 		}
 		checkpoint := appendVerifierDraftCheckpoint(task, draft, evidence, executionComplete, executionReason)
@@ -1663,7 +1690,32 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evid
 		return confidence, output.Supported, nil
 	}
 
-	output, err := c.FinalVerifier.Finalize(ctx, task.Goal, evidence, task.Memories)
+	var output *FinalVerificationOutput
+	var verifierUsage types.TokenUsage
+	var err error
+	for attempt := 1; attempt <= 2; attempt++ {
+		finalizeCtx := ctx
+		if attempt > 1 {
+			finalizeCtx = withAnswerRegeneration(finalizeCtx)
+		}
+		candidate, finalizeErr := c.FinalVerifier.Finalize(finalizeCtx, task.Goal, evidence, task.Memories)
+		if candidate != nil {
+			addMultiAgentUsage(&verifierUsage, candidate.TokenUsage)
+		}
+		if finalizeErr != nil {
+			err = finalizeErr
+			break
+		}
+		if qualityErr := validateFinalVerificationOutput(candidate); qualityErr != nil {
+			err = fmt.Errorf("invalid final verifier answer: %w", qualityErr)
+			log.Warn("Final verifier answer rejected", "task_id", task.ID, "attempt", attempt, "error", qualityErr)
+			continue
+		}
+		output = candidate
+		output.TokenUsage = verifierUsage
+		err = nil
+		break
+	}
 	elapsed := time.Since(start)
 	if c.Metrics != nil {
 		outcome := "success"
@@ -1673,8 +1725,8 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evid
 		c.Metrics.ObserveMultiAgentPhase("verifier", outcome, elapsed)
 	}
 	if err != nil {
-		c.recordVerifierFailure(task, err, types.TokenUsage{}, false)
-		task.FinalAnswer = "Execution completed but final verification failed. See trace for gathered evidence."
+		c.recordVerifierFailure(task, err, verifierUsage, false)
+		task.FinalAnswer = invalidAnswerFallback
 		return "low", false, err
 	}
 	if c.Metrics != nil {
@@ -1701,6 +1753,17 @@ func finalVerificationOutput(draft *VerificationDraft, verification *Verificatio
 }
 
 func (c *Coordinator) applyFinalVerificationOutput(task *types.Task, output *FinalVerificationOutput, traceUsage types.TokenUsage, elapsed time.Duration) string {
+	if err := validateFinalVerificationOutput(output); err != nil {
+		log.Error("Final verifier output failed publication guard", "task_id", task.ID, "error", err)
+		if output == nil {
+			output = &FinalVerificationOutput{}
+		}
+		output.FinalAnswer = invalidAnswerFallback
+		output.DraftConfidence = "low"
+		output.Supported = false
+		output.EvidenceSummary = "The generated final answer failed the publication quality guard."
+		output.Issues = append(output.Issues, VerificationIssue{Kind: "evidence_gap", Detail: err.Error(), SourceID: "final_answer"})
+	}
 	if strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") && planner.RequiresFactualEvidence(task) && !planner.HasSupportingEvidence(task.Trace) {
 		output.FinalAnswer = "未检索到足够证据，暂时无法可靠回答该事实性问题。"
 		output.DraftConfidence = "low"
@@ -1761,6 +1824,12 @@ func (c *Coordinator) resumeVerifierCheckpoint(ctx context.Context, task *types.
 		c.recordVerifierFailure(task, err, types.TokenUsage{}, false)
 		return err
 	}
+	if err := validateVerificationDraft(&checkpoint.Draft); err != nil {
+		checkpointErr := fmt.Errorf("invalid persisted verifier draft: %w", err)
+		c.recordVerifierFailure(task, checkpointErr, checkpoint.Draft.TokenUsage, false)
+		task.FinalAnswer = invalidAnswerFallback
+		return checkpointErr
+	}
 	task.Status = types.StatusRunning
 	verifyStart := time.Now()
 	verification, err := verifier.Verify(ctx, task.Goal, checkpoint.Draft.FinalAnswer, checkpoint.Evidence)
@@ -1810,12 +1879,40 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	log.Info("Phase 3 — Writing final answer", "task_id", task.ID)
 
 	start := time.Now()
-	writeCtx := ctx
 	var answerChunks []string
-	if c.TokenCallback != nil {
-		writeCtx = withAnswerTokenCallback(ctx, func(token string) { answerChunks = append(answerChunks, token) })
+	var output *WriterOutput
+	var writerUsage types.TokenUsage
+	var err error
+	qualityRejected := false
+	for attempt := 1; attempt <= 2; attempt++ {
+		writeCtx := ctx
+		var attemptChunks []string
+		if attempt > 1 {
+			writeCtx = withAnswerRegeneration(writeCtx)
+		}
+		if c.TokenCallback != nil {
+			writeCtx = withAnswerTokenCallback(writeCtx, func(token string) { attemptChunks = append(attemptChunks, token) })
+		}
+		candidate, writeErr := c.Writer.Write(writeCtx, task.Goal, evidence, task.Memories)
+		if candidate != nil {
+			addMultiAgentUsage(&writerUsage, candidate.TokenUsage)
+		}
+		if writeErr != nil {
+			err = writeErr
+			break
+		}
+		if qualityErr := validateWriterOutput(candidate); qualityErr != nil {
+			qualityRejected = true
+			err = fmt.Errorf("invalid writer answer: %w", qualityErr)
+			log.Warn("Writer answer rejected", "task_id", task.ID, "attempt", attempt, "error", qualityErr)
+			continue
+		}
+		output = candidate
+		output.TokenUsage = writerUsage
+		answerChunks = attemptChunks
+		err = nil
+		break
 	}
-	output, err := c.Writer.Write(writeCtx, task.Goal, evidence, task.Memories)
 	elapsed := time.Since(start)
 
 	if c.Metrics != nil {
@@ -1835,6 +1932,9 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 		// StatusCompleted, which made writer errors indistinguishable from a
 		// genuine success at the API/status layer.
 		fallback := "Research complete but synthesis failed. See trace for gathered evidence."
+		if qualityRejected {
+			fallback = invalidAnswerFallback
+		}
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount,
 			Goal:        task.Goal,
@@ -1843,6 +1943,7 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 			Observation: fmt.Sprintf("[writer] synthesis error: %v", err),
 			Error:       err.Error(),
 			AgentRole:   RoleWriter,
+			TokenUsage:  writerUsage,
 		})
 		task.StepCount++
 		task.Status = types.StatusFailed

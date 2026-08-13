@@ -131,6 +131,9 @@ func (v *VerifierAgent) Draft(ctx context.Context, goal string, evidence []StepE
 	callCtx := llmcore.WithPromptBinding(ctx, resolvedPrompt.Binding)
 	systemPrompt := resolvedPrompt.Content
 	prompt := (&WriterAgent{}).buildPrompt(goal, evidence, memories)
+	if answerRegenerationRequested(ctx) {
+		prompt += "\n\nThe previous generation was rejected as empty or placeholder content. Regenerate a complete, substantive final_answer."
+	}
 	var candidate VerificationDraft
 	var draftUsage types.TokenUsage
 	var err error
