@@ -129,6 +129,14 @@ orchestrator:
   # Env override: AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
   run_all_timeout_seconds: 600
 
+# Multi-agent team and DAG rollout settings. Environment overrides:
+# AI_AGENT_MULTIAGENT_TEAM, AI_AGENT_MULTIAGENT_RUNTIME,
+# AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT.
+multiagent:
+  team: "kb_qa"
+  runtime: "legacy"
+  dag_canary_percent: 0
+
 approval:
   # Maximum age of a pending durable approval in seconds. 0 disables expiry.
   # Env override: AI_AGENT_APPROVAL_TTL_SECONDS

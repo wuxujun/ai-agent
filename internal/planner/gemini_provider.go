@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"google.golang.org/genai"
 )
@@ -43,6 +44,7 @@ func (p *geminiProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 	}
 
 	log.Info("Gemini planner request",
+		"task_id", logger.TaskID(ctx),
 		"model", req.Model,
 		"base_url", req.BaseURL,
 		"response_mime_type", cfg.ResponseMIMEType,
@@ -79,6 +81,7 @@ func (p *geminiProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 
 	responseText := textBuf.String()
 	log.Info("Gemini planner response",
+		"task_id", logger.TaskID(ctx),
 		"model", req.Model,
 		"response_len", len(responseText),
 		"prompt_tokens", usage.PromptTokens,

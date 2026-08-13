@@ -190,11 +190,12 @@ func (c *Coordinator) runReviewedDAGVerification(ctx context.Context, task *type
 			c.Metrics.ObserveMultiAgentPhase("replanner", outcome, time.Since(replanStart))
 		}
 		if replanErr != nil || newPlan == nil || len(newPlan.Steps) == 0 {
-			log.Error("DAG reviewed replan failed or returned empty steps", "error", replanErr)
+			log.Error("DAG reviewed replan failed or returned empty steps", "task_id", task.ID, "error", replanErr)
 			break
 		}
 		enforceJITResearchPlan(task, newPlan)
 		enforceWorkspaceResearchPlan(task, newPlan)
+		ensureExplicitWorkspaceFileReads(task, newPlan)
 		if c.Metrics != nil {
 			c.Metrics.ObserveTokens(newPlan.TokenUsage.PromptTokens, newPlan.TokenUsage.CompletionTokens, newPlan.TokenUsage.TotalTokens, "replanner")
 		}

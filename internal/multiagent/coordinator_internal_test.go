@@ -27,6 +27,23 @@ func (e *countingExecutor) Execute(context.Context, string, ResearchStep) (*Step
 	return &StepEvidence{Observation: "executed"}, nil
 }
 
+func TestRuntimeInvocationReplanned(t *testing.T) {
+	traces := []types.StepTrace{
+		{Action: "plan", Query: "planner"},
+		{Action: "plan", Query: "replanner"},
+		{Action: "plan", Query: "critic_replan"},
+	}
+	if runtimeInvocationReplanned(traces, 0, 1) {
+		t.Fatal("initial plan was classified as a replan")
+	}
+	if !runtimeInvocationReplanned(traces, 1, 2) || !runtimeInvocationReplanned(traces, 2, 3) {
+		t.Fatal("runtime replan trace was not detected")
+	}
+	if runtimeInvocationReplanned(traces, 3, 1) {
+		t.Fatal("invalid trace bounds were classified as a replan")
+	}
+}
+
 // TestIsReadOnlyActionRejectsHighRiskTool verifies the approval-bypass guard:
 // a tool that the registry reports as high-risk must NOT be treated as
 // parallelisable, so it is
@@ -325,5 +342,16 @@ func TestPersistTaskDetachedSurvivesCanceledExecutionContext(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("PersistTask was not called")
+	}
+}
+
+func TestMultiAgentToolStepCountIgnoresAgentAuditTraces(t *testing.T) {
+	task := &types.Task{Trace: []types.StepTrace{
+		{Action: "rag_search", AgentRole: RoleExecutor},
+		{Action: "prompt_injection_detect", AgentRole: RoleResearcher},
+		{Action: "evidence_relevance_filter", AgentRole: RoleResearcher},
+	}}
+	if got := multiAgentToolStepCount(task); got != 1 {
+		t.Fatalf("tool steps=%d, want 1", got)
 	}
 }

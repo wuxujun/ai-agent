@@ -35,6 +35,7 @@ const (
 const (
 	WorkflowRouteTraceAction    = "multiagent_workflow_route"
 	TeamConfigChangeTraceAction = "multiagent_team_config_change"
+	RuntimeSelectionTraceAction = "multiagent_runtime_selection"
 )
 
 type ResumeConfigPolicy string
@@ -161,16 +162,17 @@ func agentPromptSelector(agentCfg AgentConfig) promptmanager.Selector {
 }
 
 type TeamConfig struct {
-	Runtime      OrchestrationRuntime  `yaml:"runtime" json:"runtime,omitempty"`
-	Workflow     Workflow              `yaml:"workflow" json:"workflow"`
-	Routing      WorkflowRoutingConfig `yaml:"routing" json:"routing"`
-	CriticPolicy CriticPolicyConfig    `yaml:"critic_policy" json:"critic_policy"`
-	Planner      AgentConfig           `yaml:"planner" json:"planner"`
-	Critic       AgentConfig           `yaml:"critic" json:"critic"`
-	Executor     AgentConfig           `yaml:"executor" json:"executor"`
-	Verifier     AgentConfig           `yaml:"verifier" json:"verifier"`
-	Researcher   AgentConfig           `yaml:"researcher" json:"researcher"`
-	Writer       AgentConfig           `yaml:"writer" json:"writer"`
+	Runtime          OrchestrationRuntime  `yaml:"runtime" json:"runtime,omitempty"`
+	DAGCanaryPercent int                   `yaml:"dag_canary_percent" json:"dag_canary_percent,omitempty"`
+	Workflow         Workflow              `yaml:"workflow" json:"workflow"`
+	Routing          WorkflowRoutingConfig `yaml:"routing" json:"routing"`
+	CriticPolicy     CriticPolicyConfig    `yaml:"critic_policy" json:"critic_policy"`
+	Planner          AgentConfig           `yaml:"planner" json:"planner"`
+	Critic           AgentConfig           `yaml:"critic" json:"critic"`
+	Executor         AgentConfig           `yaml:"executor" json:"executor"`
+	Verifier         AgentConfig           `yaml:"verifier" json:"verifier"`
+	Researcher       AgentConfig           `yaml:"researcher" json:"researcher"`
+	Writer           AgentConfig           `yaml:"writer" json:"writer"`
 }
 
 type WorkflowRoutingConfig struct {
@@ -262,20 +264,25 @@ func GetTeamsConfig() *TeamsConfig {
 		}
 	}
 
-	// If AI_AGENT_MULTIAGENT_TEAM environment variable is set, override the active team
-	if envTeam := os.Getenv("AI_AGENT_MULTIAGENT_TEAM"); envTeam != "" {
-		cfg.ActiveTeam = envTeam
+	runtimeCfg := config.Get().MultiAgent
+	// Operational rollout settings are owned by config.yaml/Viper so file,
+	// environment, reload, validation, and redacted diff behavior stay unified.
+	if configuredTeam := strings.TrimSpace(runtimeCfg.Team); configuredTeam != "" {
+		cfg.ActiveTeam = configuredTeam
 	}
 	if envWorkflow := os.Getenv("AI_AGENT_MULTIAGENT_WORKFLOW"); envWorkflow != "" {
 		team := cfg.Teams[cfg.ActiveTeam]
 		team.Workflow = parseWorkflow(envWorkflow)
 		cfg.Teams[cfg.ActiveTeam] = team
 	}
-	if envRuntime := os.Getenv("AI_AGENT_MULTIAGENT_RUNTIME"); envRuntime != "" {
+	if configuredRuntime := strings.TrimSpace(runtimeCfg.Runtime); configuredRuntime != "" {
 		team := cfg.Teams[cfg.ActiveTeam]
-		team.Runtime = parseOrchestrationRuntime(envRuntime)
+		team.Runtime = parseOrchestrationRuntime(configuredRuntime)
 		cfg.Teams[cfg.ActiveTeam] = team
 	}
+	team := cfg.Teams[cfg.ActiveTeam]
+	team.DAGCanaryPercent = runtimeCfg.DAGCanaryPercent
+	cfg.Teams[cfg.ActiveTeam] = team
 	if envPolicy := os.Getenv("AI_AGENT_MULTIAGENT_RESUME_CONFIG_POLICY"); envPolicy != "" {
 		cfg.ResumeConfigPolicy = parseResumeConfigPolicy(envPolicy)
 	} else {

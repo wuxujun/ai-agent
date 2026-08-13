@@ -115,6 +115,31 @@ func TestEnforceWorkspaceResearchPlanPreservesMixedPlan(t *testing.T) {
 	}
 }
 
+func TestEnsureExplicitWorkspaceFileReads(t *testing.T) {
+	task := &types.Task{Goal: "检查工作区中的 requirements.md 并读取 runtime.go", MaxSteps: 6}
+	plan := &ResearchPlan{Steps: []ResearchStep{{ID: "step-1", Action: "find_files", FileGlob: "*"}}}
+	if !ensureExplicitWorkspaceFileReads(task, plan) {
+		t.Fatal("named workspace files were not added")
+	}
+	if len(plan.Steps) != 3 || plan.Steps[1].FilePath != "requirements.md" || plan.Steps[2].FilePath != "runtime.go" {
+		t.Fatalf("plan=%+v", plan.Steps)
+	}
+	if ensureExplicitWorkspaceFileReads(task, plan) {
+		t.Fatalf("duplicate reads added: %+v", plan.Steps)
+	}
+}
+
+func TestEnsureExplicitWorkspaceFileReadsDoesNotRetryAttemptedFailure(t *testing.T) {
+	task := &types.Task{
+		Goal: "检查工作区中的 missing.md", MaxSteps: 6,
+		Trace: []types.StepTrace{{Action: "read_file", Query: `path="missing.md"`, Observation: "read_file error: file not found"}},
+	}
+	plan := &ResearchPlan{Steps: []ResearchStep{{ID: "step-1", Action: "find_files", FileGlob: "*"}}}
+	if ensureExplicitWorkspaceFileReads(task, plan) {
+		t.Fatalf("failed file was retried: %+v", plan.Steps)
+	}
+}
+
 func TestCoordinatorRejectsUnsupportedFactualWriterAnswer(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "jit" }))
 	coordinator := &Coordinator{Planner: jitPlanner{}, Researcher: emptyJITResearcher{}, Writer: fabricatedJITWriter{}}

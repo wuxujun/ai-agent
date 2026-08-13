@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -40,7 +41,8 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 		method = "GET"
 	}
 
-	log.Info("Querying third-party RAG", "url", ragURL, "query", query, "method", method)
+	taskID := logger.TaskID(ctx)
+	log.Info("Querying third-party RAG", "task_id", taskID, "url", ragURL, "query", query, "method", method)
 	upperMethod := strings.ToUpper(strings.TrimSpace(method))
 	if upperMethod == "MCP" || upperMethod == "JSON-RPC" || isStreamableMCPURL(ragURL) {
 		return queryMCP(ctx, ragURL, cfg.RAG.Authorization, query)
@@ -58,7 +60,7 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 			strings.Contains(errStr, "invalid during session initialization") ||
 			strings.Contains(errStr, "session") ||
 			strings.Contains(errStr, "jsonrpc") {
-			log.Warn("Detected MCP server requiring initialization, launching MCP client query", "url", ragURL)
+			log.Warn("Detected MCP server requiring initialization, launching MCP client query", "task_id", taskID, "url", ragURL)
 			return queryMCP(ctx, ragURL, cfg.RAG.Authorization, query)
 		}
 		return nil, err
@@ -129,7 +131,7 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 		}
 	}
 
-	logRAGRequest("third_party_rag", req.Method, req.URL.String(), requestBody)
+	logRAGRequest(ctx, "third_party_rag", req.Method, req.URL.String(), requestBody)
 
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
@@ -149,7 +151,7 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		logRAGResponse("third_party_rag", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
+		logRAGResponse(ctx, "third_party_rag", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
 		return nil, fmt.Errorf("third-party RAG returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -158,12 +160,12 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	logRAGResponse("third_party_rag", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
+	logRAGResponse(ctx, "third_party_rag", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
 
-	return parseRAGResponse(bodyBytes)
+	return parseRAGResponse(ctx, bodyBytes)
 }
 
-func parseRAGResponse(data []byte) ([]types.Memory, error) {
+func parseRAGResponse(ctx context.Context, data []byte) ([]types.Memory, error) {
 	dataStr := string(data)
 	if strings.Contains(dataStr, "data:") {
 		lines := strings.Split(dataStr, "\n")
@@ -213,7 +215,7 @@ func parseRAGResponse(data []byte) ([]types.Memory, error) {
 		var allMemories []types.Memory
 		for _, content := range rpcResp.Result.Content {
 			if content.Type == "text" && content.Text != "" {
-				allMemories = append(allMemories, memoriesFromMCPText(content.Text, len(allMemories)+1)...)
+				allMemories = append(allMemories, memoriesFromMCPText(ctx, content.Text, len(allMemories)+1)...)
 			}
 		}
 		if len(allMemories) > 0 {
@@ -249,8 +251,8 @@ func parseRAGResponse(data []byte) ([]types.Memory, error) {
 	return nil, fmt.Errorf("unable to parse third-party RAG response")
 }
 
-func memoriesFromMCPText(text string, startID int) []types.Memory {
-	if mems, err := parseRAGResponse([]byte(text)); err == nil && len(mems) > 0 {
+func memoriesFromMCPText(ctx context.Context, text string, startID int) []types.Memory {
+	if mems, err := parseRAGResponse(ctx, []byte(text)); err == nil && len(mems) > 0 {
 		return mems
 	}
 	if mems := parseRAGTextFragments(text, startID); len(mems) > 0 {
@@ -263,7 +265,7 @@ func memoriesFromMCPText(text string, startID int) []types.Memory {
 	}
 	trimmed, truncated := truncateUTF8Bytes(strings.TrimSpace(text), limit, "\n[truncated raw RAG response]")
 	if truncated {
-		log.Warn("truncated unstructured third-party RAG response", "original_bytes", len(text), "included_bytes", len(trimmed), "limit_bytes", limit)
+		log.Warn("truncated unstructured third-party RAG response", "task_id", logger.TaskID(ctx), "original_bytes", len(text), "included_bytes", len(trimmed), "limit_bytes", limit)
 	}
 	return []types.Memory{{ID: fmt.Sprintf("mem-ext-%d", startID), KeyFindings: trimmed}}
 }
@@ -410,11 +412,11 @@ func getStringField(m map[string]any, keys ...string) (string, bool) {
 
 func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, error) {
 	if isStreamableMCPURL(ragURL) {
-		log.Info("Running MCP Streamable HTTP initialization", "url", ragURL)
+		log.Info("Running MCP Streamable HTTP initialization", "task_id", logger.TaskID(ctx), "url", ragURL)
 		return doMCPHandshakeAndCall(ctx, ragURL, auth, query, nil)
 	}
 
-	log.Info("Attempting MCP SSE handshake", "url", ragURL)
+	log.Info("Attempting MCP SSE handshake", "task_id", logger.TaskID(ctx), "url", ragURL)
 
 	// Create SSE GET request
 	req, err := http.NewRequestWithContext(ctx, "GET", ragURL, nil)
@@ -430,7 +432,7 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 		req.Header.Set("Authorization", authVal)
 	}
 
-	logRAGRequest("mcp_sse_handshake", req.Method, req.URL.String(), nil)
+	logRAGRequest(ctx, "mcp_sse_handshake", req.Method, req.URL.String(), nil)
 
 	resp, err := ragHTTPClient.Do(req)
 	if err != nil {
@@ -438,7 +440,7 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 	}
 	defer resp.Body.Close()
 
-	logRAGResponse("mcp_sse_handshake", req.Method, req.URL.String(), resp.StatusCode, nil)
+	logRAGResponse(ctx, "mcp_sse_handshake", req.Method, req.URL.String(), resp.StatusCode, nil)
 
 	// Capture initial session headers from GET response (e.g. Mcp-Session-Id, Cookie etc. are handled by CookieJar)
 	initialHeaders := make(map[string]string)
@@ -475,7 +477,7 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 					dataVal := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 					if lastEvent == "endpoint" {
 						endpointURL = dataVal
-						log.Info("MCP SSE event received", "event", lastEvent, "data", dataVal)
+						log.Info("MCP SSE event received", "task_id", logger.TaskID(ctx), "event", lastEvent, "data", dataVal)
 						errChan <- nil
 						return
 					}
@@ -485,7 +487,7 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 
 		select {
 		case <-readCtx.Done():
-			log.Warn("Timeout waiting for SSE endpoint event, falling back to direct POST")
+			log.Warn("Timeout waiting for SSE endpoint event, falling back to direct POST", "task_id", logger.TaskID(ctx))
 		case readErr := <-errChan:
 			if readErr == nil && endpointURL != "" {
 				base, parseErr := url.Parse(ragURL)
@@ -493,7 +495,7 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 					resolvedURL, parseErr := base.Parse(endpointURL)
 					if parseErr == nil {
 						postURL := resolvedURL.String()
-						log.Info("MCP SSE endpoint resolved", "post_url", postURL)
+						log.Info("MCP SSE endpoint resolved", "task_id", logger.TaskID(ctx), "post_url", postURL)
 						return doMCPHandshakeAndCall(ctx, postURL, auth, query, initialHeaders)
 					}
 				}
@@ -503,7 +505,7 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 
 	// Fallback/Direct: if it wasn't an SSE endpoint or SSE connection failed/timed out,
 	// run the 3-step initialization flow directly on ragURL.
-	log.Info("Running direct MCP initialization on URL", "url", ragURL)
+	log.Info("Running direct MCP initialization on URL", "task_id", logger.TaskID(ctx), "url", ragURL)
 	return doMCPHandshakeAndCall(ctx, ragURL, auth, query, initialHeaders)
 }
 
@@ -618,7 +620,7 @@ func doMCPHandshakeAndCall(ctx context.Context, postURL, auth, query string, ini
 	var allMemories []types.Memory
 	for _, content := range rpcResp.Result.Content {
 		if content.Type == "text" && content.Text != "" {
-			allMemories = append(allMemories, memoriesFromMCPText(content.Text, len(allMemories)+1)...)
+			allMemories = append(allMemories, memoriesFromMCPText(ctx, content.Text, len(allMemories)+1)...)
 		}
 	}
 
@@ -643,7 +645,7 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 		req.Header.Set(k, v)
 	}
 
-	logRAGRequest("mcp_jsonrpc", req.Method, req.URL.String(), jsonBytes)
+	logRAGRequest(ctx, "mcp_jsonrpc", req.Method, req.URL.String(), jsonBytes)
 
 	resp, err := ragHTTPClient.Do(req)
 	if err != nil {
@@ -653,7 +655,7 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		logRAGResponse("mcp_jsonrpc", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
+		logRAGResponse(ctx, "mcp_jsonrpc", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
 		return nil, fmt.Errorf("POST returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -680,9 +682,9 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 		}
 	}
 
-	logRAGResponse("mcp_jsonrpc", req.Method, req.URL.String(), resp.StatusCode, rawBodyBytes)
+	logRAGResponse(ctx, "mcp_jsonrpc", req.Method, req.URL.String(), resp.StatusCode, rawBodyBytes)
 	if !bytes.Equal(rawBodyBytes, bodyBytes) {
-		logRAGResponse("mcp_jsonrpc_parsed_sse_data", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
+		logRAGResponse(ctx, "mcp_jsonrpc_parsed_sse_data", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
 	}
 
 	if respTarget != nil {
@@ -693,9 +695,11 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 	return resp.Header, nil
 }
 
-func logRAGRequest(kind, method, targetURL string, body []byte) {
+func logRAGRequest(ctx context.Context, kind, method, targetURL string, body []byte) {
+	taskID := logger.TaskID(ctx)
 	if len(body) == 0 {
 		log.Info("RAG request",
+			"task_id", taskID,
 			"kind", kind,
 			"method", method,
 			"url", targetURL,
@@ -704,6 +708,7 @@ func logRAGRequest(kind, method, targetURL string, body []byte) {
 		return
 	}
 	log.Info("RAG request",
+		"task_id", taskID,
 		"kind", kind,
 		"method", method,
 		"url", targetURL,
@@ -712,10 +717,12 @@ func logRAGRequest(kind, method, targetURL string, body []byte) {
 	)
 }
 
-func logRAGResponse(kind, method, targetURL string, statusCode int, body []byte) {
+func logRAGResponse(ctx context.Context, kind, method, targetURL string, statusCode int, body []byte) {
+	taskID := logger.TaskID(ctx)
 	const maxResponsePreview = 300
 	if len(body) == 0 {
 		log.Info("RAG response",
+			"task_id", taskID,
 			"kind", kind,
 			"method", method,
 			"url", targetURL,
@@ -726,6 +733,7 @@ func logRAGResponse(kind, method, targetURL string, statusCode int, body []byte)
 	}
 	bodyText, truncated := ragResponsePreview(body, maxResponsePreview)
 	log.Info("RAG response",
+		"task_id", taskID,
 		"kind", kind,
 		"method", method,
 		"url", targetURL,

@@ -5,9 +5,8 @@
 # Verifier Draft uses draft_prompt_label / draft_prompt_version in the same way.
 # A remotely resolved label is pinned to its actual version for the lifetime of a task.
 # system_prompt remains the fallback when Langfuse is disabled or unavailable.
-# runtime defaults to legacy. DAG rollout supports fixed workflows and the
-# adaptive route; Research-to-Reviewed escalation falls back to legacy.
-# Override with AI_AGENT_MULTIAGENT_RUNTIME=dag.
+# Runtime/team rollout selection is loaded through config.yaml/Viper. This file
+# defines the available team topologies and their compatibility fallbacks.
 
 active_team: "kb_qa" # Choices: "software" | "software_reviewed" | "data" | "kb_qa"
 # require_match prevents a resumed task from silently switching prompts/models.
@@ -16,7 +15,7 @@ resume_config_policy: "require_match"
 
 teams:
   software:
-    # Use "dag" after validating the fixed Research workflow in your environment.
+    # Compatibility fallback when multiagent.runtime is omitted from config.yaml.
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     # Set workflow to "adaptive" (or use AI_AGENT_MULTIAGENT_WORKFLOW=adaptive)
@@ -68,7 +67,11 @@ teams:
              parameters. If a duplicate is detected, terminate planning immediately.
           8. Step IDs must be "step-1", "step-2", ... in strict order.
           9. Set every unused field to an empty string "".
-         10. Output must strictly conform to the provided JSON schema — no extra keys,
+         10. Use write_file only when the user explicitly requests creating, modifying, or
+             saving a file, or when the requested repository change necessarily requires it.
+             For questions, research, explanations, and summaries, return the result in the
+             final answer; never add write_file merely to save or report findings.
+         11. Output must strictly conform to the provided JSON schema — no extra keys,
              no markdown wrapping, no comments.
       # To bypass the shared LiteLLM gateway for this role, explicitly set a
       # different provider and model here.
@@ -140,7 +143,11 @@ teams:
         6. Each step must build on the concrete findings of the previous step.
         7. Step IDs must be "step-1", "step-2", etc. in strict order.
         8. Set every unused field to an empty string "".
-        9. Output must strictly conform to the provided JSON schema — no extra keys,
+        9. Use write_file only when the user explicitly requests creating, modifying, or
+           saving a file, or when the requested data change necessarily requires it.
+           For questions, research, explanations, and summaries, return the result in the
+           final answer; never add write_file merely to save or report findings.
+        10. Output must strictly conform to the provided JSON schema — no extra keys,
            no markdown wrapping, no comments.
 
     researcher:
@@ -212,7 +219,11 @@ teams:
            unless evidence from prior steps confirms they are necessary and safe.
         7. Step IDs must be "step-1", "step-2", etc. in strict order.
         8. Set every unused field to an empty string "".
-        9. Return JSON only.
+        9. Use write_file only when the user explicitly requests creating, modifying, or
+           saving a file, or when the requested repository change necessarily requires it.
+           For questions, research, explanations, and summaries, return the result in the
+           final answer; never add write_file merely to save or report findings.
+        10. Return JSON only.
     critic:
       name: "Software Plan Critic"
       prompt_name: "teams/software-reviewed/critic"

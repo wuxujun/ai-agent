@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/tools"
 )
@@ -19,12 +20,13 @@ type ResearcherAgent struct{}
 type ExecutorAgent struct{}
 
 func (e *ExecutorAgent) Execute(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
+	taskID := logger.TaskID(ctx)
 	agentName := "Executor"
 	activeTeam := teamConfigFromContext(ctx).Team
 	if activeTeam.Executor.Name != "" {
 		agentName = activeTeam.Executor.Name
 	}
-	log.Info("Execution step starting", "step_id", step.ID, "action", step.Action, "desc", step.Description, "agent_name", agentName)
+	log.Info("Execution step starting", "task_id", taskID, "step_id", step.ID, "action", step.Action, "desc", step.Description, "agent_name", agentName)
 	return executeResearchStep(ctx, workspace, step, "ExecutorAgent")
 }
 
@@ -32,16 +34,18 @@ func (e *ExecutorAgent) Execute(ctx context.Context, workspace string, step Rese
 // Errors inside individual tool calls are treated as non-fatal: the observation
 // records the error and the caller can decide whether to continue.
 func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
+	taskID := logger.TaskID(ctx)
 	agentName := "Researcher"
 	activeTeam := teamConfigFromContext(ctx).Team
 	if activeTeam.Researcher.Name != "" {
 		agentName = activeTeam.Researcher.Name
 	}
-	log.Info("Research step starting", "step_id", step.ID, "action", step.Action, "desc", step.Description, "agent_name", agentName)
+	log.Info("Research step starting", "task_id", taskID, "step_id", step.ID, "action", step.Action, "desc", step.Description, "agent_name", agentName)
 	return executeResearchStep(ctx, workspace, step, "ResearcherAgent")
 }
 
 func executeResearchStep(ctx context.Context, workspace string, step ResearchStep, roleName string) (*StepEvidence, error) {
+	taskID := logger.TaskID(ctx)
 	// Validate workspace boundary before any operation.
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("%s workspace policy: %w", roleName, err)
@@ -57,7 +61,7 @@ func executeResearchStep(ctx context.Context, workspace string, step ResearchSte
 	if !ok {
 		ev.Observation = fmt.Sprintf("unsupported action %q — skipping", step.Action)
 		ev.Failed = true
-		log.Info("Unsupported action", "step_id", step.ID, "action", step.Action)
+		log.Info("Unsupported action", "task_id", taskID, "step_id", step.ID, "action", step.Action)
 		return ev, nil
 	}
 
@@ -71,14 +75,14 @@ func executeResearchStep(ctx context.Context, workspace string, step ResearchSte
 	if err != nil {
 		ev.Observation = fmt.Sprintf("%s error: %v", step.Action, err)
 		ev.Failed = true
-		log.Info("Step tool error", "step_id", step.ID, "action", step.Action, "error", err)
+		log.Info("Step tool error", "task_id", taskID, "step_id", step.ID, "action", step.Action, "error", err)
 		return ev, nil // non-fatal
 	}
 	ev.Observation = result.Observation
 	ev.Evidence = result.Evidence
 	ev.TokenUsage = result.TokenUsage
 
-	log.Info("Research step done", "step_id", step.ID, "observation", ev.Observation, "evidence_count", len(ev.Evidence))
+	log.Info("Research step done", "task_id", taskID, "step_id", step.ID, "observation", ev.Observation, "evidence_count", len(ev.Evidence))
 	return ev, nil
 }
 

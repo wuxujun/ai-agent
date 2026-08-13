@@ -86,6 +86,48 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestMultiAgentEnvironmentOverrides(t *testing.T) {
+	resetConfig()
+	defer resetConfig()
+	t.Setenv("TEST_NO_CONFIG", "true")
+	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "legacy")
+	t.Setenv("AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT", "5")
+
+	cfg := LoadConfig()
+	if cfg.MultiAgent.Team != "software" || cfg.MultiAgent.Runtime != "legacy" || cfg.MultiAgent.DAGCanaryPercent != 5 {
+		t.Fatalf("multiagent env overrides = %+v", cfg.MultiAgent)
+	}
+}
+
+func TestValidateMultiAgentRolloutSettings(t *testing.T) {
+	validConfig := func() *Config {
+		cfg := &Config{}
+		cfg.LLM.Provider = "openai"
+		cfg.LLM.TimeoutSeconds = 30
+		return cfg
+	}
+	for _, runtime := range []string{"", "legacy", "dag", " DAG "} {
+		cfg := validConfig()
+		cfg.MultiAgent.Runtime = runtime
+		cfg.MultiAgent.DAGCanaryPercent = 5
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("multiagent runtime %q rejected: %v", runtime, err)
+		}
+	}
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.MultiAgent.Runtime = "graph" },
+		func(cfg *Config) { cfg.MultiAgent.DAGCanaryPercent = -1 },
+		func(cfg *Config) { cfg.MultiAgent.DAGCanaryPercent = 101 },
+	} {
+		cfg := validConfig()
+		mutate(cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid multiagent rollout accepted: %+v", cfg.MultiAgent)
+		}
+	}
+}
+
 func TestValidateOrchestratorMode(t *testing.T) {
 	for _, mode := range []string{"", "eino", "legacy", "adk", "step", "multiagent", " MULTIAGENT "} {
 		cfg := &Config{}

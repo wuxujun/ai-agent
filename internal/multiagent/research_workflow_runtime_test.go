@@ -54,9 +54,8 @@ func (w *countingResearchDAGWriter) Write(context.Context, string, []StepEvidenc
 
 func configureResearchDAGTest(t *testing.T) {
 	t.Helper()
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "planner_researcher_writer")
-	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "dag")
+	configureMultiAgentSelectionTest(t, "software", RuntimeDAG, 0)
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "prefetch"
 		cfg.LLM.Scenes = nil
@@ -106,6 +105,36 @@ func TestCoordinatorResearchDAGCompletesAndPersistsCheckpoint(t *testing.T) {
 	}
 }
 
+func TestCoordinatorResearchDAGCanarySelectsDAGAndRecordsRuntime(t *testing.T) {
+	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "planner_researcher_writer")
+	configureMultiAgentSelectionTest(t, "software", RuntimeLegacy, 100)
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "prefetch"
+		cfg.LLM.Scenes = nil
+	}))
+	planner := &countingResearchDAGPlanner{}
+	researcher := &countingResearchDAGResearcher{}
+	writer := &countingResearchDAGWriter{}
+	c := &Coordinator{Planner: planner, Researcher: researcher, Writer: writer}
+	task := &types.Task{ID: "research-dag-canary", Goal: "inspect", Workspace: t.TempDir(), Status: types.StatusCreated, MaxSteps: 2, ToolBudget: 2}
+
+	if err := c.Run(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != types.StatusCompleted || task.FinalAnswer != "answer-high" {
+		t.Fatalf("task = %+v", task)
+	}
+	selection, ok := persistedRuntimeSelection(task, "software")
+	if !ok || selection.Runtime != RuntimeDAG || selection.Source != "canary" || selection.Percent != 100 {
+		t.Fatalf("runtime selection = %+v, ok=%t", selection, ok)
+	}
+	graph, _ := BuildWorkflowGraph(WorkflowResearch)
+	summary, _ := graph.Summary()
+	if _, ok := persistedWorkflowRuntimeCheckpoint(task, summary.Digest, WorkflowResearch); !ok {
+		t.Fatal("canary-selected task did not execute with the DAG runtime")
+	}
+}
+
 func TestCoordinatorResearchDAGResumesAfterResearchCheckpoint(t *testing.T) {
 	configureResearchDAGTest(t)
 	planner := &countingResearchDAGPlanner{}
@@ -146,7 +175,8 @@ func TestCoordinatorResearchDAGPreservesAdaptiveDepth(t *testing.T) {
 	planner := &countingResearchDAGPlanner{}
 	researcher := &countingResearchDAGResearcher{}
 	writer := &countingResearchDAGWriter{confidences: []string{"low", "high"}}
-	c := &Coordinator{Planner: planner, Researcher: researcher, Writer: writer}
+	collector := metricspkg.NewCollector()
+	c := &Coordinator{Planner: planner, Researcher: researcher, Writer: writer, Metrics: collector}
 	task := &types.Task{ID: "research-dag-depth", Goal: "inspect deeply", Workspace: t.TempDir(), Status: types.StatusCreated, MaxSteps: 3, ToolBudget: 3}
 
 	if err := c.Run(context.Background(), task); err != nil {
@@ -154,6 +184,9 @@ func TestCoordinatorResearchDAGPreservesAdaptiveDepth(t *testing.T) {
 	}
 	if task.Status != types.StatusCompleted || planner.planCalls != 1 || planner.replanCalls != 1 || researcher.calls != 2 || writer.calls != 2 {
 		t.Fatalf("task=%+v calls: plan=%d replan=%d research=%d write=%d", task, planner.planCalls, planner.replanCalls, researcher.calls, writer.calls)
+	}
+	if snapshot := collector.Snapshot(); snapshot.MultiAgentDAGReplanned != 1 || snapshot.MultiAgentLegacyReplanned != 0 || snapshot.MultiAgentDAGEventsObserved != 1 {
+		t.Fatalf("runtime replan metrics = %+v", snapshot)
 	}
 }
 
@@ -196,8 +229,7 @@ func TestResearchDAGPlanPayloadPreservesRepairedParameters(t *testing.T) {
 }
 
 func TestCoordinatorDAGRuntimeUsesReviewedWorkflow(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
-	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "dag")
+	configureMultiAgentSelectionTest(t, "software_reviewed", RuntimeDAG, 0)
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "prefetch" }))
 	critic := &approvingCritic{}
 	executor := &recordingExecutor{}
@@ -223,9 +255,8 @@ func TestCoordinatorDAGRuntimeUsesReviewedWorkflow(t *testing.T) {
 }
 
 func TestCoordinatorDAGRuntimeUsesAdaptiveResearchRoute(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "adaptive")
-	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "dag")
+	configureMultiAgentSelectionTest(t, "software", RuntimeDAG, 0)
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "prefetch" }))
 	researcher := &recordingResearcher{}
 	writer := &supportedWriter{}
@@ -262,9 +293,8 @@ func TestCoordinatorResearchDAGMatchesLegacyOutcome(t *testing.T) {
 	}
 	run := func(t *testing.T, runtimeMode OrchestrationRuntime) outcome {
 		t.Helper()
-		t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
 		t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "planner_researcher_writer")
-		t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", string(runtimeMode))
+		configureMultiAgentSelectionTest(t, "software", runtimeMode, 0)
 		t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 			cfg.RAG.ContextMode = "prefetch"
 			cfg.LLM.Scenes = nil

@@ -75,7 +75,7 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 		return localEmbedding(text), nil
 	}
 	if providerRegistered && providerSpec.Protocol == llmprovider.ProtocolGemini && geminiEmbeddingUnsupportedLocation.Load() {
-		log.Debug("Gemini embedding disabled for this process after unsupported location error; using local embedding")
+		log.Debug("Gemini embedding disabled for this process after unsupported location error; using local embedding", "task_id", logger.TaskID(ctx))
 		return localEmbedding(text), nil
 	}
 
@@ -83,12 +83,12 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	embCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 	if llmcore.TaskCostBudgetEnabled(embCtx) {
-		log.Warn("remote embedding skipped because its token cost cannot be accounted under the task cost budget; using local embedding")
+		log.Warn("remote embedding skipped because its token cost cannot be accounted under the task cost budget; using local embedding", "task_id", logger.TaskID(ctx))
 		return localEmbedding(text), nil
 	}
 	if budgetErr := llmcore.ReserveTaskLLMCall(embCtx); budgetErr != nil {
 		llmcore.ObserveReliabilityContext(embCtx, llmcore.ReliabilityEvent{Kind: llmcore.ReliabilityTaskBudgetRejected, Scene: config.LLMSceneEmbedding, Provider: string(cfg.Provider), Model: cfg.Model})
-		log.Warn("remote embedding skipped by task LLM budget; using local embedding", "error", budgetErr)
+		log.Warn("remote embedding skipped by task LLM budget; using local embedding", "task_id", logger.TaskID(ctx), "error", budgetErr)
 		return localEmbedding(text), nil
 	}
 
@@ -113,12 +113,13 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 		if providerSpec.Protocol == llmprovider.ProtocolGemini && isUnsupportedLocationError(err) {
 			if geminiEmbeddingUnsupportedLocation.CompareAndSwap(false, true) {
 				log.Warn("Gemini embedding API is unavailable from current location; disabling remote Gemini embeddings for this process",
+					"task_id", logger.TaskID(ctx),
 					"error", err,
 				)
 			}
 			return localEmbedding(text), nil
 		}
-		log.Warn("Remote embedding failed (falling back to local)", "error", err)
+		log.Warn("Remote embedding failed (falling back to local)", "task_id", logger.TaskID(ctx), "error", err)
 		return localEmbedding(text), nil
 	}
 
@@ -136,13 +137,14 @@ func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		model = defaultGeminiEmbeddingModel
 	} else if strings.EqualFold(model, "text-embedding-004") {
 		log.Warn("configured Gemini embedding model is not supported by Gemini API embedContent; using current text embedding model",
+			"task_id", logger.TaskID(ctx),
 			"configured_model", model,
 			"fallback_model", defaultGeminiEmbeddingModel,
 		)
 		model = defaultGeminiEmbeddingModel
 	}
 
-	logEmbeddingRequest("gemini", model, cfg.BaseURL, text)
+	logEmbeddingRequest(ctx, "gemini", model, cfg.BaseURL, text)
 
 	resp, err := client.Models.EmbedContent(ctx, model, genai.Text(text), nil)
 	if err != nil {
@@ -183,7 +185,7 @@ func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		return nil, err
 	}
 
-	logEmbeddingRequest("openai", model, url, text)
+	logEmbeddingRequest(ctx, "openai", model, url, text)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
 	if err != nil {
@@ -254,7 +256,7 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 		return nil, err
 	}
 
-	logEmbeddingRequest("ollama", model, url, text)
+	logEmbeddingRequest(ctx, "ollama", model, url, text)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
 	if err != nil {
@@ -298,9 +300,11 @@ func isUnsupportedLocationError(err error) bool {
 		(strings.Contains(errText, "failed_precondition") && strings.Contains(errText, "location"))
 }
 
-func logEmbeddingRequest(provider, model, url, input string) {
+func logEmbeddingRequest(ctx context.Context, provider, model, url, input string) {
+	taskID := logger.TaskID(ctx)
 	if url == "" {
 		log.Info("sending embedding request",
+			"task_id", taskID,
 			"provider", provider,
 			"model", model,
 			"input_len", len(input),
@@ -309,6 +313,7 @@ func logEmbeddingRequest(provider, model, url, input string) {
 		return
 	}
 	log.Info("sending embedding request",
+		"task_id", taskID,
 		"provider", provider,
 		"model", model,
 		"url", url,

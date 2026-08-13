@@ -100,6 +100,16 @@ func AccessLogMiddleware() gin.HandlerFunc {
 		}
 		if route := c.FullPath(); route != "" {
 			attrs = append(attrs, slog.String("route", route))
+			if strings.Contains(route, "/tasks/:id") {
+				if taskID := strings.TrimSpace(c.Param("id")); taskID != "" {
+					attrs = append(attrs, slog.String("task_id", taskID))
+				}
+			}
+		}
+		if value, exists := c.Get(taskIDKey); exists {
+			if taskID, ok := value.(string); ok && strings.TrimSpace(taskID) != "" {
+				attrs = append(attrs, slog.String("task_id", strings.TrimSpace(taskID)))
+			}
 		}
 		if value, exists := c.Get(principalKey); exists {
 			if principal, ok := value.(Principal); ok && principal.TenantID != "" {

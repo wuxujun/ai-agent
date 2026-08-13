@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -117,7 +118,7 @@ func (c *Coordinator) persistTaskDetached(task *types.Task) error {
 	if c.PersistTask == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(logger.WithTaskID(context.Background(), task.ID), 10*time.Second)
 	defer cancel()
 	return c.PersistTask(ctx, task)
 }
@@ -148,6 +149,7 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 // are owned by Researcher/Writer or Executor/Verifier. Both paths retain the
 // same policy, approval, cancellation, and budget gates.
 func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) {
+	ctx = logger.WithTaskID(ctx, task.ID)
 	ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
 	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
@@ -165,11 +167,52 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 	teamSnapshot.ResumePolicy = teamsCfg.ResumeConfigPolicy
 	ctx = withTeamConfigSnapshot(ctx, teamSnapshot)
 	configuredWorkflow := teamsCfg.ActiveWorkflow()
-	runtimeMode := teamsCfg.ActiveRuntime()
+	configuredRuntime := teamsCfg.ActiveRuntime()
+	configuredGraphSummary, err := annotateWorkflowGraph(span, "multiagent.workflow.configured_graph", configuredWorkflow)
+	if err != nil {
+		task.Status = types.StatusFailed
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "configured workflow graph is invalid")
+		return err
+	}
+	planningWorkflow := configuredWorkflow
+	if planningWorkflow == WorkflowAdaptive {
+		planningWorkflow = WorkflowResearch
+	}
+	ctx = withWorkflow(ctx, planningWorkflow)
+	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam, "team_config_digest", teamSnapshot.Digest, "configured_workflow", configuredWorkflow, "configured_runtime", configuredRuntime, "dag_canary_percent", teamCfg.DAGCanaryPercent, "configured_graph_digest", configuredGraphSummary.Digest)
+	span.SetAttributes(
+		attribute.String("multiagent.team", teamSnapshot.ActiveTeam),
+		attribute.String("multiagent.team_config_digest", teamSnapshot.Digest),
+		attribute.String("multiagent.resume_config_policy", string(teamSnapshot.ResumePolicy)),
+		attribute.String("multiagent.runtime.configured", string(configuredRuntime)),
+	)
+	traceCountBeforeConfigCheck := len(task.Trace)
+	if err := enforceTeamConfigResumePolicy(task, teamSnapshot); err != nil {
+		if c.Metrics != nil {
+			c.Metrics.ObserveMultiAgentConfigChange(string(teamSnapshot.ResumePolicy), "blocked")
+		}
+		span.SetAttributes(attribute.Bool("multiagent.team_config_changed", true))
+		log.Warn("Multi-agent resume blocked by team configuration change", "task_id", task.ID, "error", err)
+		return nil
+	}
+	if c.Metrics != nil && len(task.Trace) > traceCountBeforeConfigCheck && task.Trace[len(task.Trace)-1].Action == TeamConfigChangeTraceAction {
+		c.Metrics.ObserveMultiAgentConfigChange(string(teamSnapshot.ResumePolicy), "migrated")
+	}
+	runtimeDecision := resolveTaskRuntime(task, teamSnapshot, configuredRuntime)
+	runtimeMode := runtimeDecision.Runtime
 	if forced, _ := ctx.Value(forceLegacyRuntimeContextKey{}).(bool); forced {
 		runtimeMode = RuntimeLegacy
 	}
+	span.SetAttributes(
+		attribute.String("multiagent.runtime.selected", string(runtimeMode)),
+		attribute.String("multiagent.runtime.selection_source", runtimeDecision.Source),
+		attribute.Int("multiagent.runtime.canary_bucket", runtimeDecision.Bucket),
+		attribute.Int("multiagent.runtime.canary_percent", runtimeDecision.Percent),
+	)
 	runtimeStarted := time.Now()
+	runtimeTraceStart := len(task.Trace)
+	runtimeTraceEnd := -1
 	defer func() {
 		if c.Metrics == nil {
 			return
@@ -184,38 +227,20 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 			outcome = "partial"
 		}
 		c.Metrics.ObserveMultiAgentRuntime(string(runtimeMode), outcome, time.Since(runtimeStarted))
-	}()
-	configuredGraphSummary, err := annotateWorkflowGraph(span, "multiagent.workflow.configured_graph", configuredWorkflow)
-	if err != nil {
-		task.Status = types.StatusFailed
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "configured workflow graph is invalid")
-		return err
-	}
-	planningWorkflow := configuredWorkflow
-	if planningWorkflow == WorkflowAdaptive {
-		planningWorkflow = WorkflowResearch
-	}
-	ctx = withWorkflow(ctx, planningWorkflow)
-	log.Info("Starting multi-agent workflow", "task_id", task.ID, "goal", task.Goal, "active_team", teamsCfg.ActiveTeam, "team_config_digest", teamSnapshot.Digest, "configured_workflow", configuredWorkflow, "runtime", runtimeMode, "configured_graph_digest", configuredGraphSummary.Digest)
-	span.SetAttributes(
-		attribute.String("multiagent.team", teamSnapshot.ActiveTeam),
-		attribute.String("multiagent.team_config_digest", teamSnapshot.Digest),
-		attribute.String("multiagent.resume_config_policy", string(teamSnapshot.ResumePolicy)),
-		attribute.String("multiagent.runtime.configured", string(runtimeMode)),
-	)
-	traceCountBeforeConfigCheck := len(task.Trace)
-	if err := enforceTeamConfigResumePolicy(task, teamSnapshot); err != nil {
-		if c.Metrics != nil {
-			c.Metrics.ObserveMultiAgentConfigChange(string(teamSnapshot.ResumePolicy), "blocked")
+		c.Metrics.ObserveMultiAgentRuntimeEvent(string(runtimeMode), "observed")
+		traceEnd := len(task.Trace)
+		approvalRequired := task.Status == types.StatusAwaitingApproval
+		if runtimeTraceEnd >= runtimeTraceStart && runtimeTraceEnd <= traceEnd {
+			traceEnd = runtimeTraceEnd
+			approvalRequired = false
 		}
-		span.SetAttributes(attribute.Bool("multiagent.team_config_changed", true))
-		log.Warn("Multi-agent resume blocked by team configuration change", "task_id", task.ID, "error", err)
-		return nil
-	}
-	if c.Metrics != nil && len(task.Trace) > traceCountBeforeConfigCheck && task.Trace[len(task.Trace)-1].Action == TeamConfigChangeTraceAction {
-		c.Metrics.ObserveMultiAgentConfigChange(string(teamSnapshot.ResumePolicy), "migrated")
-	}
+		if approvalRequired {
+			c.Metrics.ObserveMultiAgentRuntimeEvent(string(runtimeMode), "approval_required")
+		}
+		if runtimeInvocationReplanned(task.Trace, runtimeTraceStart, traceEnd) {
+			c.Metrics.ObserveMultiAgentRuntimeEvent(string(runtimeMode), "replanned")
+		}
+	}()
 	persistedPins := persistedPromptVersionPins(task, teamSnapshot.Digest)
 	var promptBindingMu sync.Mutex
 	pinRegistry, err := promptmanager.NewVersionPinRegistry(persistedPins, func(pin promptmanager.VersionPin) {
@@ -337,6 +362,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 				c.Metrics.ObserveMultiAgentRuntimeFallback("dag_fallback:" + escalationErr.reason)
 			}
 			log.Warn("Adaptive DAG escalated during Research; continuing with Legacy runtime", "task_id", task.ID, "reason", escalationErr.reason)
+			runtimeTraceEnd = len(task.Trace)
 			return c.Run(withForceLegacyRuntime(ctx), task)
 		}
 		if dagErr != nil {
@@ -439,7 +465,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 
 		select {
 		case <-ctx.Done():
-			log.Info("Context cancelled during execution flow")
+			log.Info("Context cancelled during execution flow", "task_id", task.ID)
 			return ctx.Err()
 		default:
 		}
@@ -472,7 +498,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 		// signal and never becomes the published answer confidence.
 		if draftConfidence == "low" && depthIterations < maxDepthIterations && task.ToolBudget > 0 && multiAgentToolStepCount(task) < task.MaxSteps && !tokenBudgetExhausted(task) {
 			depthIterations++
-			log.Info("Draft confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion", "iteration", depthIterations, "max_iterations", maxDepthIterations)
+			log.Info("Draft confidence is LOW (evidence is insufficient). Triggering adaptive step depth expansion", "task_id", task.ID, "iteration", depthIterations, "max_iterations", maxDepthIterations)
 
 			// Record adaptive depth trace
 			task.Trace = append(task.Trace, types.StepTrace{
@@ -497,11 +523,12 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 				c.Metrics.ObserveMultiAgentPhase("replanner", outcome, time.Since(replanStart))
 			}
 			if replanErr != nil || len(newPlan.Steps) == 0 {
-				log.Error("Adaptive replan failed or returned empty steps — stopping loop")
+				log.Error("Adaptive replan failed or returned empty steps — stopping loop", "task_id", task.ID)
 				break
 			}
 			enforceJITResearchPlan(task, newPlan)
 			enforceWorkspaceResearchPlan(task, newPlan)
+			ensureExplicitWorkspaceFileReads(task, newPlan)
 			if configuredWorkflow == WorkflowAdaptive && workflow != WorkflowReviewed {
 				escalation := resolveAdaptiveWorkflow(teamCfg.Routing, task, newPlan)
 				if escalation.Effective == WorkflowReviewed {
@@ -534,7 +561,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 			if workflow == WorkflowReviewed {
 				newPlan, replanErr = c.requireCriticApproval(replanCtx, task, newPlan)
 				if replanErr != nil {
-					log.Error("Adaptive plan rejected by critic", "error", replanErr)
+					log.Error("Adaptive plan rejected by critic", "task_id", task.ID, "error", replanErr)
 					task.Status = types.StatusFailed
 					break
 				}
@@ -579,6 +606,24 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 		attribute.Int("agent.task.final_answer_chars", len([]rune(task.FinalAnswer))),
 	)
 	return nil
+}
+
+func runtimeInvocationReplanned(traces []types.StepTrace, start, end int) bool {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(traces) {
+		end = len(traces)
+	}
+	if start > end {
+		return false
+	}
+	for _, trace := range traces[start:end] {
+		if trace.Query == "replanner" || trace.Query == "critic_replan" {
+			return true
+		}
+	}
+	return false
 }
 
 func annotateWorkflowGraph(span trace.Span, prefix string, workflow Workflow) (WorkflowGraphSummary, error) {
@@ -669,6 +714,7 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	if enforceWorkspaceResearchPlan(task, plan) {
 		log.Info("Adjusted research plan to workspace discovery route", "task_id", task.ID)
 	}
+	ensureExplicitWorkspaceFileReads(task, plan)
 
 	if c.Metrics != nil {
 		c.Metrics.ObserveTokens(plan.TokenUsage.PromptTokens, plan.TokenUsage.CompletionTokens, plan.TokenUsage.TotalTokens, "planner")
@@ -696,7 +742,7 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	task.StepCount++
 	task.Status = types.StatusRunning
 
-	log.Info("Phase 1 done", "steps_planned", len(plan.Steps), "elapsed", elapsed)
+	log.Info("Phase 1 done", "task_id", task.ID, "steps_planned", len(plan.Steps), "elapsed", elapsed)
 	return plan, nil
 }
 
@@ -824,6 +870,7 @@ func (c *Coordinator) requireCriticApproval(ctx context.Context, task *types.Tas
 		}
 		enforceJITResearchPlan(task, revised)
 		enforceWorkspaceResearchPlan(task, revised)
+		ensureExplicitWorkspaceFileReads(task, revised)
 		task.Trace = append(task.Trace, types.StepTrace{
 			Step:        task.StepCount,
 			Goal:        task.Goal,
@@ -869,7 +916,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		}
 		// Budget and step-count gate
 		if task.ToolBudget <= 0 || tokenBudgetExhausted(task) {
-			log.Info("Budget exhausted (tools or tokens) — stopping research early")
+			log.Info("Budget exhausted (tools or tokens) — stopping research early", "task_id", task.ID)
 			result.Complete = false
 			if tokenBudgetExhausted(task) {
 				result.Reason = "token_budget_exhausted"
@@ -880,7 +927,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		}
 		toolSteps := multiAgentToolStepCount(task)
 		if toolSteps >= task.MaxSteps {
-			log.Info("Max steps reached — stopping research early")
+			log.Info("Max steps reached — stopping research early", "task_id", task.ID)
 			result.Complete = false
 			result.Reason = "max_tool_steps_reached"
 			break
@@ -889,7 +936,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		// Context cancellation check
 		select {
 		case <-ctx.Done():
-			log.Info("Context cancelled during research phase")
+			log.Info("Context cancelled during research phase", "task_id", task.ID)
 			result.Complete = false
 			result.Reason = "context_cancelled"
 			return result
@@ -913,6 +960,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 				}
 				if len(batch) > maxParallel {
 					log.Info("Look-ahead token budget defense triggered: clamping parallel batch size",
+						"task_id", task.ID,
 						"original_size", len(batch),
 						"clamped_size", maxParallel,
 						"remaining_budget", remaining,
@@ -931,10 +979,10 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		var fatalErr error
 
 		if isParallel && len(batch) > 1 {
-			log.Info("Executing read-only steps in parallel", "count", len(batch))
+			log.Info("Executing read-only steps in parallel", "task_id", task.ID, "count", len(batch))
 			batchEvidence, anyFailed = c.runBatchParallel(ctx, task, batch)
 		} else {
-			log.Info("Executing steps serially", "count", len(batch))
+			log.Info("Executing steps serially", "task_id", task.ID, "count", len(batch))
 			batchEvidence, anyFailed, fatalErr = c.runBatchSerial(ctx, task, batch)
 		}
 
@@ -955,7 +1003,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		// Trigger re-planning if any step in the batch failed
 		if anyFailed && replansCount < maxReplans {
 			replansCount++
-			log.Info("Triggering collaborative replan/error-correction loop", "replan_count", replansCount)
+			log.Info("Triggering collaborative replan/error-correction loop", "task_id", task.ID, "replan_count", replansCount)
 
 			replanStart := time.Now()
 			newPlan, replanErr := c.Planner.Replan(ctx, task.Goal, task.Workspace, task.Trace, task.Memories)
@@ -967,10 +1015,11 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 				c.Metrics.ObserveMultiAgentPhase("replanner", outcome, time.Since(replanStart))
 			}
 			if replanErr != nil {
-				log.Error("Replanner failed — continuing with remaining steps", "error", replanErr)
+				log.Error("Replanner failed — continuing with remaining steps", "task_id", task.ID, "error", replanErr)
 			} else if len(newPlan.Steps) > 0 {
 				enforceJITResearchPlan(task, newPlan)
 				enforceWorkspaceResearchPlan(task, newPlan)
+				ensureExplicitWorkspaceFileReads(task, newPlan)
 				if configuredWorkflow == WorkflowAdaptive && workflowFromContext(ctx) != WorkflowReviewed {
 					escalation := resolveAdaptiveWorkflow(routing, task, newPlan)
 					if escalation.Effective == WorkflowReviewed {
@@ -984,7 +1033,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 						log.Info("Escalated adaptive workflow after execution replan", "task_id", task.ID, "workflow", WorkflowReviewed, "reason", escalation.Reason)
 					}
 				}
-				log.Info("Replanner generated revised steps", "count", len(newPlan.Steps))
+				log.Info("Replanner generated revised steps", "task_id", task.ID, "count", len(newPlan.Steps))
 				if c.Metrics != nil {
 					c.Metrics.ObserveTokens(newPlan.TokenUsage.PromptTokens, newPlan.TokenUsage.CompletionTokens, newPlan.TokenUsage.TotalTokens, "replanner")
 				}
@@ -1001,7 +1050,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 				if workflowFromContext(ctx) == WorkflowReviewed {
 					newPlan, replanErr = c.requireCriticApproval(ctx, task, newPlan)
 					if replanErr != nil {
-						log.Error("Revised plan rejected by critic", "error", replanErr)
+						log.Error("Revised plan rejected by critic", "task_id", task.ID, "error", replanErr)
 						task.Status = types.StatusFailed
 						result.Complete = false
 						result.Reason = "critic_rejected_recovery_plan"
@@ -1022,7 +1071,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 		}
 	}
 
-	log.Info("Phase 2 done", "evidence_items", len(result.Evidence), "complete", result.Complete, "reason", result.Reason)
+	log.Info("Phase 2 done", "task_id", task.ID, "evidence_items", len(result.Evidence), "complete", result.Complete, "reason", result.Reason)
 	return result
 }
 
@@ -1143,6 +1192,47 @@ func enforceWorkspaceResearchPlan(task *types.Task, plan *ResearchPlan) bool {
 	return true
 }
 
+var explicitWorkspaceFilePattern = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]_./-])([[:alnum:]_.-]+\.(?:md|go|json|ya?ml|txt|csv))(?:$|[^[:alnum:]_./-])`)
+
+// ensureExplicitWorkspaceFileReads prevents discovery-only plans from claiming
+// to answer questions about a specifically named local file without reading it.
+func ensureExplicitWorkspaceFileReads(task *types.Task, plan *ResearchPlan) bool {
+	if task == nil || plan == nil || !planner.GoalExplicitlyTargetsWorkspace(task.Goal) {
+		return false
+	}
+	changed := false
+	for _, match := range explicitWorkspaceFilePattern.FindAllStringSubmatch(task.Goal, -1) {
+		name := filepath.Base(strings.TrimSpace(match[1]))
+		if name == "." || name == "" {
+			continue
+		}
+		found := false
+		for _, step := range plan.Steps {
+			if step.Action == "read_file" && filepath.Base(strings.TrimSpace(step.FilePath)) == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for _, trace := range task.Trace {
+				if trace.Action == "read_file" && strings.Contains(trace.Query, fmt.Sprintf("%q", name)) {
+					found = true
+					break
+				}
+			}
+		}
+		if found || (task.MaxSteps > 0 && len(plan.Steps) >= task.MaxSteps) {
+			continue
+		}
+		plan.Steps = append(plan.Steps, ResearchStep{
+			ID: fmt.Sprintf("step-%d", len(plan.Steps)+1), Description: "Read the explicitly named workspace file " + name,
+			Action: "read_file", FilePath: name,
+		})
+		changed = true
+	}
+	return changed
+}
+
 func retrievalFetchSteps(evidence []StepEvidence) []ResearchStep {
 	limit := config.Get().RAG.JITFetchMaxItems
 	if limit <= 0 {
@@ -1238,7 +1328,7 @@ func multiAgentToolStepCount(task *types.Task) int {
 	}
 	count := 0
 	for _, trace := range task.Trace {
-		if (trace.AgentRole == RoleResearcher || trace.AgentRole == RoleExecutor) && !isApprovalGateTrace(trace) {
+		if _, registered := tools.Get(trace.Action); registered && !isApprovalGateTrace(trace) {
 			count++
 		}
 	}
@@ -1283,7 +1373,6 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 	}
 
 	results := make([]result, len(batch))
-	baseStep := task.StepCount
 	agentRole, agentLabel := executionTraceIdentity(ctx)
 
 	var wg sync.WaitGroup
@@ -1313,7 +1402,6 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 			}
 
 			tr := types.StepTrace{
-				Step:        baseStep + idx,
 				Goal:        task.Goal,
 				Action:      s.Action,
 				Query:       buildStepQuery(s),
@@ -1346,12 +1434,18 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 			r.tr.Observation = fmt.Sprintf("[%s] %s", agentLabel, r.ev.Observation)
 			r.tr.Evidence = r.ev.Evidence
 		}
+		r.tr.Step = task.StepCount
 		task.Trace = append(task.Trace, r.tr)
+		task.StepCount++
 		if audit != nil {
+			audit.Step = task.StepCount
 			task.Trace = append(task.Trace, *audit)
+			task.StepCount++
 		}
 		if relevanceAudit != nil {
+			relevanceAudit.Step = task.StepCount
 			task.Trace = append(task.Trace, *relevanceAudit)
+			task.StepCount++
 		}
 		if r.ev != nil && !r.failed {
 			evidence = append(evidence, *r.ev)
@@ -1360,7 +1454,6 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 			anyFailed = true
 		}
 	}
-	task.StepCount += len(batch)
 	task.ToolBudget -= len(batch)
 	if c.EventCallback != nil {
 		c.EventCallback(task.ID, task.Status)
@@ -1382,7 +1475,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 		default:
 		}
 
-		log.Info("Executing research step", "step_num", task.StepCount+1, "step_id", step.ID, "action", step.Action, "desc", step.Description)
+		log.Info("Executing research step", "task_id", task.ID, "step_num", task.StepCount+1, "step_id", step.ID, "action", step.Action, "desc", step.Description)
 
 		tool, ok := tools.Get(step.Action)
 		if ok && tool.RiskLevel() == types.RiskLevelHigh {
@@ -1409,7 +1502,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 			approvalCtx := WithApprovalAgentRole(ctx, agentRole)
 			approved, newParams, err := c.SuspendForApproval(approvalCtx, task, step.Action, stepToParams(step))
 			if err != nil {
-				log.Error("Action approval error", "action", step.Action, "error", err)
+				log.Error("Action approval error", "task_id", task.ID, "action", step.Action, "error", err)
 				anyFailed = true
 				break
 			}
@@ -1465,11 +1558,16 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 			TokenUsage:  tokenUsage,
 			AgentRole:   agentRole,
 		})
+		task.StepCount++
 		if audit != nil {
+			audit.Step = task.StepCount
 			task.Trace = append(task.Trace, *audit)
+			task.StepCount++
 		}
 		if relevanceAudit != nil {
+			relevanceAudit.Step = task.StepCount
 			task.Trace = append(task.Trace, *relevanceAudit)
+			task.StepCount++
 		}
 
 		if ev != nil && !failed {
@@ -1479,7 +1577,6 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 			anyFailed = true
 		}
 
-		task.StepCount++
 		task.ToolBudget--
 		task.Status = types.StatusRunning
 	}
@@ -1626,7 +1723,7 @@ func (c *Coordinator) applyFinalVerificationOutput(task *types.Task, output *Fin
 	})
 	task.StepCount++
 	task.FinalAnswer = output.FinalAnswer
-	log.Info("Phase 3 done — result verified", "supported", output.Supported, "draft_confidence", confidence, "elapsed", elapsed)
+	log.Info("Phase 3 done — result verified", "task_id", task.ID, "supported", output.Supported, "draft_confidence", confidence, "elapsed", elapsed)
 	return confidence
 }
 
@@ -1804,7 +1901,7 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 		}
 	}
 
-	log.Info("Phase 3 done — draft written", "draft_confidence", draftConfidence, "elapsed", elapsed)
+	log.Info("Phase 3 done — draft written", "task_id", task.ID, "draft_confidence", draftConfidence, "elapsed", elapsed)
 	return draftConfidence, nil
 }
 

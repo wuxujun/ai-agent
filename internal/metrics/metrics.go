@@ -65,10 +65,16 @@ type Snapshot struct {
 	MultiAgentDAGCompletions          int64         `json:"multiagent_dag_completions"`
 	MultiAgentDAGFailures             int64         `json:"multiagent_dag_failures"`
 	MultiAgentDAGFallbacks            int64         `json:"multiagent_dag_fallbacks"`
+	MultiAgentDAGApprovalRequired     int64         `json:"multiagent_dag_approval_required"`
+	MultiAgentDAGReplanned            int64         `json:"multiagent_dag_replanned"`
+	MultiAgentDAGEventsObserved       int64         `json:"multiagent_dag_events_observed"`
 	MultiAgentDAGLatencySum           time.Duration `json:"multiagent_dag_latency_sum"`
 	MultiAgentLegacyCalls             int64         `json:"multiagent_legacy_calls"`
 	MultiAgentLegacyCompletions       int64         `json:"multiagent_legacy_completions"`
 	MultiAgentLegacyFailures          int64         `json:"multiagent_legacy_failures"`
+	MultiAgentLegacyApprovalRequired  int64         `json:"multiagent_legacy_approval_required"`
+	MultiAgentLegacyReplanned         int64         `json:"multiagent_legacy_replanned"`
+	MultiAgentLegacyEventsObserved    int64         `json:"multiagent_legacy_events_observed"`
 	MultiAgentLegacyLatencySum        time.Duration `json:"multiagent_legacy_latency_sum"`
 	RetrievalCalls                    int64         `json:"retrieval_calls"`
 	RetrievalFailures                 int64         `json:"retrieval_failures"`
@@ -157,6 +163,7 @@ type Collector struct {
 	multiAgentRuntimeCalls     api.Int64Counter
 	multiAgentRuntimeLatency   api.Float64Histogram
 	multiAgentRuntimeFallbacks api.Int64Counter
+	multiAgentRuntimeEvents    api.Int64Counter
 	retrievalCalls             api.Int64Counter
 	retrievalFailures          api.Int64Counter
 	retrievalFallbacks         api.Int64Counter
@@ -218,6 +225,7 @@ func NewCollector() *Collector {
 	multiAgentRuntimeCalls, _ := meter.Int64Counter("agent.multiagent.runtime.calls")
 	multiAgentRuntimeLatency, _ := meter.Float64Histogram("agent.multiagent.runtime.latency_ms")
 	multiAgentRuntimeFallbacks, _ := meter.Int64Counter("agent.multiagent.runtime.fallbacks")
+	multiAgentRuntimeEvents, _ := meter.Int64Counter("agent.multiagent.runtime.events")
 	retrievalCalls, _ := meter.Int64Counter("agent.store.retrieval.calls")
 	retrievalFailures, _ := meter.Int64Counter("agent.store.retrieval.failures")
 	retrievalFallbacks, _ := meter.Int64Counter("agent.store.retrieval.fallbacks")
@@ -272,6 +280,7 @@ func NewCollector() *Collector {
 		multiAgentRuntimeCalls:     multiAgentRuntimeCalls,
 		multiAgentRuntimeLatency:   multiAgentRuntimeLatency,
 		multiAgentRuntimeFallbacks: multiAgentRuntimeFallbacks,
+		multiAgentRuntimeEvents:    multiAgentRuntimeEvents,
 		retrievalCalls:             retrievalCalls,
 		retrievalFailures:          retrievalFailures,
 		retrievalFallbacks:         retrievalFallbacks,
@@ -634,6 +643,39 @@ func (c *Collector) ObserveMultiAgentRuntimeFallback(reason string) {
 	c.s.MultiAgentDAGFallbacks++
 	c.mu.Unlock()
 	c.multiAgentRuntimeFallbacks.Add(context.Background(), 1, api.WithAttributes(attribute.String("reason_category", category)))
+}
+
+// ObserveMultiAgentRuntimeEvent records bounded task-level rollout signals.
+func (c *Collector) ObserveMultiAgentRuntimeEvent(runtime, event string) {
+	if runtime != "dag" {
+		runtime = "legacy"
+	}
+	if event != "approval_required" && event != "replanned" && event != "observed" {
+		return
+	}
+	c.mu.Lock()
+	if runtime == "dag" {
+		if event == "observed" {
+			c.s.MultiAgentDAGEventsObserved++
+		} else if event == "approval_required" {
+			c.s.MultiAgentDAGApprovalRequired++
+		} else {
+			c.s.MultiAgentDAGReplanned++
+		}
+	} else {
+		if event == "observed" {
+			c.s.MultiAgentLegacyEventsObserved++
+		} else if event == "approval_required" {
+			c.s.MultiAgentLegacyApprovalRequired++
+		} else {
+			c.s.MultiAgentLegacyReplanned++
+		}
+	}
+	c.mu.Unlock()
+	c.multiAgentRuntimeEvents.Add(context.Background(), 1, api.WithAttributes(
+		attribute.String("runtime", runtime),
+		attribute.String("event", event),
+	))
 }
 
 func multiAgentRouteCategory(reason string) string {

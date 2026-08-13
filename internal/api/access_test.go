@@ -42,7 +42,7 @@ func TestAccessLogMiddlewareWritesStructuredRecordsWithoutSecrets(t *testing.T) 
 		setPrincipal(c, Principal{TenantID: "tenant-6492"})
 		c.Next()
 	})
-	router.GET("/items/:id", func(c *gin.Context) {
+	router.GET("/api/tasks/:id", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 	router.GET("/failure", func(c *gin.Context) {
@@ -52,7 +52,7 @@ func TestAccessLogMiddlewareWritesStructuredRecordsWithoutSecrets(t *testing.T) 
 		panic("expected access test panic")
 	})
 
-	request := httptest.NewRequest(http.MethodGet, "/items/42?token=query-secret", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/tasks/task-42?token=query-secret", nil)
 	request.Header.Set("X-Request-ID", "request-123")
 	request.Header.Set("Authorization", "Bearer authorization-secret")
 	request.Header.Set("X-API-Key", "api-key-secret")
@@ -123,7 +123,7 @@ func TestAccessLogMiddlewareWritesStructuredRecordsWithoutSecrets(t *testing.T) 
 		t.Fatalf("access record count = %d, want 4: %s", len(records), text)
 	}
 	first := records[0]
-	if first["app_version"] == nil || first["component"] != "access" || first["method"] != http.MethodGet || first["path"] != "/items/42" || first["route"] != "/items/:id" || first["tenant_id"] != "tenant-6492" || first["request_id"] != "request-123" || first["user_agent"] != "access-test-agent" {
+	if first["app_version"] == nil || first["component"] != "access" || first["method"] != http.MethodGet || first["path"] != "/api/tasks/task-42" || first["route"] != "/api/tasks/:id" || first["task_id"] != "task-42" || first["tenant_id"] != "tenant-6492" || first["request_id"] != "request-123" || first["user_agent"] != "access-test-agent" {
 		t.Fatalf("unexpected first access record: %#v", first)
 	}
 	if status, ok := first["status"].(float64); !ok || int(status) != http.StatusOK {

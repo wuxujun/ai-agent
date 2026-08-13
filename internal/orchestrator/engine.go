@@ -634,6 +634,7 @@ func (e *Engine) effectiveMode(task *types.Task) Mode {
 }
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
+	ctx = logger.WithTaskID(ctx, task.ID)
 	effectiveMode := e.effectiveMode(task)
 	resumingMultiAgent := effectiveMode == ModeMultiAgent && e.CanResumeTask(task)
 	engineLog.Info("running next execution step", "task_id", task.ID, "session_id", task.SessionID, "mode", string(effectiveMode))
@@ -726,7 +727,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 				retrievedMems = append(retrievedMems, extMems...)
 				engineLog.Info("retrieved memories from third-party RAG URL", "task_id", task.ID, "count", len(extMems))
 			} else if extErr != nil {
-				engineLog.Warn("failed to query third-party RAG URL", "error", extErr)
+				engineLog.Warn("failed to query third-party RAG URL", "task_id", task.ID, "error", extErr)
 			}
 		}
 
@@ -1506,6 +1507,7 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 }
 
 func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
+	ctx = logger.WithTaskID(ctx, task.ID)
 	ctx, span := tracer.Start(ctx, "engine.run_all")
 	defer span.End()
 
@@ -1575,12 +1577,12 @@ func stepFindTextFiles(ctx context.Context, task *types.Task) error {
 
 	txtFiles, err := tools.FindFiles(ctx, task.Workspace, "*.txt")
 	if err != nil {
-		engineLog.Error("legacy static path - FindFiles (*.txt) failed", "error", err)
+		engineLog.Error("legacy static path - FindFiles (*.txt) failed", "task_id", task.ID, "error", err)
 		return err
 	}
 	mdFiles, err := tools.FindFiles(ctx, task.Workspace, "*.md")
 	if err != nil {
-		engineLog.Error("legacy static path - FindFiles (*.md) failed", "error", err)
+		engineLog.Error("legacy static path - FindFiles (*.md) failed", "task_id", task.ID, "error", err)
 		return err
 	}
 
@@ -1609,7 +1611,7 @@ func stepFindTextFiles(ctx context.Context, task *types.Task) error {
 func stepSearchKeyword(ctx context.Context, task *types.Task) error {
 	query, err := lastWord(task.Goal)
 	if err != nil {
-		engineLog.Error("legacy static path - failed to extract keyword", "error", err)
+		engineLog.Error("legacy static path - failed to extract keyword", "task_id", task.ID, "error", err)
 		return err
 	}
 	engineLog.Info("legacy static path - searching keyword", "keyword", query, "task_id", task.ID)
@@ -1617,7 +1619,7 @@ func stepSearchKeyword(ctx context.Context, task *types.Task) error {
 
 	evidence, _, err := tools.SearchWithRG(ctx, task.Workspace, query, "*.txt")
 	if err != nil {
-		engineLog.Error("legacy static path - SearchWithRG failed", "error", err)
+		engineLog.Error("legacy static path - SearchWithRG failed", "task_id", task.ID, "error", err)
 		return err
 	}
 
@@ -1657,7 +1659,7 @@ func stepReadBestFile(ctx context.Context, task *types.Task) error {
 	engineLog.Info("legacy static path - target best file identified", "task_id", task.ID, "file", target)
 	content, err := tools.ReadFile(task.Workspace, target)
 	if err != nil {
-		engineLog.Error("legacy static path - ReadFile failed", "error", err)
+		engineLog.Error("legacy static path - ReadFile failed", "task_id", task.ID, "error", err)
 		return err
 	}
 

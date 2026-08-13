@@ -82,7 +82,7 @@ func (c *streamingDraftCaller) CallJSONStream(ctx context.Context, cfg llmcore.C
 }
 
 func TestVerifierDraftStreamsOnlyFinalAnswer(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
+	configureMultiAgentSelectionTest(t, "software_reviewed", RuntimeLegacy, 0)
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.Langfuse.Enabled = false }))
 	caller := &streamingDraftCaller{}
 	ctx := llmcore.WithRuntime(context.Background(), llmcore.NewRuntime(caller, nil))
@@ -200,7 +200,7 @@ func (c *sequentialFinalVerifierCaller) CallJSON(_ context.Context, cfg llmcore.
 }
 
 func TestFinalVerifierUsesIndependentDraftAndVerificationCalls(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
+	configureMultiAgentSelectionTest(t, "software_reviewed", RuntimeLegacy, 0)
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.Langfuse.Enabled = false
 	}))

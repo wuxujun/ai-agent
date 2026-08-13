@@ -198,7 +198,7 @@ func TestMemoriesFromMCPTextCapsUnstructuredFallback(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.MaxRawFallbackBytes = 80
 	}))
-	memories := memoriesFromMCPText(strings.Repeat("数学顾问资料", 100), 1)
+	memories := memoriesFromMCPText(context.Background(), strings.Repeat("数学顾问资料", 100), 1)
 	if len(memories) != 1 || len(memories[0].KeyFindings) > 80 {
 		t.Fatalf("raw fallback was not capped: %#v", memories)
 	}

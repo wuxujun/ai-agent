@@ -53,6 +53,30 @@ func TestPreferredJITSearchActionUsesMemoryForExplicitSessionRecall(t *testing.T
 	}
 }
 
+func TestPreferredJITSearchActionHonorsExplicitExternalSourceOverCodingIntent(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+	}))
+	task := &types.Task{
+		Goal:  "Query the authoritative external knowledge source and report the current runtime release token.",
+		Trace: []types.StepTrace{{Action: "intent_route", Query: "coding"}},
+	}
+	action, ok := PreferredJITSearchAction(task)
+	if !ok || action != "rag_search" {
+		t.Fatalf("explicit external-source goal routed to %q, ok=%t; want rag_search", action, ok)
+	}
+}
+
+func TestGoalExplicitlyTargetsWorkspaceDoesNotTreatReportAsRepo(t *testing.T) {
+	if GoalExplicitlyTargetsWorkspace("Query an external source and report the release token") {
+		t.Fatal("report was incorrectly matched as the repo workspace marker")
+	}
+	if !GoalExplicitlyTargetsWorkspace("Inspect this repo and report the release token") {
+		t.Fatal("standalone repo marker was not recognized")
+	}
+}
+
 func TestEnforceJITRetrievalOverridesNextActionWithCandidateFetch(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"

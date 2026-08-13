@@ -1,0 +1,106 @@
+groups:
+  - name: multiagent-dag-canary
+    interval: 30s
+    rules:
+      - alert: MultiAgentDAGNonSuccessRateRegression
+        expr: |
+          (
+            clamp_min(
+              sum(agent_multiagent_runtime_calls_total{runtime="dag",outcome!="success"})
+              - (sum(agent_multiagent_runtime_calls_total{runtime="dag",outcome!="success"} offset 30m) or vector(0)), 0
+            )
+            / clamp_min(
+              clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="dag"}) - (sum(agent_multiagent_runtime_calls_total{runtime="dag"} offset 30m) or vector(0)), 0), 1
+            )
+          )
+          >
+          (
+            clamp_min(
+              sum(agent_multiagent_runtime_calls_total{runtime="legacy",outcome!="success"})
+              - (sum(agent_multiagent_runtime_calls_total{runtime="legacy",outcome!="success"} offset 30m) or vector(0)), 0
+            )
+            / clamp_min(
+              clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="legacy"}) - (sum(agent_multiagent_runtime_calls_total{runtime="legacy"} offset 30m) or vector(0)), 0), 1
+            )
+            + 0.05
+          )
+          and clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="dag"}) - (sum(agent_multiagent_runtime_calls_total{runtime="dag"} offset 30m) or vector(0)), 0) >= 10
+          and clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="legacy"}) - (sum(agent_multiagent_runtime_calls_total{runtime="legacy"} offset 30m) or vector(0)), 0) >= 10
+        for: 10m
+        labels:
+          severity: critical
+          component: multiagent-canary
+        annotations:
+          summary: DAG non-success rate exceeds Legacy by more than 5 percentage points
+          description: Keep or roll back the DAG canary; inspect failures, partial outcomes, approvals, and replans before increasing traffic.
+
+      - alert: MultiAgentDAGP95LatencyRegression
+        expr: |
+          (
+            histogram_quantile(0.95, sum by (le) (increase(agent_multiagent_runtime_latency_ms_bucket{runtime="dag"}[30m])))
+            /
+            clamp_min(histogram_quantile(0.95, sum by (le) (increase(agent_multiagent_runtime_latency_ms_bucket{runtime="legacy"}[30m]))), 1)
+          ) > 1.20
+          and clamp_min(sum(agent_multiagent_runtime_latency_ms_count{runtime="dag"}) - (sum(agent_multiagent_runtime_latency_ms_count{runtime="dag"} offset 30m) or vector(0)), 0) >= 10
+          and clamp_min(sum(agent_multiagent_runtime_latency_ms_count{runtime="legacy"}) - (sum(agent_multiagent_runtime_latency_ms_count{runtime="legacy"} offset 30m) or vector(0)), 0) >= 10
+        for: 10m
+        labels:
+          severity: warning
+          component: multiagent-canary
+        annotations:
+          summary: DAG P95 latency exceeds 1.20x Legacy
+          description: Hold the current canary percentage and inspect runtime traces before expanding traffic.
+
+      - alert: MultiAgentDAGFallbackDetected
+        expr: clamp_min(sum(agent_multiagent_runtime_fallbacks_total) - (sum(agent_multiagent_runtime_fallbacks_total offset 15m) or vector(0)), 0) > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: multiagent-canary
+        annotations:
+          summary: DAG runtime fallback detected
+          description: Inspect the reason_category label and affected workflow before increasing the canary percentage.
+
+      - alert: MultiAgentDAGApprovalRateRegression
+        expr: |
+          (
+            clamp_min(sum(agent_multiagent_runtime_events_total{runtime="dag",event="approval_required"}) - (sum(agent_multiagent_runtime_events_total{runtime="dag",event="approval_required"} offset 30m) or vector(0)), 0)
+            / clamp_min(clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="dag"}) - (sum(agent_multiagent_runtime_calls_total{runtime="dag"} offset 30m) or vector(0)), 0), 1)
+          )
+          >
+          (
+            clamp_min(sum(agent_multiagent_runtime_events_total{runtime="legacy",event="approval_required"}) - (sum(agent_multiagent_runtime_events_total{runtime="legacy",event="approval_required"} offset 30m) or vector(0)), 0)
+            / clamp_min(clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="legacy"}) - (sum(agent_multiagent_runtime_calls_total{runtime="legacy"} offset 30m) or vector(0)), 0), 1)
+            + 0.05
+          )
+          and clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="dag"}) - (sum(agent_multiagent_runtime_calls_total{runtime="dag"} offset 30m) or vector(0)), 0) >= 10
+          and clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="legacy"}) - (sum(agent_multiagent_runtime_calls_total{runtime="legacy"} offset 30m) or vector(0)), 0) >= 10
+        for: 10m
+        labels:
+          severity: warning
+          component: multiagent-canary
+        annotations:
+          summary: DAG approval-required rate exceeds Legacy by more than 5 percentage points
+          description: Hold the canary and inspect high-risk action selection and approval traces.
+
+      - alert: MultiAgentDAGReplanRateRegression
+        expr: |
+          (
+            clamp_min(sum(agent_multiagent_runtime_events_total{runtime="dag",event="replanned"}) - (sum(agent_multiagent_runtime_events_total{runtime="dag",event="replanned"} offset 30m) or vector(0)), 0)
+            / clamp_min(clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="dag"}) - (sum(agent_multiagent_runtime_calls_total{runtime="dag"} offset 30m) or vector(0)), 0), 1)
+          )
+          >
+          (
+            clamp_min(sum(agent_multiagent_runtime_events_total{runtime="legacy",event="replanned"}) - (sum(agent_multiagent_runtime_events_total{runtime="legacy",event="replanned"} offset 30m) or vector(0)), 0)
+            / clamp_min(clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="legacy"}) - (sum(agent_multiagent_runtime_calls_total{runtime="legacy"} offset 30m) or vector(0)), 0), 1)
+            + 0.05
+          )
+          and clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="dag"}) - (sum(agent_multiagent_runtime_calls_total{runtime="dag"} offset 30m) or vector(0)), 0) >= 10
+          and clamp_min(sum(agent_multiagent_runtime_calls_total{runtime="legacy"}) - (sum(agent_multiagent_runtime_calls_total{runtime="legacy"} offset 30m) or vector(0)), 0) >= 10
+        for: 10m
+        labels:
+          severity: warning
+          component: multiagent-canary
+        annotations:
+          summary: DAG replan rate exceeds Legacy by more than 5 percentage points
+          description: Hold the canary and inspect failed tools, replanner traces, and workflow escalation.

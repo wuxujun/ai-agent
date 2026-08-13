@@ -2,6 +2,7 @@ package planner
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -172,6 +173,13 @@ func RequiresFactualEvidence(task *types.Task) bool {
 	if goalExplicitlyTargetsMemory(task.Goal) {
 		return true
 	}
+	// An explicit external-source request is stronger than the optional intent
+	// route. Software-team goals can otherwise be classified as "coding" merely
+	// because they mention a runtime, even when the requested evidence must come
+	// from the configured external knowledge source.
+	if goalExplicitlyTargetsExternalKnowledge(task.Goal) {
+		return true
+	}
 	for i := len(task.Trace) - 1; i >= 0; i-- {
 		if task.Trace[i].Action != "intent_route" {
 			continue
@@ -187,11 +195,11 @@ func RequiresFactualEvidence(task *types.Task) bool {
 	return goalLikelyNeedsRetrieval(task.Goal)
 }
 
-func GoalExplicitlyTargetsWorkspace(goal string) bool {
+func goalExplicitlyTargetsExternalKnowledge(goal string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(goal))
 	markers := []string{
-		"工作区", "项目中", "项目内", "仓库中", "仓库内", "本地文件", "源代码", "代码库",
-		"workspace", "repository", "repo", "source code", "local file", "project file",
+		"外部知识源", "外部数据源", "权威知识源", "权威外部来源",
+		"external knowledge source", "external data source", "authoritative external source",
 	}
 	for _, marker := range markers {
 		if strings.Contains(normalized, marker) {
@@ -199,6 +207,22 @@ func GoalExplicitlyTargetsWorkspace(goal string) bool {
 		}
 	}
 	return false
+}
+
+var workspaceRepoWordPattern = regexp.MustCompile(`(?:^|[^a-z0-9_])repo(?:$|[^a-z0-9_])`)
+
+func GoalExplicitlyTargetsWorkspace(goal string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(goal))
+	markers := []string{
+		"工作区", "项目中", "项目内", "仓库中", "仓库内", "本地文件", "源代码", "代码库",
+		"workspace", "repository", "source code", "local file", "project file",
+	}
+	for _, marker := range markers {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return workspaceRepoWordPattern.MatchString(normalized)
 }
 
 func goalLikelyNeedsRetrieval(goal string) bool {

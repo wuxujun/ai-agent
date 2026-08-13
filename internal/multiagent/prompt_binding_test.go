@@ -51,6 +51,8 @@ func TestCoordinatorResumeUsesPersistedPromptVersion(t *testing.T) {
 	t.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
 	t.Setenv("LANGFUSE_SECRET_KEY", "sk-test")
 	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "legacy")
+	t.Setenv("AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT", "0")
 
 	var firstQueriesMu sync.Mutex
 	var firstQueries []string

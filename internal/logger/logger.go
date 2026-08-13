@@ -18,6 +18,26 @@ import (
 )
 
 type ctxKey struct{}
+type taskIDContextKey struct{}
+
+// WithTaskID attaches a task identity to the context so task-aware components
+// can include it in structured logs without widening every internal API.
+func WithTaskID(ctx context.Context, taskID string) context.Context {
+	if ctx == nil || strings.TrimSpace(taskID) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, taskIDContextKey{}, strings.TrimSpace(taskID))
+}
+
+// TaskID returns the task identity attached by WithTaskID, or an empty string
+// for process-level work that is not associated with a task.
+func TaskID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	taskID, _ := ctx.Value(taskIDContextKey{}).(string)
+	return taskID
+}
 
 // Options controls console, level-specific file, and access logging.
 // RetentionDays is based on the date in the rotated filename; zero keeps files

@@ -7,6 +7,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -53,7 +54,8 @@ func (w *WriterAgent) jsonSchema() map[string]any {
 
 // Write calls the LLM to synthesise all gathered evidence into a WriterOutput.
 func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*WriterOutput, error) {
-	log.Info("Synthesising answer", "goal", goal, "evidence_items", len(evidence))
+	taskID := logger.TaskID(ctx)
+	log.Info("Synthesising answer", "task_id", taskID, "goal", goal, "evidence_items", len(evidence))
 
 	userPrompt := w.buildPrompt(goal, evidence, memories)
 
@@ -72,7 +74,7 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 	callCtx := llmcore.WithPromptBinding(ctx, resolvedPrompt.Binding)
 	systemPrompt := resolvedPrompt.Content
 	if hasConfiguredPrompt(activeTeam.Writer) {
-		log.Info("Using team-configured system prompt for WriterAgent", "team", teamSnapshot.ActiveTeam, "agent_name", activeTeam.Writer.Name, "prompt_name", activeTeam.Writer.PromptName)
+		log.Info("Using team-configured system prompt for WriterAgent", "task_id", taskID, "team", teamSnapshot.ActiveTeam, "agent_name", activeTeam.Writer.Name, "prompt_name", activeTeam.Writer.PromptName)
 	}
 	if activeTeam.Writer.Provider != "" || activeTeam.Writer.Model != "" || activeTeam.Writer.LLMScene != "" {
 		cfg = GetLLMConfig(activeTeam.Writer, config.LLMSceneMultiAgentWriter)
@@ -92,7 +94,7 @@ func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvi
 	}
 	output.TokenUsage = usage
 
-	log.Info("Synthesis complete", "draft_confidence", output.resolvedDraftConfidence())
+	log.Info("Synthesis complete", "task_id", taskID, "draft_confidence", output.resolvedDraftConfidence())
 	return &output, nil
 }
 

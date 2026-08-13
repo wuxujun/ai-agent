@@ -27,6 +27,8 @@ var log = logger.Component("api")
 var taskReportLog = logger.ReportComponent("api")
 var accessLog = logger.AccessComponent("access")
 
+const taskIDKey = "task_id"
+
 func truncateTaskReportText(value string, limit int) string {
 	runes := []rune(value)
 	if limit <= 0 || len(runes) <= limit {
@@ -369,6 +371,7 @@ func (h *Handler) createTask(c *gin.Context) {
 		return
 	}
 
+	c.Set(taskIDKey, task.ID)
 	c.JSON(http.StatusCreated, task)
 }
 
@@ -668,18 +671,19 @@ func (h *Handler) runAll(c *gin.Context) {
 		taskReportLog.Info("async run-all completed", "task_id", task.ID, "status", task.Status)
 		taskReportLog.Info("--- TASK DECOMPOSITION & PLANNING RESULTS ---", "task_id", task.ID, "goal", task.Goal)
 		if task.Hypothesis != "" {
-			taskReportLog.Info("Thought Strategy / Hypothesis:", "hypothesis", task.Hypothesis)
+			taskReportLog.Info("Thought Strategy / Hypothesis:", "task_id", task.ID, "hypothesis", task.Hypothesis)
 		}
 		if len(task.Unresolved) > 0 {
-			taskReportLog.Info("Unresolved subtasks remaining:", "unresolved", task.Unresolved)
+			taskReportLog.Info("Unresolved subtasks remaining:", "task_id", task.ID, "unresolved", task.Unresolved)
 		}
-		taskReportLog.Info("--- STEP BY STEP EXECUTION TRACE ---", "step_count", len(task.Trace))
+		taskReportLog.Info("--- STEP BY STEP EXECUTION TRACE ---", "task_id", task.ID, "step_count", len(task.Trace))
 		for _, tr := range task.Trace {
 			roleStr := ""
 			if tr.AgentRole != "" {
 				roleStr = fmt.Sprintf(" [%s]", tr.AgentRole)
 			}
 			taskReportLog.Info("task step",
+				"task_id", task.ID,
 				"step", tr.Step,
 				"agent_role", strings.TrimSpace(roleStr),
 				"action", tr.Action,
@@ -687,13 +691,13 @@ func (h *Handler) runAll(c *gin.Context) {
 			)
 			if tr.Observation != "" {
 				obs := truncateTaskReportText(tr.Observation, 300)
-				taskReportLog.Info("  Observation:", "content", obs)
+				taskReportLog.Info("  Observation:", "task_id", task.ID, "content", obs)
 			}
 			if tr.Error != "" {
-				taskReportLog.Info("  Error:", "error", tr.Error)
+				taskReportLog.Info("  Error:", "task_id", task.ID, "error", tr.Error)
 			}
 		}
-		taskReportLog.Info("----------------------------------------------")
+		taskReportLog.Info("----------------------------------------------", "task_id", task.ID)
 
 		if execErr != nil {
 			// RunAll persists every successful execution step, including the
@@ -947,7 +951,7 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 			// ── P0: Not found locally — broadcast via Redis so executing instance picks it up ──
 			if h.approvalBus != nil {
 				if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), body.ApprovalID, taskID, result); pubErr != nil {
-					log.Warn("approval bus publish failed", "error", pubErr)
+					log.Warn("approval bus publish failed", "task_id", taskID, "error", pubErr)
 				}
 				c.JSON(http.StatusAccepted, gin.H{"message": "approval signal forwarded to cluster", "approval_id": body.ApprovalID})
 				return
@@ -996,7 +1000,7 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 				h.startDurableApprovalRecovery(taskID, approvalID)
 				if h.approvalBus != nil {
 					if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), approvalID, taskID, result); pubErr != nil {
-						log.Warn("approval bus publish failed", "error", pubErr)
+						log.Warn("approval bus publish failed", "task_id", taskID, "error", pubErr)
 					}
 				}
 				c.JSON(http.StatusAccepted, h.approvalResponseMessage(approved, durableApproval))
@@ -1006,7 +1010,7 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 		// ── P0: Not found locally — broadcast via Redis ──
 		if h.approvalBus != nil {
 			if pubErr := h.approvalBus.PublishApproval(c.Request.Context(), "", taskID, result); pubErr != nil {
-				log.Warn("approval bus publish failed", "error", pubErr)
+				log.Warn("approval bus publish failed", "task_id", taskID, "error", pubErr)
 			}
 			c.JSON(http.StatusAccepted, gin.H{"message": "approval signal forwarded to cluster", "task_id": taskID})
 			return

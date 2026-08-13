@@ -1,0 +1,6 @@
+{
+  "project": {
+    "name": "ai-agent",
+    "modes": ["eino", "legacy", "adk", "step", "multiagent"]
+  }
+}

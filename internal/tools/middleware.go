@@ -65,6 +65,7 @@ func (m *toolMiddleware) Execute(ctx context.Context, workspace string, params m
 
 		if attempt < retryPolicy.MaxRetries {
 			mwLog.Warn("tool execute failed, retrying",
+				"task_id", logger.TaskID(ctx),
 				"tool", m.Name(),
 				"attempt", attempt+1,
 				"max_retries", retryPolicy.MaxRetries,

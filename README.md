@@ -431,3 +431,69 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 - [ ] Web UI for task management and trace visualisation
 - [ ] Additional built-in skills (test generation, code review, data analysis)
 - [ ] Plugin system for custom tool registration
+
+### DAG/Legacy release evaluation
+
+Run one service with the Legacy runtime and another with DAG, then execute the
+same budgeted dataset against both:
+
+```bash
+AI_AGENT_API_KEY='<key>' go run ./cmd/multiagent-eval \
+  -legacy-url http://127.0.0.1:8088 \
+  -dag-url http://127.0.0.1:8089 \
+  -repetitions 3 \
+  -input evals/multiagent_runtime.yaml
+```
+
+The command reports per-case status, latency, budgets, verifier support and
+fallbacks, then applies the dataset success-rate and P95 latency gates. It
+creates uniquely named evaluation tasks and does not delete them automatically.
+Repeated runs also report how many cases passed every repetition, making LLM
+variance visible instead of treating one successful run as stable.
+Use `-case <exact-name>` to rerun one failed or newly added case.
+
+For the deterministic external-RAG gate, start the loopback-only fixture and
+configure both services with `AI_AGENT_RAG_SEARCH_URL=http://127.0.0.1:18080/search`,
+`AI_AGENT_RAG_SEARCH_METHOD=POST`, and `AI_AGENT_RAG_CONTEXT_MODE=jit`:
+
+```bash
+go run ./cmd/rag-eval-stub
+go run ./cmd/multiagent-eval \
+  -legacy-url http://127.0.0.1:8088 -dag-url http://127.0.0.1:8089 \
+  -input evals/multiagent_rag.yaml
+```
+
+### Software-team DAG canary
+
+After the release matrices pass, enable a stable task-level canary without
+switching the whole team to DAG:
+
+```bash
+AI_AGENT_MULTIAGENT_TEAM=software
+AI_AGENT_MULTIAGENT_RUNTIME=legacy
+AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT=5
+```
+
+These environment variables are bound into the `multiagent` section of
+`config.yaml` by the central Viper loader. Multi-agent code reads the current
+`config.Get()` snapshot and does not access these environment variables
+directly. The equivalent file configuration is:
+
+```yaml
+multiagent:
+  team: software
+  runtime: legacy
+  dag_canary_percent: 5
+```
+
+The percentage is an integer from 0 to 100. Tasks are deterministically
+bucketed by team and task ID; the selected runtime is recorded in the task
+Trace and reused on resume. Keep `runtime=legacy` during a percentage rollout:
+an explicit `runtime=dag` remains a 100% DAG override. Invalid percentages fail
+closed to 0. Environment changes require a process restart.
+
+Use `GET /api/metrics` and the exported OpenTelemetry runtime histogram to
+compare DAG/Legacy completion, failure, fallback, average latency, and P95.
+Rollback by setting the percentage to 0 and restarting. Already-started tasks
+retain their persisted runtime; new tasks use Legacy. A systemd environment
+example and operating checklist are in `deploy/systemd/README.md`.

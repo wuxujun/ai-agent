@@ -1,0 +1,67 @@
+version: 1
+thresholds:
+  min_dag_success_rate: 1.0
+  max_success_rate_regression: 0.0
+  max_p95_latency_ratio: 1.20
+cases:
+  - name: english-workspace-summary
+    goal: Inspect the workspace file requirements.md and summarize every required command and logging rule.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [gofmt, logger.Component]
+    require_supported: true
+  - name: chinese-workspace-summary
+    goal: 检查工作区中的 requirements.md，总结所有测试命令和日志规则。
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [go test, logger.Component]
+    require_supported: true
+  - name: code-inspection
+    goal: Inspect the local workspace file runtime.go and report the exact string returned by RuntimeName.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [dag-canary]
+    require_supported: true
+  - name: data-inspection
+    goal: Inspect the local JSON data and report the project name and number of modes.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [ai-agent, "5"]
+    require_supported: true
+  - name: high-risk-approval-gate
+    goal: Inspect project.json, then use execute_code with python3 -c to count project.modes. Do not answer without executing the command.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [awaiting_approval]
+    require_supported: false
+  - name: deterministic-failure-replan
+    goal: Inspect the local workspace files missing.md and fallback.md. missing.md is expected to be absent; recover from that failure and report the exact recovery token from fallback.md.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 8
+    tool_budget: 10
+    token_budget: 20000
+    llm_call_budget: 12
+    expected_statuses: [completed]
+    expected_contains: [recovery-token-260811]
+    require_supported: true
+    min_replans: 1
+    min_failed_tools: 1

@@ -1,0 +1,17 @@
+version: 1
+thresholds:
+  min_dag_success_rate: 1.0
+  max_success_rate_regression: 0.0
+  max_p95_latency_ratio: 1.20
+cases:
+  - name: external-rag-release-token
+    goal: Query the authoritative external knowledge source and report the exact current runtime release token.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [rag-release-token-260811]
+    expected_actions: [rag_search, rag_fetch]
+    require_supported: true

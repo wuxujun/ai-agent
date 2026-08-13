@@ -161,11 +161,20 @@ func TestCollectorTracksMultiAgentRuntimeRollout(t *testing.T) {
 	collector.ObserveMultiAgentRuntime("dag", "partial", 2*time.Millisecond)
 	collector.ObserveMultiAgentRuntime("legacy", "canceled", 5*time.Millisecond)
 	collector.ObserveMultiAgentRuntimeFallback("dag_fallback:research_replan_escalated_to_reviewed")
+	collector.ObserveMultiAgentRuntimeEvent("dag", "approval_required")
+	collector.ObserveMultiAgentRuntimeEvent("dag", "replanned")
+	collector.ObserveMultiAgentRuntimeEvent("dag", "observed")
+	collector.ObserveMultiAgentRuntimeEvent("legacy", "replanned")
+	collector.ObserveMultiAgentRuntimeEvent("legacy", "observed")
+	collector.ObserveMultiAgentRuntimeEvent("dag", "unknown")
 	snapshot := collector.Snapshot()
 	if snapshot.MultiAgentDAGCalls != 3 || snapshot.MultiAgentDAGCompletions != 1 || snapshot.MultiAgentDAGFailures != 1 || snapshot.MultiAgentDAGFallbacks != 1 || snapshot.MultiAgentDAGLatencySum != 32*time.Millisecond {
 		t.Fatalf("DAG rollout metrics = %+v", snapshot)
 	}
 	if snapshot.MultiAgentLegacyCalls != 1 || snapshot.MultiAgentLegacyCompletions != 0 || snapshot.MultiAgentLegacyFailures != 1 || snapshot.MultiAgentLegacyLatencySum != 5*time.Millisecond {
 		t.Fatalf("Legacy rollout metrics = %+v", snapshot)
+	}
+	if snapshot.MultiAgentDAGApprovalRequired != 1 || snapshot.MultiAgentDAGReplanned != 1 || snapshot.MultiAgentDAGEventsObserved != 1 || snapshot.MultiAgentLegacyApprovalRequired != 0 || snapshot.MultiAgentLegacyReplanned != 1 || snapshot.MultiAgentLegacyEventsObserved != 1 {
+		t.Fatalf("runtime event metrics = %+v", snapshot)
 	}
 }

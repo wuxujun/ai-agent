@@ -150,6 +150,62 @@ curl --fail http://127.0.0.1:3000/api/health
 curl --fail http://127.0.0.1:9464/metrics | rg '^agent_'
 ```
 
+## Multi-Agent DAG Canary 观测与晋级门槛
+
+`AI Agent Overview` 仪表盘包含 DAG 流量占比、窗口调用量、非成功率、fallback、
+按 runtime 划分的完成率、P95 和平均延迟。Prometheus 同时加载
+`prometheus-rules/multiagent-canary.yml`，提供以下保护性告警：
+
+- DAG 与 Legacy 在 30 分钟内各至少 10 次调用后，DAG 非成功率持续 10 分钟高于
+  Legacy 5 个百分点；
+- 两侧在 30 分钟内各至少 10 个延迟样本后，DAG P95 持续 10 分钟高于
+  Legacy 的 1.20 倍；
+- 15 分钟内出现任何 DAG fallback。
+- 两侧在 30 分钟内各至少 10 次调用后，DAG 的 approval-required 比例持续
+  高于 Legacy 5 个百分点；
+- 同样的样本条件下，DAG 的 Replan 比例持续高于 Legacy 5 个百分点。
+
+本地 Compose 栈未包含 Alertmanager；规则状态可在 Prometheus 的 `/alerts` 页面查看。
+需要主动通知时，应在实际部署环境中把这些规则接入已有 Alertmanager 或告警平台。
+
+修改规则或首次加入规则目录后，需要重新创建 Prometheus 容器以加载新挂载；这不会
+删除命名卷中的历史数据：
+
+```bash
+docker compose \
+  --env-file deploy/opentelemetry/.env \
+  -f deploy/opentelemetry/docker-compose.yml \
+  up -d --force-recreate prometheus
+```
+
+提升 Canary 比例前，不只依赖告警的最低触发样本。建议在代表性真实流量窗口中至少
+累计 20 次 DAG 完成任务，并确认 DAG/Legacy 两侧均有可比较样本、没有 fallback、
+DAG 非成功率不高于 Legacy 5 个百分点、DAG P95 不超过 Legacy 的 1.20 倍，且审批与
+Replan 行为没有回归。任一条件不满足时保持当前比例；出现 fallback 或明显正确性回归时
+将比例回退为 0，重启应用后仅影响新任务。
+
+应用同时导出 `agent_multiagent_runtime_events_total`，以 bounded labels 记录每次 runtime
+调用是否进入 `approval_required` 或成功产生 `replanned` Trace。它用于自动比较两侧事件
+比例，但不能判断审批请求和重规划内容是否语义正确，因此人工 Trace 复核仍是强制门禁。
+部署包含该指标的新版本后，需要重启应用，重启前的调用不会补记为 runtime event。
+每次新版本 runtime 调用还会记录 `event=observed`；晋级工具要求 observed 数不少于窗口内
+runtime calls。Collector 保留的旧调用若缺少新事件覆盖，将明确导致 HOLD，直到旧样本离开
+观察窗口，避免混用指标上线前后口径。
+
+使用只读晋级门禁统一计算上述指标。`--manual-review-passed` 只能在人工检查审批和
+Replan Trace 后设置；工具不会自行修改配置。默认通过退出码为 0，HOLD 为 1，查询或
+参数错误为 2：
+
+```bash
+go run ./cmd/canary-gate \
+  --prometheus-url http://127.0.0.1:19090 \
+  --window 24h
+```
+
+计数使用窗口终点与起点的原始 Counter 差值，不使用会对短生命周期序列做外推的
+`increase()`。如果窗口内发生 Counter 重置，样本数会被保守计为零并保持 HOLD；应等待
+当前进程积累足够的新样本，而不是把重置前后的计数拼接为晋级依据。
+
 查看所有组件日志：
 
 ```bash

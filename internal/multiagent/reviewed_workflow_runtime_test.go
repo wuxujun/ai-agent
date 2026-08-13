@@ -10,9 +10,8 @@ import (
 
 func configureReviewedDAGTest(t *testing.T, runtimeMode OrchestrationRuntime) {
 	t.Helper()
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "planner_critic_executor_verifier")
-	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", string(runtimeMode))
+	configureMultiAgentSelectionTest(t, "software_reviewed", runtimeMode, 0)
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "prefetch"
 		cfg.LLM.Scenes = nil

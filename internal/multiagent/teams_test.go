@@ -4,15 +4,18 @@ import (
 	"os"
 	"testing"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
 )
 
 func TestTeamsConfig_DefaultFallback(t *testing.T) {
-	// Clean up any environment override
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "")
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "")
-	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "")
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.MultiAgent.Team = ""
+		cfg.MultiAgent.Runtime = "legacy"
+		cfg.MultiAgent.DAGCanaryPercent = 0
+	}))
 
 	// Ensure no local teams.yaml is read by moving away or testing in clean env.
 	// We'll rename local teams.yaml if it exists, but since we are running tests,
@@ -27,17 +30,21 @@ func TestTeamsConfig_DefaultFallback(t *testing.T) {
 	}
 }
 
-func TestTeamsConfig_EnvironmentOverride(t *testing.T) {
-	os.Setenv("AI_AGENT_MULTIAGENT_TEAM", "test-team-env")
-	defer os.Unsetenv("AI_AGENT_MULTIAGENT_TEAM")
+func TestTeamsConfig_ConfigOverride(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.MultiAgent.Team = "test-team-config" }))
 
 	cfg := multiagent.GetTeamsConfig()
-	if cfg.ActiveTeam != "test-team-env" {
-		t.Errorf("expected active team to be 'test-team-env', got %q", cfg.ActiveTeam)
+	if cfg.ActiveTeam != "test-team-config" {
+		t.Errorf("expected active team to be 'test-team-config', got %q", cfg.ActiveTeam)
 	}
 }
 
 func TestTeamsConfig_YAMLParse(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.MultiAgent.Team = ""
+		cfg.MultiAgent.Runtime = ""
+		cfg.MultiAgent.DAGCanaryPercent = 0
+	}))
 	yamlContent := `
 active_team: "data"
 resume_config_policy: "require_match"
@@ -154,7 +161,7 @@ teams:
 }
 
 func TestTeamsConfig_WorkflowEnvironmentOverride(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.MultiAgent.Team = "software" }))
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "planner-critic-executor-verifier")
 
 	cfg := multiagent.GetTeamsConfig()
@@ -164,7 +171,7 @@ func TestTeamsConfig_WorkflowEnvironmentOverride(t *testing.T) {
 }
 
 func TestTeamsConfig_AdaptiveWorkflowEnvironmentOverride(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.MultiAgent.Team = "software" }))
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "auto")
 
 	cfg := multiagent.GetTeamsConfig()
@@ -173,14 +180,29 @@ func TestTeamsConfig_AdaptiveWorkflowEnvironmentOverride(t *testing.T) {
 	}
 }
 
-func TestTeamsConfig_RuntimeEnvironmentOverride(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
-	t.Setenv("AI_AGENT_MULTIAGENT_RUNTIME", "graph")
+func TestTeamsConfig_RuntimeConfigOverride(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.MultiAgent.Team = "software"
+		cfg.MultiAgent.Runtime = "dag"
+	}))
 
 	cfg := multiagent.GetTeamsConfig()
 	if cfg.ActiveRuntime() != multiagent.RuntimeDAG {
 		t.Fatalf("expected DAG runtime override, got %q", cfg.ActiveRuntime())
 	}
+}
+
+func TestTeamsConfig_DAGCanaryPercentConfigOverride(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.MultiAgent.Team = "software"
+		cfg.MultiAgent.DAGCanaryPercent = 5
+	}))
+
+	cfg := multiagent.GetTeamsConfig()
+	if got := cfg.GetActiveTeam().DAGCanaryPercent; got != 5 {
+		t.Fatalf("DAG canary percent = %d, want 5", got)
+	}
+
 }
 
 func TestTeamsConfig_ResumePolicyEnvironmentOverride(t *testing.T) {

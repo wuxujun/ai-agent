@@ -71,6 +71,15 @@ type Config struct {
 		RunAllTimeoutSeconds int `mapstructure:"run_all_timeout_seconds"`
 	} `mapstructure:"orchestrator"`
 
+	MultiAgent struct {
+		// Team selects an entry from teams.yaml. Runtime remains legacy during a
+		// percentage rollout; DAGCanaryPercent then assigns new tasks to DAG by
+		// stable task-ID bucket.
+		Team             string `mapstructure:"team"`
+		Runtime          string `mapstructure:"runtime"`
+		DAGCanaryPercent int    `mapstructure:"dag_canary_percent"`
+	} `mapstructure:"multiagent"`
+
 	Approval struct {
 		// TTLSeconds expires unresolved durable approvals lazily on access.
 		// Zero disables expiration.
@@ -433,6 +442,9 @@ func setupViper() {
 	viper.SetDefault("orchestrator.mode", "eino")
 	viper.SetDefault("orchestrator.max_concurrent_tasks", 10)
 	viper.SetDefault("orchestrator.run_all_timeout_seconds", 600)
+	viper.SetDefault("multiagent.team", "")
+	viper.SetDefault("multiagent.runtime", "")
+	viper.SetDefault("multiagent.dag_canary_percent", 0)
 	viper.SetDefault("approval.ttl_seconds", 86400)
 	viper.SetDefault("approval.retention_days", 30)
 	viper.SetDefault("answer_pipeline.enabled", true)
@@ -500,6 +512,9 @@ func setupViper() {
 	_ = viper.BindEnv("api.auth.require_tenant_workspace_root", "AI_AGENT_API_REQUIRE_TENANT_WORKSPACE_ROOT")
 	_ = viper.BindEnv("approval.ttl_seconds", "AI_AGENT_APPROVAL_TTL_SECONDS")
 	_ = viper.BindEnv("approval.retention_days", "AI_AGENT_APPROVAL_RETENTION_DAYS")
+	_ = viper.BindEnv("multiagent.team", "AI_AGENT_MULTIAGENT_TEAM")
+	_ = viper.BindEnv("multiagent.runtime", "AI_AGENT_MULTIAGENT_RUNTIME")
+	_ = viper.BindEnv("multiagent.dag_canary_percent", "AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT")
 	_ = viper.BindEnv("api.auth.bearer.validation_mode", "AI_AGENT_API_BEARER_VALIDATION_MODE")
 	_ = viper.BindEnv("api.auth.jwt.issuer", "AI_AGENT_API_JWT_ISSUER")
 	_ = viper.BindEnv("api.auth.jwt.audience", "AI_AGENT_API_JWT_AUDIENCE")
@@ -904,6 +919,9 @@ func diffConfigs(old, new *Config) []string {
 	addIf("orchestrator.mode", old.Orchestrator.Mode, new.Orchestrator.Mode)
 	addIfInt("orchestrator.max_concurrent_tasks", old.Orchestrator.MaxConcurrentTasks, new.Orchestrator.MaxConcurrentTasks)
 	addIfInt("orchestrator.run_all_timeout_seconds", old.Orchestrator.RunAllTimeoutSeconds, new.Orchestrator.RunAllTimeoutSeconds)
+	addIf("multiagent.team", old.MultiAgent.Team, new.MultiAgent.Team)
+	addIf("multiagent.runtime", old.MultiAgent.Runtime, new.MultiAgent.Runtime)
+	addIfInt("multiagent.dag_canary_percent", old.MultiAgent.DAGCanaryPercent, new.MultiAgent.DAGCanaryPercent)
 	addIfInt("approval.ttl_seconds", old.Approval.TTLSeconds, new.Approval.TTLSeconds)
 	addIfInt("approval.retention_days", old.Approval.RetentionDays, new.Approval.RetentionDays)
 	if !reflect.DeepEqual(old.AnswerPipeline, new.AnswerPipeline) {
@@ -1258,6 +1276,14 @@ func (c *Config) Validate() error {
 	case "", "eino", "legacy", "adk", "step", "multiagent":
 	default:
 		return fmt.Errorf("orchestrator.mode must be one of eino, legacy, adk, step, or multiagent")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.MultiAgent.Runtime)) {
+	case "", "legacy", "dag":
+	default:
+		return fmt.Errorf("multiagent.runtime must be legacy or dag")
+	}
+	if c.MultiAgent.DAGCanaryPercent < 0 || c.MultiAgent.DAGCanaryPercent > 100 {
+		return fmt.Errorf("multiagent.dag_canary_percent must be between 0 and 100")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Store.VectorSearch)) {
 	case "", "in_process", "pgvector", "paradedb":

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -79,53 +80,53 @@ type RAGSearchResult struct {
 }
 
 func findFilesHandler(ctx tool.Context, args FindFilesArgs) (FindFilesResult, error) {
-	log.Debug("find_files called", "pattern", args.Pattern)
+	log.Debug("find_files called", "task_id", logger.TaskID(ctx), "pattern", args.Pattern)
 	workspace, _ := ctx.Value(workspaceKey).(string)
 	if workspace == "" {
 		err := fmt.Errorf("workspace not found in context")
-		log.Error("find_files: no workspace in context", "error", err)
+		log.Error("find_files: no workspace in context", "task_id", logger.TaskID(ctx), "error", err)
 		return FindFilesResult{}, err
 	}
 	files, err := tools.FindFiles(ctx, workspace, args.Pattern)
 	if err != nil {
-		log.Error("find_files failed", "pattern", args.Pattern, "error", err)
+		log.Error("find_files failed", "task_id", logger.TaskID(ctx), "pattern", args.Pattern, "error", err)
 		return FindFilesResult{}, err
 	}
-	log.Debug("find_files completed", "pattern", args.Pattern, "count", len(files))
+	log.Debug("find_files completed", "task_id", logger.TaskID(ctx), "pattern", args.Pattern, "count", len(files))
 	return FindFilesResult{Files: files}, nil
 }
 
 func searchTextHandler(ctx tool.Context, args SearchTextArgs) (SearchTextResult, error) {
-	log.Debug("search_text called", "query", args.Query, "glob", args.Glob)
+	log.Debug("search_text called", "task_id", logger.TaskID(ctx), "query", args.Query, "glob", args.Glob)
 	workspace, _ := ctx.Value(workspaceKey).(string)
 	if workspace == "" {
 		err := fmt.Errorf("workspace not found in context")
-		log.Error("search_text: no workspace in context", "error", err)
+		log.Error("search_text: no workspace in context", "task_id", logger.TaskID(ctx), "error", err)
 		return SearchTextResult{}, err
 	}
 	evidence, _, err := tools.SearchWithRG(ctx, workspace, args.Query, args.Glob)
 	if err != nil {
-		log.Error("search_text failed", "query", args.Query, "error", err)
+		log.Error("search_text failed", "task_id", logger.TaskID(ctx), "query", args.Query, "error", err)
 		return SearchTextResult{}, err
 	}
-	log.Debug("search_text completed", "query", args.Query, "count", len(evidence))
+	log.Debug("search_text completed", "task_id", logger.TaskID(ctx), "query", args.Query, "count", len(evidence))
 	return SearchTextResult{Evidence: evidence}, nil
 }
 
 func readFileHandler(ctx tool.Context, args ReadFileArgs) (ReadFileResult, error) {
-	log.Debug("read_file called", "path", args.Path)
+	log.Debug("read_file called", "task_id", logger.TaskID(ctx), "path", args.Path)
 	workspace, _ := ctx.Value(workspaceKey).(string)
 	if workspace == "" {
 		err := fmt.Errorf("workspace not found in context")
-		log.Error("read_file: no workspace in context", "error", err)
+		log.Error("read_file: no workspace in context", "task_id", logger.TaskID(ctx), "error", err)
 		return ReadFileResult{}, err
 	}
 	content, err := tools.ReadFile(workspace, args.Path)
 	if err != nil {
-		log.Error("read_file failed", "path", args.Path, "error", err)
+		log.Error("read_file failed", "task_id", logger.TaskID(ctx), "path", args.Path, "error", err)
 		return ReadFileResult{}, err
 	}
-	log.Debug("read_file completed", "path", args.Path, "chars", len(content))
+	log.Debug("read_file completed", "task_id", logger.TaskID(ctx), "path", args.Path, "chars", len(content))
 	return ReadFileResult{Content: content}, nil
 }
 

@@ -70,6 +70,19 @@ func TestContentAndCredentialFieldPolicy(t *testing.T) {
 	}
 }
 
+func TestTaskIDContext(t *testing.T) {
+	ctx := WithTaskID(context.Background(), " task-123 ")
+	if got := TaskID(ctx); got != "task-123" {
+		t.Fatalf("TaskID() = %q, want task-123", got)
+	}
+	if got := TaskID(context.Background()); got != "" {
+		t.Fatalf("TaskID(background) = %q, want empty", got)
+	}
+	if got := TaskID(WithTaskID(ctx, "")); got != "task-123" {
+		t.Fatalf("empty task ID replaced existing context value: %q", got)
+	}
+}
+
 // TestProductionLogMessagesAreStatic prevents user-controlled values from
 // bypassing attribute redaction by being formatted into the log message.
 func TestProductionLogMessagesAreStatic(t *testing.T) {

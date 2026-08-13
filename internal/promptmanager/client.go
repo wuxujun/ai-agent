@@ -119,7 +119,7 @@ func (pm *PromptManager) Resolve(ctx context.Context, name string, selector Sele
 		return resolved
 	}
 	if selectorErr != nil {
-		log.Error("invalid Langfuse prompt selector; using fallback", "name", name, "error", selectorErr)
+		log.Error("invalid Langfuse prompt selector; using fallback", "task_id", logger.TaskID(ctx), "name", name, "error", selectorErr)
 		resolved := fallbackPrompt(name, Selector{}, fallback)
 		recordPromptResolution(ctx, resolved, "invalid_selector")
 		return resolved
@@ -139,10 +139,10 @@ func (pm *PromptManager) Resolve(ctx context.Context, name string, selector Sele
 	}
 
 	// 2. Cache miss or expired: fetch from Langfuse
-	log.Info("fetching prompt from Langfuse", "name", name, "selector", normalized.String())
+	log.Info("fetching prompt from Langfuse", "task_id", logger.TaskID(ctx), "name", name, "selector", normalized.String())
 	resolved, err := pm.fetchFromLangfuse(ctx, name, normalized, cfg.Host, cfg.PublicKey, cfg.SecretKey)
 	if err != nil {
-		log.Error("failed to fetch prompt from Langfuse; using fallback", "name", name, "error", err)
+		log.Error("failed to fetch prompt from Langfuse; using fallback", "task_id", logger.TaskID(ctx), "name", name, "error", err)
 		// On failure, write a short-lived fallback cache (e.g. 1 minute) to avoid hammering Langfuse on every subsequent request
 		pm.mu.Lock()
 		resolved = fallbackPrompt(name, normalized, fallback)

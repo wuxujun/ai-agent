@@ -175,7 +175,7 @@ func (v *retryingCheckpointVerifier) Finalize(context.Context, string, []StepEvi
 }
 
 func TestCoordinatorReviewedWorkflowUsesFourRoles(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
+	configureMultiAgentSelectionTest(t, "software_reviewed", RuntimeLegacy, 0)
 	planner := reviewedPlanner{}
 	critic := &approvingCritic{}
 	executor := &recordingExecutor{}
@@ -207,7 +207,7 @@ func TestCoordinatorReviewedWorkflowUsesFourRoles(t *testing.T) {
 }
 
 func TestCoordinatorResumesVerifierCheckpointWithoutRepeatingDraftOrExecution(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
+	configureMultiAgentSelectionTest(t, "software_reviewed", RuntimeLegacy, 0)
 	executor := &recordingExecutor{}
 	critic := &approvingCritic{}
 	verifier := &retryingCheckpointVerifier{}
@@ -302,7 +302,7 @@ func TestCriticConvergenceRejectsRepeatedPlan(t *testing.T) {
 }
 
 func TestCoordinatorReviewedWorkflowMaxStepsCountsOnlyExecutorSteps(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
+	configureMultiAgentSelectionTest(t, "software_reviewed", RuntimeLegacy, 0)
 	executor := &recordingExecutor{}
 	c := &Coordinator{
 		Planner:            twoStepReviewedPlanner{},
@@ -331,7 +331,7 @@ func TestCoordinatorReviewedWorkflowMaxStepsCountsOnlyExecutorSteps(t *testing.T
 }
 
 func TestCoordinatorMarksIncompleteExecutionPartial(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
+	configureMultiAgentSelectionTest(t, "software_reviewed", RuntimeLegacy, 0)
 	executor := &recordingExecutor{}
 	c := &Coordinator{
 		Planner:            twoStepReviewedPlanner{},
@@ -357,7 +357,7 @@ func TestCoordinatorMarksIncompleteExecutionPartial(t *testing.T) {
 }
 
 func TestCoordinatorMarksUnsupportedFinalAnswerPartial(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software_reviewed")
+	configureMultiAgentSelectionTest(t, "software_reviewed", RuntimeLegacy, 0)
 	c := &Coordinator{
 		Planner:       reviewedPlanner{},
 		PlanCritic:    &approvingCritic{},
@@ -378,7 +378,7 @@ func TestCoordinatorMarksUnsupportedFinalAnswerPartial(t *testing.T) {
 }
 
 func TestCoordinatorAdaptiveWorkflowRoutesHighComplexityToReviewed(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	configureMultiAgentSelectionTest(t, "software", RuntimeLegacy, 0)
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "adaptive")
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "prefetch" }))
 	critic := &approvingCritic{}
@@ -425,7 +425,7 @@ func TestCoordinatorAdaptiveWorkflowRoutesHighComplexityToReviewed(t *testing.T)
 }
 
 func TestCoordinatorAdaptiveWorkflowKeepsLowRiskTaskOnResearch(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	configureMultiAgentSelectionTest(t, "software", RuntimeLegacy, 0)
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "adaptive")
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.RAG.ContextMode = "prefetch" }))
 	researcher := &recordingResearcher{}
@@ -454,7 +454,7 @@ func TestCoordinatorAdaptiveWorkflowKeepsLowRiskTaskOnResearch(t *testing.T) {
 }
 
 func TestCoordinatorAdaptiveWorkflowEscalatesExecutionReplan(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	configureMultiAgentSelectionTest(t, "software", RuntimeLegacy, 0)
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "adaptive")
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "prefetch"
@@ -500,7 +500,7 @@ func TestCoordinatorAdaptiveWorkflowEscalatesExecutionReplan(t *testing.T) {
 }
 
 func TestCoordinatorAdaptiveWorkflowEscalatesDepthReplan(t *testing.T) {
-	t.Setenv("AI_AGENT_MULTIAGENT_TEAM", "software")
+	configureMultiAgentSelectionTest(t, "software", RuntimeLegacy, 0)
 	t.Setenv("AI_AGENT_MULTIAGENT_WORKFLOW", "adaptive")
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "prefetch"

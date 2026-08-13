@@ -408,3 +408,59 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 - [ ] 任务管理与 Trace 可视化 Web UI
 - [ ] 更多内置技能（测试生成、代码审查、数据分析）
 - [ ] 自定义工具注册插件系统
+
+### DAG/Legacy 发布评估
+
+分别启动 Legacy 与 DAG 服务，再以相同预算执行同一数据集：
+
+```bash
+AI_AGENT_API_KEY='<key>' go run ./cmd/multiagent-eval \
+  -legacy-url http://127.0.0.1:8088 \
+  -dag-url http://127.0.0.1:8089 \
+  -repetitions 3 \
+  -input evals/multiagent_runtime.yaml
+```
+
+命令输出每个样本的状态、延迟、预算、Verifier 支持结果和 fallback 数量，并应用数据集中的
+成功率与 P95 延迟门槛。评估任务使用唯一 ID 创建，工具不会自动删除任务。
+重复运行还会报告每一轮都通过的稳定样本数，避免把单次 LLM 成功误判为稳定性结论。
+可使用 `-case <精确名称>` 单独复跑失败或新增样本。
+
+确定性外部 RAG 门禁需要先启动仅绑定 loopback 的 fixture，并为两个服务配置
+`AI_AGENT_RAG_SEARCH_URL=http://127.0.0.1:18080/search`、
+`AI_AGENT_RAG_SEARCH_METHOD=POST` 和 `AI_AGENT_RAG_CONTEXT_MODE=jit`：
+
+```bash
+go run ./cmd/rag-eval-stub
+go run ./cmd/multiagent-eval \
+  -legacy-url http://127.0.0.1:8088 -dag-url http://127.0.0.1:8089 \
+  -input evals/multiagent_rag.yaml
+```
+
+### software 团队 DAG 小流量 Canary
+
+发布矩阵通过后，可按任务稳定分桶开启 Canary，而不必把整个团队一次性切到 DAG：
+
+```bash
+AI_AGENT_MULTIAGENT_TEAM=software
+AI_AGENT_MULTIAGENT_RUNTIME=legacy
+AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT=5
+```
+
+三个环境变量均由中央 Viper 加载器绑定到 `config.yaml` 的 `multiagent` 配置段；Multi-Agent 代码只在
+使用点读取最新的 `config.Get()` 快照，不再直接读取环境变量。等价的文件配置为：
+
+```yaml
+multiagent:
+  team: software
+  runtime: legacy
+  dag_canary_percent: 5
+```
+
+比例必须是 0–100 的整数。系统按团队名和任务 ID 确定性分桶，并把选中的 runtime 写入任务 Trace，
+恢复任务时继续使用原 runtime。百分比灰度期间应保持 `runtime=legacy`；显式设置 `runtime=dag` 仍表示
+100% DAG。非法比例会安全回退为 0，环境变量变更后需要重启进程。
+
+通过 `GET /api/metrics` 和 OpenTelemetry runtime 延迟直方图对比 DAG/Legacy 的完成率、失败率、
+fallback、平均延迟和 P95。回滚时把比例设为 0 并重启；已开始的任务保留持久化 runtime，新任务走
+Legacy。systemd 环境示例和操作检查表见 `deploy/systemd/README.md`。
