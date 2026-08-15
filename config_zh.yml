@@ -75,6 +75,8 @@ api:
   #       - numeric_consistency_check
   #       - answer_uncertainty_calibrate
   #       - safety_guard_output
+  #     # 除非 wiki.default_space 明确用于跨租户共享，否则应配置租户专属 Wiki 空间。
+  #     wiki_space: "project-a"
 
 # 存储配置
 store:
@@ -446,6 +448,27 @@ mcp:
   #     disabled: false
   #     # 私网/回环地址默认拒绝，必须显式开启。
   #     allow_private_network: false
+
+# 可选的只读 LLM Wiki 适配器。仅注册 wiki_search 与 wiki_fetch，
+# 不开放写入、摄取、提交、Schema 或空间管理工具。修改后需要重启服务。
+wiki:
+  # Streamable HTTP MCP 端点，例如 http://127.0.0.1:18765/mcp。
+  # 环境变量覆盖：AI_AGENT_WIKI_URL
+  url: ""
+  # 保存认证值的环境变量名称；凭据本身禁止写入本文件。
+  # 环境变量覆盖：AI_AGENT_WIKI_AUTHORIZATION_ENV
+  authorization_env: ""
+  # 共享的默认空间。多租户隔离优先使用 api.tenants.<tenant>.wiki_space。
+  # 环境变量覆盖：AI_AGENT_WIKI_DEFAULT_SPACE
+  default_space: ""
+  timeout_seconds: 15
+  search_top_k: 5
+  fetch_max_items: 3
+  fetch_max_bytes: 12000
+  # 回环/私网端点默认拒绝，必须显式开启。
+  allow_private_network: false
+  # 已配置的 Wiki 无法初始化时是否阻止服务启动。
+  required: false
 
 # 日志配置
 log:

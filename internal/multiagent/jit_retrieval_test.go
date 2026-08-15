@@ -65,6 +65,21 @@ func TestCoordinatorAutomaticallyFetchesJITCandidates(t *testing.T) {
 	}
 }
 
+func TestRetrievalFetchStepsCreatesWikiFetch(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.Wiki.FetchMaxItems = 1 }))
+	steps := retrievalFetchSteps([]StepEvidence{{
+		StepID: "wiki-step", Action: "wiki_search",
+		Observation: `{"count":2,"results":[{"id":"wiki-a"},{"id":"wiki-b"}]}`,
+	}})
+	if len(steps) != 1 || steps[0].Action != "wiki_fetch" {
+		t.Fatalf("steps = %+v", steps)
+	}
+	ids, _ := steps[0].RepairedParameters["ids"].([]string)
+	if !reflect.DeepEqual(ids, []string{"wiki-a"}) {
+		t.Fatalf("wiki fetch ids = %v", ids)
+	}
+}
+
 func TestCoordinatorRewritesDriftingFactualPlanToRAG(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"

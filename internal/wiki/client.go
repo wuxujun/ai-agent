@@ -1,0 +1,235 @@
+// Package wiki adapts the read-only LLM Wiki MCP tools to typed documents.
+package wiki
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/wuxujun/ai-agent/internal/mcpclient"
+)
+
+const (
+	searchToolName = "wiki_search"
+	readToolName   = "wiki_content_read"
+)
+
+type Config struct {
+	URL                 string
+	Authorization       string
+	Timeout             time.Duration
+	AllowPrivateNetwork bool
+}
+
+// Document preserves stable Wiki identity and ranking metadata across the
+// search-then-read flow.
+type Document struct {
+	Slug       string  `json:"slug,omitempty"`
+	URI        string  `json:"uri"`
+	Title      string  `json:"title,omitempty"`
+	Summary    string  `json:"summary,omitempty"`
+	Excerpt    string  `json:"excerpt,omitempty"`
+	Content    string  `json:"content,omitempty"`
+	Status     string  `json:"status,omitempty"`
+	Score      float64 `json:"score,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+
+type Client struct {
+	mcp         mcpCaller
+	searchProps map[string]any
+	readProps   map[string]any
+}
+
+type mcpCaller interface {
+	ListTools(context.Context) ([]mcpclient.Tool, error)
+	CallTool(context.Context, string, map[string]any) (*mcpclient.CallResult, error)
+	Close(context.Context) error
+}
+
+func New(cfg Config) (*Client, error) {
+	client, err := mcpclient.New(mcpclient.Config{
+		Name:                "llm-wiki",
+		URL:                 cfg.URL,
+		Authorization:       cfg.Authorization,
+		Timeout:             cfg.Timeout,
+		AllowPrivateNetwork: cfg.AllowPrivateNetwork,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Client{mcp: client}, nil
+}
+
+// Initialize discovers the server schemas and verifies that both required
+// read-only tools exist. Arguments are filtered through these schemas so the
+// adapter does not send provider-specific RAG fields to LLM Wiki.
+func (c *Client) Initialize(ctx context.Context) error {
+	if c == nil || c.mcp == nil {
+		return errors.New("wiki client is nil")
+	}
+	remoteTools, err := c.mcp.ListTools(ctx)
+	if err != nil {
+		return err
+	}
+	for _, remote := range remoteTools {
+		switch remote.Name {
+		case searchToolName:
+			c.searchProps = remote.Properties()
+		case readToolName:
+			c.readProps = remote.Properties()
+		}
+	}
+	if c.searchProps == nil || c.readProps == nil {
+		return fmt.Errorf("LLM Wiki must expose %s and %s", searchToolName, readToolName)
+	}
+	if !hasAnyProperty(c.searchProps, "query") {
+		return fmt.Errorf("%s schema does not expose query", searchToolName)
+	}
+	if !hasAnyProperty(c.readProps, "uri", "slug", "path") {
+		return fmt.Errorf("%s schema does not expose uri, slug, or path", readToolName)
+	}
+	return nil
+}
+
+func (c *Client) Search(ctx context.Context, query string, topK int, space string) ([]Document, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, errors.New("wiki search query must not be empty")
+	}
+	arguments := map[string]any{"query": strings.TrimSpace(query)}
+	setIfSupported(arguments, c.searchProps, "top_k", topK)
+	setIfSupported(arguments, c.searchProps, "format", "json")
+	setIfSupported(arguments, c.searchProps, "wiki", strings.TrimSpace(space))
+	result, err := c.mcp.CallTool(ctx, searchToolName, arguments)
+	if err != nil {
+		return nil, err
+	}
+	documents, err := parseSearchResult(result)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s result: %w", searchToolName, err)
+	}
+	if topK > 0 && len(documents) > topK {
+		documents = documents[:topK]
+	}
+	return documents, nil
+}
+
+func (c *Client) Read(ctx context.Context, document Document, space string) (Document, error) {
+	reference := strings.TrimSpace(document.URI)
+	if reference == "" {
+		reference = strings.TrimSpace(document.Slug)
+	}
+	if reference == "" {
+		return Document{}, errors.New("wiki document has no uri or slug")
+	}
+	arguments := make(map[string]any)
+	switch {
+	case hasAnyProperty(c.readProps, "uri"):
+		arguments["uri"] = reference
+	case hasAnyProperty(c.readProps, "slug"):
+		arguments["slug"] = reference
+	default:
+		arguments["path"] = reference
+	}
+	setIfSupported(arguments, c.readProps, "wiki", strings.TrimSpace(space))
+	setIfSupported(arguments, c.readProps, "backlinks", true)
+	setIfSupported(arguments, c.readProps, "format", "json")
+	result, err := c.mcp.CallTool(ctx, readToolName, arguments)
+	if err != nil {
+		return Document{}, err
+	}
+	content, err := parseReadResult(result)
+	if err != nil {
+		return Document{}, fmt.Errorf("parse %s result for %s: %w", readToolName, reference, err)
+	}
+	document.Content = content
+	return document, nil
+}
+
+func (c *Client) Close(ctx context.Context) error {
+	if c == nil || c.mcp == nil {
+		return nil
+	}
+	return c.mcp.Close(ctx)
+}
+
+func setIfSupported(arguments, properties map[string]any, name string, value any) {
+	if _, ok := properties[name]; !ok {
+		return
+	}
+	if text, ok := value.(string); ok && text == "" {
+		return
+	}
+	arguments[name] = value
+}
+
+func hasAnyProperty(properties map[string]any, names ...string) bool {
+	for _, name := range names {
+		if _, ok := properties[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func parseSearchResult(result *mcpclient.CallResult) ([]Document, error) {
+	if result == nil {
+		return nil, errors.New("empty MCP result")
+	}
+	for _, data := range [][]byte{result.StructuredContent, []byte(strings.TrimSpace(result.Text))} {
+		if len(data) == 0 {
+			continue
+		}
+		var envelope struct {
+			Results []Document `json:"results"`
+		}
+		if err := json.Unmarshal(data, &envelope); err == nil && envelope.Results != nil {
+			return normalizeDocuments(envelope.Results), nil
+		}
+		var documents []Document
+		if err := json.Unmarshal(data, &documents); err == nil && documents != nil {
+			return normalizeDocuments(documents), nil
+		}
+	}
+	return nil, errors.New("response did not contain a JSON results list")
+}
+
+func normalizeDocuments(documents []Document) []Document {
+	result := make([]Document, 0, len(documents))
+	for _, document := range documents {
+		document.Slug = strings.TrimSpace(document.Slug)
+		document.URI = strings.TrimSpace(document.URI)
+		if document.URI == "" && document.Slug != "" {
+			document.URI = document.Slug
+		}
+		if document.URI == "" {
+			continue
+		}
+		result = append(result, document)
+	}
+	return result
+}
+
+func parseReadResult(result *mcpclient.CallResult) (string, error) {
+	if result == nil {
+		return "", errors.New("empty MCP result")
+	}
+	for _, data := range [][]byte{result.StructuredContent, []byte(strings.TrimSpace(result.Text))} {
+		if len(data) == 0 {
+			continue
+		}
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(data, &payload); err == nil && strings.TrimSpace(payload.Content) != "" {
+			return strings.TrimSpace(payload.Content), nil
+		}
+	}
+	if content := strings.TrimSpace(result.Text); content != "" {
+		return content, nil
+	}
+	return "", errors.New("response did not contain page content")
+}

@@ -155,6 +155,20 @@ type Config struct {
 		Servers []MCPServerConfig `mapstructure:"servers"`
 	} `mapstructure:"mcp"`
 
+	// Wiki configures the optional read-only LLM Wiki adapter. Mutating Wiki
+	// operations are deliberately not exposed by this integration.
+	Wiki struct {
+		URL                 string `mapstructure:"url"`
+		AuthorizationEnv    string `mapstructure:"authorization_env"`
+		DefaultSpace        string `mapstructure:"default_space"`
+		TimeoutSeconds      int    `mapstructure:"timeout_seconds"`
+		SearchTopK          int    `mapstructure:"search_top_k"`
+		FetchMaxItems       int    `mapstructure:"fetch_max_items"`
+		FetchMaxBytes       int    `mapstructure:"fetch_max_bytes"`
+		AllowPrivateNetwork bool   `mapstructure:"allow_private_network"`
+		Required            bool   `mapstructure:"required"`
+	} `mapstructure:"wiki"`
+
 	Search struct {
 		URL    string `mapstructure:"url"`
 		APIKey string `mapstructure:"api_key"`
@@ -205,6 +219,10 @@ type APITenantConfig struct {
 	DailyLLMCostBudgetUSD        float64  `mapstructure:"daily_llm_cost_budget_usd"`
 	AnswerPipelineEnforcement    string   `mapstructure:"answer_pipeline_enforcement"`
 	AnswerPipelineRequiredStages []string `mapstructure:"answer_pipeline_required_stages"`
+	// WikiSpace selects the LLM Wiki space visible to this tenant. An empty
+	// value falls back to wiki.default_space when that operator-wide sharing is
+	// intentional.
+	WikiSpace string `mapstructure:"wiki_space"`
 }
 
 type APIAuthConfig struct {
@@ -497,6 +515,15 @@ func setupViper() {
 	viper.SetDefault("rag.max_memory_bytes", 2500)
 	viper.SetDefault("rag.max_memory_prompt_bytes", 8000)
 	viper.SetDefault("rag.max_raw_fallback_bytes", 4000)
+	viper.SetDefault("wiki.url", "")
+	viper.SetDefault("wiki.authorization_env", "")
+	viper.SetDefault("wiki.default_space", "")
+	viper.SetDefault("wiki.timeout_seconds", 15)
+	viper.SetDefault("wiki.search_top_k", 5)
+	viper.SetDefault("wiki.fetch_max_items", 3)
+	viper.SetDefault("wiki.fetch_max_bytes", 12000)
+	viper.SetDefault("wiki.allow_private_network", false)
+	viper.SetDefault("wiki.required", false)
 	viper.SetDefault("search.url", "https://api.firecrawl.dev/v1/search")
 	viper.SetDefault("search.api_key", "")
 	viper.SetDefault("langfuse.enabled", false)
@@ -539,6 +566,9 @@ func setupViper() {
 	_ = viper.BindEnv("llm.google_api_key", "GOOGLE_API_KEY")
 	_ = viper.BindEnv("rag.tool_name", "AI_AGENT_RAG_TOOL_NAME")
 	_ = viper.BindEnv("rag.authorization", "AI_AGENT_RAG_AUTHORIZATION")
+	_ = viper.BindEnv("wiki.url", "AI_AGENT_WIKI_URL")
+	_ = viper.BindEnv("wiki.authorization_env", "AI_AGENT_WIKI_AUTHORIZATION_ENV")
+	_ = viper.BindEnv("wiki.default_space", "AI_AGENT_WIKI_DEFAULT_SPACE")
 	_ = viper.BindEnv("search.url", "AI_AGENT_SEARCH_URL")
 	_ = viper.BindEnv("search.api_key", "FIRECRAWL_API_KEY")
 	_ = viper.BindEnv("langfuse.public_key", "LANGFUSE_PUBLIC_KEY")
@@ -949,6 +979,9 @@ func diffConfigs(old, new *Config) []string {
 	// value, so comparing the declarative server list is safe.
 	if !reflect.DeepEqual(old.MCP.Servers, new.MCP.Servers) {
 		changes = append(changes, "mcp.servers: changed")
+	}
+	if !reflect.DeepEqual(old.Wiki, new.Wiki) {
+		changes = append(changes, "wiki: changed (restart required)")
 	}
 
 	// Search
@@ -1420,6 +1453,18 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("mcp server %q risk_level must be low or high", name)
 		}
+	}
+	if c.Wiki.Required && strings.TrimSpace(c.Wiki.URL) == "" {
+		return fmt.Errorf("wiki.url must not be empty when wiki.required is true")
+	}
+	if c.Wiki.TimeoutSeconds < 0 || c.Wiki.SearchTopK < 0 || c.Wiki.FetchMaxItems < 0 || c.Wiki.FetchMaxBytes < 0 {
+		return fmt.Errorf("wiki timeout and retrieval limits must be >= 0")
+	}
+	if c.Wiki.SearchTopK > 10 {
+		return fmt.Errorf("wiki.search_top_k must not exceed 10")
+	}
+	if c.Wiki.FetchMaxItems > 10 {
+		return fmt.Errorf("wiki.fetch_max_items must not exceed 10")
 	}
 	if c.LLM.PlannerTraceMaxItems < 0 || c.LLM.PlannerObservationMaxChars < 0 || c.LLM.PlannerEvidenceMaxItems < 0 || c.LLM.PlannerEvidenceLineMaxChars < 0 || c.LLM.PlannerTraceMaxChars < 0 {
 		return fmt.Errorf("planner trace budget values must be >= 0")

@@ -199,6 +199,15 @@ func run() error {
 			slog.Warn("MCP session cleanup failed", "error", err)
 		}
 	}()
+	wikiRuntime, err := buildWikiRuntime(context.Background(), cfg, tools.DefaultRegistry)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := wikiRuntime.Close(); err != nil {
+			slog.Warn("LLM Wiki session cleanup failed", "error", err)
+		}
+	}()
 	engineBuild, err := buildEngine(context.Background(), cfg, st, planner.ProbeOllama)
 	if err != nil {
 		return err

@@ -75,6 +75,9 @@ api:
   #       - numeric_consistency_check
   #       - answer_uncertainty_calibrate
   #       - safety_guard_output
+  #     # Required for tenant-isolated Wiki access unless wiki.default_space
+  #     # intentionally shares one space across tenants.
+  #     wiki_space: "project-a"
 
 # Storage configuration
 store:
@@ -442,6 +445,29 @@ mcp:
   #     disabled: false
   #     # Private/loopback endpoints are rejected unless explicitly enabled.
   #     allow_private_network: false
+
+# Optional read-only LLM Wiki adapter. Only wiki_search and wiki_fetch are
+# registered; write, ingest, commit, schema, and space-management tools are not.
+# Changes require a service restart.
+wiki:
+  # Streamable HTTP MCP endpoint, for example http://127.0.0.1:18765/mcp.
+  # Env override: AI_AGENT_WIKI_URL
+  url: ""
+  # Name of the environment variable containing the authorization value.
+  # The secret itself must not be stored in this file.
+  # Env override: AI_AGENT_WIKI_AUTHORIZATION_ENV
+  authorization_env: ""
+  # Shared fallback space. Prefer api.tenants.<tenant>.wiki_space for isolation.
+  # Env override: AI_AGENT_WIKI_DEFAULT_SPACE
+  default_space: ""
+  timeout_seconds: 15
+  search_top_k: 5
+  fetch_max_items: 3
+  fetch_max_bytes: 12000
+  # Loopback/private endpoints are rejected unless explicitly enabled.
+  allow_private_network: false
+  # Fail service startup when the configured Wiki cannot initialize.
+  required: false
 
 # Logging configuration
 log:

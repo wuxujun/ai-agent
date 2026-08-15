@@ -19,7 +19,8 @@ var SkillRegistry *skills.Registry
 
 func BuildSystemPrompt() string {
 	contextRules := `- Context retrieval is just-in-time: do not assume RAG or historical memory has been prefetched.
-- For current external facts, first call rag_search, then call rag_fetch with only the relevant candidate IDs.
+- For facts in the configured LLM Wiki, first call wiki_search, then call wiki_fetch with only the relevant candidate IDs.
+- For other current external facts, first call rag_search, then call rag_fetch with only the relevant candidate IDs.
 - For prior-task knowledge or user history, first call memory_search, then call memory_get with only the relevant candidate IDs.
 - Use workspace tools (find_files, search_text, read_file, execute_code) only when the goal explicitly concerns local files, source code, a repository, or the workspace.
 - Never use execute_code merely to parse, rank, or summarize retrieval results.
@@ -157,7 +158,7 @@ func toolRelevantToTask(task *types.Task, name string) bool {
 		return true
 	}
 	switch name {
-	case "rag_search", "rag_fetch", "memory_search", "memory_get", "web_search", "http_fetch", "web_browser":
+	case "wiki_search", "wiki_fetch", "rag_search", "rag_fetch", "memory_search", "memory_get", "web_search", "http_fetch", "web_browser":
 		return true
 	default:
 		return false

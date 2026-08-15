@@ -1,11 +1,25 @@
 package planner
 
 import (
+	"context"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+type jitWikiSearchStub struct{}
+
+func (jitWikiSearchStub) Name() string        { return "wiki_search" }
+func (jitWikiSearchStub) Description() string { return "test Wiki search" }
+func (jitWikiSearchStub) Parameters() map[string]any {
+	return map[string]any{"query": map[string]any{"type": "string"}, "top_k": map[string]any{"type": "integer"}}
+}
+func (jitWikiSearchStub) RiskLevel() types.RiskLevel { return types.RiskLevelLow }
+func (jitWikiSearchStub) Execute(context.Context, string, map[string]interface{}) (*tools.ToolResult, error) {
+	return &tools.ToolResult{}, nil
+}
 
 func TestEnforceJITRetrievalOverridesUnsupportedFactualAnswer(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
@@ -50,6 +64,35 @@ func TestPreferredJITSearchActionUsesMemoryForExplicitSessionRecall(t *testing.T
 		if !ok || action != "memory_search" {
 			t.Fatalf("goal %q routed to %q, ok=%t; want memory_search", goal, action, ok)
 		}
+	}
+}
+
+func TestPreferredJITSearchActionPrefersConfiguredWiki(t *testing.T) {
+	tools.Register(jitWikiSearchStub{})
+	t.Cleanup(func() { tools.Unregister("wiki_search") })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+		cfg.Wiki.URL = "https://wiki.test/mcp"
+	}))
+	action, ok := PreferredJITSearchAction(&types.Task{Goal: "查询当前组织政策"})
+	if !ok || action != "wiki_search" {
+		t.Fatalf("configured Wiki routed to %q, ok=%t", action, ok)
+	}
+}
+
+func TestNextJITRetrievalDecisionFetchesWikiCandidates(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.Wiki.URL = "https://wiki.test/mcp"
+		cfg.Wiki.FetchMaxItems = 2
+	}))
+	task := &types.Task{Goal: "查询当前组织政策", Trace: []types.StepTrace{{
+		Action: "wiki_search", Observation: `{"count":2,"results":[{"id":"wiki-a"},{"id":"wiki-b"}]}`,
+	}}}
+	decision, ok := NextJITRetrievalDecision(task)
+	if !ok || len(decision.Actions) != 1 || decision.Actions[0].Action != "wiki_fetch" {
+		t.Fatalf("decision = %+v, ok=%t", decision, ok)
 	}
 }
 

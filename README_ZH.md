@@ -177,6 +177,7 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `store` | `type`、`dsn`、`vector_search`、`pgvector_dimensions`、ParadeDB 排名/慢查询设置、Memory 候选/衰减设置 |
 | `rag` | `search_url`、`search_method`（`MCP` / `POST`）、`context_mode`（`jit` / `prefetch`） |
 | `mcp` | `servers[]`，包含 URL、凭据环境变量、工具前缀、风险级别和故障策略（修改后需重启） |
+| `wiki` | 只读 LLM Wiki MCP 端点、租户空间、搜索/读取限制和启动失败策略（修改后需重启） |
 | `embedding` | `model`（用于记忆向量搜索） |
 | `answer_pipeline` | `enabled`、`enforcement`、必选审计阶段 |
 | `langfuse` | 凭证、运行时获取及可选的启动 Prompt 初始化 |

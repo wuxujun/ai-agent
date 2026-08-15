@@ -78,6 +78,8 @@ func NextJITRetrievalDecision(task *types.Task) (*PlanDecision, bool) {
 		fetchAction := "rag_fetch"
 		if search.Action == "memory_search" {
 			fetchAction = "memory_get"
+		} else if search.Action == "wiki_search" {
+			fetchAction = "wiki_fetch"
 		}
 		return &PlanDecision{
 			ThoughtSummary: "Fetch selected retrieval evidence before answering",
@@ -108,9 +110,9 @@ func NextJITRetrievalDecision(task *types.Task) (*PlanDecision, bool) {
 func latestPendingRetrievalSearch(traces []types.StepTrace) (retrievalSearchState, bool) {
 	for i := len(traces) - 1; i >= 0; i-- {
 		switch traces[i].Action {
-		case "rag_fetch", "memory_get":
+		case "wiki_fetch", "rag_fetch", "memory_get":
 			return retrievalSearchState{}, false
-		case "rag_search", "memory_search":
+		case "wiki_search", "rag_search", "memory_search":
 			return retrievalSearchFromTrace(traces[i]), true
 		}
 	}
@@ -138,6 +140,11 @@ func PreferredJITSearchAction(task *types.Task) (string, bool) {
 	}
 	if goalExplicitlyTargetsMemory(task.Goal) {
 		return "memory_search", true
+	}
+	if strings.TrimSpace(config.Get().Wiki.URL) != "" {
+		if _, ready := tools.Get("wiki_search"); ready {
+			return "wiki_search", true
+		}
 	}
 	if strings.TrimSpace(config.Get().RAG.SearchURL) != "" {
 		return "rag_search", true
@@ -250,7 +257,7 @@ func HasSupportingEvidence(traces []types.StepTrace) bool {
 			continue
 		}
 		switch trace.Action {
-		case "rag_fetch", "memory_get":
+		case "wiki_fetch", "rag_fetch", "memory_get":
 			if len(trace.Evidence) > 0 {
 				return true
 			}
@@ -270,9 +277,9 @@ func HasSupportingEvidence(traces []types.StepTrace) bool {
 func latestRetrievalDetailFailed(traces []types.StepTrace) bool {
 	for i := len(traces) - 1; i >= 0; i-- {
 		switch traces[i].Action {
-		case "rag_fetch", "memory_get":
+		case "wiki_fetch", "rag_fetch", "memory_get":
 			return traces[i].Error != "" || len(traces[i].Evidence) == 0
-		case "rag_search", "memory_search":
+		case "wiki_search", "rag_search", "memory_search":
 			return false
 		}
 	}
@@ -287,7 +294,7 @@ type retrievalSearchState struct {
 func latestRetrievalSearch(traces []types.StepTrace) (retrievalSearchState, bool) {
 	for i := len(traces) - 1; i >= 0; i-- {
 		trace := traces[i]
-		if trace.Action != "rag_search" && trace.Action != "memory_search" {
+		if trace.Action != "wiki_search" && trace.Action != "rag_search" && trace.Action != "memory_search" {
 			continue
 		}
 		return retrievalSearchFromTrace(trace), true
@@ -307,6 +314,9 @@ func retrievalSearchFromTrace(trace types.StepTrace) retrievalSearchState {
 	}
 	if json.Unmarshal([]byte(trace.Observation), &payload) == nil {
 		limit := config.Get().RAG.JITFetchMaxItems
+		if trace.Action == "wiki_search" {
+			limit = config.Get().Wiki.FetchMaxItems
+		}
 		if limit <= 0 {
 			limit = 3
 		}

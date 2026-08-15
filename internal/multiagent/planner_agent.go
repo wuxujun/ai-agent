@@ -29,6 +29,7 @@ Available actions:
   http_fetch    – fetch content from a public URL  (set url; private/loopback addresses are blocked)
   web_search    – search the web for keywords      (set search_query)
   rag_search    – search current external RAG      (set search_query; details are fetched automatically)
+  wiki_search   – search the configured LLM Wiki   (set search_query; full pages are fetched automatically)
   memory_search – search historical task memory    (set search_query; details are fetched automatically)
   analyze_image – analyze a workspace image        (set file_path and prompt)
 
@@ -149,7 +150,7 @@ func plannerResearchActions() []string {
 	for _, name := range names {
 		// Detail tools require candidate IDs that do not exist until their search
 		// step has executed. Coordinator inserts these steps deterministically.
-		if name != "rag_fetch" && name != "memory_get" {
+		if name != "wiki_fetch" && name != "rag_fetch" && name != "memory_get" {
 			result = append(result, name)
 		}
 	}
@@ -227,6 +228,7 @@ Available actions:
   http_fetch    – fetch content from a public URL  (set url; private/loopback addresses are blocked)
   web_search    – search the web for keywords      (set search_query)
   rag_search    – search current external RAG      (set search_query; details are fetched automatically)
+  wiki_search   – search the configured LLM Wiki   (set search_query; full pages are fetched automatically)
   memory_search – search historical task memory    (set search_query; details are fetched automatically)
   analyze_image – analyze a workspace image        (set file_path and prompt)
 

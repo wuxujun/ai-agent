@@ -78,11 +78,40 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 2 || cfg.RAG.JITRetrievalMaxCycles != 2 || cfg.RAG.JITFetchMaxItems != 3 || cfg.RAG.JITRAGFetchMaxBytes != 6000 || cfg.RAG.JITMemoryFetchMaxBytes != 2000 {
 		t.Errorf("unexpected RAG JIT defaults: %+v", cfg.RAG)
 	}
+	if cfg.Wiki.URL != "" || cfg.Wiki.TimeoutSeconds != 15 || cfg.Wiki.SearchTopK != 5 || cfg.Wiki.FetchMaxItems != 3 || cfg.Wiki.FetchMaxBytes != 12000 || cfg.Wiki.AllowPrivateNetwork || cfg.Wiki.Required {
+		t.Errorf("unexpected Wiki defaults: %+v", cfg.Wiki)
+	}
 	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
 		t.Errorf("unexpected planner trace budget defaults: %+v", cfg.LLM)
 	}
 	if cfg.Langfuse.BootstrapMissingPrompts || cfg.Langfuse.BootstrapFailurePolicy != "fail" || cfg.Langfuse.BootstrapTimeoutSeconds != 15 {
 		t.Errorf("unexpected Langfuse bootstrap defaults: %+v", cfg.Langfuse)
+	}
+}
+
+func TestValidateWikiSettings(t *testing.T) {
+	valid := func() *Config {
+		cfg := &Config{}
+		cfg.LLM.Provider = "openai-responses"
+		cfg.LLM.TimeoutSeconds = 30
+		return cfg
+	}
+	cfg := valid()
+	cfg.Wiki.Required = true
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "wiki.url") {
+		t.Fatalf("required Wiki without URL accepted: %v", err)
+	}
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.Wiki.TimeoutSeconds = -1 },
+		func(cfg *Config) { cfg.Wiki.SearchTopK = 11 },
+		func(cfg *Config) { cfg.Wiki.FetchMaxItems = 11 },
+		func(cfg *Config) { cfg.Wiki.FetchMaxBytes = -1 },
+	} {
+		cfg = valid()
+		mutate(cfg)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "wiki") {
+			t.Fatalf("invalid Wiki settings accepted: %+v", cfg.Wiki)
+		}
 	}
 }
 

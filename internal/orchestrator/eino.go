@@ -261,7 +261,14 @@ func (e *Engine) finalizeBeforeRetrievalExpansion(ctx context.Context, task *typ
 	guardReason := ""
 	for _, action := range decision.Actions {
 		switch action.Action {
-		case "rag_search", "memory_search":
+		case "wiki_search", "rag_search", "memory_search":
+			if action.Action == "wiki_search" {
+				if hardCapacityGuard {
+					mustFinalize = true
+					guardReason = "retrieval_capacity_reserved"
+				}
+				continue
+			}
 			kind := strings.TrimSuffix(action.Action, "_search")
 			query, _ := action.Parameters["query"].(string)
 			state := tools.RetrievalStateForTask(task.ID)
@@ -279,7 +286,7 @@ func (e *Engine) finalizeBeforeRetrievalExpansion(ctx context.Context, task *typ
 				mustFinalize = true
 				guardReason = "retrieval_cycle_limit_reached"
 			}
-		case "rag_fetch", "memory_get":
+		case "wiki_fetch", "rag_fetch", "memory_get":
 			ids := retrievalActionIDs(action.Parameters["ids"])
 			pending := tools.UnfetchedRetrievalIDs(task.ID, ids)
 			if len(pending) < len(ids) {

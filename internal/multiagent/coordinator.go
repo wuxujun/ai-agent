@@ -1178,7 +1178,7 @@ func enforceWorkspaceResearchPlan(task *types.Task, plan *ResearchPlan) bool {
 	}
 	for _, step := range plan.Steps {
 		switch step.Action {
-		case "rag_search", "rag_fetch", "memory_search", "memory_get", "web_search", "http_fetch":
+		case "wiki_search", "wiki_fetch", "rag_search", "rag_fetch", "memory_search", "memory_get", "web_search", "http_fetch":
 			// External-only plans are repaired below.
 		default:
 			return false
@@ -1234,13 +1234,9 @@ func ensureExplicitWorkspaceFileReads(task *types.Task, plan *ResearchPlan) bool
 }
 
 func retrievalFetchSteps(evidence []StepEvidence) []ResearchStep {
-	limit := config.Get().RAG.JITFetchMaxItems
-	if limit <= 0 {
-		limit = 3
-	}
 	steps := make([]ResearchStep, 0, len(evidence))
 	for _, item := range evidence {
-		if item.Failed || (item.Action != "rag_search" && item.Action != "memory_search") {
+		if item.Failed || (item.Action != "wiki_search" && item.Action != "rag_search" && item.Action != "memory_search") {
 			continue
 		}
 		var payload struct {
@@ -1250,6 +1246,13 @@ func retrievalFetchSteps(evidence []StepEvidence) []ResearchStep {
 		}
 		if json.Unmarshal([]byte(item.Observation), &payload) != nil {
 			continue
+		}
+		limit := config.Get().RAG.JITFetchMaxItems
+		if item.Action == "wiki_search" {
+			limit = config.Get().Wiki.FetchMaxItems
+		}
+		if limit <= 0 {
+			limit = 3
 		}
 		ids := make([]string, 0, min(limit, len(payload.Results)))
 		for _, candidate := range payload.Results {
@@ -1266,6 +1269,8 @@ func retrievalFetchSteps(evidence []StepEvidence) []ResearchStep {
 		action := "rag_fetch"
 		if item.Action == "memory_search" {
 			action = "memory_get"
+		} else if item.Action == "wiki_search" {
+			action = "wiki_fetch"
 		}
 		steps = append(steps, ResearchStep{
 			ID:                 item.StepID + "-fetch",
@@ -2116,9 +2121,9 @@ func buildStepQuery(step ResearchStep) string {
 		return fmt.Sprintf("url=%q", step.URL)
 	case "web_search":
 		return fmt.Sprintf("query=%q", step.SearchQuery)
-	case "rag_search", "memory_search":
+	case "wiki_search", "rag_search", "memory_search":
 		return fmt.Sprintf("query=%q", step.SearchQuery)
-	case "rag_fetch", "memory_get":
+	case "wiki_fetch", "rag_fetch", "memory_get":
 		if ids, ok := step.RepairedParameters["ids"]; ok {
 			return fmt.Sprintf("ids=%v", ids)
 		}
