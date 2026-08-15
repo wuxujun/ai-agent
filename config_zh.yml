@@ -455,6 +455,10 @@ wiki:
   # Streamable HTTP MCP 端点，例如 http://127.0.0.1:18765/mcp。
   # 环境变量覆盖：AI_AGENT_WIKI_URL
   url: ""
+  # 也可直接只读访问 llm-wiki 工作目录。可指向包含 AGENTS.md/raw/wiki
+  # 的仓库根目录，或直接指向 wiki 目录。与 url 互斥。
+  # 环境变量覆盖：AI_AGENT_WIKI_DIRECTORY
+  directory: ""
   # 保存认证值的环境变量名称；凭据本身禁止写入本文件。
   # 环境变量覆盖：AI_AGENT_WIKI_AUTHORIZATION_ENV
   authorization_env: ""

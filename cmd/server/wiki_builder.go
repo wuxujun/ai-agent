@@ -32,7 +32,26 @@ func buildWikiRuntime(ctx context.Context, cfg *config.Config, registry *tools.R
 
 func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, registry *tools.Registry, factory wikiClientFactory) (*wikiRuntime, error) {
 	runtime := &wikiRuntime{}
-	if cfg == nil || strings.TrimSpace(cfg.Wiki.URL) == "" {
+	if cfg == nil || (strings.TrimSpace(cfg.Wiki.URL) == "" && strings.TrimSpace(cfg.Wiki.Directory) == "") {
+		return runtime, nil
+	}
+	if strings.TrimSpace(cfg.Wiki.Directory) != "" {
+		client, err := wiki.NewDirectory(cfg.Wiki.Directory)
+		if err == nil {
+			err = client.Initialize(ctx)
+		}
+		if err != nil {
+			if cfg.Wiki.Required {
+				return nil, fmt.Errorf("initialize required local Wiki: %w", err)
+			}
+			slog.Warn("optional local Wiki unavailable", "error", err)
+			return runtime, nil
+		}
+		if err := tools.RegisterWikiTools(registry, client); err != nil {
+			return nil, err
+		}
+		runtime.client = client
+		slog.Info("read-only local Wiki initialized", "directory", cfg.Wiki.Directory)
 		return runtime, nil
 	}
 	authorization := ""

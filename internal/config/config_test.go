@@ -98,8 +98,16 @@ func TestValidateWikiSettings(t *testing.T) {
 	}
 	cfg := valid()
 	cfg.Wiki.Required = true
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "wiki.url") {
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "wiki.url or wiki.directory") {
 		t.Fatalf("required Wiki without URL accepted: %v", err)
+	}
+	cfg.Wiki.Directory = "./llm-wiki"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("required directory Wiki rejected: %v", err)
+	}
+	cfg.Wiki.URL = "https://wiki.example/mcp"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("Wiki URL and directory accepted together: %v", err)
 	}
 	for _, mutate := range []func(*Config){
 		func(cfg *Config) { cfg.Wiki.TimeoutSeconds = -1 },

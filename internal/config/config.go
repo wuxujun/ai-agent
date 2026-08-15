@@ -159,6 +159,7 @@ type Config struct {
 	// operations are deliberately not exposed by this integration.
 	Wiki struct {
 		URL                 string `mapstructure:"url"`
+		Directory           string `mapstructure:"directory"`
 		AuthorizationEnv    string `mapstructure:"authorization_env"`
 		DefaultSpace        string `mapstructure:"default_space"`
 		TimeoutSeconds      int    `mapstructure:"timeout_seconds"`
@@ -516,6 +517,7 @@ func setupViper() {
 	viper.SetDefault("rag.max_memory_prompt_bytes", 8000)
 	viper.SetDefault("rag.max_raw_fallback_bytes", 4000)
 	viper.SetDefault("wiki.url", "")
+	viper.SetDefault("wiki.directory", "")
 	viper.SetDefault("wiki.authorization_env", "")
 	viper.SetDefault("wiki.default_space", "")
 	viper.SetDefault("wiki.timeout_seconds", 15)
@@ -567,6 +569,7 @@ func setupViper() {
 	_ = viper.BindEnv("rag.tool_name", "AI_AGENT_RAG_TOOL_NAME")
 	_ = viper.BindEnv("rag.authorization", "AI_AGENT_RAG_AUTHORIZATION")
 	_ = viper.BindEnv("wiki.url", "AI_AGENT_WIKI_URL")
+	_ = viper.BindEnv("wiki.directory", "AI_AGENT_WIKI_DIRECTORY")
 	_ = viper.BindEnv("wiki.authorization_env", "AI_AGENT_WIKI_AUTHORIZATION_ENV")
 	_ = viper.BindEnv("wiki.default_space", "AI_AGENT_WIKI_DEFAULT_SPACE")
 	_ = viper.BindEnv("search.url", "AI_AGENT_SEARCH_URL")
@@ -1454,8 +1457,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("mcp server %q risk_level must be low or high", name)
 		}
 	}
-	if c.Wiki.Required && strings.TrimSpace(c.Wiki.URL) == "" {
-		return fmt.Errorf("wiki.url must not be empty when wiki.required is true")
+	if strings.TrimSpace(c.Wiki.URL) != "" && strings.TrimSpace(c.Wiki.Directory) != "" {
+		return fmt.Errorf("wiki.url and wiki.directory are mutually exclusive")
+	}
+	if c.Wiki.Required && strings.TrimSpace(c.Wiki.URL) == "" && strings.TrimSpace(c.Wiki.Directory) == "" {
+		return fmt.Errorf("wiki.url or wiki.directory must not be empty when wiki.required is true")
 	}
 	if c.Wiki.TimeoutSeconds < 0 || c.Wiki.SearchTopK < 0 || c.Wiki.FetchMaxItems < 0 || c.Wiki.FetchMaxBytes < 0 {
 		return fmt.Errorf("wiki timeout and retrieval limits must be >= 0")

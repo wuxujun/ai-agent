@@ -118,21 +118,29 @@ func (c *Client) Search(ctx context.Context, query string, topK int, space strin
 }
 
 func (c *Client) Read(ctx context.Context, document Document, space string) (Document, error) {
-	reference := strings.TrimSpace(document.URI)
-	if reference == "" {
-		reference = strings.TrimSpace(document.Slug)
+	uri := strings.TrimSpace(document.URI)
+	slug := strings.TrimSpace(document.Slug)
+	if slug == "" {
+		slug = slugFromWikiURI(uri, space)
 	}
-	if reference == "" {
+	if uri == "" && slug == "" {
 		return Document{}, errors.New("wiki document has no uri or slug")
 	}
 	arguments := make(map[string]any)
 	switch {
+	// Directory-backed LLM Wiki installations expose pages as relative slugs or
+	// paths. Prefer those references and keep wiki:// URIs only as stable
+	// evidence identities; they are not network URLs or filesystem paths.
+	case hasAnyProperty(c.readProps, "slug") && slug != "":
+		arguments["slug"] = slug
+	case hasAnyProperty(c.readProps, "path") && slug != "":
+		arguments["path"] = slug
+	case hasAnyProperty(c.readProps, "uri") && uri != "":
+		arguments["uri"] = uri
 	case hasAnyProperty(c.readProps, "uri"):
-		arguments["uri"] = reference
-	case hasAnyProperty(c.readProps, "slug"):
-		arguments["slug"] = reference
+		arguments["uri"] = slug
 	default:
-		arguments["path"] = reference
+		return Document{}, errors.New("wiki document has no usable reference for the discovered read schema")
 	}
 	setIfSupported(arguments, c.readProps, "wiki", strings.TrimSpace(space))
 	setIfSupported(arguments, c.readProps, "backlinks", true)
@@ -143,10 +151,37 @@ func (c *Client) Read(ctx context.Context, document Document, space string) (Doc
 	}
 	content, err := parseReadResult(result)
 	if err != nil {
-		return Document{}, fmt.Errorf("parse %s result for %s: %w", readToolName, reference, err)
+		return Document{}, fmt.Errorf("parse %s result for %s: %w", readToolName, firstNonEmpty(slug, uri), err)
 	}
 	document.Content = content
 	return document, nil
+}
+
+func slugFromWikiURI(uri, space string) string {
+	const prefix = "wiki://"
+	if !strings.HasPrefix(uri, prefix) {
+		return ""
+	}
+	value := strings.TrimPrefix(uri, prefix)
+	if configuredSpace := strings.Trim(strings.TrimSpace(space), "/"); configuredSpace != "" {
+		if rest, ok := strings.CutPrefix(value, configuredSpace+"/"); ok {
+			return strings.Trim(rest, "/")
+		}
+	}
+	_, rest, ok := strings.Cut(value, "/")
+	if !ok {
+		return ""
+	}
+	return strings.Trim(rest, "/")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (c *Client) Close(ctx context.Context) error {

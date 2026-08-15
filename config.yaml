@@ -453,6 +453,10 @@ wiki:
   # Streamable HTTP MCP endpoint, for example http://127.0.0.1:18765/mcp.
   # Env override: AI_AGENT_WIKI_URL
   url: ""
+  # Alternatively, read an llm-wiki checkout directly. May point at its root
+  # (containing AGENTS.md/raw/wiki) or at the wiki directory itself.
+  # Mutually exclusive with url. Env override: AI_AGENT_WIKI_DIRECTORY
+  directory: ""
   # Name of the environment variable containing the authorization value.
   # The secret itself must not be stored in this file.
   # Env override: AI_AGENT_WIKI_AUTHORIZATION_ENV

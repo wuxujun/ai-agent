@@ -177,7 +177,7 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `store` | `type`, `dsn`, `vector_search`, `pgvector_dimensions`, ParadeDB ranking/slow-query settings, memory candidate/decay settings |
 | `rag` | `search_url`, `search_method` (`MCP` / `POST`), `context_mode` (`jit` / `prefetch`) |
 | `mcp` | `servers[]` with URL, credential environment variable, tool prefix, risk level, and failure policy (restart required) |
-| `wiki` | read-only LLM Wiki MCP endpoint, tenant space, search/fetch limits, and startup failure policy (restart required) |
+| `wiki` | read-only LLM Wiki MCP endpoint or local directory, tenant space, search/fetch limits, and startup failure policy (restart required) |
 | `embedding` | `model` (used for memory vector search) |
 | `answer_pipeline` | `enabled`, `enforcement`, required audit stages |
 | `langfuse` | credentials, runtime fetching, and optional startup prompt bootstrap |

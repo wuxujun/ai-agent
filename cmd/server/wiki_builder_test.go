@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -12,6 +14,31 @@ import (
 type fakeWikiClient struct {
 	initialized bool
 	closed      bool
+}
+
+func TestBuildWikiRuntimeFromLocalDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "wiki", "entities"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "wiki", "entities", "router.md"), []byte("# Router\n\nRoutes tasks."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.Wiki.Directory = root
+	cfg.Wiki.Required = true
+	registry := tools.NewRegistry()
+	runtime, err := buildWikiRuntime(t.Context(), cfg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, ok := registry.Get("wiki_search"); !ok {
+		t.Fatal("local wiki_search was not registered")
+	}
+	if _, ok := registry.Get("wiki_fetch"); !ok {
+		t.Fatal("local wiki_fetch was not registered")
+	}
 }
 
 func (f *fakeWikiClient) Initialize(context.Context) error { f.initialized = true; return nil }

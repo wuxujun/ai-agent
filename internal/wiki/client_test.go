@@ -90,8 +90,45 @@ func TestClientFiltersArgumentsUsingDiscoveredSchema(t *testing.T) {
 	if _, err := client.Read(t.Context(), documents[0], "private-space"); err != nil {
 		t.Fatal(err)
 	}
-	if got := transport.calls[1].args; !reflect.DeepEqual(got, map[string]any{"slug": documents[0].URI}) {
+	if got := transport.calls[1].args; !reflect.DeepEqual(got, map[string]any{"slug": documents[0].Slug}) {
 		t.Fatalf("read args = %#v", got)
+	}
+}
+
+func TestClientPrefersDirectoryPathOverWikiURI(t *testing.T) {
+	transport := &fakeMCP{tools: []mcpclient.Tool{
+		{Name: searchToolName, InputSchema: map[string]any{"properties": map[string]any{"query": map[string]any{"type": "string"}}}},
+		{Name: readToolName, InputSchema: map[string]any{"properties": map[string]any{
+			"uri": map[string]any{"type": "string"}, "path": map[string]any{"type": "string"},
+		}}},
+	}}
+	client := &Client{mcp: transport}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	document := Document{URI: "wiki://research/concepts/moe", Slug: "concepts/moe"}
+	if _, err := client.Read(t.Context(), document, "research"); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.calls[0].args; !reflect.DeepEqual(got, map[string]any{"path": "concepts/moe"}) {
+		t.Fatalf("directory read args = %#v", got)
+	}
+}
+
+func TestClientDerivesDirectoryPathFromWikiURI(t *testing.T) {
+	transport := &fakeMCP{tools: []mcpclient.Tool{
+		{Name: searchToolName, InputSchema: map[string]any{"properties": map[string]any{"query": map[string]any{"type": "string"}}}},
+		{Name: readToolName, InputSchema: map[string]any{"properties": map[string]any{"path": map[string]any{"type": "string"}}}},
+	}}
+	client := &Client{mcp: transport}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Read(t.Context(), Document{URI: "wiki://research/comparisons/agents"}, "research"); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.calls[0].args["path"]; got != "comparisons/agents" {
+		t.Fatalf("derived path = %v", got)
 	}
 }
 
