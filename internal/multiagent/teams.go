@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -46,22 +47,23 @@ const (
 )
 
 type AgentConfig struct {
-	Name               string `yaml:"name" json:"name"`
-	SystemPrompt       string `yaml:"system_prompt" json:"system_prompt"`
-	PromptName         string `yaml:"prompt_name" json:"prompt_name"`
-	LangfusePrompt     string `yaml:"langfuse_prompt" json:"langfuse_prompt"`
-	PromptLabel        string `yaml:"prompt_label" json:"prompt_label"`
-	PromptVersion      int    `yaml:"prompt_version" json:"prompt_version"`
-	DraftPromptName    string `yaml:"draft_prompt_name" json:"draft_prompt_name"`
-	DraftPromptLabel   string `yaml:"draft_prompt_label" json:"draft_prompt_label"`
-	DraftPromptVersion int    `yaml:"draft_prompt_version" json:"draft_prompt_version"`
-	DraftSystemPrompt  string `yaml:"draft_system_prompt" json:"draft_system_prompt"`
-	DraftProvider      string `yaml:"draft_provider" json:"draft_provider"`
-	DraftModel         string `yaml:"draft_model" json:"draft_model"`
-	DraftLLMScene      string `yaml:"draft_llm_scene" json:"draft_llm_scene"`
-	Provider           string `yaml:"provider" json:"provider"`
-	Model              string `yaml:"model" json:"model"`
-	LLMScene           string `yaml:"llm_scene" json:"llm_scene"`
+	Name               string   `yaml:"name" json:"name"`
+	Tools              []string `yaml:"tools" json:"tools,omitempty"`
+	SystemPrompt       string   `yaml:"system_prompt" json:"system_prompt"`
+	PromptName         string   `yaml:"prompt_name" json:"prompt_name"`
+	LangfusePrompt     string   `yaml:"langfuse_prompt" json:"langfuse_prompt"`
+	PromptLabel        string   `yaml:"prompt_label" json:"prompt_label"`
+	PromptVersion      int      `yaml:"prompt_version" json:"prompt_version"`
+	DraftPromptName    string   `yaml:"draft_prompt_name" json:"draft_prompt_name"`
+	DraftPromptLabel   string   `yaml:"draft_prompt_label" json:"draft_prompt_label"`
+	DraftPromptVersion int      `yaml:"draft_prompt_version" json:"draft_prompt_version"`
+	DraftSystemPrompt  string   `yaml:"draft_system_prompt" json:"draft_system_prompt"`
+	DraftProvider      string   `yaml:"draft_provider" json:"draft_provider"`
+	DraftModel         string   `yaml:"draft_model" json:"draft_model"`
+	DraftLLMScene      string   `yaml:"draft_llm_scene" json:"draft_llm_scene"`
+	Provider           string   `yaml:"provider" json:"provider"`
+	Model              string   `yaml:"model" json:"model"`
+	LLMScene           string   `yaml:"llm_scene" json:"llm_scene"`
 }
 
 func draftAgentConfig(agentCfg AgentConfig) AgentConfig {
@@ -237,6 +239,17 @@ func teamConfigFromContext(ctx context.Context) teamConfigSnapshot {
 	snapshot := newTeamConfigSnapshot(teamsCfg.ActiveTeam, teamsCfg.GetActiveTeam())
 	snapshot.ResumePolicy = teamsCfg.ResumeConfigPolicy
 	return snapshot
+}
+
+// teamLogger adds the selected multi-agent team to every core workflow log.
+// The snapshot is task-scoped, so concurrent tasks using different teams do
+// not leak labels into one another.
+func teamLogger(ctx context.Context) *slog.Logger {
+	team := strings.TrimSpace(teamConfigFromContext(ctx).ActiveTeam)
+	if team == "" {
+		return log
+	}
+	return log.With("team", team)
 }
 
 // GetTeamsConfig loads and parses teams.yaml if it exists.

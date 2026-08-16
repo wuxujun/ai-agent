@@ -120,7 +120,7 @@ func (t *wikiSearchTool) Validate(params map[string]any) error {
 		return errors.New("wiki_search requires non-empty query")
 	}
 	topK := intParameter(params, "top_k")
-	if topK < 1 || topK > 10 {
+	if topK < 0 || topK > 10 {
 		return errors.New("wiki_search top_k must be between 1 and 10")
 	}
 	return nil
@@ -142,6 +142,9 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 	configuredTopK := config.Get().Wiki.SearchTopK
 	if configuredTopK <= 0 {
 		configuredTopK = 5
+	}
+	if topK == 0 {
+		topK = configuredTopK
 	}
 	if topK > configuredTopK {
 		topK = configuredTopK

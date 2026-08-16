@@ -6,8 +6,19 @@ import (
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+type wikiOnlySearchStub struct{}
+
+func (wikiOnlySearchStub) Name() string               { return "wiki_search" }
+func (wikiOnlySearchStub) Description() string        { return "test Wiki search" }
+func (wikiOnlySearchStub) Parameters() map[string]any { return map[string]any{} }
+func (wikiOnlySearchStub) RiskLevel() types.RiskLevel { return types.RiskLevelLow }
+func (wikiOnlySearchStub) Execute(context.Context, string, map[string]interface{}) (*tools.ToolResult, error) {
+	return &tools.ToolResult{}, nil
+}
 
 func TestPlannerResearchActionsExposeSearchButNotDetailTools(t *testing.T) {
 	actions := plannerResearchActions()
@@ -28,6 +39,21 @@ func TestPlannerResearchActionsExposeSearchButNotDetailTools(t *testing.T) {
 		if contains(action) {
 			t.Fatalf("planner must not select detail action %q before candidate IDs exist", action)
 		}
+	}
+}
+
+func TestPlannerResearchActionsForWikiTeamOnlyAllowsSearch(t *testing.T) {
+	tools.Register(wikiOnlySearchStub{})
+	t.Cleanup(func() { tools.Unregister("wiki_search") })
+	actions := plannerResearchActionsFor(AgentConfig{Tools: []string{"wiki_search"}})
+	if !reflect.DeepEqual(actions, []string{"wiki_search"}) {
+		t.Fatalf("Wiki team planner actions = %v", actions)
+	}
+	schema := (&PlannerAgent{}).jsonSchema(actions)
+	properties := schema["properties"].(map[string]any)
+	steps := properties["steps"].(map[string]any)
+	if steps["minItems"] != 1 {
+		t.Fatalf("Wiki team minimum plan steps = %v, want 1", steps["minItems"])
 	}
 }
 

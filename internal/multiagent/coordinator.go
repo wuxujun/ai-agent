@@ -166,6 +166,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 	teamSnapshot := newTeamConfigSnapshot(teamsCfg.ActiveTeam, teamCfg)
 	teamSnapshot.ResumePolicy = teamsCfg.ResumeConfigPolicy
 	ctx = withTeamConfigSnapshot(ctx, teamSnapshot)
+	log := teamLogger(ctx)
 	configuredWorkflow := teamsCfg.ActiveWorkflow()
 	configuredRuntime := teamsCfg.ActiveRuntime()
 	configuredGraphSummary, err := annotateWorkflowGraph(span, "multiagent.workflow.configured_graph", configuredWorkflow)
@@ -684,6 +685,7 @@ func appendWorkflowRouteTrace(task *types.Task, decision workflowRouteDecision) 
 // ── phase helpers ─────────────────────────────────────────────────────────────
 
 func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*ResearchPlan, error) {
+	log := teamLogger(ctx)
 	log.Info("Phase 1 — Planning", "task_id", task.ID)
 
 	start := time.Now()
@@ -769,6 +771,7 @@ func (c *Coordinator) critiqueResearchPlan(ctx context.Context, task *types.Task
 }
 
 func (c *Coordinator) reviewResearchPlan(ctx context.Context, task *types.Task, plan *ResearchPlan, required, countStep bool) (*plancritic.Result, error) {
+	log := teamLogger(ctx)
 	if c.PlanCritic == nil || plan == nil {
 		if required {
 			return nil, fmt.Errorf("reviewed workflow requires a Critic")
@@ -900,6 +903,7 @@ func criticPlanFromResearchPlan(plan *ResearchPlan) plancritic.Plan {
 }
 
 func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, steps []ResearchStep, configuredWorkflow Workflow, routing WorkflowRoutingConfig) researchPhaseResult {
+	log := teamLogger(ctx)
 	log.Info("Phase 2 — Researching", "task_id", task.ID)
 
 	result := researchPhaseResult{Complete: true, Workflow: workflowFromContext(ctx)}
@@ -1469,6 +1473,7 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 
 // runBatchSerial executes steps one at a time (used for write/execute steps).
 func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batch []ResearchStep) (evidence []StepEvidence, anyFailed bool, fatalErr error) {
+	log := teamLogger(ctx)
 	agentRole, agentLabel := executionTraceIdentity(ctx)
 	for _, step := range batch {
 		if task.ToolBudget <= 0 || multiAgentToolStepCount(task) >= task.MaxSteps {
@@ -1589,6 +1594,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 }
 
 func (c *Coordinator) runVerifyPhase(ctx context.Context, task *types.Task, evidence []StepEvidence, executionComplete bool, executionReason string) (string, bool, error) {
+	log := teamLogger(ctx)
 	log.Info("Phase 3 — Verifying execution result", "task_id", task.ID)
 	if c.FinalVerifier == nil {
 		err := fmt.Errorf("reviewed workflow requires a final Verifier")
@@ -1820,6 +1826,7 @@ func (c *Coordinator) recordVerifierFailure(task *types.Task, err error, usage t
 }
 
 func (c *Coordinator) resumeVerifierCheckpoint(ctx context.Context, task *types.Task, checkpoint verifierDraftCheckpoint) error {
+	log := teamLogger(ctx)
 	verifier, ok := c.FinalVerifier.(CheckpointFinalVerifier)
 	if !ok {
 		err := fmt.Errorf("pending verifier draft requires a checkpoint-capable FinalVerifier")
@@ -1881,6 +1888,7 @@ func (c *Coordinator) resumeVerifierCheckpoint(ctx context.Context, task *types.
 }
 
 func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {
+	log := teamLogger(ctx)
 	log.Info("Phase 3 — Writing final answer", "task_id", task.ID)
 
 	start := time.Now()

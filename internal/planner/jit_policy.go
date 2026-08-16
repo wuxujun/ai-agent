@@ -141,7 +141,8 @@ func PreferredJITSearchAction(task *types.Task) (string, bool) {
 	if goalExplicitlyTargetsMemory(task.Goal) {
 		return "memory_search", true
 	}
-	if strings.TrimSpace(config.Get().Wiki.URL) != "" {
+	wikiConfig := config.Get().Wiki
+	if strings.TrimSpace(wikiConfig.URL) != "" || strings.TrimSpace(wikiConfig.Directory) != "" {
 		if _, ready := tools.Get("wiki_search"); ready {
 			return "wiki_search", true
 		}

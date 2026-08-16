@@ -61,7 +61,7 @@ type PlannerAgent struct {
 }
 
 // jsonSchema returns the JSON Schema used to enforce structured output.
-func (p *PlannerAgent) jsonSchema() map[string]any {
+func (p *PlannerAgent) jsonSchema(actions []string) map[string]any {
 	// Action enum is derived from the tool registry so newly registered tools
 	// become selectable by the planner without editing this schema by hand.
 	stepSchema := map[string]any{
@@ -69,8 +69,8 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 		"properties": map[string]any{
 			"id":           map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
 			"description":  map[string]any{"type": "string", "description": "What this step investigates"},
-			"action":       map[string]any{"type": "string", "enum": plannerResearchActions()},
-			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search)"},
+			"action":       map[string]any{"type": "string", "enum": actions},
+			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search / retrieval search tools)"},
 			"file_glob":    map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
 			"file_path":    map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
 			"content":      map[string]any{"type": "string", "description": "Content to write (write_file only)"},
@@ -83,6 +83,10 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 		"additionalProperties": false,
 	}
 
+	minItems := 2
+	if len(actions) == 1 {
+		minItems = 1
+	}
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -93,7 +97,7 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 			"steps": map[string]any{
 				"type":        "array",
 				"items":       stepSchema,
-				"minItems":    2,
+				"minItems":    minItems,
 				"maxItems":    8,
 				"description": "Ordered list of research steps",
 			},
@@ -105,13 +109,13 @@ func (p *PlannerAgent) jsonSchema() map[string]any {
 
 // replanJsonSchema returns the JSON Schema used to enforce structured output for Replanning.
 // It differs from jsonSchema by allowing 1 to 5 steps, or even 0 steps (omitting minItems) if no new steps can be tried.
-func (p *PlannerAgent) replanJsonSchema() map[string]any {
+func (p *PlannerAgent) replanJsonSchema(actions []string) map[string]any {
 	stepSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"id":           map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
 			"description":  map[string]any{"type": "string", "description": "What this step investigates"},
-			"action":       map[string]any{"type": "string", "enum": plannerResearchActions()},
+			"action":       map[string]any{"type": "string", "enum": actions},
 			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search)"},
 			"file_glob":    map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
 			"file_path":    map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
@@ -157,8 +161,27 @@ func plannerResearchActions() []string {
 	return result
 }
 
+func plannerResearchActionsFor(agent AgentConfig) []string {
+	actions := plannerResearchActions()
+	if len(agent.Tools) == 0 {
+		return actions
+	}
+	allowed := make(map[string]bool, len(agent.Tools))
+	for _, name := range agent.Tools {
+		allowed[strings.TrimSpace(name)] = true
+	}
+	filtered := make([]string, 0, len(actions))
+	for _, action := range actions {
+		if allowed[action] {
+			filtered = append(filtered, action)
+		}
+	}
+	return filtered
+}
+
 // Plan calls the LLM to produce a ResearchPlan for the given goal.
 func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memories []types.Memory) (*ResearchPlan, error) {
+	log := teamLogger(ctx)
 	taskID := logger.TaskID(ctx)
 	log.Info("Decomposing goal into research plan", "task_id", taskID, "goal", goal)
 
@@ -191,7 +214,11 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentPlanner)
 	}
 
-	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, p.jsonSchema(), &plan)
+	actions := plannerResearchActionsFor(activeTeam.Planner)
+	if len(actions) == 0 {
+		return nil, fmt.Errorf("PlannerAgent team %q has no registered allowed tools", teamSnapshot.ActiveTeam)
+	}
+	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, p.jsonSchema(actions), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent LLM call failed: %w", err)
 	}
@@ -255,6 +282,7 @@ Rules:
 
 // Replan calls the LLM to generate a revised ResearchPlan when a execution step fails.
 func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, traces []types.StepTrace, memories []types.Memory) (*ResearchPlan, error) {
+	log := teamLogger(ctx)
 	taskID := logger.TaskID(ctx)
 	log.Info("Re-planning goal due to step execution failure", "task_id", taskID, "goal", goal)
 
@@ -298,7 +326,11 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentReplanner)
 	}
 
-	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, p.replanJsonSchema(), &plan)
+	actions := plannerResearchActionsFor(activeTeam.Planner)
+	if len(actions) == 0 {
+		return nil, fmt.Errorf("PlannerAgent team %q has no registered allowed tools", teamSnapshot.ActiveTeam)
+	}
+	usage, err := callLLMJSON(callCtx, cfg, systemPrompt, userPrompt, p.replanJsonSchema(actions), &plan)
 	if err != nil {
 		return nil, fmt.Errorf("PlannerAgent Replan LLM call failed: %w", err)
 	}

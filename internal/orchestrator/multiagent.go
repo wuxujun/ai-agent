@@ -16,11 +16,13 @@ import (
 func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next_multiagent")
 	defer span.End()
+	teamName := multiagent.GetTeamsConfig().ActiveTeam
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
 		attribute.Int("agent.task.goal_chars", len([]rune(task.Goal))),
 		attribute.String("agent.orchestrator", "multiagent"),
+		attribute.String("multiagent.team", teamName),
 	)
 
 	if e.Coordinator == nil {
@@ -35,7 +37,7 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 		return nil
 	}
 
-	log.Info("starting multi-agent workflow", "task_id", task.ID)
+	log.Info("starting multi-agent workflow", "task_id", task.ID, "team", teamName)
 
 	if err := e.Coordinator.Run(ctx, task); err != nil {
 		span.RecordError(err)
@@ -51,6 +53,7 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 
 	log.Info("multi-agent workflow complete",
 		"task_id", task.ID,
+		"team", teamName,
 		"status", string(task.Status),
 		"steps", task.StepCount,
 	)

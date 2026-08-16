@@ -20,6 +20,7 @@ type ResearcherAgent struct{}
 type ExecutorAgent struct{}
 
 func (e *ExecutorAgent) Execute(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
+	log := teamLogger(ctx)
 	taskID := logger.TaskID(ctx)
 	agentName := "Executor"
 	activeTeam := teamConfigFromContext(ctx).Team
@@ -34,6 +35,7 @@ func (e *ExecutorAgent) Execute(ctx context.Context, workspace string, step Rese
 // Errors inside individual tool calls are treated as non-fatal: the observation
 // records the error and the caller can decide whether to continue.
 func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
+	log := teamLogger(ctx)
 	taskID := logger.TaskID(ctx)
 	agentName := "Researcher"
 	activeTeam := teamConfigFromContext(ctx).Team
@@ -45,6 +47,7 @@ func (r *ResearcherAgent) Research(ctx context.Context, workspace string, step R
 }
 
 func executeResearchStep(ctx context.Context, workspace string, step ResearchStep, roleName string) (*StepEvidence, error) {
+	log := teamLogger(ctx)
 	taskID := logger.TaskID(ctx)
 	// Validate workspace boundary before any operation.
 	if err := policy.ValidateWorkspace(workspace); err != nil {

@@ -55,6 +55,7 @@ func (w *WriterAgent) jsonSchema() map[string]any {
 
 // Write calls the LLM to synthesise all gathered evidence into a WriterOutput.
 func (w *WriterAgent) Write(ctx context.Context, goal string, evidence []StepEvidence, memories []types.Memory) (*WriterOutput, error) {
+	log := teamLogger(ctx)
 	taskID := logger.TaskID(ctx)
 	log.Info("Synthesising answer", "task_id", taskID, "goal", goal, "evidence_items", len(evidence))
 

@@ -81,6 +81,21 @@ func TestPreferredJITSearchActionPrefersConfiguredWiki(t *testing.T) {
 	}
 }
 
+func TestPreferredJITSearchActionPrefersConfiguredWikiDirectory(t *testing.T) {
+	tools.Register(jitWikiSearchStub{})
+	t.Cleanup(func() { tools.Unregister("wiki_search") })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+		cfg.Wiki.URL = ""
+		cfg.Wiki.Directory = "/tmp/read-only-wiki"
+	}))
+	action, ok := PreferredJITSearchAction(&types.Task{Goal: "查询当前组织政策"})
+	if !ok || action != "wiki_search" {
+		t.Fatalf("configured Wiki directory routed to %q, ok=%t", action, ok)
+	}
+}
+
 func TestNextJITRetrievalDecisionFetchesWikiCandidates(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"

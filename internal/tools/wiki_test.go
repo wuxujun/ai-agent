@@ -12,15 +12,37 @@ import (
 
 type fakeWikiReader struct {
 	searchSpace string
+	searchTopK  int
 	readSpaces  []string
 }
 
-func (f *fakeWikiReader) Search(_ context.Context, _ string, _ int, space string) ([]wiki.Document, error) {
+func (f *fakeWikiReader) Search(_ context.Context, _ string, topK int, space string) ([]wiki.Document, error) {
 	f.searchSpace = space
+	f.searchTopK = topK
 	return []wiki.Document{{
 		Slug: "concepts/moe", URI: "wiki://tenant-a/concepts/moe", Title: "Mixture of Experts",
 		Summary: "Sparse expert routing", Excerpt: "Each token is routed to selected experts.", Score: 0.94, Confidence: 0.9,
 	}}, nil
+}
+
+func TestWikiSearchUsesConfiguredTopKWhenOmitted(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.Wiki.DefaultSpace = "local"
+		cfg.Wiki.SearchTopK = 4
+	}))
+	reader := &fakeWikiReader{}
+	registry := NewRegistry()
+	if err := RegisterWikiTools(registry, reader); err != nil {
+		t.Fatal(err)
+	}
+	search, _ := registry.Get("wiki_search")
+	ctx := WithRetrievalExecutionContext(t.Context(), "task-default-top-k", "6492")
+	if _, err := search.Execute(ctx, "", map[string]any{"query": "PBL 历史旅行指南"}); err != nil {
+		t.Fatal(err)
+	}
+	if reader.searchTopK != 4 {
+		t.Fatalf("search top_k = %d, want configured default 4", reader.searchTopK)
+	}
 }
 func (f *fakeWikiReader) Read(_ context.Context, document wiki.Document, space string) (wiki.Document, error) {
 	f.readSpaces = append(f.readSpaces, space)
