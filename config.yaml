@@ -468,6 +468,10 @@ wiki:
   search_top_k: 5
   fetch_max_items: 3
   fetch_max_bytes: 12000
+  # Consecutive backend failures before temporarily rejecting Wiki calls.
+  # Set either value to 0 to disable the circuit breaker.
+  circuit_breaker_failure_threshold: 3
+  circuit_breaker_cooldown_seconds: 30
   # Loopback/private endpoints are rejected unless explicitly enabled.
   allow_private_network: false
   # Fail service startup when the configured Wiki cannot initialize.

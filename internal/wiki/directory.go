@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"gopkg.in/yaml.v3"
 )
 
 // DirectoryClient reads an llm-wiki checkout without requiring its MCP
@@ -19,7 +23,45 @@ import (
 type DirectoryClient struct {
 	configuredRoot string
 	root           string
+	indexMu        sync.RWMutex
+	indexSignature string
+	index          []directoryIndexPage
 }
+
+type directoryIndexPage struct {
+	slug            string
+	title           string
+	summary         string
+	excerpt         string
+	links           []string
+	slugText        string
+	titleText       string
+	headingText     string
+	metadataText    string
+	bodyText        string
+	slugCompact     string
+	titleCompact    string
+	metadataCompact string
+	bodyCompact     string
+	chunks          []directoryIndexChunk
+}
+
+type directoryIndexChunk struct {
+	text       string
+	normalized string
+	compact    string
+}
+
+type directoryFrontmatter struct {
+	Title   string   `yaml:"title"`
+	Summary string   `yaml:"summary"`
+	Tags    []string `yaml:"tags"`
+	Aliases []string `yaml:"aliases"`
+}
+
+var markdownWikiLinkPattern = regexp.MustCompile(`\[[^\]]*\]\(([^)#]+\.md)(?:#[^)]*)?\)`)
+
+const maxDirectoryPageBytes = 2 << 20
 
 func NewDirectory(root string) (*DirectoryClient, error) {
 	if strings.TrimSpace(root) == "" {
@@ -48,18 +90,27 @@ func (c *DirectoryClient) Initialize(context.Context) error {
 		return fmt.Errorf("resolve wiki directory: %w", err)
 	}
 	c.root = resolved
-	return nil
+	_, err = c.ensureIndex(context.Background())
+	return err
 }
 
 func (c *DirectoryClient) Close(context.Context) error { return nil }
+
+// Probe verifies that the local Wiki root remains readable and refreshes the
+// index when its Markdown inventory changed.
+func (c *DirectoryClient) Probe(ctx context.Context) error {
+	if c == nil || c.root == "" {
+		return errors.New("wiki directory is not initialized")
+	}
+	_, err := c.ensureIndex(ctx)
+	return err
+}
 
 func (c *DirectoryClient) Search(ctx context.Context, query string, topK int, space string) ([]Document, error) {
 	if c.root == "" {
 		return nil, errors.New("wiki directory client is not initialized")
 	}
-	terms := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(query)), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
+	terms := directorySearchTerms(query)
 	if len(terms) == 0 {
 		return nil, errors.New("wiki search query must not be empty")
 	}
@@ -70,46 +121,47 @@ func (c *DirectoryClient) Search(ctx context.Context, query string, topK int, sp
 	if space == "" {
 		space = "local"
 	}
-	var documents []Document
-	err := filepath.WalkDir(c.root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
-			return nil
-		}
-		if err := policy.ValidateReadPath(c.root, path); err != nil {
-			return err
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if len(content) > 2<<20 {
-			content = content[:2<<20]
-		}
-		relative, err := filepath.Rel(c.root, path)
-		if err != nil {
-			return err
-		}
-		slug := strings.TrimSuffix(filepath.ToSlash(relative), filepath.Ext(relative))
-		haystack := strings.ToLower(slug + "\n" + string(content))
-		score := 0
-		for _, term := range terms {
-			score += strings.Count(haystack, term)
-		}
-		if score == 0 {
-			return nil
-		}
-		title, excerpt := directoryPageSummary(slug, string(content))
-		documents = append(documents, Document{Slug: slug, URI: "wiki://" + space + "/" + slug, Title: title, Excerpt: excerpt, Score: float64(score)})
-		return nil
-	})
+	pages, err := c.ensureIndex(ctx)
 	if err != nil {
 		return nil, err
+	}
+	phrase := strings.Join(terms, " ")
+	compactPhrase := compactDirectorySearchText(phrase)
+	scores := make(map[string]float64, len(pages))
+	pageBySlug := make(map[string]directoryIndexPage, len(pages))
+	for _, page := range pages {
+		pageBySlug[page.slug] = page
+		scores[page.slug] = scoreDirectoryPage(page, terms, phrase, compactPhrase)
+	}
+	// A strongly matching compiled page can nominate its directly linked source,
+	// entity, concept, or comparison pages. This is deliberately one hop and
+	// capped so relationship context cannot outrank a direct title match.
+	for _, page := range pages {
+		directScore := scores[page.slug]
+		if directScore == 0 || isDirectoryNavigationPage(page.slug) {
+			continue
+		}
+		linkBoost := directScore * 0.08
+		if linkBoost > 25 {
+			linkBoost = 25
+		}
+		for _, linkedSlug := range page.links {
+			if _, exists := pageBySlug[linkedSlug]; exists {
+				scores[linkedSlug] += linkBoost
+			}
+		}
+	}
+	documents := make([]Document, 0, len(pages))
+	for _, page := range pages {
+		score := scores[page.slug]
+		if score == 0 {
+			continue
+		}
+		if isDirectoryNavigationPage(page.slug) {
+			score *= 0.25
+		}
+		excerpt := bestDirectoryExcerpt(page, terms, phrase, compactPhrase)
+		documents = append(documents, Document{Slug: page.slug, URI: "wiki://" + space + "/" + page.slug, Title: page.title, Summary: page.summary, Excerpt: excerpt, Score: score})
 	}
 	sort.SliceStable(documents, func(i, j int) bool {
 		if documents[i].Score == documents[j].Score {
@@ -121,6 +173,269 @@ func (c *DirectoryClient) Search(ctx context.Context, query string, topK int, sp
 		documents = documents[:topK]
 	}
 	return documents, nil
+}
+
+func (c *DirectoryClient) ensureIndex(ctx context.Context) ([]directoryIndexPage, error) {
+	paths, signature, err := directoryMarkdownFiles(ctx, c.root)
+	if err != nil {
+		return nil, err
+	}
+	c.indexMu.RLock()
+	if signature == c.indexSignature {
+		pages := append([]directoryIndexPage(nil), c.index...)
+		c.indexMu.RUnlock()
+		return pages, nil
+	}
+	c.indexMu.RUnlock()
+
+	c.indexMu.Lock()
+	defer c.indexMu.Unlock()
+	// Another concurrent search may already have rebuilt this signature.
+	if signature == c.indexSignature {
+		return append([]directoryIndexPage(nil), c.index...), nil
+	}
+	pages := make([]directoryIndexPage, 0, len(paths))
+	for _, path := range paths {
+		page, err := buildDirectoryIndexPage(c.root, path)
+		if err != nil {
+			return nil, err
+		}
+		pages = append(pages, page)
+	}
+	c.index = pages
+	c.indexSignature = signature
+	return append([]directoryIndexPage(nil), c.index...), nil
+}
+
+func directoryMarkdownFiles(ctx context.Context, root string) ([]string, string, error) {
+	var paths []string
+	var signature strings.Builder
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
+			return nil
+		}
+		if err := policy.ValidateReadPath(root, path); err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		paths = append(paths, path)
+		fmt.Fprintf(&signature, "%s\x00%d\x00%d\n", path, info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	return paths, signature.String(), err
+}
+
+func buildDirectoryIndexPage(root, path string) (directoryIndexPage, error) {
+	content, err := readDirectoryMarkdownFile(path)
+	if err != nil {
+		return directoryIndexPage{}, fmt.Errorf("index wiki page %q: %w", path, err)
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return directoryIndexPage{}, err
+	}
+	slug := strings.TrimSuffix(filepath.ToSlash(relative), filepath.Ext(relative))
+	metadata, body := parseDirectoryFrontmatter(string(content))
+	title, excerpt := directoryPageSummary(slug, body)
+	if strings.TrimSpace(metadata.Title) != "" {
+		title = strings.TrimSpace(metadata.Title)
+	}
+	summary := strings.TrimSpace(metadata.Summary)
+	if summary == "" {
+		summary = excerpt
+	}
+	var headings []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			headings = append(headings, strings.TrimSpace(strings.TrimLeft(line, "#")))
+		}
+	}
+	page := directoryIndexPage{
+		slug: slug, title: title, summary: summary, excerpt: excerpt, links: directoryPageLinks(slug, body),
+		slugText: normalizeDirectorySearchText(slug), titleText: normalizeDirectorySearchText(title),
+		headingText:  normalizeDirectorySearchText(strings.Join(headings, " ")),
+		metadataText: normalizeDirectorySearchText(strings.Join(append(append([]string{metadata.Summary}, metadata.Tags...), metadata.Aliases...), " ")),
+		bodyText:     normalizeDirectorySearchText(body),
+	}
+	page.slugCompact = strings.ReplaceAll(page.slugText, " ", "")
+	page.titleCompact = strings.ReplaceAll(page.titleText, " ", "")
+	page.metadataCompact = strings.ReplaceAll(page.metadataText, " ", "")
+	page.bodyCompact = strings.ReplaceAll(page.bodyText, " ", "")
+	page.chunks = directorySearchChunks(body)
+	return page, nil
+}
+
+func directorySearchChunks(body string) []directoryIndexChunk {
+	const maxChunks = 256
+	paragraphs := strings.FieldsFunc(body, func(r rune) bool { return r == '\n' || r == '\r' })
+	chunks := make([]directoryIndexChunk, 0, min(len(paragraphs), maxChunks))
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" {
+			continue
+		}
+		runes := []rune(paragraph)
+		if len(runes) > 500 {
+			runes = runes[:500]
+			paragraph = string(runes)
+		}
+		normalized := normalizeDirectorySearchText(paragraph)
+		chunks = append(chunks, directoryIndexChunk{text: paragraph, normalized: normalized, compact: strings.ReplaceAll(normalized, " ", "")})
+		if len(chunks) == maxChunks {
+			break
+		}
+	}
+	return chunks
+}
+
+func bestDirectoryExcerpt(page directoryIndexPage, terms []string, phrase, compactPhrase string) string {
+	bestScore := 0
+	best := ""
+	for _, chunk := range page.chunks {
+		score := 0
+		if phrase != "" && strings.Contains(chunk.normalized, phrase) {
+			score += 20
+		}
+		if compactPhrase != "" && strings.Contains(chunk.compact, compactPhrase) {
+			score += 10
+		}
+		for _, term := range terms {
+			if strings.Contains(chunk.normalized, term) {
+				score += 3
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			best = chunk.text
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return page.excerpt
+}
+
+func parseDirectoryFrontmatter(content string) (directoryFrontmatter, string) {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	if !strings.HasPrefix(normalized, "---\n") {
+		return directoryFrontmatter{}, content
+	}
+	end := strings.Index(normalized[4:], "\n---\n")
+	if end < 0 {
+		return directoryFrontmatter{}, content
+	}
+	end += 4
+	var metadata directoryFrontmatter
+	if err := yaml.Unmarshal([]byte(normalized[4:end]), &metadata); err != nil {
+		return directoryFrontmatter{}, content
+	}
+	return metadata, normalized[end+5:]
+}
+
+func directoryPageLinks(sourceSlug, content string) []string {
+	seen := make(map[string]bool)
+	var links []string
+	for _, match := range markdownWikiLinkPattern.FindAllStringSubmatch(content, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		target := strings.TrimSpace(match[1])
+		if strings.Contains(target, "://") || filepath.IsAbs(target) {
+			continue
+		}
+		resolved := filepath.ToSlash(filepath.Clean(filepath.Join(filepath.Dir(sourceSlug), filepath.FromSlash(target))))
+		resolved = strings.TrimSuffix(resolved, filepath.Ext(resolved))
+		if resolved == ".." || strings.HasPrefix(resolved, "../") || seen[resolved] {
+			continue
+		}
+		seen[resolved] = true
+		links = append(links, resolved)
+	}
+	return links
+}
+
+func isDirectoryNavigationPage(slug string) bool {
+	base := strings.ToLower(filepath.Base(slug))
+	return base == "index" || base == "_index" || base == "log"
+}
+
+func directorySearchTerms(value string) []string {
+	return strings.Fields(normalizeDirectorySearchText(value))
+}
+
+func normalizeDirectorySearchText(value string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	}), " ")
+}
+
+func compactDirectorySearchText(value string) string {
+	return strings.ReplaceAll(normalizeDirectorySearchText(value), " ", "")
+}
+
+func scoreDirectoryPage(page directoryIndexPage, terms []string, phrase, compactPhrase string) float64 {
+	score := 0
+	if phrase != "" {
+		if strings.Contains(page.titleText, phrase) {
+			score += 100
+		}
+		if strings.Contains(page.slugText, phrase) {
+			score += 70
+		}
+		if strings.Contains(page.headingText, phrase) {
+			score += 40
+		}
+		if strings.Contains(page.metadataText, phrase) {
+			score += 35
+		}
+		if strings.Contains(page.bodyText, phrase) {
+			score += 20
+		}
+	}
+	// Compact matching bridges harmless punctuation and spacing differences,
+	// especially mixed acronym/CJK queries such as "PBL历史旅行指南". Its
+	// weights remain below normalized exact-phrase weights.
+	if compactPhrase != "" {
+		if strings.Contains(page.titleCompact, compactPhrase) {
+			score += 60
+		}
+		if strings.Contains(page.slugCompact, compactPhrase) {
+			score += 40
+		}
+		if strings.Contains(page.metadataCompact, compactPhrase) {
+			score += 20
+		}
+		if strings.Contains(page.bodyCompact, compactPhrase) {
+			score += 10
+		}
+	}
+	matched := 0
+	for _, term := range terms {
+		termScore := strings.Count(page.titleText, term)*25 + strings.Count(page.slugText, term)*18 + strings.Count(page.headingText, term)*10 + strings.Count(page.metadataText, term)*8
+		bodyMatches := strings.Count(page.bodyText, term)
+		if bodyMatches > 10 {
+			bodyMatches = 10
+		}
+		termScore += bodyMatches * 2
+		if termScore > 0 {
+			matched++
+			score += termScore
+		}
+	}
+	if matched == len(terms) {
+		score += 25
+	}
+	return float64(score)
 }
 
 func (c *DirectoryClient) Read(ctx context.Context, document Document, space string) (Document, error) {
@@ -141,7 +456,7 @@ func (c *DirectoryClient) Read(ctx context.Context, document Document, space str
 	if err := policy.ValidateReadPath(c.root, path); err != nil {
 		return Document{}, fmt.Errorf("wiki page path rejected: %w", err)
 	}
-	content, err := os.ReadFile(path)
+	content, err := readDirectoryMarkdownFile(path)
 	if err != nil {
 		return Document{}, fmt.Errorf("read wiki page %q: %w", slug, err)
 	}
@@ -154,6 +469,32 @@ func (c *DirectoryClient) Read(ctx context.Context, document Document, space str
 	return document, nil
 }
 
+func readDirectoryMarkdownFile(path string) ([]byte, error) {
+	if !strings.EqualFold(filepath.Ext(path), ".md") {
+		return nil, errors.New("wiki page must be a Markdown file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("wiki page is not a regular file")
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxDirectoryPageBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(content) > maxDirectoryPageBytes {
+		return nil, fmt.Errorf("wiki page exceeds %d byte read limit", maxDirectoryPageBytes)
+	}
+	return content, nil
+}
+
 func directoryPageSummary(slug, content string) (string, string) {
 	title := filepath.Base(slug)
 	for _, line := range strings.Split(content, "\n") {
@@ -163,9 +504,9 @@ func directoryPageSummary(slug, content string) (string, string) {
 			break
 		}
 	}
-	excerpt := strings.TrimSpace(content)
-	if len(excerpt) > 500 {
-		excerpt = excerpt[:500]
+	excerptRunes := []rune(strings.TrimSpace(content))
+	if len(excerptRunes) > 500 {
+		excerptRunes = excerptRunes[:500]
 	}
-	return title, excerpt
+	return title, string(excerptRunes)
 }

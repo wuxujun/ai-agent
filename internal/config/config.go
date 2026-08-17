@@ -158,16 +158,18 @@ type Config struct {
 	// Wiki configures the optional read-only LLM Wiki adapter. Mutating Wiki
 	// operations are deliberately not exposed by this integration.
 	Wiki struct {
-		URL                 string `mapstructure:"url"`
-		Directory           string `mapstructure:"directory"`
-		AuthorizationEnv    string `mapstructure:"authorization_env"`
-		DefaultSpace        string `mapstructure:"default_space"`
-		TimeoutSeconds      int    `mapstructure:"timeout_seconds"`
-		SearchTopK          int    `mapstructure:"search_top_k"`
-		FetchMaxItems       int    `mapstructure:"fetch_max_items"`
-		FetchMaxBytes       int    `mapstructure:"fetch_max_bytes"`
-		AllowPrivateNetwork bool   `mapstructure:"allow_private_network"`
-		Required            bool   `mapstructure:"required"`
+		URL                            string `mapstructure:"url"`
+		Directory                      string `mapstructure:"directory"`
+		AuthorizationEnv               string `mapstructure:"authorization_env"`
+		DefaultSpace                   string `mapstructure:"default_space"`
+		TimeoutSeconds                 int    `mapstructure:"timeout_seconds"`
+		SearchTopK                     int    `mapstructure:"search_top_k"`
+		FetchMaxItems                  int    `mapstructure:"fetch_max_items"`
+		FetchMaxBytes                  int    `mapstructure:"fetch_max_bytes"`
+		CircuitBreakerFailureThreshold int    `mapstructure:"circuit_breaker_failure_threshold"`
+		CircuitBreakerCooldownSeconds  int    `mapstructure:"circuit_breaker_cooldown_seconds"`
+		AllowPrivateNetwork            bool   `mapstructure:"allow_private_network"`
+		Required                       bool   `mapstructure:"required"`
 	} `mapstructure:"wiki"`
 
 	Search struct {
@@ -524,6 +526,8 @@ func setupViper() {
 	viper.SetDefault("wiki.search_top_k", 5)
 	viper.SetDefault("wiki.fetch_max_items", 3)
 	viper.SetDefault("wiki.fetch_max_bytes", 12000)
+	viper.SetDefault("wiki.circuit_breaker_failure_threshold", 3)
+	viper.SetDefault("wiki.circuit_breaker_cooldown_seconds", 30)
 	viper.SetDefault("wiki.allow_private_network", false)
 	viper.SetDefault("wiki.required", false)
 	viper.SetDefault("search.url", "https://api.firecrawl.dev/v1/search")
@@ -1463,7 +1467,7 @@ func (c *Config) Validate() error {
 	if c.Wiki.Required && strings.TrimSpace(c.Wiki.URL) == "" && strings.TrimSpace(c.Wiki.Directory) == "" {
 		return fmt.Errorf("wiki.url or wiki.directory must not be empty when wiki.required is true")
 	}
-	if c.Wiki.TimeoutSeconds < 0 || c.Wiki.SearchTopK < 0 || c.Wiki.FetchMaxItems < 0 || c.Wiki.FetchMaxBytes < 0 {
+	if c.Wiki.TimeoutSeconds < 0 || c.Wiki.SearchTopK < 0 || c.Wiki.FetchMaxItems < 0 || c.Wiki.FetchMaxBytes < 0 || c.Wiki.CircuitBreakerFailureThreshold < 0 || c.Wiki.CircuitBreakerCooldownSeconds < 0 {
 		return fmt.Errorf("wiki timeout and retrieval limits must be >= 0")
 	}
 	if c.Wiki.SearchTopK > 10 {

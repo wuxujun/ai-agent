@@ -469,6 +469,9 @@ wiki:
   search_top_k: 5
   fetch_max_items: 3
   fetch_max_bytes: 12000
+  # 连续后端失败达到该阈值后临时拒绝 Wiki 调用；任一值为 0 时禁用熔断。
+  circuit_breaker_failure_threshold: 3
+  circuit_breaker_cooldown_seconds: 30
   # 回环/私网端点默认拒绝，必须显式开启。
   allow_private_network: false
   # 已配置的 Wiki 无法初始化时是否阻止服务启动。

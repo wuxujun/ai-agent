@@ -3,8 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/wiki"
@@ -14,6 +16,56 @@ type fakeWikiReader struct {
 	searchSpace string
 	searchTopK  int
 	readSpaces  []string
+}
+
+type failingWikiReader struct {
+	calls             int
+	failuresRemaining int
+}
+
+func (f *failingWikiReader) Search(context.Context, string, int, string) ([]wiki.Document, error) {
+	f.calls++
+	if f.failuresRemaining > 0 {
+		f.failuresRemaining--
+		return nil, errors.New("backend unavailable")
+	}
+	return []wiki.Document{{Slug: "concepts/recovered", URI: "wiki://local/concepts/recovered"}}, nil
+}
+func (f *failingWikiReader) Read(context.Context, wiki.Document, string) (wiki.Document, error) {
+	return wiki.Document{}, errors.New("not used")
+}
+
+func TestWikiBackendCircuitOpensRejectsAndRecovers(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.Wiki.DefaultSpace = "local"
+		cfg.Wiki.SearchTopK = 3
+		cfg.Wiki.CircuitBreakerFailureThreshold = 2
+		cfg.Wiki.CircuitBreakerCooldownSeconds = 60
+	}))
+	reader := &failingWikiReader{failuresRemaining: 2}
+	search := &wikiSearchTool{client: reader, cache: newWikiCache(), guard: &wikiBackendGuard{}}
+	ctx := WithRetrievalExecutionContext(t.Context(), "task-circuit", "default")
+	params := map[string]any{"query": "recovery"}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := search.Execute(ctx, "", params); err == nil || !strings.Contains(err.Error(), "backend unavailable") {
+			t.Fatalf("backend failure %d = %v", attempt+1, err)
+		}
+	}
+	if _, err := search.Execute(ctx, "", params); err == nil || !strings.Contains(err.Error(), "circuit is open") {
+		t.Fatalf("open circuit error = %v", err)
+	}
+	if reader.calls != 2 {
+		t.Fatalf("backend calls while open = %d, want 2", reader.calls)
+	}
+	search.guard.mu.Lock()
+	search.guard.openUntil = time.Now().Add(-time.Second)
+	search.guard.mu.Unlock()
+	if _, err := search.Execute(ctx, "", params); err != nil {
+		t.Fatalf("half-open recovery: %v", err)
+	}
+	if reader.calls != 3 {
+		t.Fatalf("backend calls after recovery = %d, want 3", reader.calls)
+	}
 }
 
 func (f *fakeWikiReader) Search(_ context.Context, _ string, topK int, space string) ([]wiki.Document, error) {

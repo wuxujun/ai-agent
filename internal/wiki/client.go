@@ -95,6 +95,32 @@ func (c *Client) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// Probe verifies that the remote Wiki still exposes the required read-only
+// operations without mutating the schemas used by active tool calls.
+func (c *Client) Probe(ctx context.Context) error {
+	if c == nil || c.mcp == nil {
+		return errors.New("wiki client is nil")
+	}
+	remoteTools, err := c.mcp.ListTools(ctx)
+	if err != nil {
+		return err
+	}
+	searchReady := false
+	readReady := false
+	for _, remote := range remoteTools {
+		switch remote.Name {
+		case searchToolName:
+			searchReady = hasAnyProperty(remote.Properties(), "query")
+		case readToolName:
+			readReady = hasAnyProperty(remote.Properties(), "uri", "slug", "path")
+		}
+	}
+	if !searchReady || !readReady {
+		return fmt.Errorf("LLM Wiki must expose usable %s and %s tools", searchToolName, readToolName)
+	}
+	return nil
+}
+
 func (c *Client) Search(ctx context.Context, query string, topK int, space string) ([]Document, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, errors.New("wiki search query must not be empty")

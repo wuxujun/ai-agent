@@ -56,6 +56,12 @@ type Handler struct {
 	// locally (task running on a peer instance) are broadcast via Redis Pub/Sub
 	// so the executing instance can pick them up.
 	approvalBus *orchestrator.ApprovalBus
+	wikiReady   WikiReadinessChecker
+}
+
+// WikiReadinessChecker probes the configured read-only Wiki dependency.
+type WikiReadinessChecker interface {
+	Check(context.Context) error
 }
 
 // activeRun is a uniquely allocated reservation token stored in
@@ -157,14 +163,37 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		scenes, healthy := llmcore.CheckConfiguredScenes(ctx)
 		verified := llmcore.AllScenesVerified(scenes)
 		readinessMode := config.Get().ResolveLLMReadinessMode()
+		wikiCfg := config.Get().Wiki
+		wikiConfigured := strings.TrimSpace(wikiCfg.URL) != "" || strings.TrimSpace(wikiCfg.Directory) != ""
+		wikiHealthy := !wikiCfg.Required
+		wikiError := ""
+		if wikiConfigured && h.wikiReady != nil {
+			if err := h.wikiReady.Check(ctx); err != nil {
+				wikiError = err.Error()
+			} else {
+				wikiHealthy = true
+			}
+		} else if wikiCfg.Required {
+			wikiError = "required Wiki is not initialized"
+		}
+		ready := healthy && (!wikiCfg.Required || wikiHealthy)
 		status := http.StatusOK
-		if !healthy {
+		if !ready {
 			status = http.StatusServiceUnavailable
 		}
-		c.JSON(status, gin.H{"ready": healthy, "llm_verified": verified, "llm_readiness_mode": readinessMode, "llm_scenes": scenes})
+		c.JSON(status, gin.H{
+			"ready": ready, "llm_verified": verified, "llm_readiness_mode": readinessMode, "llm_scenes": scenes,
+			"wiki": gin.H{"configured": wikiConfigured, "required": wikiCfg.Required, "healthy": wikiHealthy, "error": wikiError},
+		})
 	})
 
 	return h
+}
+
+// SetWikiReadinessChecker wires the optional Wiki dependency probe. It must be
+// called during application construction, before the HTTP server starts.
+func (h *Handler) SetWikiReadinessChecker(checker WikiReadinessChecker) {
+	h.wikiReady = checker
 }
 
 // Wait blocks until all background run-all goroutines complete. Call during shutdown.

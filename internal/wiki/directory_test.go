@@ -1,10 +1,13 @@
 package wiki
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestDirectoryClientSearchAndReadRepositoryLayout(t *testing.T) {
@@ -45,6 +48,247 @@ func TestDirectoryClientSearchAndReadRepositoryLayout(t *testing.T) {
 	}
 }
 
+func TestDirectoryClientRanksChineseTitleAndPhraseAboveBodyFrequency(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(filepath.Join(wikiRoot, "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pages := map[string]string{
+		"concepts/pbl-new-york.md":  "# PBL 历史旅行指南：纽约篇\n\n面向学生的项目制历史写作课程。",
+		"concepts/keyword-notes.md": "# 关键词笔记\n\nPBL PBL PBL。历史旅行指南可用于课程检索。",
+	}
+	for name, content := range pages {
+		if err := os.WriteFile(filepath.Join(wikiRoot, filepath.FromSlash(name)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	documents, err := client.Search(t.Context(), "PBL 历史旅行指南", 2, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 2 || documents[0].Slug != "concepts/pbl-new-york" {
+		t.Fatalf("ranked documents = %+v", documents)
+	}
+	if documents[0].Score <= documents[1].Score {
+		t.Fatalf("title score %.0f <= body score %.0f", documents[0].Score, documents[1].Score)
+	}
+}
+
+func TestDirectoryClientIndexRefreshesAfterFileChange(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(filepath.Join(wikiRoot, "entities"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(wikiRoot, "entities", "mentor.md")
+	if err := os.WriteFile(path, []byte("# Mentor\n\nInitial biography."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if documents, err := client.Search(t.Context(), "Vanessa", 5, "local"); err != nil || len(documents) != 0 {
+		t.Fatalf("initial search = %+v, err=%v", documents, err)
+	}
+	if err := os.WriteFile(path, []byte("# Vanessa Ruales\n\nUpdated mentor biography."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	documents, err := client.Search(t.Context(), "Vanessa", 5, "local")
+	if err != nil || len(documents) != 1 || documents[0].Title != "Vanessa Ruales" {
+		t.Fatalf("refreshed search = %+v, err=%v", documents, err)
+	}
+}
+
+func TestDirectoryClientConcurrentSearchesShareIndexSafely(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(filepath.Join(wikiRoot, "sources"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "sources", "course.md"), []byte("# PBL Course\n\nHistorical travel guide."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var wait sync.WaitGroup
+	errorsFound := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			documents, err := client.Search(t.Context(), "PBL course", 3, "local")
+			if err != nil {
+				errorsFound <- err
+				return
+			}
+			if len(documents) != 1 {
+				errorsFound <- fmt.Errorf("documents=%d", len(documents))
+			}
+		}()
+	}
+	wait.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		t.Error(err)
+	}
+}
+
+func TestDirectoryClientAddsOneHopRelatedWikiPages(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki")
+	for _, category := range []string{"concepts", "entities", "sources"} {
+		if err := os.MkdirAll(filepath.Join(wikiRoot, category), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pages := map[string]string{
+		"concepts/pbl-guide.md":      "# PBL 历史旅行指南\n\n课程由 [Vanessa Ruales](../entities/vanessa-ruales.md) 指导。\n\n## 来源\n- [课程来源](../sources/course.md)",
+		"entities/vanessa-ruales.md": "# Vanessa Ruales\n\n写作导师。",
+		"sources/course.md":          "# 课程产品说明\n\n原始课程材料。",
+		"index.md":                   "# Index\n\n[PBL](concepts/pbl-guide.md) [Vanessa](entities/vanessa-ruales.md)",
+	}
+	for name, content := range pages {
+		if err := os.WriteFile(filepath.Join(wikiRoot, filepath.FromSlash(name)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	documents, err := client.Search(t.Context(), "PBL 历史旅行指南", 4, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) < 3 || documents[0].Slug != "concepts/pbl-guide" {
+		t.Fatalf("related search results = %+v", documents)
+	}
+	seen := make(map[string]bool)
+	for _, document := range documents {
+		seen[document.Slug] = true
+	}
+	for _, slug := range []string{"entities/vanessa-ruales", "sources/course"} {
+		if !seen[slug] {
+			t.Fatalf("linked page %q missing from %+v", slug, documents)
+		}
+	}
+	if len(documents) > 1 && documents[1].Slug == "index" {
+		t.Fatalf("navigation index outranked related content: %+v", documents)
+	}
+}
+
+func TestDirectoryClientIndexesFrontmatterMetadata(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki", "concepts")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `---
+title: "纽约历史写作项目"
+summary: "面向中学生的二十世纪城市研究课程"
+tags: [PBL, history]
+aliases: ["Historical Travel Guide", "历史旅行指南"]
+---
+# 页面旧标题
+
+正文没有查询使用的英文别名。
+`
+	if err := os.WriteFile(filepath.Join(wikiRoot, "project.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	documents, err := client.Search(t.Context(), "Historical Travel Guide", 3, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 1 || documents[0].Title != "纽约历史写作项目" || documents[0].Summary != "面向中学生的二十世纪城市研究课程" {
+		t.Fatalf("frontmatter result = %+v", documents)
+	}
+}
+
+func TestDirectoryClientMatchesMixedLanguageSpacingVariants(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki", "concepts")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "pbl-new-york.md"), []byte("# PBL 历史旅行指南：纽约篇\n\n项目制历史写作课程。"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		"PBL历史旅行指南",
+		"PBL-历史旅行指南",
+		"PBL：历史旅行指南",
+	} {
+		documents, err := client.Search(t.Context(), query, 3, "local")
+		if err != nil || len(documents) != 1 || documents[0].Slug != "concepts/pbl-new-york" {
+			t.Fatalf("query %q documents = %+v, err=%v", query, documents, err)
+		}
+	}
+}
+
+func TestDirectoryClientReturnsQueryRelevantExcerpt(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki", "sources")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# Course Source\n\nGeneral introduction without the target.\n\n## Enrollment\n\n申请者须提交原创说明文写作样本，并与学术顾问沟通。"
+	if err := os.WriteFile(filepath.Join(wikiRoot, "course.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	documents, err := client.Search(t.Context(), "说明文写作样本", 3, "local")
+	if err != nil || len(documents) != 1 {
+		t.Fatalf("documents = %+v, err=%v", documents, err)
+	}
+	if !strings.Contains(documents[0].Excerpt, "说明文写作样本") || strings.Contains(documents[0].Excerpt, "General introduction") {
+		t.Fatalf("query-relevant excerpt = %q", documents[0].Excerpt)
+	}
+}
+
+func TestDirectoryClientMalformedFrontmatterFallsBackToMarkdown(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ntags: [broken\n---\n# Recoverable Page\n\nFallback keyword."
+	if err := os.WriteFile(filepath.Join(wikiRoot, "recoverable.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	documents, err := client.Search(t.Context(), "Fallback keyword", 3, "local")
+	if err != nil || len(documents) != 1 {
+		t.Fatalf("fallback documents = %+v, err=%v", documents, err)
+	}
+}
+
 func TestDirectoryClientRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "wiki"), 0o755); err != nil {
@@ -56,5 +300,29 @@ func TestDirectoryClientRejectsTraversal(t *testing.T) {
 	}
 	if _, err := client.Read(t.Context(), Document{Slug: "../AGENTS"}, "local"); err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("traversal error = %v", err)
+	}
+}
+
+func TestDirectoryClientReadRejectsNonMarkdownAndOversizedFiles(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "private.json"), []byte(`{"secret":"not wiki content"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Read(t.Context(), Document{Slug: "private.json"}, "local"); err == nil || !strings.Contains(err.Error(), "Markdown") {
+		t.Fatalf("non-Markdown read error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "oversized.md"), make([]byte, maxDirectoryPageBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Read(t.Context(), Document{Slug: "oversized"}, "local"); err == nil || !strings.Contains(err.Error(), "read limit") {
+		t.Fatalf("oversized read error = %v", err)
 	}
 }

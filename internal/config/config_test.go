@@ -78,7 +78,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 2 || cfg.RAG.JITRetrievalMaxCycles != 2 || cfg.RAG.JITFetchMaxItems != 3 || cfg.RAG.JITRAGFetchMaxBytes != 6000 || cfg.RAG.JITMemoryFetchMaxBytes != 2000 {
 		t.Errorf("unexpected RAG JIT defaults: %+v", cfg.RAG)
 	}
-	if cfg.Wiki.URL != "" || cfg.Wiki.TimeoutSeconds != 15 || cfg.Wiki.SearchTopK != 5 || cfg.Wiki.FetchMaxItems != 3 || cfg.Wiki.FetchMaxBytes != 12000 || cfg.Wiki.AllowPrivateNetwork || cfg.Wiki.Required {
+	if cfg.Wiki.URL != "" || cfg.Wiki.TimeoutSeconds != 15 || cfg.Wiki.SearchTopK != 5 || cfg.Wiki.FetchMaxItems != 3 || cfg.Wiki.FetchMaxBytes != 12000 || cfg.Wiki.CircuitBreakerFailureThreshold != 3 || cfg.Wiki.CircuitBreakerCooldownSeconds != 30 || cfg.Wiki.AllowPrivateNetwork || cfg.Wiki.Required {
 		t.Errorf("unexpected Wiki defaults: %+v", cfg.Wiki)
 	}
 	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
@@ -114,6 +114,8 @@ func TestValidateWikiSettings(t *testing.T) {
 		func(cfg *Config) { cfg.Wiki.SearchTopK = 11 },
 		func(cfg *Config) { cfg.Wiki.FetchMaxItems = 11 },
 		func(cfg *Config) { cfg.Wiki.FetchMaxBytes = -1 },
+		func(cfg *Config) { cfg.Wiki.CircuitBreakerFailureThreshold = -1 },
+		func(cfg *Config) { cfg.Wiki.CircuitBreakerCooldownSeconds = -1 },
 	} {
 		cfg = valid()
 		mutate(cfg)

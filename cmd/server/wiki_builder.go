@@ -15,6 +15,7 @@ import (
 type wikiClient interface {
 	tools.WikiReader
 	Initialize(context.Context) error
+	Probe(context.Context) error
 	Close(context.Context) error
 }
 
@@ -22,6 +23,13 @@ type wikiClientFactory func(wiki.Config) (wikiClient, error)
 
 type wikiRuntime struct {
 	client wikiClient
+}
+
+func (r *wikiRuntime) Check(ctx context.Context) error {
+	if r == nil || r.client == nil {
+		return fmt.Errorf("wiki is not configured or initialized")
+	}
+	return r.client.Probe(ctx)
 }
 
 func newWikiClient(cfg wiki.Config) (wikiClient, error) { return wiki.New(cfg) }

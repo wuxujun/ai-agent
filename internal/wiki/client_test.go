@@ -40,6 +40,19 @@ func wikiTestTools() []mcpclient.Tool {
 	}
 }
 
+func TestClientProbeRequiresUsableReadOnlyTools(t *testing.T) {
+	client := &Client{mcp: &fakeMCP{tools: wikiTestTools()}}
+	if err := client.Probe(t.Context()); err != nil {
+		t.Fatalf("healthy probe: %v", err)
+	}
+	client.mcp = &fakeMCP{tools: []mcpclient.Tool{{Name: searchToolName, InputSchema: map[string]any{
+		"properties": map[string]any{"query": map[string]any{"type": "string"}},
+	}}}}
+	if err := client.Probe(t.Context()); err == nil {
+		t.Fatal("probe succeeded without the read tool")
+	}
+}
+
 func TestClientSearchThenReadPreservesWikiIdentity(t *testing.T) {
 	transport := &fakeMCP{tools: wikiTestTools()}
 	client := &Client{mcp: transport}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -59,6 +60,10 @@ func (mp *mockPlanner) PlanNext(ctx context.Context, task *types.Task, onChunk f
 }
 
 type mockExecutor struct{}
+
+type failingWikiReadiness struct{}
+
+func (failingWikiReadiness) Check(context.Context) error { return errors.New("wiki unavailable") }
 
 func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, decision *planner.PlanDecision) ([]types.StepTrace, error) {
 	return nil, nil
@@ -190,6 +195,43 @@ func TestReadyReportsConfiguredProbeMode(t *testing.T) {
 		t.Fatalf("decode readiness response: %v", err)
 	}
 	if !response.Ready || response.Verified || response.ReadinessMode != config.LLMReadinessConfigOnly {
+		t.Fatalf("readiness response = %+v", response)
+	}
+}
+
+func TestReadyFailsWhenRequiredWikiProbeFails(t *testing.T) {
+	restore := config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = ""
+		cfg.LLM.Provider = "openai"
+		cfg.LLM.Model = "gpt-test"
+		cfg.LLM.ReadinessMode = config.LLMReadinessConfigOnly
+		cfg.Wiki.Directory = t.TempDir()
+		cfg.Wiki.Required = true
+	})
+	t.Cleanup(restore)
+	r := gin.New()
+	handler := api.RegisterRoutes(r, store.NewMemoryStore(), nil, nil)
+	handler.SetWikiReadinessChecker(failingWikiReadiness{})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/ready", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready status = %d, want 503: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Ready bool `json:"ready"`
+		Wiki  struct {
+			Configured bool   `json:"configured"`
+			Required   bool   `json:"required"`
+			Healthy    bool   `json:"healthy"`
+			Error      string `json:"error"`
+		} `json:"wiki"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Ready || !response.Wiki.Configured || !response.Wiki.Required || response.Wiki.Healthy || response.Wiki.Error != "wiki unavailable" {
 		t.Fatalf("readiness response = %+v", response)
 	}
 }

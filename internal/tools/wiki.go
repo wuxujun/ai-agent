@@ -102,6 +102,7 @@ func (c *wikiCache) markFetched(taskKey string, ids []string) {
 type wikiSearchTool struct {
 	client WikiReader
 	cache  *wikiCache
+	guard  *wikiBackendGuard
 }
 
 func (t *wikiSearchTool) Name() string { return "wiki_search" }
@@ -149,7 +150,12 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 	if topK > configuredTopK {
 		topK = configuredTopK
 	}
-	documents, err := t.client.Search(ctx, query, topK, space)
+	var documents []wiki.Document
+	err = t.guard.call(ctx, "search", func() error {
+		var callErr error
+		documents, callErr = t.client.Search(ctx, query, topK, space)
+		return callErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +192,7 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 type wikiFetchTool struct {
 	client WikiReader
 	cache  *wikiCache
+	guard  *wikiBackendGuard
 }
 
 func (t *wikiFetchTool) Name() string { return "wiki_fetch" }
@@ -252,7 +259,12 @@ func (t *wikiFetchTool) Execute(ctx context.Context, _ string, params map[string
 		if budget <= 0 {
 			break
 		}
-		document, readErr := t.client.Read(ctx, candidate.Document, space)
+		var document wiki.Document
+		readErr := t.guard.call(ctx, "read", func() error {
+			var callErr error
+			document, callErr = t.client.Read(ctx, candidate.Document, space)
+			return callErr
+		})
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -285,8 +297,9 @@ func RegisterWikiTools(registry *Registry, client WikiReader) error {
 		return errors.New("wiki reader must not be nil")
 	}
 	cache := newWikiCache()
-	registry.Register(&wikiSearchTool{client: client, cache: cache})
-	registry.Register(&wikiFetchTool{client: client, cache: cache})
+	guard := &wikiBackendGuard{}
+	registry.Register(&wikiSearchTool{client: client, cache: cache, guard: guard})
+	registry.Register(&wikiFetchTool{client: client, cache: cache, guard: guard})
 	return nil
 }
 

@@ -213,6 +213,7 @@ func run() error {
 		return err
 	}
 	app := buildApp(cfg, st, engineBuild.engine, engineBuild.metrics, engineBuild.runtime)
+	app.tasks.SetWikiReadinessChecker(wikiRuntime)
 
 	// Wait for SIGINT, SIGTERM (shutdown) or SIGHUP (hot-reload).
 	quit := make(chan os.Signal, 1)

@@ -42,6 +42,7 @@ func TestBuildWikiRuntimeFromLocalDirectory(t *testing.T) {
 }
 
 func (f *fakeWikiClient) Initialize(context.Context) error { f.initialized = true; return nil }
+func (f *fakeWikiClient) Probe(context.Context) error      { return nil }
 func (f *fakeWikiClient) Close(context.Context) error      { f.closed = true; return nil }
 func (f *fakeWikiClient) Search(context.Context, string, int, string) ([]wiki.Document, error) {
 	return nil, nil
