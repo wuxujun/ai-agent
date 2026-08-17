@@ -36,6 +36,7 @@ func (f *failingWikiReader) Read(context.Context, wiki.Document, string) (wiki.D
 }
 
 func TestWikiBackendCircuitOpensRejectsAndRecovers(t *testing.T) {
+	before := CurrentWikiMetrics()
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.Wiki.DefaultSpace = "local"
 		cfg.Wiki.SearchTopK = 3
@@ -65,6 +66,14 @@ func TestWikiBackendCircuitOpensRejectsAndRecovers(t *testing.T) {
 	}
 	if reader.calls != 3 {
 		t.Fatalf("backend calls after recovery = %d, want 3", reader.calls)
+	}
+	after := CurrentWikiMetrics()
+	if after.BackendCalls-before.BackendCalls != 3 || after.BackendErrors-before.BackendErrors != 2 ||
+		after.CircuitOpened-before.CircuitOpened != 1 || after.CircuitRejected-before.CircuitRejected != 1 {
+		t.Fatalf("wiki metrics delta before=%+v after=%+v", before, after)
+	}
+	if after.BackendAverageLatencyMS < 0 {
+		t.Fatalf("average latency = %f", after.BackendAverageLatencyMS)
 	}
 }
 

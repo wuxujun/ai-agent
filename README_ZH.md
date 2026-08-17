@@ -167,7 +167,8 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 
 ## ⚙️ 配置说明
 
-所有配置项位于 [`config.yaml`](config.yaml)，可通过 `AI_AGENT_*` 环境变量覆盖，无需重启。
+所有配置项位于 [`config.yaml`](config.yaml)，可通过 `AI_AGENT_*` 环境变量覆盖；标注为
+“修改后需重启”的运行时依赖需要重启服务才能重新初始化。
 
 | 配置节 | 关键项 |
 |:---|:---|
@@ -187,6 +188,42 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `search` | `url`、`api_key`（Firecrawl 或兼容服务） |
 | `tool` | `timeout_seconds` |
 | `skill` | `root`（技能发现根目录） |
+
+### 只读 LLM Wiki
+
+本地目录模式可直接读取 llm-wiki 工作目录。`AI_AGENT_WIKI_DIRECTORY` 既可指向包含
+`AGENTS.md`、`raw/`、`wiki/` 的仓库根目录，也可直接指向其中的 `wiki/` 目录：
+
+```bash
+export AI_AGENT_WIKI_DIRECTORY=/srv/knowledge
+export AI_AGENT_WIKI_DEFAULT_SPACE=local
+export AI_AGENT_MULTIAGENT_TEAM=wiki
+```
+
+远程模式使用 Streamable HTTP MCP 端点；本机或私网地址还需显式允许私网访问：
+
+```bash
+export AI_AGENT_WIKI_URL=http://127.0.0.1:8088/mcp
+export AI_AGENT_WIKI_ALLOW_PRIVATE_NETWORK=true
+export AI_AGENT_WIKI_DEFAULT_SPACE=local
+export AI_AGENT_MULTIAGENT_TEAM=wiki
+```
+
+`wiki.directory` 与 `wiki.url` 互斥，修改后必须重启服务。`wiki` Team 只向 Planner
+开放 `wiki_search`；命中候选后协调器会自动执行内部 `wiki_fetch` 获取全文。多租户部署应为
+每个租户配置 `api.tenants.<tenant>.wiki_space`；单租户或共享知识库可使用
+`wiki.default_space`。若日志出现 `has no api.tenants.<id>.wiki_space and
+wiki.default_space is empty`，说明两处空间配置均为空。
+
+可通过以下接口确认运行状态：
+
+- `GET /ready`：查看 `wiki.configured`、`required`、`healthy` 和 `error`；仅必需 Wiki 不健康时返回 503。
+- `GET /api/metrics`：管理员查看 `wiki.backend_calls`、`backend_errors`、平均延迟及熔断计数。
+- Multi-Agent 日志：应依次出现 `team=wiki`、`action=wiki_search` 和 `action=wiki_fetch`。
+
+若未使用 `wiki_search`，依次检查服务是否已重启、`AI_AGENT_WIKI_DIRECTORY`/`URL` 是否在
+服务进程环境中可见、Team 是否为 `wiki`，以及 `/ready` 中 Wiki 是否健康。配置了目录但仅
+手工注册工具仍不够：JIT 路由以当前 `wiki.directory` 或 `wiki.url` 判断 Wiki 是否已配置。
 
 设置一个 base64 编码的 32 字节 AES 密钥后，会启用审批持久化恢复。所有实例必须从密钥管理服务
 读取同一个密钥；密钥丢失后，尚未消费的审批载荷将无法恢复。
@@ -386,9 +423,10 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 
 | 方法 | 路径 | 说明 |
 |:---|:---|:---|
-| `GET` | `/api/metrics` | 本地性能指标，包含持久化审批及 DAG/Legacy 灰度计数 |
+| `GET` | `/api/metrics` | 本地性能指标，包含 Wiki、持久化审批及 DAG/Legacy 灰度计数 |
 | `POST` | `/api/config/reload` | 热重载配置（返回脱敏 diff 和单调递增的 `config_revision`） |
 | `GET` | `/ping` | 健康检查 → `{"message":"pong"}` |
+| `GET` | `/ready` | LLM 与必需 Wiki 就绪检查；依赖异常时返回 503 |
 
 ---
 

@@ -167,7 +167,9 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 
 ## ⚙️ Configuration
 
-All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_AGENT_*` environment variables without restart.
+All settings live in [`config.yaml`](config.yaml) and can be overridden by
+`AI_AGENT_*` environment variables. Runtime dependencies marked “restart
+required” must be reinitialized by restarting the service.
 
 | Section | Key settings |
 |:---|:---|
@@ -187,6 +189,48 @@ All settings live in [`config.yaml`](config.yaml) and can be overridden by `AI_A
 | `search` | `url`, `api_key` (Firecrawl or compatible) |
 | `tool` | `timeout_seconds` |
 | `skill` | `root` (skill discovery directory) |
+
+### Read-only LLM Wiki
+
+Local-directory mode reads an llm-wiki checkout directly.
+`AI_AGENT_WIKI_DIRECTORY` may point either to the checkout root containing
+`AGENTS.md`, `raw/`, and `wiki/`, or directly to its `wiki/` directory:
+
+```bash
+export AI_AGENT_WIKI_DIRECTORY=/srv/knowledge
+export AI_AGENT_WIKI_DEFAULT_SPACE=local
+export AI_AGENT_MULTIAGENT_TEAM=wiki
+```
+
+Remote mode uses a Streamable HTTP MCP endpoint. Loopback or private endpoints
+must also be explicitly allowed:
+
+```bash
+export AI_AGENT_WIKI_URL=http://127.0.0.1:8088/mcp
+export AI_AGENT_WIKI_ALLOW_PRIVATE_NETWORK=true
+export AI_AGENT_WIKI_DEFAULT_SPACE=local
+export AI_AGENT_MULTIAGENT_TEAM=wiki
+```
+
+`wiki.directory` and `wiki.url` are mutually exclusive and changes require a
+service restart. The `wiki` team exposes only `wiki_search` to the Planner; the
+coordinator automatically runs the internal `wiki_fetch` operation for selected
+candidates. For multi-tenant deployments, configure
+`api.tenants.<tenant>.wiki_space`; use `wiki.default_space` only for a shared or
+single-tenant Wiki. The error `has no api.tenants.<id>.wiki_space and
+wiki.default_space is empty` means neither space setting is present.
+
+Operational checks:
+
+- `GET /ready` reports `wiki.configured`, `required`, `healthy`, and `error`; only an unhealthy required Wiki causes a 503.
+- `GET /api/metrics` reports `wiki.backend_calls`, `backend_errors`, average latency, and circuit-breaker counters to administrators.
+- Multi-Agent logs should show `team=wiki`, then `action=wiki_search`, followed by `action=wiki_fetch` for a successful retrieval.
+
+If `wiki_search` is not selected, verify that the service was restarted, the
+Wiki directory/URL exists in the service process environment, the active team
+is `wiki`, and `/ready` reports a healthy Wiki. Registering tools alone is not
+enough: JIT routing uses the current `wiki.directory` or `wiki.url` setting to
+decide whether Wiki is configured.
 
 Durable approval recovery is enabled when a 32-byte AES key is supplied as
 base64. Keep the same key on every instance and in the secret manager; losing
@@ -408,10 +452,11 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 
 | Method | Path | Description |
 |:---|:---|:---|
-| `GET` | `/api/metrics` | Local performance metrics, including durable approval and DAG/Legacy rollout counters |
+| `GET` | `/api/metrics` | Local performance metrics, including Wiki, durable approval, and DAG/Legacy rollout counters |
 | `POST` | `/api/config/reload` | Hot-reload config (returns redacted diff and monotonic `config_revision`) |
 | `POST` | `/api/prompt/init` | Admin: idempotently initialize missing `teams.yaml` prompts in Langfuse |
 | `GET` | `/ping` | Health check → `{"message":"pong"}` |
+| `GET` | `/ready` | LLM and required-Wiki readiness; returns 503 when a required dependency is unhealthy |
 
 ---
 

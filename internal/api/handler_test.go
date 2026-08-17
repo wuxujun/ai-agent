@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,11 +18,14 @@ import (
 	"github.com/wuxujun/ai-agent/internal/api"
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/metrics"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/store"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"github.com/wuxujun/ai-agent/internal/wiki"
 )
 
 type mockPlanner struct {
@@ -64,6 +69,34 @@ type mockExecutor struct{}
 type failingWikiReadiness struct{}
 
 func (failingWikiReadiness) Check(context.Context) error { return errors.New("wiki unavailable") }
+
+type wikiHTTPPlanner struct{}
+
+func (wikiHTTPPlanner) Plan(context.Context, string, string, []types.Memory) (*multiagent.ResearchPlan, error) {
+	return &multiagent.ResearchPlan{ThoughtSummary: "search Wiki", Steps: []multiagent.ResearchStep{{
+		ID: "wiki-search", Description: "Search the course Wiki", Action: "wiki_search", SearchQuery: "PBL 历史旅行指南",
+	}}}, nil
+}
+
+func (wikiHTTPPlanner) Replan(context.Context, string, string, []types.StepTrace, []types.Memory) (*multiagent.ResearchPlan, error) {
+	return &multiagent.ResearchPlan{}, nil
+}
+
+type wikiHTTPWriter struct{}
+
+func (wikiHTTPWriter) Write(_ context.Context, _ string, evidence []multiagent.StepEvidence, _ []types.Memory) (*multiagent.WriterOutput, error) {
+	for _, item := range evidence {
+		for _, source := range item.Evidence {
+			if source.Path == "wiki://local/concepts/pbl-historical-travel-guide-new-york" && strings.Contains(strings.Join(source.Lines, "\n"), "800–1,000") {
+				return &multiagent.WriterOutput{
+					FinalAnswer:     "课程要求完成 800–1,000 字旅行指南（wiki://local/concepts/pbl-historical-travel-guide-new-york）。",
+					EvidenceSummary: "Wiki page fetched", DraftConfidence: "high",
+				}, nil
+			}
+		}
+	}
+	return nil, errors.New("writer did not receive fetched Wiki page evidence")
+}
 
 func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, decision *planner.PlanDecision) ([]types.StepTrace, error) {
 	return nil, nil
@@ -233,6 +266,108 @@ func TestReadyFailsWhenRequiredWikiProbeFails(t *testing.T) {
 	}
 	if response.Ready || !response.Wiki.Configured || !response.Wiki.Required || response.Wiki.Healthy || response.Wiki.Error != "wiki unavailable" {
 		t.Fatalf("readiness response = %+v", response)
+	}
+}
+
+func TestMetricsIncludesWikiSnapshot(t *testing.T) {
+	restore := config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.APIKey = "metrics-admin-key"
+	})
+	t.Cleanup(restore)
+	r := gin.New()
+	api.RegisterRoutes(r, store.NewMemoryStore(), nil, metrics.NewCollector())
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/metrics", nil)
+	req.Header.Set("X-API-Key", "metrics-admin-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		PlannerCalls int64 `json:"planner_calls"`
+		Wiki         struct {
+			BackendCalls            int64   `json:"backend_calls"`
+			BackendAverageLatencyMS float64 `json:"backend_average_latency_ms"`
+		} `json:"wiki"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Wiki.BackendCalls < 0 || response.Wiki.BackendAverageLatencyMS < 0 {
+		t.Fatalf("metrics response = %+v", response)
+	}
+}
+
+func TestHTTPMultiAgentSearchesAndFetchesLocalWiki(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = ""
+		cfg.AnswerPipeline.Enabled = false
+		cfg.RAG.ContextMode = "jit"
+		cfg.MultiAgent.Team = "wiki"
+		cfg.Wiki.Directory = root
+		cfg.Wiki.DefaultSpace = "local"
+		cfg.Wiki.SearchTopK = 3
+		cfg.Wiki.FetchMaxItems = 2
+		cfg.Wiki.FetchMaxBytes = 12000
+	}))
+	pageDir := filepath.Join(root, "wiki", "concepts")
+	if err := os.MkdirAll(pageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	page := "# PBL 历史旅行指南：纽约篇\n\n学生需完成一篇 800–1,000 字的历史旅行指南。"
+	if err := os.WriteFile(filepath.Join(pageDir, "pbl-historical-travel-guide-new-york.md"), []byte(page), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := wiki.NewDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tools.RegisterWikiTools(tools.DefaultRegistry, client); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		tools.Unregister("wiki_search")
+		tools.Unregister("wiki_fetch")
+	})
+
+	st := store.NewMemoryStore()
+	coordinator := &multiagent.Coordinator{
+		Planner: &wikiHTTPPlanner{}, Researcher: &multiagent.ResearcherAgent{}, Writer: &wikiHTTPWriter{},
+	}
+	engine := &orchestrator.Engine{Mode: orchestrator.ModeMultiAgent, Store: st, Coordinator: coordinator}
+	r := setupTestRouter(t, st, engine)
+
+	create := httptest.NewRecorder()
+	request, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(
+		`{"id":"wiki-http-e2e","goal":"PBL 历史旅行指南有哪些要求？","workspace":"workspace","mode":"multiagent","max_steps":4,"tool_budget":4}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(create, request)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", create.Code, create.Body.String())
+	}
+	run := httptest.NewRecorder()
+	request, _ = http.NewRequest(http.MethodPost, "/api/tasks/wiki-http-e2e/run-all", nil)
+	r.ServeHTTP(run, request)
+	if run.Code != http.StatusAccepted {
+		t.Fatalf("run status = %d: %s", run.Code, run.Body.String())
+	}
+	completed := waitForTaskStatus(t, st, "wiki-http-e2e", types.StatusCompleted)
+	if !strings.Contains(completed.FinalAnswer, "800–1,000") || !strings.Contains(completed.FinalAnswer, "wiki://local/concepts/pbl-historical-travel-guide-new-york") {
+		t.Fatalf("final answer = %q", completed.FinalAnswer)
+	}
+	actions := make(map[string]bool)
+	for _, trace := range completed.Trace {
+		actions[trace.Action] = true
+	}
+	if !actions["wiki_search"] || !actions["wiki_fetch"] {
+		t.Fatalf("trace actions = %v", actions)
 	}
 }
 

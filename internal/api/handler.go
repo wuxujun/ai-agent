@@ -20,6 +20,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/store"
+	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
@@ -887,7 +888,10 @@ func (h *Handler) getMetrics(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "metrics disabled"})
 		return
 	}
-	c.JSON(http.StatusOK, h.metrics.Snapshot())
+	c.JSON(http.StatusOK, struct {
+		metrics.Snapshot
+		Wiki tools.WikiMetricsSnapshot `json:"wiki"`
+	}{Snapshot: h.metrics.Snapshot(), Wiki: tools.CurrentWikiMetrics()})
 }
 
 func (h *Handler) getTenantUsage(c *gin.Context) {
