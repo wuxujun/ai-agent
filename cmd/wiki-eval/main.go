@@ -35,6 +35,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.Int64Var(&thresholds.MaxP95LatencyMS, "max-p95-ms", 500, "maximum local search+fetch P95 latency in milliseconds; 0 disables")
 	flags.Float64Var(&thresholds.MinGraphPathRecall, "min-graph-path-recall", 0.80, "minimum expected graph-node recall")
 	flags.Float64Var(&thresholds.MaxIrrelevantNodeRate, "max-irrelevant-node-rate", 0.75, "maximum unrelated graph-node rate")
+	flags.Float64Var(&thresholds.MinSuggestionRecall, "min-suggestion-recall", 0.80, "minimum expected Wiki suggestion recall")
+	flags.Float64Var(&thresholds.MaxSuggestionNoiseRate, "max-suggestion-noise-rate", 0.60, "maximum unexpected Wiki suggestion rate")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -77,15 +79,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_ = encoder.Encode(summary)
 	} else {
 		for _, result := range results {
-			fmt.Fprintf(stdout, "%s recall=%.3f first=%t rr=%.3f fetch=%t keywords=%.3f citations=%.3f graph_recall=%.3f irrelevant=%.3f nodes=%d edges=%d latency=%dms error=%s\n",
+			fmt.Fprintf(stdout, "%s recall=%.3f first=%t rr=%.3f fetch=%t keywords=%.3f citations=%.3f graph_recall=%.3f irrelevant=%.3f nodes=%d edges=%d suggestion_recall=%.3f suggestion_noise=%.3f suggestions=%d latency=%dms error=%s\n",
 				result.Name, result.RecallAtK, result.FirstHit, result.ReciprocalRank, result.FetchSucceeded,
 				result.KeywordCoverage, result.CitationCoverage, result.GraphPathRecall, result.IrrelevantNodeRate,
-				result.GraphNodes, result.GraphEdges, result.LatencyMS, result.Error)
+				result.GraphNodes, result.GraphEdges, result.SuggestionRecall, result.SuggestionNoiseRate, result.SuggestionCount, result.LatencyMS, result.Error)
 		}
-		fmt.Fprintf(stdout, "summary cases=%d recall=%.3f first_hit=%.3f mrr=%.3f fetch=%.3f keywords=%.3f citations=%.3f graph_cases=%d graph_recall=%.3f irrelevant=%.3f errors=%.3f p95=%dms passed=%t failures=%s\n",
+		fmt.Fprintf(stdout, "summary cases=%d recall=%.3f first_hit=%.3f mrr=%.3f fetch=%.3f keywords=%.3f citations=%.3f graph_cases=%d graph_recall=%.3f irrelevant=%.3f suggestion_cases=%d suggestion_recall=%.3f suggestion_noise=%.3f errors=%.3f p95=%dms passed=%t failures=%s\n",
 			summary.Cases, summary.RecallAtK, summary.FirstHitRate, summary.MeanReciprocalRank,
 			summary.FetchSuccessRate, summary.KeywordCoverage, summary.CitationCoverage, summary.GraphCases,
-			summary.GraphPathRecall, summary.IrrelevantNodeRate, summary.ErrorRate,
+			summary.GraphPathRecall, summary.IrrelevantNodeRate, summary.SuggestionCases, summary.SuggestionRecall, summary.SuggestionNoiseRate, summary.ErrorRate,
 			summary.P95LatencyMS, summary.ThresholdsPassed, strings.Join(summary.FailedThresholds, "; "))
 	}
 	if !summary.ThresholdsPassed {
@@ -95,7 +97,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func validThresholds(value wikieval.Thresholds) bool {
-	for _, metric := range []float64{value.MinRecallAtK, value.MinFirstHitRate, value.MinFetchSuccessRate, value.MinKeywordCoverage, value.MinCitationCoverage, value.MaxErrorRate, value.MinGraphPathRecall, value.MaxIrrelevantNodeRate} {
+	for _, metric := range []float64{value.MinRecallAtK, value.MinFirstHitRate, value.MinFetchSuccessRate, value.MinKeywordCoverage, value.MinCitationCoverage, value.MaxErrorRate, value.MinGraphPathRecall, value.MaxIrrelevantNodeRate, value.MinSuggestionRecall, value.MaxSuggestionNoiseRate} {
 		if metric < 0 || metric > 1 {
 			return false
 		}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -162,7 +163,11 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 		attribute.Int("agent.task.goal_chars", len([]rune(task.Goal))),
 	)
 
-	teamsCfg := GetTeamsConfig()
+	teamsCfg, err := teamsConfigForTask(task)
+	if err != nil {
+		task.Status = types.StatusFailed
+		return err
+	}
 	teamCfg := teamsCfg.GetActiveTeam()
 	teamSnapshot := newTeamConfigSnapshot(teamsCfg.ActiveTeam, teamCfg)
 	teamSnapshot.ResumePolicy = teamsCfg.ResumeConfigPolicy
@@ -610,6 +615,19 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 	return nil
 }
 
+func teamsConfigForTask(task *types.Task) (*TeamsConfig, error) {
+	config := GetTeamsConfig()
+	if task == nil || strings.TrimSpace(task.Team) == "" {
+		return config, nil
+	}
+	selected := strings.TrimSpace(task.Team)
+	if _, ok := config.Teams[selected]; !ok {
+		return nil, fmt.Errorf("multi-agent team %q is not configured", selected)
+	}
+	config.ActiveTeam = selected
+	return config, nil
+}
+
 func runtimeInvocationReplanned(traces []types.StepTrace, start, end int) bool {
 	if start < 0 {
 		start = 0
@@ -714,6 +732,9 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 	if enforceJITResearchPlan(task, plan) {
 		log.Info("Adjusted research plan to JIT retrieval route", "task_id", task.ID, "action", plan.Steps[0].Action)
 	}
+	if enforceControlledWikiInitialPlan(ctx, task, plan) {
+		log.Info("Reduced controlled Wiki initial plan to one search", "task_id", task.ID, "team", teamConfigFromContext(ctx).ActiveTeam)
+	}
 	if enforceWorkspaceResearchPlan(task, plan) {
 		log.Info("Adjusted research plan to workspace discovery route", "task_id", task.ID)
 	}
@@ -747,6 +768,36 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 
 	log.Info("Phase 1 done", "task_id", task.ID, "steps_planned", len(plan.Steps), "elapsed", elapsed)
 	return plan, nil
+}
+
+func enforceControlledWikiInitialPlan(ctx context.Context, task *types.Task, plan *ResearchPlan) bool {
+	if task == nil || plan == nil {
+		return false
+	}
+	team := teamConfigFromContext(ctx).ActiveTeam
+	if team != "wiki" && team != "wiki_graph" && team != "wiki_suggest" {
+		return false
+	}
+	for _, trace := range task.Trace {
+		if strings.HasPrefix(trace.Action, "wiki_") {
+			return false
+		}
+	}
+	if len(plan.Steps) == 1 && plan.Steps[0].Action == "wiki_search" {
+		return false
+	}
+	query := task.Goal
+	for _, step := range plan.Steps {
+		if step.Action == "wiki_search" && strings.TrimSpace(step.SearchQuery) != "" {
+			query = step.SearchQuery
+			break
+		}
+	}
+	plan.ThoughtSummary = "Search the configured Wiki before bounded read-only follow-up"
+	plan.Steps = []ResearchStep{{
+		ID: "step-1", Description: "Search the configured Wiki for the target page", Action: "wiki_search", SearchQuery: query,
+	}}
+	return true
 }
 
 func researchPlanFromJITDecision(task *types.Task, decision *planner.PlanDecision) *ResearchPlan {
@@ -1260,19 +1311,44 @@ func retrievalFollowupSteps(ctx context.Context, evidence []StepEvidence) []Rese
 			}
 			continue
 		}
-		if item.Action == "wiki_graph" && teamConfigFromContext(ctx).ActiveTeam == "wiki_graph" {
-			var graph wiki.GraphResult
-			if json.Unmarshal([]byte(item.Observation), &graph) != nil {
-				continue
+		if item.Action == "wiki_fetch" && teamConfigFromContext(ctx).ActiveTeam == "wiki_suggest" {
+			for _, source := range item.Evidence {
+				if strings.HasPrefix(source.Path, "wiki://") {
+					steps = append(steps, ResearchStep{
+						ID: item.StepID + "-suggest", Description: "Generate bounded read-only Wiki curation suggestions", Action: "wiki_suggest",
+						SuggestURI: source.Path, SuggestLimit: 5,
+					})
+					break
+				}
 			}
+			continue
+		}
+		if item.Action == "wiki_graph" && teamConfigFromContext(ctx).ActiveTeam == "wiki_graph" {
 			uris := make([]string, 0, 3)
-			for _, node := range graph.Nodes {
-				if node.URI == graph.RootURI || !strings.HasPrefix(node.URI, "wiki://") {
+			for _, uri := range item.FollowupURIs {
+				if !strings.HasPrefix(uri, "wiki://") || slices.Contains(uris, uri) {
 					continue
 				}
-				uris = append(uris, node.URI)
+				uris = append(uris, uri)
 				if len(uris) == 3 {
 					break
+				}
+			}
+			// Compatibility fallback for custom Researcher implementations that
+			// have not adopted FollowupURIs. Built-in tools never depend on this
+			// display Observation, which middleware is allowed to truncate.
+			if len(uris) == 0 {
+				var graph wiki.GraphResult
+				if json.Unmarshal([]byte(item.Observation), &graph) == nil {
+					for _, node := range graph.Nodes {
+						if node.URI == graph.RootURI || !strings.HasPrefix(node.URI, "wiki://") {
+							continue
+						}
+						uris = append(uris, node.URI)
+						if len(uris) == 3 {
+							break
+						}
+					}
 				}
 			}
 			if len(uris) > 0 {
@@ -1933,6 +2009,7 @@ func (c *Coordinator) resumeVerifierCheckpoint(ctx context.Context, task *types.
 func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evidence []StepEvidence) (string, error) {
 	log := teamLogger(ctx)
 	log.Info("Phase 3 — Writing final answer", "task_id", task.ID)
+	evidence = writerEvidenceForTeam(ctx, evidence)
 
 	start := time.Now()
 	var answerChunks []string
@@ -2062,6 +2139,20 @@ func (c *Coordinator) runWritePhase(ctx context.Context, task *types.Task, evide
 	return draftConfidence, nil
 }
 
+func writerEvidenceForTeam(ctx context.Context, evidence []StepEvidence) []StepEvidence {
+	if teamConfigFromContext(ctx).ActiveTeam != "wiki_suggest" {
+		return evidence
+	}
+	result := make([]StepEvidence, 0, len(evidence))
+	for _, item := range evidence {
+		if item.Action == "wiki_suggest" {
+			item.Observation = fmt.Sprintf("retained %d read-only Wiki suggestion(s) after safety and relevance filtering", len(item.Evidence))
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
 func verificationIssuesAsEvidence(issues []VerificationIssue) []types.Evidence {
 	result := make([]types.Evidence, 0, len(issues))
 	for _, issue := range issues {
@@ -2181,6 +2272,8 @@ func buildStepQuery(step ResearchStep) string {
 		return "ids=[]"
 	case "wiki_graph":
 		return fmt.Sprintf("uri=%q depth=%d direction=%q", step.GraphURI, step.GraphDepth, step.GraphDirection)
+	case "wiki_suggest":
+		return fmt.Sprintf("uri=%q limit=%d", step.SuggestURI, step.SuggestLimit)
 	case "analyze_image":
 		return fmt.Sprintf("path=%q prompt=%q", step.FilePath, step.Prompt)
 	default:
@@ -2222,6 +2315,7 @@ func paramsToStep(params map[string]any, step *ResearchStep) {
 	}
 	if uri, ok := params["uri"].(string); ok {
 		step.GraphURI = uri
+		step.SuggestURI = uri
 	}
 	if depth, ok := params["depth"].(int); ok {
 		step.GraphDepth = depth
@@ -2230,5 +2324,10 @@ func paramsToStep(params map[string]any, step *ResearchStep) {
 	}
 	if direction, ok := params["direction"].(string); ok {
 		step.GraphDirection = direction
+	}
+	if limit, ok := params["limit"].(int); ok {
+		step.SuggestLimit = limit
+	} else if limit, ok := params["limit"].(float64); ok {
+		step.SuggestLimit = int(limit)
 	}
 }

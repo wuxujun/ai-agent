@@ -218,6 +218,7 @@ type APITenantConfig struct {
 	APIKey                       string   `mapstructure:"api_key"`
 	Admin                        bool     `mapstructure:"admin"`
 	WorkspaceRoot                string   `mapstructure:"workspace_root"`
+	AllowedMultiAgentTeams       []string `mapstructure:"allowed_multiagent_teams"`
 	DailyLLMCallBudget           int      `mapstructure:"daily_llm_call_budget"`
 	DailyLLMCostBudgetUSD        float64  `mapstructure:"daily_llm_cost_budget_usd"`
 	AnswerPipelineEnforcement    string   `mapstructure:"answer_pipeline_enforcement"`
@@ -718,6 +719,7 @@ func cloneConfig(source *Config) *Config {
 	cloned.API.Tenants = make(map[string]APITenantConfig, len(source.API.Tenants))
 	for tenantID, tenant := range source.API.Tenants {
 		tenant.AnswerPipelineRequiredStages = append([]string(nil), tenant.AnswerPipelineRequiredStages...)
+		tenant.AllowedMultiAgentTeams = append([]string(nil), tenant.AllowedMultiAgentTeams...)
 		cloned.API.Tenants[tenantID] = tenant
 	}
 	cloned.LLM.Gateway = cloneLLMEndpoint(source.LLM.Gateway)
@@ -1536,6 +1538,16 @@ func (c *Config) Validate() error {
 			if err := c.ValidateLLMCostBudgetCoverage(); err != nil {
 				return err
 			}
+		}
+		seenTeams := make(map[string]bool, len(tenant.AllowedMultiAgentTeams))
+		for _, team := range tenant.AllowedMultiAgentTeams {
+			if team == "" || strings.TrimSpace(team) != team {
+				return fmt.Errorf("api tenant %q allowed_multiagent_teams entries must be non-empty and trimmed", tenantID)
+			}
+			if seenTeams[team] {
+				return fmt.Errorf("api tenant %q contains duplicate allowed multi-agent team %q", tenantID, team)
+			}
+			seenTeams[team] = true
 		}
 		switch strings.ToLower(strings.TrimSpace(tenant.AnswerPipelineEnforcement)) {
 		case "", "observe", "advisory", "strict":

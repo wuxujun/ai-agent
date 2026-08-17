@@ -57,6 +57,16 @@ func TestTeamsConfig_WikiGraphToolBoundary(t *testing.T) {
 	}
 }
 
+func TestTeamsConfig_WikiSuggestToolBoundary(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.MultiAgent.Team = "wiki_suggest" }))
+
+	cfg := multiagent.GetTeamsConfig()
+	team := cfg.GetActiveTeam()
+	if cfg.ActiveTeam != "wiki_suggest" || len(team.Planner.Tools) != 2 || team.Planner.Tools[0] != "wiki_search" || team.Planner.Tools[1] != "wiki_suggest" {
+		t.Fatalf("wiki_suggest team=%q tools=%v", cfg.ActiveTeam, team.Planner.Tools)
+	}
+}
+
 func TestTeamsConfig_YAMLParse(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.MultiAgent.Team = ""

@@ -39,10 +39,11 @@ type Document struct {
 }
 
 type Client struct {
-	mcp         mcpCaller
-	searchProps map[string]any
-	readProps   map[string]any
-	graphProps  map[string]any
+	mcp          mcpCaller
+	searchProps  map[string]any
+	readProps    map[string]any
+	graphProps   map[string]any
+	suggestProps map[string]any
 }
 
 type mcpCaller interface {
@@ -84,6 +85,8 @@ func (c *Client) Initialize(ctx context.Context) error {
 			c.readProps = remote.Properties()
 		case graphToolName:
 			c.graphProps = remote.Properties()
+		case suggestToolName:
+			c.suggestProps = remote.Properties()
 		}
 	}
 	if c.searchProps == nil || c.readProps == nil {
@@ -98,7 +101,48 @@ func (c *Client) Initialize(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) SupportsGraph() bool { return c != nil && c.graphProps != nil }
+func (c *Client) SupportsGraph() bool   { return c != nil && c.graphProps != nil }
+func (c *Client) SupportsSuggest() bool { return c != nil && c.suggestProps != nil }
+
+func (c *Client) Suggest(ctx context.Context, document Document, space string, limit int) (SuggestResult, error) {
+	if !c.SupportsSuggest() {
+		return SuggestResult{}, errors.New("remote Wiki does not expose wiki_suggest")
+	}
+	slug, space, limit, err := validateSuggestRequest(document, space, limit)
+	if err != nil {
+		return SuggestResult{}, err
+	}
+	uri := strings.TrimSpace(document.URI)
+	if uri == "" {
+		uri = graphURI(space, slug)
+	}
+	arguments := make(map[string]any)
+	switch {
+	case hasAnyProperty(c.suggestProps, "uri"):
+		arguments["uri"] = uri
+	case hasAnyProperty(c.suggestProps, "slug"):
+		arguments["slug"] = slug
+	case hasAnyProperty(c.suggestProps, "path"):
+		arguments["path"] = slug
+	default:
+		return SuggestResult{}, errors.New("wiki_suggest schema does not expose uri, slug, or path")
+	}
+	setIfSupported(arguments, c.suggestProps, "wiki", space)
+	setIfSupported(arguments, c.suggestProps, "limit", limit)
+	setIfSupported(arguments, c.suggestProps, "format", "json")
+	result, err := c.mcp.CallTool(ctx, suggestToolName, arguments)
+	if err != nil {
+		return SuggestResult{}, err
+	}
+	suggestions, err := parseSuggestResult(result)
+	if err != nil {
+		return SuggestResult{}, fmt.Errorf("parse %s result for %s: %w", suggestToolName, slug, err)
+	}
+	if suggestions.RootURI == "" {
+		suggestions.RootURI = uri
+	}
+	return normalizeSuggestResult(suggestions, limit), nil
+}
 
 // Graph calls the optional read-only wiki_graph MCP operation. Its schema is
 // discovered at startup and only supported arguments are sent.
@@ -362,4 +406,24 @@ func parseGraphResult(result *mcpclient.CallResult) (GraphResult, error) {
 		}
 	}
 	return GraphResult{}, errors.New("response did not contain graph nodes or edges")
+}
+
+func parseSuggestResult(result *mcpclient.CallResult) (SuggestResult, error) {
+	if result == nil {
+		return SuggestResult{}, errors.New("empty MCP result")
+	}
+	for _, data := range [][]byte{result.StructuredContent, []byte(strings.TrimSpace(result.Text))} {
+		if len(data) == 0 {
+			continue
+		}
+		var envelope SuggestResult
+		if err := json.Unmarshal(data, &envelope); err == nil && envelope.Suggestions != nil {
+			return envelope, nil
+		}
+		var suggestions []Suggestion
+		if err := json.Unmarshal(data, &suggestions); err == nil && suggestions != nil {
+			return SuggestResult{Suggestions: suggestions}, nil
+		}
+	}
+	return SuggestResult{}, errors.New("response did not contain a JSON suggestions list")
 }

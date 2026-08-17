@@ -81,6 +81,8 @@ func TestStores(t *testing.T) {
 				Goal:                "Build a cool agent",
 				Status:              types.StatusCreated,
 				Mode:                "multiagent",
+				Team:                "wiki_graph",
+				TeamConfigDigest:    "team-digest",
 				MaxSteps:            10,
 				StepCount:           1,
 				Workspace:           "/tmp/workspace",
@@ -154,6 +156,9 @@ func TestStores(t *testing.T) {
 			}
 			if retrieved.Mode != task.Mode {
 				t.Errorf("expected Mode %q, got %q", task.Mode, retrieved.Mode)
+			}
+			if retrieved.Team != task.Team || retrieved.TeamConfigDigest != task.TeamConfigDigest {
+				t.Errorf("expected team %q/%q, got %q/%q", task.Team, task.TeamConfigDigest, retrieved.Team, retrieved.TeamConfigDigest)
 			}
 			if retrieved.MaxSteps != task.MaxSteps {
 				t.Errorf("expected MaxSteps %d, got %d", task.MaxSteps, retrieved.MaxSteps)

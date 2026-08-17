@@ -67,6 +67,10 @@ api:
   #     api_key: "<secret>"
   #     admin: false
   #     workspace_root: "./workspace/tenants/project_a"
+  #     # 留空或省略时可使用全部已配置 Team；非管理员租户配置后只能使用列表内 Team。
+  #     allowed_multiagent_teams:
+  #       - wiki
+  #       - wiki_graph
   #     daily_llm_call_budget: 100
   #     daily_llm_cost_budget_usd: 10
   #     answer_pipeline_enforcement: strict

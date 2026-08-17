@@ -305,6 +305,22 @@ func GetTeamsConfig() *TeamsConfig {
 	return cfg
 }
 
+// ResolveTeamSelection validates a requested task-level team and returns the
+// concrete name plus its immutable configuration digest. An empty request uses
+// the process default for backward compatibility.
+func ResolveTeamSelection(requested string) (string, string, error) {
+	cfg := GetTeamsConfig()
+	team := strings.TrimSpace(requested)
+	if team == "" {
+		team = strings.TrimSpace(cfg.ActiveTeam)
+	}
+	teamConfig, ok := cfg.Teams[team]
+	if !ok || team == "" {
+		return "", "", fmt.Errorf("multi-agent team %q is not configured", team)
+	}
+	return team, newTeamConfigSnapshot(team, teamConfig).Digest, nil
+}
+
 func parseResumeConfigPolicy(value string) ResumeConfigPolicy {
 	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(value)))
 	switch normalized {

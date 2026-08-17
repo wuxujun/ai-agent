@@ -215,6 +215,11 @@ export AI_AGENT_MULTIAGENT_TEAM=wiki
 `wiki.default_space`。若日志出现 `has no api.tenants.<id>.wiki_space and
 wiki.default_space is empty`，说明两处空间配置均为空。
 
+创建任务时，可在 `mode=multiagent` 下通过 `team` 覆盖进程默认 Team。可使用
+`api.tenants.<tenant>.allowed_multiagent_teams` 限制非管理员租户；留空或省略
+时为兼容现有配置，仍可访问全部已配置 Team。省略 `team` 后解析得到的当前
+默认 Team 同样受此白名单约束。
+
 可通过以下接口确认运行状态：
 
 - `GET /ready`：查看 `wiki.configured`、`required`、`healthy` 和 `error`；仅必需 Wiki 不健康时返回 503。
@@ -249,6 +254,27 @@ go run ./cmd/wiki-eval \
 `AI_AGENT_MULTIAGENT_TEAM=wiki_graph`，受控执行 `wiki_search -> wiki_fetch ->
 wiki_graph -> wiki_graph_fetch`：每个任务最多一次图遍历、最多读取三个邻居页面，并共享
 12,000 字节读取预算；内部邻居读取工具不会暴露给 Planner。
+
+后端支持时还会注册只读 `wiki_suggest`。设置
+`AI_AGENT_MULTIAGENT_TEAM=wiki_suggest` 后，系统受控执行 `wiki_search ->
+wiki_fetch -> wiki_suggest`，报告直接相关页面、可能重复概念，以及搜索相关但尚无直接链接的
+页面。该流程每任务最多调用一次、最多返回 10 项，只生成需要人工审核的候选，绝不应用修改。
+包含 `expected_suggestion_uris` 的评测用例默认要求建议召回率至少 0.80、噪声率不超过 0.60。
+
+Multi-Agent 任务可直接选择 `teams.yaml` 中的 Team，无需修改环境变量并重启：
+
+```json
+{
+  "goal": "查找 PBL 课程的关联证据",
+  "workspace": "workspace",
+  "mode": "multiagent",
+  "team": "wiki_graph"
+}
+```
+
+API 会校验 Team 名称，并持久化 `team` 与 `team_config_digest`。省略 `team` 时解析并锁定
+当前进程默认 Team；非 Multi-Agent 模式拒绝 Team 覆盖。并发任务使用相互隔离的 Team
+快照，恢复任务继续遵循既有配置漂移策略。
 
 设置一个 base64 编码的 32 字节 AES 密钥后，会启用审批持久化恢复。所有实例必须从密钥管理服务
 读取同一个密钥；密钥丢失后，尚未消费的审批载荷将无法恢复。

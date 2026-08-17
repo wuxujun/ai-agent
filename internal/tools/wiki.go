@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,11 @@ type WikiGraphReader interface {
 	Graph(context.Context, wiki.Document, string, int, string) (wiki.GraphResult, error)
 }
 
+type WikiSuggestReader interface {
+	SupportsSuggest() bool
+	Suggest(context.Context, wiki.Document, string, int) (wiki.SuggestResult, error)
+}
+
 type wikiCandidate struct {
 	ID         string        `json:"id"`
 	Title      string        `json:"title,omitempty"`
@@ -39,10 +45,11 @@ type wikiCandidate struct {
 }
 
 type wikiTaskCache struct {
-	candidates map[string]wikiCandidate
-	fetched    map[string]bool
-	graphCalls int
-	updatedAt  time.Time
+	candidates   map[string]wikiCandidate
+	fetched      map[string]bool
+	graphCalls   int
+	suggestCalls int
+	updatedAt    time.Time
 }
 
 type wikiCache struct {
@@ -122,6 +129,26 @@ func (c *wikiCache) releaseGraph(taskKey string) {
 	task := c.task(taskKey)
 	if task.graphCalls > 0 {
 		task.graphCalls--
+	}
+}
+
+func (c *wikiCache) reserveSuggest(taskKey string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	task := c.task(taskKey)
+	if task.suggestCalls >= 1 {
+		return errors.New("wiki_suggest permits at most one call per task")
+	}
+	task.suggestCalls++
+	return nil
+}
+
+func (c *wikiCache) releaseSuggest(taskKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	task := c.task(taskKey)
+	if task.suggestCalls > 0 {
+		task.suggestCalls--
 	}
 }
 
@@ -392,6 +419,147 @@ func (t *wikiGraphTool) Execute(ctx context.Context, _ string, params map[string
 	for _, edge := range graph.Edges {
 		evidence = append(evidence, types.Evidence{Path: edge.From, Query: "wiki_graph", Lines: []string{edge.From + " -> " + edge.To}})
 	}
+	followupURIs := rankedGraphFollowupURIs(graph)
+	return &ToolResult{Query: uri, Observation: string(encoded), Evidence: evidence, FollowupURIs: followupURIs}, nil
+}
+
+func rankedGraphFollowupURIs(graph wiki.GraphResult) []string {
+	root := strings.TrimSpace(graph.RootURI)
+	adjacency := make(map[string][]string, len(graph.Nodes))
+	directPriority := make(map[string]int)
+	for _, edge := range graph.Edges {
+		from, to := strings.TrimSpace(edge.From), strings.TrimSpace(edge.To)
+		if from == "" || to == "" {
+			continue
+		}
+		adjacency[from] = append(adjacency[from], to)
+		adjacency[to] = append(adjacency[to], from)
+		if from == root {
+			directPriority[to] = 0 // Root explicitly links to this page.
+		} else if to == root {
+			if _, outgoing := directPriority[from]; !outgoing {
+				directPriority[from] = 1 // Page links back to the root.
+			}
+		}
+	}
+	distance := map[string]int{root: 0}
+	queue := []string{root}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, neighbor := range adjacency[current] {
+			if _, seen := distance[neighbor]; seen {
+				continue
+			}
+			distance[neighbor] = distance[current] + 1
+			queue = append(queue, neighbor)
+		}
+	}
+	result := make([]string, 0, len(graph.Nodes))
+	seen := make(map[string]bool, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		uri := strings.TrimSpace(node.URI)
+		if uri != root && strings.HasPrefix(uri, "wiki://") && !seen[uri] {
+			seen[uri] = true
+			result = append(result, uri)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftDistance, leftOK := distance[result[i]]
+		rightDistance, rightOK := distance[result[j]]
+		if !leftOK {
+			leftDistance = int(^uint(0) >> 1)
+		}
+		if !rightOK {
+			rightDistance = int(^uint(0) >> 1)
+		}
+		if leftDistance != rightDistance {
+			return leftDistance < rightDistance
+		}
+		leftPriority, leftDirect := directPriority[result[i]]
+		rightPriority, rightDirect := directPriority[result[j]]
+		if !leftDirect {
+			leftPriority = 2
+		}
+		if !rightDirect {
+			rightPriority = 2
+		}
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
+		}
+		return result[i] < result[j]
+	})
+	return result
+}
+
+type wikiSuggestTool struct {
+	client WikiSuggestReader
+	cache  *wikiCache
+	guard  *wikiBackendGuard
+}
+
+func (*wikiSuggestTool) Name() string { return "wiki_suggest" }
+func (*wikiSuggestTool) Description() string {
+	return "Generate bounded read-only curation suggestions for a wiki:// page; never modifies Wiki content"
+}
+func (*wikiSuggestTool) Parameters() map[string]any {
+	return map[string]any{
+		"uri":   map[string]any{"type": "string", "pattern": `^wiki://`},
+		"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 10},
+	}
+}
+func (*wikiSuggestTool) RiskLevel() types.RiskLevel { return types.RiskLevelLow }
+func (*wikiSuggestTool) Validate(params map[string]any) error {
+	if !strings.HasPrefix(strings.TrimSpace(stringParameter(params, "uri")), "wiki://") {
+		return errors.New("wiki_suggest requires a wiki:// uri")
+	}
+	if limit := intParameter(params, "limit"); limit < 0 || limit > 10 {
+		return errors.New("wiki_suggest limit must be between 1 and 10")
+	}
+	return nil
+}
+func (t *wikiSuggestTool) Execute(ctx context.Context, _ string, params map[string]any) (*ToolResult, error) {
+	if err := t.Validate(params); err != nil {
+		return nil, err
+	}
+	exec, err := retrievalExecutionFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	space, err := wikiSpaceForTenant(exec.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	uri := strings.TrimSpace(stringParameter(params, "uri"))
+	if space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
+		return nil, errors.New("wiki_suggest URI does not belong to the current tenant space")
+	}
+	taskKey := wikiTaskKey(exec)
+	if err := t.cache.reserveSuggest(taskKey); err != nil {
+		return nil, err
+	}
+	limit := intParameter(params, "limit")
+	if limit == 0 {
+		limit = 5
+	}
+	var suggestions wiki.SuggestResult
+	err = t.guard.call(ctx, "suggest", func() error {
+		var callErr error
+		suggestions, callErr = t.client.Suggest(ctx, wiki.Document{URI: uri}, space, limit)
+		return callErr
+	})
+	if err != nil {
+		t.cache.releaseSuggest(taskKey)
+		return nil, err
+	}
+	encoded, err := json.Marshal(suggestions)
+	if err != nil {
+		return nil, err
+	}
+	evidence := make([]types.Evidence, 0, len(suggestions.Suggestions))
+	for _, item := range suggestions.Suggestions {
+		evidence = append(evidence, types.Evidence{Path: item.URI, Query: item.Kind, Lines: []string{fmt.Sprintf("%s: %s (score %.3f)", item.Kind, item.Reason, item.Score)}})
+	}
 	return &ToolResult{Query: uri, Observation: string(encoded), Evidence: evidence}, nil
 }
 
@@ -484,6 +652,9 @@ func RegisterWikiTools(registry *Registry, client WikiReader) error {
 	if graphClient, ok := client.(WikiGraphReader); ok && graphClient.SupportsGraph() {
 		registry.Register(&wikiGraphTool{client: graphClient, cache: cache, guard: guard})
 		registry.Register(&wikiGraphFetchTool{client: client, guard: guard})
+	}
+	if suggestClient, ok := client.(WikiSuggestReader); ok && suggestClient.SupportsSuggest() {
+		registry.Register(&wikiSuggestTool{client: suggestClient, cache: cache, guard: guard})
 	}
 	return nil
 }

@@ -17,6 +17,7 @@ import (
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/metrics"
+	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/policy"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -79,6 +80,7 @@ type CreateTaskRequest struct {
 	Goal       string `json:"goal"`
 	Workspace  string `json:"workspace"`
 	Mode       string `json:"mode"`
+	Team       string `json:"team"`
 	MaxSteps   int    `json:"max_steps"`
 	ToolBudget int    `json:"tool_budget"`
 	// TokenBudget caps cumulative planner+executor token usage across the task.
@@ -302,9 +304,23 @@ func (h *Handler) createTask(c *gin.Context) {
 		req.MaxSteps = 5
 	}
 	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+	req.Team = strings.TrimSpace(req.Team)
 	if req.Mode != "" && !orchestrator.IsSupportedMode(orchestrator.Mode(req.Mode)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "mode must be one of eino, legacy, adk, step, or multiagent"})
 		return
+	}
+	if req.Team != "" && req.Mode != "" && req.Mode != string(orchestrator.ModeMultiAgent) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "team is only supported for multiagent mode"})
+		return
+	}
+	selectedTeam, teamDigest := "", ""
+	if req.Mode == string(orchestrator.ModeMultiAgent) || req.Team != "" {
+		var err error
+		selectedTeam, teamDigest, err = multiagent.ResolveTeamSelection(req.Team)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	req.SessionID = strings.TrimSpace(req.SessionID)
 	if req.SessionID != "" && !validRequestID(req.SessionID) {
@@ -332,6 +348,10 @@ func (h *Handler) createTask(c *gin.Context) {
 	principal := principalFromGin(c)
 	runtimeConfig := config.Get()
 	tenant, tenantConfigured := runtimeConfig.API.Tenants[principal.TenantID]
+	if selectedTeam != "" && !principal.Admin && !tenantAllowsMultiAgentTeam(tenant, selectedTeam) {
+		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("multi-agent team %q is not allowed for tenant", selectedTeam)})
+		return
+	}
 	if root := strings.TrimSpace(tenant.WorkspaceRoot); root != "" {
 		if err := policy.ValidateWorkspaceWithinRoot(root, req.Workspace); err != nil {
 			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
@@ -370,6 +390,8 @@ func (h *Handler) createTask(c *gin.Context) {
 		Goal:             req.Goal,
 		Workspace:        req.Workspace,
 		Mode:             req.Mode,
+		Team:             selectedTeam,
+		TeamConfigDigest: teamDigest,
 		MaxSteps:         req.MaxSteps,
 		ToolBudget:       req.ToolBudget,
 		TokenBudget:      req.TokenBudget,
@@ -406,6 +428,18 @@ func (h *Handler) createTask(c *gin.Context) {
 
 	c.Set(taskIDKey, task.ID)
 	c.JSON(http.StatusCreated, task)
+}
+
+func tenantAllowsMultiAgentTeam(tenant config.APITenantConfig, team string) bool {
+	if len(tenant.AllowedMultiAgentTeams) == 0 {
+		return true
+	}
+	for _, allowed := range tenant.AllowedMultiAgentTeams {
+		if allowed == team {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) runTaskStep(c *gin.Context) {

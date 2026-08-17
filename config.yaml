@@ -67,6 +67,11 @@ api:
   #     api_key: "<secret>"
   #     admin: false
   #     workspace_root: "./workspace/tenants/project_a"
+  #     # Empty or omitted preserves access to all configured Teams. Non-admin
+  #     # tenants with a non-empty list may only create tasks using these Teams.
+  #     allowed_multiagent_teams:
+  #       - wiki
+  #       - wiki_graph
   #     daily_llm_call_budget: 100
   #     daily_llm_cost_budget_usd: 10
   #     answer_pipeline_enforcement: strict

@@ -9,12 +9,35 @@
 # Research→Reviewed 的升级路由仅在 legacy 模式下生效。
 # 可通过环境变量 AI_AGENT_MULTIAGENT_RUNTIME=dag 强制切换至 DAG 运行时。
 
-active_team: "software" # 可选值："software" | "software_reviewed" | "data" | "kb_qa" | "wiki" | "wiki_graph"
+active_team: "software" # 可选值："software" | "software_reviewed" | "data" | "kb_qa" | "wiki" | "wiki_graph" | "wiki_suggest"
 # require_match 可防止恢复任务时静默切换提示词或模型。
 # 如需刻意切换，请设置 AI_AGENT_MULTIAGENT_RESUME_CONFIG_POLICY=use_latest。
 resume_config_policy: "require_match"
 
 teams:
+  wiki_suggest:
+    runtime: "legacy"
+    workflow: "planner_researcher_writer"
+    planner:
+      name: "Wiki 策展建议规划师"
+      tools: ["wiki_search", "wiki_suggest"]
+      llm_scene: "multiagent_planner"
+      system_prompt: |
+        你负责规划只读 Wiki 策展分析。初始计划必须且只能包含一个聚焦的 wiki_search，
+        协调器会自动读取最佳页面并生成有界建议。
+
+        禁止选择写入、摄取、文件系统、网络、RAG、Memory 或代码执行工具。只有重规划且
+        Trace 已包含明确 wiki:// URI 时才能使用 wiki_suggest。建议只是候选，不是事实或
+        已授权修改。仅返回符合 Schema 的 JSON。
+    researcher:
+      name: "只读 Wiki 策展员"
+    writer:
+      name: "Wiki 建议审核员"
+      llm_scene: "multiagent_writer"
+      system_prompt: |
+        只能报告提供的只读 Wiki 策展建议，按可能重复、缺失链接和相关页面分组，引用
+        wiki:// 目标并说明需要人工审核，绝不能声称已应用修改。仅返回符合 Schema 的 JSON。
+
   wiki_graph:
     runtime: "legacy"
     workflow: "planner_researcher_writer"

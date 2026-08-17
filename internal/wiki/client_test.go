@@ -29,6 +29,9 @@ func (f *fakeMCP) CallTool(_ context.Context, name string, args map[string]any) 
 	if name == graphToolName {
 		return &mcpclient.CallResult{StructuredContent: json.RawMessage(`{"root_uri":"wiki://research/concepts/moe","nodes":[{"uri":"wiki://research/concepts/moe"},{"uri":"wiki://research/sources/moe"}],"edges":[{"from":"wiki://research/concepts/moe","to":"wiki://research/sources/moe"}]}`)}, nil
 	}
+	if name == suggestToolName {
+		return &mcpclient.CallResult{StructuredContent: json.RawMessage(`{"root_uri":"wiki://research/concepts/moe","suggestions":[{"kind":"missing_link","uri":"wiki://research/sources/moe","reason":"relevant but unlinked","score":0.9}]}`)}, nil
+	}
 	return &mcpclient.CallResult{Text: `{"content":"# MoE\n\nFull page"}`}, nil
 }
 
@@ -172,5 +175,25 @@ func TestClientUsesOptionalWikiGraphSchema(t *testing.T) {
 	}
 	if got := transport.calls[0].args; !reflect.DeepEqual(got, map[string]any{"uri": "wiki://research/concepts/moe", "wiki": "research", "depth": 2, "direction": "outgoing"}) {
 		t.Fatalf("graph args = %#v", got)
+	}
+}
+
+func TestClientUsesOptionalWikiSuggestSchema(t *testing.T) {
+	transport := &fakeMCP{tools: append(wikiTestTools(), mcpclient.Tool{Name: suggestToolName, InputSchema: map[string]any{"properties": map[string]any{
+		"uri": map[string]any{"type": "string"}, "wiki": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer"}, "format": map[string]any{"type": "string"},
+	}}})}
+	client := &Client{mcp: transport}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !client.SupportsSuggest() {
+		t.Fatal("optional wiki_suggest was not discovered")
+	}
+	result, err := client.Suggest(t.Context(), Document{URI: "wiki://research/concepts/moe"}, "research", 4)
+	if err != nil || len(result.Suggestions) != 1 || result.Suggestions[0].Kind != "missing_link" {
+		t.Fatalf("suggestions=%+v err=%v", result, err)
+	}
+	if got := transport.calls[0].args; !reflect.DeepEqual(got, map[string]any{"uri": "wiki://research/concepts/moe", "wiki": "research", "limit": 4, "format": "json"}) {
+		t.Fatalf("suggest args=%#v", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ type failingWikiReader struct {
 }
 
 type graphWikiReader struct{ fakeWikiReader }
+type suggestWikiReader struct{ fakeWikiReader }
 
 func (*graphWikiReader) SupportsGraph() bool { return true }
 func (*graphWikiReader) Graph(_ context.Context, document wiki.Document, space string, depth int, direction string) (wiki.GraphResult, error) {
@@ -33,6 +35,13 @@ func (*graphWikiReader) Graph(_ context.Context, document wiki.Document, space s
 		Nodes:   []wiki.GraphNode{{URI: root}, {URI: "wiki://" + space + "/sources/moe"}},
 		Edges:   []wiki.GraphEdge{{From: root, To: "wiki://" + space + "/sources/moe"}},
 	}, nil
+}
+
+func (*suggestWikiReader) SupportsSuggest() bool { return true }
+func (*suggestWikiReader) Suggest(_ context.Context, document wiki.Document, space string, limit int) (wiki.SuggestResult, error) {
+	return wiki.SuggestResult{RootURI: document.URI, Suggestions: []wiki.Suggestion{{
+		Kind: "missing_link", URI: "wiki://" + space + "/sources/moe", Reason: "relevant but unlinked", Score: 0.9,
+	}}}, nil
 }
 
 func (f *failingWikiReader) Search(context.Context, string, int, string) ([]wiki.Document, error) {
@@ -257,6 +266,9 @@ func TestWikiGraphRegistersOnlyForCapableBackend(t *testing.T) {
 	if len(result.Evidence) != 1 || result.Evidence[0].Path != "wiki://local/concepts/moe" || !strings.Contains(result.Observation, `"edges"`) {
 		t.Fatalf("graph result = %+v", result)
 	}
+	if len(result.FollowupURIs) != 1 || result.FollowupURIs[0] != "wiki://local/sources/moe" {
+		t.Fatalf("graph followup URIs = %v", result.FollowupURIs)
+	}
 	if _, err := tool.Execute(ctx, "", map[string]any{"uri": "wiki://local/concepts/moe"}); err == nil || !strings.Contains(err.Error(), "at most one") {
 		t.Fatalf("second graph call error = %v", err)
 	}
@@ -266,5 +278,54 @@ func TestWikiGraphRegistersOnlyForCapableBackend(t *testing.T) {
 	}
 	if _, err := fetch.Execute(ctx, "", map[string]any{"uris": []string{"wiki://other/sources/moe"}}); err == nil || !strings.Contains(err.Error(), "tenant space") {
 		t.Fatalf("cross-space graph fetch error = %v", err)
+	}
+}
+
+func TestWikiSuggestRegistersOnlyForCapableBackendAndEnforcesTenant(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.Wiki.DefaultSpace = "local" }))
+	registry := NewRegistry()
+	if err := RegisterWikiTools(registry, &suggestWikiReader{}); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := registry.Get("wiki_suggest")
+	if !ok || tool.RiskLevel() != "low" {
+		t.Fatalf("wiki_suggest missing or wrong risk: %v %v", ok, tool)
+	}
+	ctx := WithRetrievalExecutionContext(t.Context(), "suggest-task", "default")
+	result, err := tool.Execute(ctx, "", map[string]any{"uri": "wiki://local/concepts/moe", "limit": 5})
+	if err != nil || len(result.Evidence) != 1 || result.Evidence[0].Path != "wiki://local/sources/moe" {
+		t.Fatalf("suggest result=%+v err=%v", result, err)
+	}
+	if _, err := tool.Execute(ctx, "", map[string]any{"uri": "wiki://other/concepts/moe"}); err == nil || !strings.Contains(err.Error(), "tenant space") {
+		t.Fatalf("cross-space suggest error=%v", err)
+	}
+}
+
+func TestRankedGraphFollowupURIsPreferDirectOutgoingThenIncoming(t *testing.T) {
+	root := "wiki://local/sources/pbl-course"
+	graph := wiki.GraphResult{
+		RootURI: root,
+		Nodes: []wiki.GraphNode{
+			{URI: "wiki://local/comparisons/ieo"},
+			{URI: "wiki://local/entities/vanessa"},
+			{URI: "wiki://local/concepts/pbl"},
+			{URI: "wiki://local/index"},
+			{URI: root},
+		},
+		Edges: []wiki.GraphEdge{
+			{From: root, To: "wiki://local/entities/vanessa"},
+			{From: root, To: "wiki://local/concepts/pbl"},
+			{From: "wiki://local/index", To: root},
+			{From: "wiki://local/index", To: "wiki://local/comparisons/ieo"},
+		},
+	}
+	want := []string{
+		"wiki://local/concepts/pbl",
+		"wiki://local/entities/vanessa",
+		"wiki://local/index",
+		"wiki://local/comparisons/ieo",
+	}
+	if got := rankedGraphFollowupURIs(graph); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranked graph URIs = %v, want %v", got, want)
 	}
 }

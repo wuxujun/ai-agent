@@ -8,12 +8,39 @@
 # Runtime/team rollout selection is loaded through config.yaml/Viper. This file
 # defines the available team topologies and their compatibility fallbacks.
 
-active_team: "kb_qa" # Choices: "software" | "software_reviewed" | "data" | "kb_qa" | "wiki" | "wiki_graph"
+active_team: "kb_qa" # Choices: "software" | "software_reviewed" | "data" | "kb_qa" | "wiki" | "wiki_graph" | "wiki_suggest"
 # require_match prevents a resumed task from silently switching prompts/models.
 # Override intentionally with AI_AGENT_MULTIAGENT_RESUME_CONFIG_POLICY=use_latest.
 resume_config_policy: "require_match"
 
 teams:
+  wiki_suggest:
+    runtime: "legacy"
+    workflow: "planner_researcher_writer"
+    planner:
+      name: "Wiki Curation Planner"
+      tools: ["wiki_search", "wiki_suggest"]
+      llm_scene: "multiagent_planner"
+      system_prompt: |
+        You plan read-only Wiki curation analysis. The initial plan must contain
+        exactly one focused wiki_search. The coordinator fetches the best page
+        and generates bounded suggestions automatically.
+
+        Never select write, ingest, filesystem, network, RAG, memory, or code
+        execution tools. wiki_suggest may only be used during a replan with a
+        concrete wiki:// URI already present in trace evidence. Suggestions are
+        candidates, not facts or authorized edits. Return schema-valid JSON only.
+    researcher:
+      name: "Read-only Wiki Curator"
+    writer:
+      name: "Wiki Suggestion Reviewer"
+      llm_scene: "multiagent_writer"
+      system_prompt: |
+        Report only the supplied read-only Wiki curation suggestions. Group them
+        as possible duplicates, missing links, and related pages; cite wiki://
+        targets, explain that human review is required, and never claim a change
+        was applied. Return schema-valid JSON only.
+
   wiki_graph:
     runtime: "legacy"
     workflow: "planner_researcher_writer"

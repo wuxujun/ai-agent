@@ -51,6 +51,8 @@ type ResearchStep struct {
 	GraphURI       string `json:"graph_uri"`       // used by wiki_graph
 	GraphDepth     int    `json:"graph_depth"`     // used by wiki_graph (1..2)
 	GraphDirection string `json:"graph_direction"` // outgoing / incoming / both
+	SuggestURI     string `json:"suggest_uri"`     // used by wiki_suggest
+	SuggestLimit   int    `json:"suggest_limit"`   // used by wiki_suggest (1..10)
 	// RepairedParameters is populated after plan-time argument repair. It is
 	// intentionally excluded from LLM JSON and is shared by approval and execution.
 	RepairedParameters map[string]any `json:"-"`
@@ -71,6 +73,10 @@ type StepEvidence struct {
 	Observation string           `json:"observation"`
 	Evidence    []types.Evidence `json:"evidence,omitempty"`
 	TokenUsage  types.TokenUsage `json:"token_usage,omitempty"`
+	// FollowupURIs is internal routing state emitted by a tool. It is excluded
+	// from persisted/user-facing evidence and must still be validated by the
+	// receiving follow-up tool before use.
+	FollowupURIs []string `json:"-"`
 	// Failed is set to true by ResearcherAgent when the step could not be
 	// completed (tool error or policy violation). Coordinator uses this flag
 	// instead of parsing Observation strings, avoiding false positives when

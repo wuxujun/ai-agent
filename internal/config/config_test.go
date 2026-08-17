@@ -858,6 +858,14 @@ func TestValidateAPITenants(t *testing.T) {
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unknown answer pipeline stage") {
 		t.Fatalf("invalid tenant stage error = %v", err)
 	}
+	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", AllowedMultiAgentTeams: []string{"wiki", "wiki"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate allowed multi-agent team") {
+		t.Fatalf("duplicate tenant team error = %v", err)
+	}
+	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", AllowedMultiAgentTeams: []string{" wiki"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "non-empty and trimmed") {
+		t.Fatalf("untrimmed tenant team error = %v", err)
+	}
 }
 
 func TestValidateJWTAuthentication(t *testing.T) {
@@ -923,7 +931,7 @@ func TestCloneConfigDetachesTenantPipelineStages(t *testing.T) {
 	source := &Config{}
 	source.API.Auth.JWT.AllowedAlgorithms = []string{"RS256"}
 	source.API.Tenants = map[string]APITenantConfig{
-		"tenant-a": {APIKey: "key", AnswerPipelineRequiredStages: []string{"safety_guard_output"}},
+		"tenant-a": {APIKey: "key", AnswerPipelineRequiredStages: []string{"safety_guard_output"}, AllowedMultiAgentTeams: []string{"wiki"}},
 	}
 	cloned := cloneConfig(source)
 	tenant := cloned.API.Tenants["tenant-a"]
@@ -931,6 +939,12 @@ func TestCloneConfigDetachesTenantPipelineStages(t *testing.T) {
 	cloned.API.Tenants["tenant-a"] = tenant
 	if got := source.API.Tenants["tenant-a"].AnswerPipelineRequiredStages[0]; got != "safety_guard_output" {
 		t.Fatalf("tenant pipeline stages share backing array: %q", got)
+	}
+	tenant = cloned.API.Tenants["tenant-a"]
+	tenant.AllowedMultiAgentTeams[0] = "software"
+	cloned.API.Tenants["tenant-a"] = tenant
+	if got := source.API.Tenants["tenant-a"].AllowedMultiAgentTeams[0]; got != "wiki" {
+		t.Fatalf("tenant allowed teams share backing array: %q", got)
 	}
 	cloned.API.Auth.JWT.AllowedAlgorithms[0] = "RS512"
 	if got := source.API.Auth.JWT.AllowedAlgorithms[0]; got != "RS256" {

@@ -121,3 +121,27 @@ func TestMiddlewareNormalizesInvalidToolOutput(t *testing.T) {
 		t.Fatalf("invalid tool output was not normalized: %q", got)
 	}
 }
+
+func TestMiddlewareTruncationPreservesFollowupURIs(t *testing.T) {
+	tool := &followupStubTool{}
+	result, err := (&toolMiddleware{Tool: tool}).Execute(t.Context(), ".", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Observation, "truncated by middleware") || len(result.FollowupURIs) != 1 || result.FollowupURIs[0] != "wiki://local/entities/teacher" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+type followupStubTool struct{}
+
+func (*followupStubTool) Name() string               { return "followup_stub" }
+func (*followupStubTool) Description() string        { return "followup stub" }
+func (*followupStubTool) Parameters() map[string]any { return nil }
+func (*followupStubTool) RiskLevel() types.RiskLevel { return types.RiskLevelLow }
+func (*followupStubTool) Execute(context.Context, string, map[string]interface{}) (*ToolResult, error) {
+	return &ToolResult{
+		Observation:  strings.Repeat("x", 5000),
+		FollowupURIs: []string{"wiki://local/entities/teacher"},
+	}, nil
+}

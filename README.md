@@ -220,6 +220,12 @@ candidates. For multi-tenant deployments, configure
 single-tenant Wiki. The error `has no api.tenants.<id>.wiki_space and
 wiki.default_space is empty` means neither space setting is present.
 
+Task creation may override the process default with `team` when `mode` is
+`multiagent`. To restrict non-admin tenants, set
+`api.tenants.<tenant>.allowed_multiagent_teams`; an empty or omitted list keeps
+access to all configured Teams for backward compatibility. The allowlist also
+applies when `team` is omitted and the current default Team is resolved.
+
 Operational checks:
 
 - `GET /ready` reports `wiki.configured`, `required`, `healthy`, and `error`; only an unhealthy required Wiki causes a 503.
@@ -263,6 +269,31 @@ team follows a bounded `wiki_search -> wiki_fetch -> wiki_graph ->
 wiki_graph_fetch` chain: at most one graph traversal per task and at most three
 neighbor pages, within the shared 12,000-byte fetch budget. The internal
 neighbor fetch is not exposed to the Planner.
+
+When supported, the service also registers read-only `wiki_suggest`. Select
+`AI_AGENT_MULTIAGENT_TEAM=wiki_suggest` for curation analysis. The bounded
+`wiki_search -> wiki_fetch -> wiki_suggest` chain reports direct related pages,
+possible duplicates, and search-relevant pages that lack a direct link. It
+never applies an edit, runs at most once per task, returns at most ten items,
+and requires human review. Eval cases with `expected_suggestion_uris` use the
+default suggestion recall gate 0.80 and noise-rate ceiling 0.60.
+
+Multi-Agent tasks may select a configured team without restarting the service:
+
+```json
+{
+  "goal": "Find linked evidence for the PBL course",
+  "workspace": "workspace",
+  "mode": "multiagent",
+  "team": "wiki_graph"
+}
+```
+
+The API validates the name against `teams.yaml` and persists both `team` and
+`team_config_digest`. Omitting `team` resolves and pins the current process
+default. Non-Multi-Agent modes reject a team override. Concurrent tasks keep
+independent team snapshots, and resume follows the existing configuration-drift
+policy.
 
 Durable approval recovery is enabled when a 32-byte AES key is supplied as
 base64. Keep the same key on every instance and in the secret manager; losing

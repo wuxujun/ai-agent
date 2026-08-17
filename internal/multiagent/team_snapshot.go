@@ -37,12 +37,17 @@ func persistedTeamConfigFromTask(task *types.Task) (persistedTeamConfig, bool) {
 			}
 		}
 	}
+	if team, digest := strings.TrimSpace(task.Team), strings.TrimSpace(task.TeamConfigDigest); team != "" && digest != "" {
+		return persistedTeamConfig{ActiveTeam: team, Digest: digest}, true
+	}
 	return persistedTeamConfig{}, false
 }
 
 func enforceTeamConfigResumePolicy(task *types.Task, snapshot teamConfigSnapshot) error {
 	previous, ok := persistedTeamConfigFromTask(task)
 	if !ok || (previous.ActiveTeam == snapshot.ActiveTeam && previous.Digest == snapshot.Digest) {
+		task.Team = snapshot.ActiveTeam
+		task.TeamConfigDigest = snapshot.Digest
 		return nil
 	}
 	current := persistedTeamConfig{ActiveTeam: snapshot.ActiveTeam, Digest: snapshot.Digest}
@@ -57,6 +62,8 @@ func enforceTeamConfigResumePolicy(task *types.Task, snapshot teamConfigSnapshot
 		AgentRole:   RolePlanner,
 	}
 	if snapshot.ResumePolicy == ResumeConfigUseLatest {
+		task.Team = snapshot.ActiveTeam
+		task.TeamConfigDigest = snapshot.Digest
 		trace.Evidence = []types.Evidence{{
 			Path:  "team_config",
 			Query: current.ActiveTeam,

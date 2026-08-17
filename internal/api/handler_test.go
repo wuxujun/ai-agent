@@ -122,6 +122,29 @@ func (wikiGraphHTTPWriter) Write(_ context.Context, _ string, evidence []multiag
 	}, nil
 }
 
+type wikiSuggestHTTPWriter struct{}
+
+func (wikiSuggestHTTPWriter) Write(_ context.Context, _ string, evidence []multiagent.StepEvidence, _ []types.Memory) (*multiagent.WriterOutput, error) {
+	seen := make([]string, 0, 2)
+	for _, item := range evidence {
+		if item.Action != "wiki_suggest" {
+			continue
+		}
+		for _, source := range item.Evidence {
+			if strings.HasPrefix(source.Path, "wiki://local/") {
+				seen = append(seen, source.Path)
+			}
+		}
+	}
+	if len(seen) != 2 {
+		return nil, fmt.Errorf("writer did not receive bounded Wiki suggestions: %v", seen)
+	}
+	return &multiagent.WriterOutput{
+		FinalAnswer:     fmt.Sprintf("建议人工审核 %s 和 %s；未应用任何修改。", seen[0], seen[1]),
+		EvidenceSummary: "Read-only Wiki suggestions", DraftConfidence: "high",
+	}, nil
+}
+
 func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, decision *planner.PlanDecision) ([]types.StepTrace, error) {
 	return nil, nil
 }
@@ -363,6 +386,9 @@ func TestHTTPMultiAgentSearchesAndFetchesLocalWiki(t *testing.T) {
 	t.Cleanup(func() {
 		tools.Unregister("wiki_search")
 		tools.Unregister("wiki_fetch")
+		tools.Unregister("wiki_graph")
+		tools.Unregister("wiki_graph_fetch")
+		tools.Unregister("wiki_suggest")
 	})
 
 	st := store.NewMemoryStore()
@@ -406,7 +432,7 @@ func TestHTTPMultiAgentWikiGraphFetchesBoundedNeighborPages(t *testing.T) {
 		cfg.API.APIKey = ""
 		cfg.AnswerPipeline.Enabled = false
 		cfg.RAG.ContextMode = "jit"
-		cfg.MultiAgent.Team = "wiki_graph"
+		cfg.MultiAgent.Team = "software"
 		cfg.Wiki.Directory = root
 		cfg.Wiki.DefaultSpace = "local"
 		cfg.Wiki.SearchTopK = 3
@@ -442,6 +468,7 @@ func TestHTTPMultiAgentWikiGraphFetchesBoundedNeighborPages(t *testing.T) {
 		tools.Unregister("wiki_fetch")
 		tools.Unregister("wiki_graph")
 		tools.Unregister("wiki_graph_fetch")
+		tools.Unregister("wiki_suggest")
 	})
 
 	st := store.NewMemoryStore()
@@ -453,7 +480,7 @@ func TestHTTPMultiAgentWikiGraphFetchesBoundedNeighborPages(t *testing.T) {
 
 	create := httptest.NewRecorder()
 	request, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(
-		`{"id":"wiki-graph-http-e2e","goal":"PBL 历史旅行指南的导师和课次是什么？","workspace":"workspace","mode":"multiagent","max_steps":6,"tool_budget":4}`,
+		`{"id":"wiki-graph-http-e2e","goal":"PBL 历史旅行指南的导师和课次是什么？","workspace":"workspace","mode":"multiagent","team":"wiki_graph","max_steps":6,"tool_budget":4}`,
 	))
 	request.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(create, request)
@@ -477,6 +504,79 @@ func TestHTTPMultiAgentWikiGraphFetchesBoundedNeighborPages(t *testing.T) {
 	for _, action := range []string{"wiki_search", "wiki_fetch", "wiki_graph", "wiki_graph_fetch"} {
 		if !actions[action] {
 			t.Fatalf("trace actions = %v; missing %s", actions, action)
+		}
+	}
+}
+
+func TestHTTPMultiAgentWikiSuggestProducesReadOnlyCandidates(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = ""
+		cfg.AnswerPipeline.Enabled = false
+		cfg.RAG.ContextMode = "jit"
+		cfg.MultiAgent.Team = "software"
+		cfg.Wiki.Directory = root
+		cfg.Wiki.DefaultSpace = "local"
+		cfg.Wiki.SearchTopK = 3
+		cfg.Wiki.FetchMaxItems = 1
+	}))
+	pages := map[string]string{
+		"concepts/pbl-course.md": "# PBL Course\n\n[Teacher](../entities/teacher.md) and [Source](../sources/pbl-course.md).",
+		"entities/teacher.md":    "# Teacher\n\nCourse mentor.",
+		"sources/pbl-course.md":  "# PBL Course Source\n\nCourse details.",
+	}
+	for path, content := range pages {
+		fullPath := filepath.Join(root, "wiki", filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, _ := wiki.NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tools.RegisterWikiTools(tools.DefaultRegistry, client); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, name := range []string{"wiki_search", "wiki_fetch", "wiki_graph", "wiki_graph_fetch", "wiki_suggest"} {
+			tools.Unregister(name)
+		}
+	})
+	st := store.NewMemoryStore()
+	engine := &orchestrator.Engine{Mode: orchestrator.ModeMultiAgent, Store: st, Coordinator: &multiagent.Coordinator{
+		Planner: &wikiHTTPPlanner{}, Researcher: &multiagent.ResearcherAgent{}, Writer: &wikiSuggestHTTPWriter{},
+	}}
+	r := setupTestRouter(t, st, engine)
+	create := httptest.NewRecorder()
+	request, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(
+		`{"id":"wiki-suggest-http-e2e","goal":"为 PBL Course 提供只读 Wiki 策展建议","workspace":"workspace","mode":"multiagent","team":"wiki_suggest","max_steps":6,"tool_budget":3}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(create, request)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status=%d: %s", create.Code, create.Body.String())
+	}
+	run := httptest.NewRecorder()
+	request, _ = http.NewRequest(http.MethodPost, "/api/tasks/wiki-suggest-http-e2e/run-all", nil)
+	r.ServeHTTP(run, request)
+	if run.Code != http.StatusAccepted {
+		t.Fatalf("run status=%d: %s", run.Code, run.Body.String())
+	}
+	completed := waitForTaskStatus(t, st, "wiki-suggest-http-e2e", types.StatusCompleted)
+	if !strings.Contains(completed.FinalAnswer, "未应用任何修改") {
+		t.Fatalf("final answer=%q", completed.FinalAnswer)
+	}
+	actions := make(map[string]bool)
+	for _, trace := range completed.Trace {
+		actions[trace.Action] = true
+	}
+	for _, action := range []string{"wiki_search", "wiki_fetch", "wiki_suggest"} {
+		if !actions[action] {
+			t.Fatalf("trace actions=%v; missing %s", actions, action)
 		}
 	}
 }
@@ -756,6 +856,120 @@ func TestCreateTaskPersistsMode(t *testing.T) {
 	}
 	if got.Mode != "multiagent" {
 		t.Fatalf("persisted mode = %q, want multiagent", got.Mode)
+	}
+}
+
+func TestCreateTaskPersistsValidatedTeamSelection(t *testing.T) {
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"id":"task-team","goal":"x","workspace":"./testdata","mode":"multiagent","team":"wiki_graph"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	got, err := st.GetTask(t.Context(), "task-team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Team != "wiki_graph" || got.TeamConfigDigest == "" {
+		t.Fatalf("persisted team selection=%+v", got)
+	}
+}
+
+func TestCreateTaskRejectsUnknownOrNonMultiAgentTeam(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown": `{"goal":"x","workspace":"./testdata","mode":"multiagent","team":"missing-team"}`,
+		"legacy":  `{"goal":"x","workspace":"./testdata","mode":"legacy","team":"wiki"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := store.NewMemoryStore()
+			r := setupTestRouter(t, st, nil)
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestCreateTaskEnforcesTenantTeamAllowlist(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "tenant-a-team-key", AllowedMultiAgentTeams: []string{"wiki"}},
+		}
+	}))
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+
+	create := func(id, team string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"id":%q,"goal":"x","workspace":"./testdata","mode":"multiagent","team":%q}`, id, team)
+		req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", "tenant-a-team-key")
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := create("tenant-wiki", "wiki"); w.Code != http.StatusCreated {
+		t.Fatalf("allowed team status = %d: %s", w.Code, w.Body.String())
+	}
+	if w := create("tenant-graph", "wiki_graph"); w.Code != http.StatusForbidden {
+		t.Fatalf("disallowed team status = %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := st.GetTask(t.Context(), "tenant-graph"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("disallowed task persisted: %v", err)
+	}
+}
+
+func TestCreateTaskTeamAllowlistAppliesToDefaultAndExemptsAdmin(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		admin      bool
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "resolved default is restricted",
+			body:       `{"id":"tenant-default","goal":"x","workspace":"./testdata","mode":"multiagent"}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "tenant admin bypasses allowlist",
+			admin:      true,
+			body:       `{"id":"tenant-admin","goal":"x","workspace":"./testdata","mode":"multiagent","team":"wiki_graph"}`,
+			wantStatus: http.StatusCreated,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+				cfg.API.Auth.Mode = "api_key"
+				cfg.MultiAgent.Team = "software"
+				cfg.API.Tenants = map[string]config.APITenantConfig{
+					"tenant-a": {
+						APIKey:                 "tenant-a-team-key",
+						Admin:                  tc.admin,
+						AllowedMultiAgentTeams: []string{"wiki"},
+					},
+				}
+			}))
+			r := setupTestRouter(t, store.NewMemoryStore(), nil)
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Key", "tenant-a-team-key")
+			r.ServeHTTP(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+		})
 	}
 }
 

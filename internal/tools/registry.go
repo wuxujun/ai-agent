@@ -14,6 +14,10 @@ type ToolResult struct {
 	Observation string
 	Evidence    []types.Evidence
 	TokenUsage  types.TokenUsage
+	// FollowupURIs carries trusted, tool-produced routing hints separately from
+	// Observation. Middleware may truncate display text, but coordinators still
+	// need complete identifiers to schedule bounded read-only follow-ups.
+	FollowupURIs []string
 }
 
 type Tool interface {

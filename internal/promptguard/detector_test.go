@@ -50,7 +50,7 @@ func TestDeterministicDetectionWorksWithoutConfiguredScene(t *testing.T) {
 }
 
 func TestWikiActionsAreExternalContent(t *testing.T) {
-	for _, action := range []string{"wiki_search", "wiki_fetch", "wiki_graph", "wiki_graph_fetch"} {
+	for _, action := range []string{"wiki_search", "wiki_fetch", "wiki_graph", "wiki_graph_fetch", "wiki_suggest"} {
 		if !IsExternalAction(action) {
 			t.Errorf("%s must be inspected as external content", action)
 		}

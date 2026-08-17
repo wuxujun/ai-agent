@@ -3,6 +3,7 @@ package multiagent
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -117,7 +118,10 @@ func TestWikiGraphTeamBuildsBoundedAutomaticFollowups(t *testing.T) {
 	}
 	fetchSteps := retrievalFollowupSteps(ctx, []StepEvidence{{
 		StepID: "wiki-graph", Action: "wiki_graph",
-		Observation: `{"root_uri":"wiki://local/concepts/course","nodes":[{"uri":"wiki://local/concepts/course"},{"uri":"wiki://local/entities/teacher"},{"uri":"wiki://local/sources/course"},{"uri":"wiki://local/comparisons/ct"},{"uri":"wiki://local/entities/extra"}]}`,
+		Observation: "{truncated graph observation\n...[truncated by middleware]",
+		FollowupURIs: []string{
+			"wiki://local/entities/teacher", "wiki://local/sources/course", "wiki://local/comparisons/ct", "wiki://local/entities/extra",
+		},
 	}})
 	if len(fetchSteps) != 1 || fetchSteps[0].Action != "wiki_graph_fetch" {
 		t.Fatalf("fetch steps = %+v", fetchSteps)
@@ -128,11 +132,57 @@ func TestWikiGraphTeamBuildsBoundedAutomaticFollowups(t *testing.T) {
 	}
 }
 
+func TestWikiGraphFollowupFallsBackToCompleteLegacyObservation(t *testing.T) {
+	ctx := withTeamConfigSnapshot(t.Context(), newTeamConfigSnapshot("wiki_graph", TeamConfig{}))
+	steps := retrievalFollowupSteps(ctx, []StepEvidence{{
+		StepID: "legacy-graph", Action: "wiki_graph",
+		Observation: `{"root_uri":"wiki://local/concepts/course","nodes":[{"uri":"wiki://local/concepts/course"},{"uri":"wiki://local/entities/teacher"}]}`,
+	}})
+	if len(steps) != 1 || steps[0].Action != "wiki_graph_fetch" {
+		t.Fatalf("legacy graph followup steps = %+v", steps)
+	}
+}
+
 func TestWikiTeamDoesNotBuildGraphFollowup(t *testing.T) {
 	ctx := withTeamConfigSnapshot(t.Context(), newTeamConfigSnapshot("wiki", TeamConfig{}))
 	steps := retrievalFollowupSteps(ctx, []StepEvidence{{StepID: "fetch", Action: "wiki_fetch", Evidence: []types.Evidence{{Path: "wiki://local/concepts/course"}}}})
 	if len(steps) != 0 {
 		t.Fatalf("ordinary Wiki team graph followups = %+v", steps)
+	}
+}
+
+func TestWikiSuggestTeamBuildsBoundedAutomaticFollowup(t *testing.T) {
+	ctx := withTeamConfigSnapshot(t.Context(), newTeamConfigSnapshot("wiki_suggest", TeamConfig{}))
+	steps := retrievalFollowupSteps(ctx, []StepEvidence{{
+		StepID: "wiki-fetch", Action: "wiki_fetch", Evidence: []types.Evidence{{Path: "wiki://local/concepts/course"}},
+	}})
+	if len(steps) != 1 || steps[0].Action != "wiki_suggest" || steps[0].SuggestURI != "wiki://local/concepts/course" || steps[0].SuggestLimit != 5 {
+		t.Fatalf("suggest steps=%+v", steps)
+	}
+}
+
+func TestControlledWikiInitialPlanCollapsesDuplicateSearches(t *testing.T) {
+	ctx := withTeamConfigSnapshot(t.Context(), newTeamConfigSnapshot("wiki_suggest", TeamConfig{}))
+	task := &types.Task{Goal: "curate PBL Wiki"}
+	plan := &ResearchPlan{Steps: []ResearchStep{
+		{ID: "step-1", Action: "wiki_search", SearchQuery: "PBL"},
+		{ID: "step-2", Action: "wiki_search", SearchQuery: "PBL course"},
+	}}
+	if !enforceControlledWikiInitialPlan(ctx, task, plan) || len(plan.Steps) != 1 || plan.Steps[0].SearchQuery != "PBL" {
+		t.Fatalf("controlled Wiki plan=%+v", plan)
+	}
+}
+
+func TestWikiSuggestWriterReceivesOnlySuggestionEvidence(t *testing.T) {
+	ctx := withTeamConfigSnapshot(t.Context(), newTeamConfigSnapshot("wiki_suggest", TeamConfig{}))
+	evidence := []StepEvidence{
+		{Action: "wiki_search", Observation: "candidates"},
+		{Action: "wiki_fetch", Evidence: []types.Evidence{{Path: "wiki://local/concepts/course", Lines: []string{"page content"}}}},
+		{Action: "wiki_suggest", Evidence: []types.Evidence{{Path: "wiki://local/entities/teacher", Lines: []string{"related"}}}},
+	}
+	got := writerEvidenceForTeam(ctx, evidence)
+	if len(got) != 1 || got[0].Action != "wiki_suggest" || strings.Contains(got[0].Observation, "candidates") || !strings.Contains(got[0].Observation, "retained 1") {
+		t.Fatalf("writer evidence=%+v", got)
 	}
 }
 

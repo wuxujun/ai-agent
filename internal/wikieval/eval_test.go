@@ -31,6 +31,12 @@ func (evalReader) Graph(context.Context, wiki.Document, string, int, string) (wi
 		},
 	}, nil
 }
+func (evalReader) Suggest(context.Context, wiki.Document, string, int) (wiki.SuggestResult, error) {
+	return wiki.SuggestResult{Suggestions: []wiki.Suggestion{
+		{Kind: "missing_link", URI: "wiki://local/entities/teacher"},
+		{Kind: "related", URI: "wiki://local/concepts/unrelated"},
+	}}, nil
+}
 
 func TestLoadEvaluateAndSummarize(t *testing.T) {
 	cases, err := LoadJSONL(strings.NewReader(`{"name":"pbl","query":"PBL guide","expected_uris":["wiki://local/concepts/pbl"],"expected_keywords":["800–1,000","travel guide"],"top_k":3}` + "\n"))
@@ -61,6 +67,25 @@ func TestEvaluateGraphQualityAndThresholds(t *testing.T) {
 		t.Fatalf("summary=%+v", summary)
 	}
 	failed := Summarize([]CaseResult{result}, Thresholds{MinGraphPathRecall: 1, MaxIrrelevantNodeRate: 0.3})
+	if failed.ThresholdsPassed || len(failed.FailedThresholds) != 1 {
+		t.Fatalf("failed summary=%+v", failed)
+	}
+}
+
+func TestEvaluateSuggestionQualityAndThresholds(t *testing.T) {
+	cases, err := LoadJSONL(strings.NewReader(`{"name":"pbl-suggest","query":"PBL guide","expected_uris":["wiki://local/concepts/pbl"],"expected_suggestion_uris":["wiki://local/entities/teacher"],"suggest_limit":5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := Evaluate(t.Context(), evalReader{}, "local", cases[0], 5)
+	if result.Error != "" || !result.SuggestionEvaluated || result.SuggestionRecall != 1 || result.SuggestionNoiseRate != 0.5 || result.SuggestionCount != 2 {
+		t.Fatalf("result=%+v", result)
+	}
+	summary := Summarize([]CaseResult{result}, Thresholds{MinSuggestionRecall: 1, MaxSuggestionNoiseRate: 0.5})
+	if !summary.ThresholdsPassed || summary.SuggestionCases != 1 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	failed := Summarize([]CaseResult{result}, Thresholds{MinSuggestionRecall: 1, MaxSuggestionNoiseRate: 0.4})
 	if failed.ThresholdsPassed || len(failed.FailedThresholds) != 1 {
 		t.Fatalf("failed summary=%+v", failed)
 	}

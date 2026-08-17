@@ -81,13 +81,15 @@ func (p *PlannerAgent) jsonSchema(actions []string) map[string]any {
 			"graph_uri":       map[string]any{"type": "string", "description": "Root wiki:// URI (wiki_graph only)"},
 			"graph_depth":     map[string]any{"type": "integer", "minimum": 0, "maximum": 2, "description": "Graph depth 1..2; 0 when unused"},
 			"graph_direction": map[string]any{"type": "string", "enum": []string{"", "outgoing", "incoming", "both"}, "description": "Wiki graph direction"},
+			"suggest_uri":     map[string]any{"type": "string", "description": "Root wiki:// URI (wiki_suggest only)"},
+			"suggest_limit":   map[string]any{"type": "integer", "minimum": 0, "maximum": 10, "description": "Suggestion limit 1..10; 0 when unused"},
 		},
-		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt", "graph_uri", "graph_depth", "graph_direction"},
+		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt", "graph_uri", "graph_depth", "graph_direction", "suggest_uri", "suggest_limit"},
 		"additionalProperties": false,
 	}
 
 	minItems := 2
-	if len(actions) == 1 {
+	if len(actions) == 1 || controlledWikiPlannerActions(actions) {
 		minItems = 1
 	}
 	return map[string]any{
@@ -110,6 +112,14 @@ func (p *PlannerAgent) jsonSchema(actions []string) map[string]any {
 	}
 }
 
+func controlledWikiPlannerActions(actions []string) bool {
+	if len(actions) != 2 {
+		return false
+	}
+	seen := map[string]bool{actions[0]: true, actions[1]: true}
+	return seen["wiki_search"] && (seen["wiki_graph"] || seen["wiki_suggest"])
+}
+
 // replanJsonSchema returns the JSON Schema used to enforce structured output for Replanning.
 // It differs from jsonSchema by allowing 1 to 5 steps, or even 0 steps (omitting minItems) if no new steps can be tried.
 func (p *PlannerAgent) replanJsonSchema(actions []string) map[string]any {
@@ -130,8 +140,10 @@ func (p *PlannerAgent) replanJsonSchema(actions []string) map[string]any {
 			"graph_uri":       map[string]any{"type": "string", "description": "Root wiki:// URI (wiki_graph only)"},
 			"graph_depth":     map[string]any{"type": "integer", "minimum": 0, "maximum": 2, "description": "Graph depth 1..2; 0 when unused"},
 			"graph_direction": map[string]any{"type": "string", "enum": []string{"", "outgoing", "incoming", "both"}, "description": "Wiki graph direction"},
+			"suggest_uri":     map[string]any{"type": "string", "description": "Root wiki:// URI (wiki_suggest only)"},
+			"suggest_limit":   map[string]any{"type": "integer", "minimum": 0, "maximum": 10, "description": "Suggestion limit 1..10; 0 when unused"},
 		},
-		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt", "graph_uri", "graph_depth", "graph_direction"},
+		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt", "graph_uri", "graph_depth", "graph_direction", "suggest_uri", "suggest_limit"},
 		"additionalProperties": false,
 	}
 

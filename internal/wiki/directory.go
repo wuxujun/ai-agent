@@ -96,7 +96,8 @@ func (c *DirectoryClient) Initialize(context.Context) error {
 
 func (c *DirectoryClient) Close(context.Context) error { return nil }
 
-func (c *DirectoryClient) SupportsGraph() bool { return c != nil }
+func (c *DirectoryClient) SupportsGraph() bool   { return c != nil }
+func (c *DirectoryClient) SupportsSuggest() bool { return c != nil }
 
 // Probe verifies that the local Wiki root remains readable and refreshes the
 // index when its Markdown inventory changed.
@@ -242,6 +243,69 @@ func (c *DirectoryClient) Graph(ctx context.Context, document Document, space st
 		nodes = append(nodes, GraphNode{URI: graphURI(space, slug), Slug: slug, Title: page.title, Summary: page.summary})
 	}
 	return normalizeGraphResult(GraphResult{RootURI: graphURI(space, root), Nodes: nodes, Edges: edges}), nil
+}
+
+// Suggest returns bounded, read-only curation candidates. It never modifies
+// links or pages; callers decide whether a suggestion is useful.
+func (c *DirectoryClient) Suggest(ctx context.Context, document Document, space string, limit int) (SuggestResult, error) {
+	if c == nil || c.root == "" {
+		return SuggestResult{}, errors.New("wiki directory client is not initialized")
+	}
+	slug, space, limit, err := validateSuggestRequest(document, space, limit)
+	if err != nil {
+		return SuggestResult{}, err
+	}
+	pages, err := c.ensureIndex(ctx)
+	if err != nil {
+		return SuggestResult{}, err
+	}
+	pageBySlug := make(map[string]directoryIndexPage, len(pages))
+	direct := make(map[string]bool)
+	for _, page := range pages {
+		pageBySlug[page.slug] = page
+		if page.slug == slug {
+			for _, target := range page.links {
+				direct[target] = true
+			}
+		}
+		for _, target := range page.links {
+			if target == slug {
+				direct[page.slug] = true
+			}
+		}
+	}
+	root, ok := pageBySlug[slug]
+	if !ok {
+		return SuggestResult{}, fmt.Errorf("wiki suggest root %q was not found", slug)
+	}
+	result := SuggestResult{RootURI: graphURI(space, slug)}
+	for linkedSlug := range direct {
+		if page, exists := pageBySlug[linkedSlug]; exists {
+			result.Suggestions = append(result.Suggestions, Suggestion{Kind: "related", URI: graphURI(space, linkedSlug), Title: page.title, Reason: "direct Wiki link relationship", Score: 1})
+		}
+	}
+	candidates, err := c.Search(ctx, root.title, min(20, len(pages)), space)
+	if err != nil {
+		return SuggestResult{}, err
+	}
+	maxScore := float64(1)
+	if len(candidates) > 0 && candidates[0].Score > maxScore {
+		maxScore = candidates[0].Score
+	}
+	for _, candidate := range candidates {
+		if candidate.Slug == slug || direct[candidate.Slug] {
+			continue
+		}
+		similarity := titleSimilarity(root.title, candidate.Title)
+		item := Suggestion{URI: candidate.URI, Title: candidate.Title, Score: candidate.Score / maxScore}
+		if similarity >= 0.6 {
+			item.Kind, item.Reason, item.Score = "possible_duplicate", "title substantially overlaps the root page", similarity
+		} else {
+			item.Kind, item.Reason = "missing_link", "search-relevant page has no direct link to the root"
+		}
+		result.Suggestions = append(result.Suggestions, item)
+	}
+	return normalizeSuggestResult(result, limit), nil
 }
 
 func (c *DirectoryClient) ensureIndex(ctx context.Context) ([]directoryIndexPage, error) {

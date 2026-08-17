@@ -84,6 +84,7 @@ func executeResearchStep(ctx context.Context, workspace string, step ResearchSte
 	ev.Observation = result.Observation
 	ev.Evidence = result.Evidence
 	ev.TokenUsage = result.TokenUsage
+	ev.FollowupURIs = append([]string(nil), result.FollowupURIs...)
 
 	log.Info("Research step done", "task_id", taskID, "step_id", step.ID, "observation", ev.Observation, "evidence_count", len(ev.Evidence))
 	return ev, nil
@@ -101,17 +102,25 @@ func stepToParams(step ResearchStep) map[string]interface{} {
 		return params
 	}
 	return map[string]interface{}{
-		"pattern":   step.FileGlob,       // find_files
-		"glob":      step.FileGlob,       // search_text filter
-		"query":     step.SearchQuery,    // search_text / web_search
-		"path":      step.FilePath,       // read_file / write_file / git_diff
-		"content":   step.Content,        // write_file
-		"command":   step.Command,        // execute_code
-		"args":      step.Args,           // execute_code
-		"url":       step.URL,            // http_fetch
-		"prompt":    step.Prompt,         // analyze_image
-		"uri":       step.GraphURI,       // wiki_graph
-		"depth":     step.GraphDepth,     // wiki_graph
-		"direction": step.GraphDirection, // wiki_graph
+		"pattern":   step.FileGlob,              // find_files
+		"glob":      step.FileGlob,              // search_text filter
+		"query":     step.SearchQuery,           // search_text / web_search
+		"path":      step.FilePath,              // read_file / write_file / git_diff
+		"content":   step.Content,               // write_file
+		"command":   step.Command,               // execute_code
+		"args":      step.Args,                  // execute_code
+		"url":       step.URL,                   // http_fetch
+		"prompt":    step.Prompt,                // analyze_image
+		"uri":       firstNonEmptyStepURI(step), // wiki_graph / wiki_suggest
+		"depth":     step.GraphDepth,            // wiki_graph
+		"direction": step.GraphDirection,        // wiki_graph
+		"limit":     step.SuggestLimit,          // wiki_suggest
 	}
+}
+
+func firstNonEmptyStepURI(step ResearchStep) string {
+	if step.SuggestURI != "" {
+		return step.SuggestURI
+	}
+	return step.GraphURI
 }

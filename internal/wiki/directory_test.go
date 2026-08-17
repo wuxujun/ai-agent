@@ -359,3 +359,40 @@ func TestDirectoryClientGraphReturnsBoundedIncomingAndOutgoingLinks(t *testing.T
 		t.Fatal("cross-space graph URI was accepted")
 	}
 }
+
+func TestDirectoryClientSuggestsDuplicatesMissingLinksAndRelatedPages(t *testing.T) {
+	root := t.TempDir()
+	pages := map[string]string{
+		"concepts/pbl-new-york-guide.md":         "# PBL New York Guide\n\n[Teacher](../entities/teacher.md).",
+		"concepts/pbl-new-york-guide-revised.md": "# PBL New York Guide Revised\n\nA second course guide.",
+		"sources/pbl-new-york-course-details.md": "# PBL New York Course Details\n\nPBL New York Guide curriculum details.",
+		"entities/teacher.md":                    "# Teacher\n\nCourse mentor.",
+	}
+	for path, content := range pages {
+		fullPath := filepath.Join(root, "wiki", filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Suggest(t.Context(), Document{URI: "wiki://local/concepts/pbl-new-york-guide"}, "local", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := make(map[string]string)
+	for _, item := range result.Suggestions {
+		kinds[item.URI] = item.Kind
+	}
+	if kinds["wiki://local/entities/teacher"] != "related" || kinds["wiki://local/concepts/pbl-new-york-guide-revised"] != "possible_duplicate" || kinds["wiki://local/sources/pbl-new-york-course-details"] != "missing_link" {
+		t.Fatalf("suggestions=%+v", result.Suggestions)
+	}
+	if _, err := client.Suggest(t.Context(), Document{URI: "wiki://other/concepts/pbl-new-york-guide"}, "local", 5); err == nil {
+		t.Fatal("cross-space suggest URI accepted")
+	}
+}
