@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -230,6 +231,38 @@ func TestApplyReloadedConfigAdvancesRevisionOnlyForChanges(t *testing.T) {
 	changes := applyReloadedConfig(changed)
 	if configRevision != 11 || len(changes) == 0 {
 		t.Fatalf("effective reload did not advance revision: revision=%d changes=%v", configRevision, changes)
+	}
+}
+
+func TestValidateReloadCandidateUsesRegisteredValidators(t *testing.T) {
+	called := false
+	unregister := RegisterReloadValidator("test-validator", func(candidate *Config) error {
+		called = true
+		if candidate.MultiAgent.Team == "blocked" {
+			return fmt.Errorf("blocked Team")
+		}
+		return nil
+	})
+	t.Cleanup(unregister)
+
+	if err := validateReloadCandidate(&Config{}); err != nil || !called {
+		t.Fatalf("valid candidate: called=%v err=%v", called, err)
+	}
+	previousConfig, previousRevision := globalConfig, configRevision
+	defer func() {
+		globalConfig = previousConfig
+		configRevision = previousRevision
+	}()
+	before := &Config{}
+	globalConfig = before
+	configRevision = 42
+	candidate := &Config{}
+	candidate.MultiAgent.Team = "blocked"
+	if err := validateReloadCandidate(candidate); err == nil || !strings.Contains(err.Error(), "test-validator: blocked Team") {
+		t.Fatalf("validator error = %v", err)
+	}
+	if globalConfig != before || configRevision != 42 {
+		t.Fatalf("rejected candidate changed global config: revision=%d", configRevision)
 	}
 }
 
@@ -865,6 +898,14 @@ func TestValidateAPITenants(t *testing.T) {
 	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", AllowedMultiAgentTeams: []string{" wiki"}}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "non-empty and trimmed") {
 		t.Fatalf("untrimmed tenant team error = %v", err)
+	}
+	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", DefaultMultiAgentTeam: "wiki_graph", AllowedMultiAgentTeams: []string{"wiki"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "must be included in allowed_multiagent_teams") {
+		t.Fatalf("tenant default outside allowlist error = %v", err)
+	}
+	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", DefaultMultiAgentTeam: " wiki", AllowedMultiAgentTeams: []string{"wiki"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "default_multiagent_team must be trimmed") {
+		t.Fatalf("untrimmed tenant default error = %v", err)
 	}
 }
 

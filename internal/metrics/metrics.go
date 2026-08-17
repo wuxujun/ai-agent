@@ -14,100 +14,106 @@ import (
 )
 
 type Snapshot struct {
-	PlannerCalls                      int64         `json:"planner_calls"`
-	PlannerFailures                   int64         `json:"planner_failures"`
-	PlannerLatencySum                 time.Duration `json:"planner_latency_sum"`
-	WriterCalls                       int64         `json:"writer_calls"`
-	WriterFailures                    int64         `json:"writer_failures"`
-	WriterLatencySum                  time.Duration `json:"writer_latency_sum"`
-	ExecutorCalls                     int64         `json:"executor_calls"`
-	ExecutorFailures                  int64         `json:"executor_failures"`
-	ExecutorLatencySum                time.Duration `json:"executor_latency_sum"`
-	RunAllCalls                       int64         `json:"run_all_calls"`
-	TasksCompleted                    int64         `json:"tasks_completed"`
-	FallbackHits                      int64         `json:"fallback_hits"`
-	PromptTokens                      int64         `json:"prompt_tokens"`
-	CompletionTokens                  int64         `json:"completion_tokens"`
-	TotalTokens                       int64         `json:"total_tokens"`
-	LLMSceneCalls                     int64         `json:"llm_scene_calls"`
-	LLMSceneErrors                    int64         `json:"llm_scene_errors"`
-	LLMPromptTokens                   int64         `json:"llm_prompt_tokens"`
-	LLMCompletionTokens               int64         `json:"llm_completion_tokens"`
-	LLMTotalTokens                    int64         `json:"llm_total_tokens"`
-	LLMEstimatedCostUSD               float64       `json:"llm_estimated_cost_usd"`
-	LLMCircuitOpened                  int64         `json:"llm_circuit_opened"`
-	LLMCircuitRejected                int64         `json:"llm_circuit_rejected"`
-	LLMRetryBudgetExhausted           int64         `json:"llm_retry_budget_exhausted"`
-	LLMTaskBudgetRejected             int64         `json:"llm_task_budget_rejected"`
-	LLMFallbackSucceeded              int64         `json:"llm_fallback_succeeded"`
-	LLMFallbackFailed                 int64         `json:"llm_fallback_failed"`
-	AnswerPipelineRuns                int64         `json:"answer_pipeline_runs"`
-	AnswerPipelineStages              int64         `json:"answer_pipeline_stages"`
-	AnswerPipelineWarnings            int64         `json:"answer_pipeline_warnings"`
-	MultiAgentRoutes                  int64         `json:"multiagent_routes"`
-	MultiAgentBudgetFallbacks         int64         `json:"multiagent_budget_fallbacks"`
-	MultiAgentEscalations             int64         `json:"multiagent_escalations"`
-	MultiAgentPhaseCalls              int64         `json:"multiagent_phase_calls"`
-	MultiAgentPhaseFailures           int64         `json:"multiagent_phase_failures"`
-	MultiAgentPhaseLatencySum         time.Duration `json:"multiagent_phase_latency_sum"`
-	MultiAgentCriticApprovals         int64         `json:"multiagent_critic_approvals"`
-	MultiAgentCriticRejections        int64         `json:"multiagent_critic_rejections"`
-	MultiAgentCriticErrors            int64         `json:"multiagent_critic_errors"`
-	MultiAgentCriticReplans           int64         `json:"multiagent_critic_replans"`
-	MultiAgentCheckpoints             int64         `json:"multiagent_verifier_checkpoints"`
-	MultiAgentResumeAttempts          int64         `json:"multiagent_verifier_resume_attempts"`
-	MultiAgentResumeSuccesses         int64         `json:"multiagent_verifier_resume_successes"`
-	MultiAgentResumeFailures          int64         `json:"multiagent_verifier_resume_failures"`
-	MultiAgentConfigChanges           int64         `json:"multiagent_config_changes"`
-	MultiAgentConfigBlocks            int64         `json:"multiagent_config_blocks"`
-	MultiAgentConfigMigrations        int64         `json:"multiagent_config_migrations"`
-	MultiAgentDAGCalls                int64         `json:"multiagent_dag_calls"`
-	MultiAgentDAGCompletions          int64         `json:"multiagent_dag_completions"`
-	MultiAgentDAGFailures             int64         `json:"multiagent_dag_failures"`
-	MultiAgentDAGFallbacks            int64         `json:"multiagent_dag_fallbacks"`
-	MultiAgentDAGApprovalRequired     int64         `json:"multiagent_dag_approval_required"`
-	MultiAgentDAGReplanned            int64         `json:"multiagent_dag_replanned"`
-	MultiAgentDAGEventsObserved       int64         `json:"multiagent_dag_events_observed"`
-	MultiAgentDAGLatencySum           time.Duration `json:"multiagent_dag_latency_sum"`
-	MultiAgentLegacyCalls             int64         `json:"multiagent_legacy_calls"`
-	MultiAgentLegacyCompletions       int64         `json:"multiagent_legacy_completions"`
-	MultiAgentLegacyFailures          int64         `json:"multiagent_legacy_failures"`
-	MultiAgentLegacyApprovalRequired  int64         `json:"multiagent_legacy_approval_required"`
-	MultiAgentLegacyReplanned         int64         `json:"multiagent_legacy_replanned"`
-	MultiAgentLegacyEventsObserved    int64         `json:"multiagent_legacy_events_observed"`
-	MultiAgentLegacyLatencySum        time.Duration `json:"multiagent_legacy_latency_sum"`
-	RetrievalCalls                    int64         `json:"retrieval_calls"`
-	RetrievalFailures                 int64         `json:"retrieval_failures"`
-	RetrievalFallbacks                int64         `json:"retrieval_fallbacks"`
-	RetrievalSlowPhases               int64         `json:"retrieval_slow_phases"`
-	RetrievalItems                    int64         `json:"retrieval_items"`
-	RetrievalLatencySum               time.Duration `json:"retrieval_latency_sum"`
-	RetrievalAverageLatencyMS         float64       `json:"retrieval_average_latency_ms"`
-	RetrievalBM25Calls                int64         `json:"retrieval_bm25_calls"`
-	RetrievalBM25Failures             int64         `json:"retrieval_bm25_failures"`
-	RetrievalBM25Items                int64         `json:"retrieval_bm25_items"`
-	RetrievalBM25LatencySum           time.Duration `json:"retrieval_bm25_latency_sum"`
-	RetrievalBM25AverageLatencyMS     float64       `json:"retrieval_bm25_average_latency_ms"`
-	RetrievalPGVectorCalls            int64         `json:"retrieval_pgvector_calls"`
-	RetrievalPGVectorFailures         int64         `json:"retrieval_pgvector_failures"`
-	RetrievalPGVectorItems            int64         `json:"retrieval_pgvector_items"`
-	RetrievalPGVectorLatencySum       time.Duration `json:"retrieval_pgvector_latency_sum"`
-	RetrievalPGVectorAverageLatencyMS float64       `json:"retrieval_pgvector_average_latency_ms"`
-	RetrievalRRFCalls                 int64         `json:"retrieval_rrf_calls"`
-	RetrievalRRFFailures              int64         `json:"retrieval_rrf_failures"`
-	RetrievalRRFItems                 int64         `json:"retrieval_rrf_items"`
-	RetrievalRRFLatencySum            time.Duration `json:"retrieval_rrf_latency_sum"`
-	RetrievalRRFAverageLatencyMS      float64       `json:"retrieval_rrf_average_latency_ms"`
-	DurableApprovalsCreated           int64         `json:"durable_approvals_created"`
-	DurableApprovalsApproved          int64         `json:"durable_approvals_approved"`
-	DurableApprovalsRejected          int64         `json:"durable_approvals_rejected"`
-	DurableApprovalsConsumed          int64         `json:"durable_approvals_consumed"`
-	DurableApprovalsExpired           int64         `json:"durable_approvals_expired"`
-	DurableApprovalConflicts          int64         `json:"durable_approval_conflicts"`
-	DurableApprovalRecoverySuccesses  int64         `json:"durable_approval_recovery_successes"`
-	DurableApprovalRecoveryFailures   int64         `json:"durable_approval_recovery_failures"`
-	DurableApprovalsCleaned           int64         `json:"durable_approvals_cleaned"`
-	DurableApprovalCleanupFailures    int64         `json:"durable_approval_cleanup_failures"`
+	PlannerCalls                      int64            `json:"planner_calls"`
+	PlannerFailures                   int64            `json:"planner_failures"`
+	PlannerLatencySum                 time.Duration    `json:"planner_latency_sum"`
+	WriterCalls                       int64            `json:"writer_calls"`
+	WriterFailures                    int64            `json:"writer_failures"`
+	WriterLatencySum                  time.Duration    `json:"writer_latency_sum"`
+	ExecutorCalls                     int64            `json:"executor_calls"`
+	ExecutorFailures                  int64            `json:"executor_failures"`
+	ExecutorLatencySum                time.Duration    `json:"executor_latency_sum"`
+	RunAllCalls                       int64            `json:"run_all_calls"`
+	TasksCompleted                    int64            `json:"tasks_completed"`
+	FallbackHits                      int64            `json:"fallback_hits"`
+	PromptTokens                      int64            `json:"prompt_tokens"`
+	CompletionTokens                  int64            `json:"completion_tokens"`
+	TotalTokens                       int64            `json:"total_tokens"`
+	LLMSceneCalls                     int64            `json:"llm_scene_calls"`
+	LLMSceneErrors                    int64            `json:"llm_scene_errors"`
+	LLMPromptTokens                   int64            `json:"llm_prompt_tokens"`
+	LLMCompletionTokens               int64            `json:"llm_completion_tokens"`
+	LLMTotalTokens                    int64            `json:"llm_total_tokens"`
+	LLMEstimatedCostUSD               float64          `json:"llm_estimated_cost_usd"`
+	LLMCircuitOpened                  int64            `json:"llm_circuit_opened"`
+	LLMCircuitRejected                int64            `json:"llm_circuit_rejected"`
+	LLMRetryBudgetExhausted           int64            `json:"llm_retry_budget_exhausted"`
+	LLMTaskBudgetRejected             int64            `json:"llm_task_budget_rejected"`
+	LLMFallbackSucceeded              int64            `json:"llm_fallback_succeeded"`
+	LLMFallbackFailed                 int64            `json:"llm_fallback_failed"`
+	AnswerPipelineRuns                int64            `json:"answer_pipeline_runs"`
+	AnswerPipelineStages              int64            `json:"answer_pipeline_stages"`
+	AnswerPipelineWarnings            int64            `json:"answer_pipeline_warnings"`
+	MultiAgentRoutes                  int64            `json:"multiagent_routes"`
+	MultiAgentBudgetFallbacks         int64            `json:"multiagent_budget_fallbacks"`
+	MultiAgentEscalations             int64            `json:"multiagent_escalations"`
+	MultiAgentPhaseCalls              int64            `json:"multiagent_phase_calls"`
+	MultiAgentPhaseFailures           int64            `json:"multiagent_phase_failures"`
+	MultiAgentPhaseLatencySum         time.Duration    `json:"multiagent_phase_latency_sum"`
+	MultiAgentCriticApprovals         int64            `json:"multiagent_critic_approvals"`
+	MultiAgentCriticRejections        int64            `json:"multiagent_critic_rejections"`
+	MultiAgentCriticErrors            int64            `json:"multiagent_critic_errors"`
+	MultiAgentCriticReplans           int64            `json:"multiagent_critic_replans"`
+	MultiAgentCheckpoints             int64            `json:"multiagent_verifier_checkpoints"`
+	MultiAgentResumeAttempts          int64            `json:"multiagent_verifier_resume_attempts"`
+	MultiAgentResumeSuccesses         int64            `json:"multiagent_verifier_resume_successes"`
+	MultiAgentResumeFailures          int64            `json:"multiagent_verifier_resume_failures"`
+	MultiAgentConfigChanges           int64            `json:"multiagent_config_changes"`
+	MultiAgentConfigBlocks            int64            `json:"multiagent_config_blocks"`
+	MultiAgentConfigMigrations        int64            `json:"multiagent_config_migrations"`
+	MultiAgentTeamTasksCreated        int64            `json:"multiagent_team_tasks_created"`
+	MultiAgentTeamTasksCreatedByTeam  map[string]int64 `json:"multiagent_team_tasks_created_by_team"`
+	MultiAgentTeamSelectionRejections int64            `json:"multiagent_team_selection_rejections"`
+	MultiAgentTeamDefaultUnavailable  int64            `json:"multiagent_team_default_unavailable"`
+	MultiAgentTeamReadinessFailures   int64            `json:"multiagent_team_readiness_failures"`
+	MultiAgentTeamReloadRejections    int64            `json:"multiagent_team_reload_rejections"`
+	MultiAgentDAGCalls                int64            `json:"multiagent_dag_calls"`
+	MultiAgentDAGCompletions          int64            `json:"multiagent_dag_completions"`
+	MultiAgentDAGFailures             int64            `json:"multiagent_dag_failures"`
+	MultiAgentDAGFallbacks            int64            `json:"multiagent_dag_fallbacks"`
+	MultiAgentDAGApprovalRequired     int64            `json:"multiagent_dag_approval_required"`
+	MultiAgentDAGReplanned            int64            `json:"multiagent_dag_replanned"`
+	MultiAgentDAGEventsObserved       int64            `json:"multiagent_dag_events_observed"`
+	MultiAgentDAGLatencySum           time.Duration    `json:"multiagent_dag_latency_sum"`
+	MultiAgentLegacyCalls             int64            `json:"multiagent_legacy_calls"`
+	MultiAgentLegacyCompletions       int64            `json:"multiagent_legacy_completions"`
+	MultiAgentLegacyFailures          int64            `json:"multiagent_legacy_failures"`
+	MultiAgentLegacyApprovalRequired  int64            `json:"multiagent_legacy_approval_required"`
+	MultiAgentLegacyReplanned         int64            `json:"multiagent_legacy_replanned"`
+	MultiAgentLegacyEventsObserved    int64            `json:"multiagent_legacy_events_observed"`
+	MultiAgentLegacyLatencySum        time.Duration    `json:"multiagent_legacy_latency_sum"`
+	RetrievalCalls                    int64            `json:"retrieval_calls"`
+	RetrievalFailures                 int64            `json:"retrieval_failures"`
+	RetrievalFallbacks                int64            `json:"retrieval_fallbacks"`
+	RetrievalSlowPhases               int64            `json:"retrieval_slow_phases"`
+	RetrievalItems                    int64            `json:"retrieval_items"`
+	RetrievalLatencySum               time.Duration    `json:"retrieval_latency_sum"`
+	RetrievalAverageLatencyMS         float64          `json:"retrieval_average_latency_ms"`
+	RetrievalBM25Calls                int64            `json:"retrieval_bm25_calls"`
+	RetrievalBM25Failures             int64            `json:"retrieval_bm25_failures"`
+	RetrievalBM25Items                int64            `json:"retrieval_bm25_items"`
+	RetrievalBM25LatencySum           time.Duration    `json:"retrieval_bm25_latency_sum"`
+	RetrievalBM25AverageLatencyMS     float64          `json:"retrieval_bm25_average_latency_ms"`
+	RetrievalPGVectorCalls            int64            `json:"retrieval_pgvector_calls"`
+	RetrievalPGVectorFailures         int64            `json:"retrieval_pgvector_failures"`
+	RetrievalPGVectorItems            int64            `json:"retrieval_pgvector_items"`
+	RetrievalPGVectorLatencySum       time.Duration    `json:"retrieval_pgvector_latency_sum"`
+	RetrievalPGVectorAverageLatencyMS float64          `json:"retrieval_pgvector_average_latency_ms"`
+	RetrievalRRFCalls                 int64            `json:"retrieval_rrf_calls"`
+	RetrievalRRFFailures              int64            `json:"retrieval_rrf_failures"`
+	RetrievalRRFItems                 int64            `json:"retrieval_rrf_items"`
+	RetrievalRRFLatencySum            time.Duration    `json:"retrieval_rrf_latency_sum"`
+	RetrievalRRFAverageLatencyMS      float64          `json:"retrieval_rrf_average_latency_ms"`
+	DurableApprovalsCreated           int64            `json:"durable_approvals_created"`
+	DurableApprovalsApproved          int64            `json:"durable_approvals_approved"`
+	DurableApprovalsRejected          int64            `json:"durable_approvals_rejected"`
+	DurableApprovalsConsumed          int64            `json:"durable_approvals_consumed"`
+	DurableApprovalsExpired           int64            `json:"durable_approvals_expired"`
+	DurableApprovalConflicts          int64            `json:"durable_approval_conflicts"`
+	DurableApprovalRecoverySuccesses  int64            `json:"durable_approval_recovery_successes"`
+	DurableApprovalRecoveryFailures   int64            `json:"durable_approval_recovery_failures"`
+	DurableApprovalsCleaned           int64            `json:"durable_approvals_cleaned"`
+	DurableApprovalCleanupFailures    int64            `json:"durable_approval_cleanup_failures"`
 }
 
 type Collector struct {
@@ -160,6 +166,8 @@ type Collector struct {
 	multiAgentCheckpoints      api.Int64Counter
 	multiAgentResumes          api.Int64Counter
 	multiAgentConfigChanges    api.Int64Counter
+	multiAgentTeamSelections   api.Int64Counter
+	multiAgentTeamConfigEvents api.Int64Counter
 	multiAgentRuntimeCalls     api.Int64Counter
 	multiAgentRuntimeLatency   api.Float64Histogram
 	multiAgentRuntimeFallbacks api.Int64Counter
@@ -222,6 +230,8 @@ func NewCollector() *Collector {
 	multiAgentCheckpoints, _ := meter.Int64Counter("agent.multiagent.verifier.checkpoints")
 	multiAgentResumes, _ := meter.Int64Counter("agent.multiagent.verifier.resumes")
 	multiAgentConfigChanges, _ := meter.Int64Counter("agent.multiagent.team_config.changes")
+	multiAgentTeamSelections, _ := meter.Int64Counter("agent.multiagent.team.selections")
+	multiAgentTeamConfigEvents, _ := meter.Int64Counter("agent.multiagent.team_config.events")
 	multiAgentRuntimeCalls, _ := meter.Int64Counter("agent.multiagent.runtime.calls")
 	multiAgentRuntimeLatency, _ := meter.Float64Histogram("agent.multiagent.runtime.latency_ms")
 	multiAgentRuntimeFallbacks, _ := meter.Int64Counter("agent.multiagent.runtime.fallbacks")
@@ -277,6 +287,8 @@ func NewCollector() *Collector {
 		multiAgentCheckpoints:      multiAgentCheckpoints,
 		multiAgentResumes:          multiAgentResumes,
 		multiAgentConfigChanges:    multiAgentConfigChanges,
+		multiAgentTeamSelections:   multiAgentTeamSelections,
+		multiAgentTeamConfigEvents: multiAgentTeamConfigEvents,
 		multiAgentRuntimeCalls:     multiAgentRuntimeCalls,
 		multiAgentRuntimeLatency:   multiAgentRuntimeLatency,
 		multiAgentRuntimeFallbacks: multiAgentRuntimeFallbacks,
@@ -774,10 +786,65 @@ func (c *Collector) ObserveMultiAgentConfigChange(policy, outcome string) {
 	))
 }
 
+// ObserveMultiAgentTeamSelection records task-creation routing outcomes. Team
+// names come from the bounded teams.yaml configuration and are safe metric labels.
+func (c *Collector) ObserveMultiAgentTeamSelection(ctx context.Context, team, outcome string, usedDefault bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if outcome != "created" && outcome != "forbidden" {
+		return
+	}
+	c.mu.Lock()
+	if outcome == "created" {
+		c.s.MultiAgentTeamTasksCreated++
+		if c.s.MultiAgentTeamTasksCreatedByTeam == nil {
+			c.s.MultiAgentTeamTasksCreatedByTeam = make(map[string]int64)
+		}
+		c.s.MultiAgentTeamTasksCreatedByTeam[team]++
+	} else {
+		c.s.MultiAgentTeamSelectionRejections++
+		if usedDefault {
+			c.s.MultiAgentTeamDefaultUnavailable++
+		}
+	}
+	c.mu.Unlock()
+	c.multiAgentTeamSelections.Add(ctx, 1, api.WithAttributes(
+		attribute.String("team", team),
+		attribute.String("outcome", outcome),
+		attribute.Bool("used_default", usedDefault),
+	))
+}
+
+// ObserveMultiAgentTeamConfigEvent records bounded operational failures for
+// Team readiness and transactional config reload validation.
+func (c *Collector) ObserveMultiAgentTeamConfigEvent(ctx context.Context, event string) {
+	if event != "readiness_failure" && event != "reload_rejected" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	if event == "readiness_failure" {
+		c.s.MultiAgentTeamReadinessFailures++
+	} else {
+		c.s.MultiAgentTeamReloadRejections++
+	}
+	c.mu.Unlock()
+	c.multiAgentTeamConfigEvents.Add(ctx, 1, api.WithAttributes(attribute.String("event", event)))
+}
+
 func (c *Collector) Snapshot() Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	snapshot := c.s
+	if c.s.MultiAgentTeamTasksCreatedByTeam != nil {
+		snapshot.MultiAgentTeamTasksCreatedByTeam = make(map[string]int64, len(c.s.MultiAgentTeamTasksCreatedByTeam))
+		for team, count := range c.s.MultiAgentTeamTasksCreatedByTeam {
+			snapshot.MultiAgentTeamTasksCreatedByTeam[team] = count
+		}
+	}
 	snapshot.RetrievalAverageLatencyMS = averageDurationMS(snapshot.RetrievalLatencySum, snapshot.RetrievalCalls)
 	snapshot.RetrievalBM25AverageLatencyMS = averageDurationMS(snapshot.RetrievalBM25LatencySum, snapshot.RetrievalBM25Calls)
 	snapshot.RetrievalPGVectorAverageLatencyMS = averageDurationMS(snapshot.RetrievalPGVectorLatencySum, snapshot.RetrievalPGVectorCalls)

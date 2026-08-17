@@ -69,6 +69,7 @@ api:
   #     workspace_root: "./workspace/tenants/project_a"
   #     # Empty or omitted preserves access to all configured Teams. Non-admin
   #     # tenants with a non-empty list may only create tasks using these Teams.
+  #     default_multiagent_team: wiki
   #     allowed_multiagent_teams:
   #       - wiki
   #       - wiki_graph

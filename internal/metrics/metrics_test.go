@@ -178,3 +178,33 @@ func TestCollectorTracksMultiAgentRuntimeRollout(t *testing.T) {
 		t.Fatalf("runtime event metrics = %+v", snapshot)
 	}
 }
+
+func TestCollectorTracksMultiAgentTeamSelections(t *testing.T) {
+	collector := NewCollector()
+	collector.ObserveMultiAgentTeamSelection(t.Context(), "wiki", "created", false)
+	collector.ObserveMultiAgentTeamSelection(t.Context(), "wiki", "created", true)
+	collector.ObserveMultiAgentTeamSelection(t.Context(), "software", "forbidden", true)
+
+	snapshot := collector.Snapshot()
+	if snapshot.MultiAgentTeamTasksCreated != 2 || snapshot.MultiAgentTeamTasksCreatedByTeam["wiki"] != 2 {
+		t.Fatalf("created team metrics = %+v", snapshot)
+	}
+	if snapshot.MultiAgentTeamSelectionRejections != 1 || snapshot.MultiAgentTeamDefaultUnavailable != 1 {
+		t.Fatalf("rejected team metrics = %+v", snapshot)
+	}
+	snapshot.MultiAgentTeamTasksCreatedByTeam["wiki"] = 99
+	if got := collector.Snapshot().MultiAgentTeamTasksCreatedByTeam["wiki"]; got != 2 {
+		t.Fatalf("snapshot map aliases collector state: %d", got)
+	}
+}
+
+func TestCollectorTracksMultiAgentTeamConfigEvents(t *testing.T) {
+	collector := NewCollector()
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "readiness_failure")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "reload_rejected")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "unknown")
+	snapshot := collector.Snapshot()
+	if snapshot.MultiAgentTeamReadinessFailures != 1 || snapshot.MultiAgentTeamReloadRejections != 1 {
+		t.Fatalf("team config event metrics = %+v", snapshot)
+	}
+}

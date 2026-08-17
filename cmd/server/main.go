@@ -106,6 +106,9 @@ func run() error {
 			log.Printf("failed to close log files: %v", err)
 		}
 	}()
+	if err := validateStartupTeamRouting(cfg); err != nil {
+		return err
+	}
 
 	shutdown := telemetry.NoopShutdown
 	if cfg.Telemetry.Enabled {
@@ -237,6 +240,13 @@ func run() error {
 			return nil
 		},
 	}, quit)
+}
+
+func validateStartupTeamRouting(cfg *config.Config) error {
+	if err := multiagent.ValidateTeamRoutingConfig(cfg); err != nil {
+		return fmt.Errorf("validate startup Team routing: %w", err)
+	}
+	return nil
 }
 
 func bootstrapLangfusePrompts(cfg *config.Config) (multiagent.PromptBootstrapSummary, error) {

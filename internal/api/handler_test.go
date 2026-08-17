@@ -279,6 +279,74 @@ func TestReadyReportsConfiguredProbeMode(t *testing.T) {
 	}
 }
 
+func TestReadyRejectsInvalidTeamRouting(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = ""
+		cfg.LLM.Provider = "openai"
+		cfg.LLM.Model = "gpt-test"
+		cfg.LLM.ReadinessMode = config.LLMReadinessConfigOnly
+		cfg.MultiAgent.Team = "missing-ready-team"
+	}))
+	mc := metrics.NewCollector()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api.RegisterRoutes(r, store.NewMemoryStore(), nil, mc)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/ready", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready status = %d, want 503: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Ready bool `json:"ready"`
+		Teams struct {
+			Configured            bool   `json:"configured"`
+			Healthy               bool   `json:"healthy"`
+			ActiveTeam            string `json:"active_team"`
+			InvalidReferenceCount int    `json:"invalid_reference_count"`
+			Error                 string `json:"error"`
+		} `json:"teams"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Ready || !response.Teams.Configured || response.Teams.Healthy || response.Teams.ActiveTeam != "missing-ready-team" || response.Teams.InvalidReferenceCount != 1 || response.Teams.Error == "" {
+		t.Fatalf("team readiness response = %+v", response)
+	}
+	if got := mc.Snapshot().MultiAgentTeamReadinessFailures; got != 1 {
+		t.Fatalf("team readiness failure metric = %d", got)
+	}
+}
+
+func TestConfigReloadRejectsCrossConfigValidation(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.APIKey = "reload-validation-key"
+	}))
+	unregister := config.RegisterReloadValidator("api-test-reject", func(*config.Config) error {
+		return fmt.Errorf("test cross-config rejection")
+	})
+	t.Cleanup(unregister)
+	beforeRevision := config.Revision()
+	mc := metrics.NewCollector()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api.RegisterRoutes(r, store.NewMemoryStore(), nil, mc)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/config/reload", nil)
+	req.Header.Set("X-API-Key", "reload-validation-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "test cross-config rejection") {
+		t.Fatalf("reload response = %d: %s", w.Code, w.Body.String())
+	}
+	if got := config.Revision(); got != beforeRevision {
+		t.Fatalf("rejected reload changed revision: before=%d after=%d", beforeRevision, got)
+	}
+	if got := mc.Snapshot().MultiAgentTeamReloadRejections; got != 1 {
+		t.Fatalf("reload rejection metric = %d", got)
+	}
+}
+
 func TestReadyFailsWhenRequiredWikiProbeFails(t *testing.T) {
 	metricsBefore := tools.CurrentWikiMetrics()
 	restore := config.OverrideForTesting(func(cfg *config.Config) {
@@ -873,7 +941,7 @@ func TestCreateTaskPersistsValidatedTeamSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Team != "wiki_graph" || got.TeamConfigDigest == "" {
+	if got.RequestedTeam != "wiki_graph" || got.Team != "wiki_graph" || got.TeamConfigDigest == "" {
 		t.Fatalf("persisted team selection=%+v", got)
 	}
 }
@@ -905,7 +973,10 @@ func TestCreateTaskEnforcesTenantTeamAllowlist(t *testing.T) {
 		}
 	}))
 	st := store.NewMemoryStore()
-	r := setupTestRouter(t, st, nil)
+	mc := metrics.NewCollector()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api.RegisterRoutes(r, st, nil, mc)
 
 	create := func(id, team string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -926,6 +997,10 @@ func TestCreateTaskEnforcesTenantTeamAllowlist(t *testing.T) {
 	}
 	if _, err := st.GetTask(t.Context(), "tenant-graph"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("disallowed task persisted: %v", err)
+	}
+	snapshot := mc.Snapshot()
+	if snapshot.MultiAgentTeamTasksCreated != 1 || snapshot.MultiAgentTeamTasksCreatedByTeam["wiki"] != 1 || snapshot.MultiAgentTeamSelectionRejections != 1 || snapshot.MultiAgentTeamDefaultUnavailable != 0 {
+		t.Fatalf("team selection metrics = %+v", snapshot)
 	}
 }
 
@@ -970,6 +1045,147 @@ func TestCreateTaskTeamAllowlistAppliesToDefaultAndExemptsAdmin(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", w.Code, tc.wantStatus, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestCreateTaskCountsUnavailableDefaultTeam(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.MultiAgent.Team = "software"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "tenant-default-team-key", AllowedMultiAgentTeams: []string{"wiki"}},
+		}
+	}))
+	mc := metrics.NewCollector()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api.RegisterRoutes(r, store.NewMemoryStore(), nil, mc)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"goal":"x","workspace":"./testdata","mode":"multiagent"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "tenant-default-team-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	snapshot := mc.Snapshot()
+	if snapshot.MultiAgentTeamSelectionRejections != 1 || snapshot.MultiAgentTeamDefaultUnavailable != 1 {
+		t.Fatalf("default team metrics = %+v", snapshot)
+	}
+}
+
+func TestTenantDefaultTeamOverridesGlobalDefault(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.MultiAgent.Team = "software"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {
+				APIKey:                 "tenant-own-default-key",
+				DefaultMultiAgentTeam:  "wiki_graph",
+				AllowedMultiAgentTeams: []string{"wiki", "wiki_graph"},
+			},
+		}
+	}))
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"id":"tenant-own-default","goal":"x","workspace":"./testdata","mode":"multiagent"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "tenant-own-default-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", w.Code, w.Body.String())
+	}
+	created, err := st.GetTask(t.Context(), "tenant-own-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.RequestedTeam != "" || created.Team != "wiki_graph" || created.TeamConfigDigest == "" {
+		t.Fatalf("tenant default task = %+v", created)
+	}
+
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest(http.MethodGet, "/api/teams", nil)
+	req.Header.Set("X-API-Key", "tenant-own-default-key")
+	r.ServeHTTP(w, req)
+	var response struct {
+		DefaultTeam string                   `json:"default_team"`
+		Teams       []multiagent.TeamSummary `json:"teams"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &response) != nil || response.DefaultTeam != "wiki_graph" {
+		t.Fatalf("tenant Team list = %d: %s", w.Code, w.Body.String())
+	}
+	for _, team := range response.Teams {
+		if team.Default != (team.Name == "wiki_graph") {
+			t.Fatalf("tenant default marker = %+v", response.Teams)
+		}
+	}
+}
+
+func TestListTeamsFiltersForTenantAndHidesUnavailableDefault(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.MultiAgent.Team = "software"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "tenant-a-team-key", AllowedMultiAgentTeams: []string{"wiki", "wiki_graph"}},
+		}
+	}))
+	r := setupTestRouter(t, store.NewMemoryStore(), nil)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/teams", nil)
+	req.Header.Set("X-API-Key", "tenant-a-team-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		DefaultTeam string                   `json:"default_team"`
+		Teams       []multiagent.TeamSummary `json:"teams"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.DefaultTeam != "" {
+		t.Fatalf("unavailable default team exposed as %q", response.DefaultTeam)
+	}
+	if len(response.Teams) != 2 || response.Teams[0].Name != "wiki" || response.Teams[1].Name != "wiki_graph" {
+		t.Fatalf("filtered teams = %+v", response.Teams)
+	}
+	for _, team := range response.Teams {
+		if team.Default || team.ConfigDigest == "" {
+			t.Fatalf("invalid filtered team metadata: %+v", team)
+		}
+	}
+	if strings.Contains(w.Body.String(), "system_prompt") || strings.Contains(w.Body.String(), "tools") {
+		t.Fatalf("sensitive team configuration leaked: %s", w.Body.String())
+	}
+}
+
+func TestListTeamsAdminSeesAllConfiguredTeams(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.MultiAgent.Team = "software"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-admin": {APIKey: "tenant-admin-team-key", Admin: true, AllowedMultiAgentTeams: []string{"wiki"}},
+		}
+	}))
+	r := setupTestRouter(t, store.NewMemoryStore(), nil)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/teams", nil)
+	req.Header.Set("X-API-Key", "tenant-admin-team-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		DefaultTeam string                   `json:"default_team"`
+		Teams       []multiagent.TeamSummary `json:"teams"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.DefaultTeam != "software" || len(response.Teams) <= 1 {
+		t.Fatalf("admin team response = %+v", response)
 	}
 }
 

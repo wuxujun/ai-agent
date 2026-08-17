@@ -219,10 +219,15 @@ wiki.default_space is empty`，说明两处空间配置均为空。
 `api.tenants.<tenant>.allowed_multiagent_teams` 限制非管理员租户；留空或省略
 时为兼容现有配置，仍可访问全部已配置 Team。省略 `team` 后解析得到的当前
 默认 Team 同样受此白名单约束。
+可通过 `api.tenants.<tenant>.default_multiagent_team` 设置租户自己的默认 Team；
+该 Team 必须存在于 `teams.yaml`，配置白名单时还必须包含在白名单中。解析顺序为：
+请求显式 Team、租户默认 Team、进程默认 Team。
+服务启动时还会根据 `teams.yaml` 校验默认 Team 和全部租户白名单；引用不存在时
+直接拒绝启动，避免处于部分就绪状态的进程接收流量。
 
 可通过以下接口确认运行状态：
 
-- `GET /ready`：查看 `wiki.configured`、`required`、`healthy` 和 `error`；仅必需 Wiki 不健康时返回 503。
+- `GET /ready`：查看 Wiki 状态及 `teams.configured`、`healthy`、`active_team`、`team_count` 和无效引用数；默认 Team 或租户 Team 白名单引用不存在时返回 503。
 - `GET /api/metrics`：管理员查看 `wiki.backend_calls`、`backend_errors`、平均延迟及熔断计数。
 - Multi-Agent 日志：应依次出现 `team=wiki`、`action=wiki_search` 和 `action=wiki_fetch`。
 
@@ -410,6 +415,7 @@ Content-Type: application/json
   "id": "task-001",
   "session_id": "session-demo-001",
   "mode": "multiagent",
+  "team": "software",
   "goal": "查找代码库中所有 TODO 注释",
   "workspace": "./workspace",
   "max_steps": 8,
@@ -474,8 +480,9 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 
 | 方法 | 路径 | 说明 |
 |:---|:---|:---|
-| `GET` | `/api/metrics` | 本地性能指标，包含 Wiki、持久化审批及 DAG/Legacy 灰度计数 |
-| `POST` | `/api/config/reload` | 热重载配置（返回脱敏 diff 和单调递增的 `config_revision`） |
+| `GET` | `/api/teams` | 查询当前租户可用 Team（仅返回安全的路由元数据） |
+| `GET` | `/api/metrics` | 本地性能指标，包含 Wiki、Team 选择/拒绝、持久化审批及 DAG/Legacy 灰度计数 |
+| `POST` | `/api/config/reload` | 核心配置和 Team 引用校验通过后事务式热重载；跨配置校验拒绝返回 422 且 revision 不变 |
 | `GET` | `/ping` | 健康检查 → `{"message":"pong"}` |
 | `GET` | `/ready` | LLM 与必需 Wiki 就绪检查；依赖异常时返回 503 |
 

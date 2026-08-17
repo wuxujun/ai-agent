@@ -67,6 +67,28 @@ func TestTeamsConfig_WikiSuggestToolBoundary(t *testing.T) {
 	}
 }
 
+func TestListTeamSummariesIsSortedAndRedacted(t *testing.T) {
+	summaries := multiagent.ListTeamSummaries()
+	if len(summaries) == 0 {
+		t.Fatal("expected configured team summaries")
+	}
+	defaultCount := 0
+	for i, summary := range summaries {
+		if i > 0 && summaries[i-1].Name >= summary.Name {
+			t.Fatalf("team summaries are not strictly sorted: %q then %q", summaries[i-1].Name, summary.Name)
+		}
+		if summary.Name == "" || summary.ConfigDigest == "" || summary.Workflow == "" || summary.Runtime == "" {
+			t.Fatalf("incomplete team summary: %+v", summary)
+		}
+		if summary.Default {
+			defaultCount++
+		}
+	}
+	if defaultCount != 1 {
+		t.Fatalf("default team count = %d, want 1", defaultCount)
+	}
+}
+
 func TestTeamsConfig_YAMLParse(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.MultiAgent.Team = ""

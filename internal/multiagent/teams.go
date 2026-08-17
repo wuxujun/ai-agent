@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -196,6 +197,16 @@ type TeamsConfig struct {
 	Teams              map[string]TeamConfig `yaml:"teams" json:"teams"`
 }
 
+// TeamSummary contains public task-routing metadata. It intentionally omits
+// prompts, models, role configuration, and tool allowlists.
+type TeamSummary struct {
+	Name         string               `json:"name"`
+	Workflow     Workflow             `json:"workflow"`
+	Runtime      OrchestrationRuntime `json:"runtime"`
+	ConfigDigest string               `json:"config_digest"`
+	Default      bool                 `json:"default"`
+}
+
 type teamConfigSnapshot struct {
 	ActiveTeam   string
 	Team         TeamConfig
@@ -319,6 +330,31 @@ func ResolveTeamSelection(requested string) (string, string, error) {
 		return "", "", fmt.Errorf("multi-agent team %q is not configured", team)
 	}
 	return team, newTeamConfigSnapshot(team, teamConfig).Digest, nil
+}
+
+// ListTeamSummaries returns deterministic public metadata for every configured
+// team. Tenant authorization is applied by the API layer.
+func ListTeamSummaries() []TeamSummary {
+	cfg := GetTeamsConfig()
+	names := make([]string, 0, len(cfg.Teams))
+	for name := range cfg.Teams {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	summaries := make([]TeamSummary, 0, len(names))
+	for _, name := range names {
+		team := cfg.Teams[name]
+		snapshot := newTeamConfigSnapshot(name, team)
+		summaries = append(summaries, TeamSummary{
+			Name:         name,
+			Workflow:     parseWorkflow(string(team.Workflow)),
+			Runtime:      parseOrchestrationRuntime(string(team.Runtime)),
+			ConfigDigest: snapshot.Digest,
+			Default:      name == cfg.ActiveTeam,
+		})
+	}
+	return summaries
 }
 
 func parseResumeConfigPolicy(value string) ResumeConfigPolicy {

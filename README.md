@@ -225,10 +225,17 @@ Task creation may override the process default with `team` when `mode` is
 `api.tenants.<tenant>.allowed_multiagent_teams`; an empty or omitted list keeps
 access to all configured Teams for backward compatibility. The allowlist also
 applies when `team` is omitted and the current default Team is resolved.
+Set `api.tenants.<tenant>.default_multiagent_team` to give a tenant its own
+default; it must be configured in `teams.yaml` and, when an allowlist is
+present, included in that allowlist. Resolution order is request Team, tenant
+default, then process default.
+The server also validates the default Team and every tenant allowlist against
+`teams.yaml` during startup; invalid references are fatal instead of allowing a
+partially ready process to accept traffic.
 
 Operational checks:
 
-- `GET /ready` reports `wiki.configured`, `required`, `healthy`, and `error`; only an unhealthy required Wiki causes a 503.
+- `GET /ready` reports Wiki health and `teams.configured`, `healthy`, `active_team`, `team_count`, and invalid reference count. An invalid active Team or tenant Team allowlist reference causes a 503.
 - `GET /api/metrics` reports `wiki.backend_calls`, `backend_errors`, average latency, and circuit-breaker counters to administrators.
 - Multi-Agent logs should show `team=wiki`, then `action=wiki_search`, followed by `action=wiki_fetch` for a successful retrieval.
 
@@ -448,6 +455,7 @@ To attach a task to the session, set `session_id` when creating the task:
   "id": "task-001",
   "session_id": "session-demo-001",
   "mode": "multiagent",
+  "team": "software",
   "goal": "Find all TODO comments in the codebase",
   "workspace": "./workspace",
   "max_steps": 8,
@@ -515,8 +523,9 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 
 | Method | Path | Description |
 |:---|:---|:---|
-| `GET` | `/api/metrics` | Local performance metrics, including Wiki, durable approval, and DAG/Legacy rollout counters |
-| `POST` | `/api/config/reload` | Hot-reload config (returns redacted diff and monotonic `config_revision`) |
+| `GET` | `/api/teams` | List Teams available to the authenticated tenant (safe routing metadata only) |
+| `GET` | `/api/metrics` | Local performance metrics, including Wiki, Team selection/rejection, durable approval, and DAG/Legacy rollout counters |
+| `POST` | `/api/config/reload` | Transactionally hot-reload config after core and Team-reference validation; cross-config rejection returns 422 without changing revision |
 | `POST` | `/api/prompt/init` | Admin: idempotently initialize missing `teams.yaml` prompts in Langfuse |
 | `GET` | `/ping` | Health check → `{"message":"pong"}` |
 | `GET` | `/ready` | LLM and required-Wiki readiness; returns 503 when a required dependency is unhealthy |

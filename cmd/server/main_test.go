@@ -14,7 +14,25 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/wuxujun/ai-agent/internal/config"
 )
+
+func TestValidateStartupTeamRouting(t *testing.T) {
+	valid := &config.Config{}
+	valid.MultiAgent.Team = "wiki"
+	valid.API.Tenants = map[string]config.APITenantConfig{
+		"tenant-a": {AllowedMultiAgentTeams: []string{"wiki", "wiki_graph"}},
+	}
+	if err := validateStartupTeamRouting(valid); err != nil {
+		t.Fatalf("valid startup routing rejected: %v", err)
+	}
+
+	invalid := &config.Config{}
+	invalid.MultiAgent.Team = "missing-startup-team"
+	if err := validateStartupTeamRouting(invalid); err == nil || !strings.Contains(err.Error(), `default Team "missing-startup-team" is not configured`) {
+		t.Fatalf("invalid startup routing error = %v", err)
+	}
+}
 
 type fakeApprovalBusCloser struct {
 	closed atomic.Bool

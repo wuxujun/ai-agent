@@ -35,7 +35,7 @@ func TestSQLiteMigrationUpgradesLegacySchema(t *testing.T) {
 	}
 	defer store.Close()
 
-	assertSQLiteColumns(t, store.db, "tasks", "tenant_id", "session_id", "sequence_no", "created_at", "updated_at", "execution_mode", "token_budget", "llm_call_budget", "llm_cost_budget_usd", "llm_calls", "llm_estimated_cost_usd", "memories_json", "answer_audit_json")
+	assertSQLiteColumns(t, store.db, "tasks", "tenant_id", "session_id", "sequence_no", "created_at", "updated_at", "execution_mode", "requested_team", "team_name", "team_config_digest", "token_budget", "llm_call_budget", "llm_cost_budget_usd", "llm_calls", "llm_estimated_cost_usd", "memories_json", "answer_audit_json")
 	assertSQLiteColumns(t, store.db, "traces", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens")
 	assertSQLiteColumns(t, store.db, "memories", "tenant_id", "session_id")
 

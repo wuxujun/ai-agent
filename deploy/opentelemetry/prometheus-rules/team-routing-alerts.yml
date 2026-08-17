@@ -1,0 +1,41 @@
+groups:
+  - name: ai-agent-team-routing
+    interval: 30s
+    rules:
+      - alert: AIAgentTeamRoutingNotReady
+        expr: increase(agent_multiagent_team_config_events_total{event="readiness_failure"}[2m]) >= 3
+        for: 2m
+        labels:
+          severity: critical
+          component: multiagent-team-routing
+        annotations:
+          summary: Multi-Agent Team routing is not ready
+          description: The /ready handler repeatedly found an unavailable default Team, invalid tenant allowlist reference, or unreadable teams.yaml.
+
+      - alert: AIAgentTeamConfigReloadRejected
+        expr: increase(agent_multiagent_team_config_events_total{event="reload_rejected"}[15m]) > 0
+        labels:
+          severity: warning
+          component: multiagent-team-routing
+        annotations:
+          summary: Multi-Agent Team config reload was rejected
+          description: A transactional config reload failed Team cross-reference validation; the previous config remains active.
+
+      - alert: AIAgentTeamConfigDriftBlockedTask
+        expr: increase(agent_multiagent_team_config_changes_total{outcome="blocked"}[15m]) > 0
+        labels:
+          severity: warning
+          component: multiagent-team-routing
+        annotations:
+          summary: Team configuration drift blocked a resumed task
+          description: A task pinned to an earlier Team digest was blocked by require_match and needs operator review.
+
+      - alert: AIAgentTeamSelectionForbiddenSpike
+        expr: increase(agent_multiagent_team_selections_total{outcome="forbidden"}[5m]) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          component: multiagent-team-routing
+        annotations:
+          summary: Tenant Team selection rejections increased
+          description: At least five non-admin task requests selected Teams outside their tenant allowlists within five minutes.

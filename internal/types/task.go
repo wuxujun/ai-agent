@@ -101,6 +101,7 @@ type Task struct {
 	Goal             string     `json:"goal"`
 	Status           TaskStatus `json:"status"`
 	Mode             string     `json:"mode,omitempty"`
+	RequestedTeam    string     `json:"requested_team,omitempty"`
 	Team             string     `json:"team,omitempty"`
 	TeamConfigDigest string     `json:"team_config_digest,omitempty"`
 	MaxSteps         int        `json:"max_steps"`

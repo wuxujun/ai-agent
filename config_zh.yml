@@ -68,6 +68,7 @@ api:
   #     admin: false
   #     workspace_root: "./workspace/tenants/project_a"
   #     # 留空或省略时可使用全部已配置 Team；非管理员租户配置后只能使用列表内 Team。
+  #     default_multiagent_team: wiki
   #     allowed_multiagent_teams:
   #       - wiki
   #       - wiki_graph

@@ -1,10 +1,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -218,6 +220,7 @@ type APITenantConfig struct {
 	APIKey                       string   `mapstructure:"api_key"`
 	Admin                        bool     `mapstructure:"admin"`
 	WorkspaceRoot                string   `mapstructure:"workspace_root"`
+	DefaultMultiAgentTeam        string   `mapstructure:"default_multiagent_team"`
 	AllowedMultiAgentTeams       []string `mapstructure:"allowed_multiagent_teams"`
 	DailyLLMCallBudget           int      `mapstructure:"daily_llm_call_budget"`
 	DailyLLMCostBudgetUSD        float64  `mapstructure:"daily_llm_cost_budget_usd"`
@@ -415,6 +418,50 @@ var (
 	globalConfig   *Config
 	configRevision uint64
 )
+
+type ReloadValidator func(*Config) error
+
+var ErrCrossConfigValidation = errors.New("cross-config validation failed")
+
+var (
+	reloadValidatorsMu sync.RWMutex
+	reloadValidators   = make(map[string]ReloadValidator)
+)
+
+// RegisterReloadValidator adds a cross-package validation hook for candidate
+// hot-reload snapshots. The returned function unregisters the hook.
+func RegisterReloadValidator(name string, validator ReloadValidator) func() {
+	name = strings.TrimSpace(name)
+	if name == "" || validator == nil {
+		return func() {}
+	}
+	reloadValidatorsMu.Lock()
+	reloadValidators[name] = validator
+	reloadValidatorsMu.Unlock()
+	return func() {
+		reloadValidatorsMu.Lock()
+		delete(reloadValidators, name)
+		reloadValidatorsMu.Unlock()
+	}
+}
+
+func validateReloadCandidate(candidate *Config) error {
+	reloadValidatorsMu.RLock()
+	names := make([]string, 0, len(reloadValidators))
+	validators := make(map[string]ReloadValidator, len(reloadValidators))
+	for name, validator := range reloadValidators {
+		names = append(names, name)
+		validators[name] = validator
+	}
+	reloadValidatorsMu.RUnlock()
+	sort.Strings(names)
+	for _, name := range names {
+		if err := validators[name](candidate); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
+}
 
 // setupViper registers file paths, env-var bindings, and default values on the
 // package-level viper instance. Idempotent and safe to call multiple times.
@@ -809,6 +856,9 @@ func Reload() (*Config, []string, error) {
 	}
 	if err := newCfg.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("config reload: validation failed: %w", err)
+	}
+	if err := validateReloadCandidate(newCfg); err != nil {
+		return nil, nil, fmt.Errorf("config reload: %w: %v", ErrCrossConfigValidation, err)
 	}
 
 	changes := applyReloadedConfig(newCfg)
@@ -1548,6 +1598,13 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("api tenant %q contains duplicate allowed multi-agent team %q", tenantID, team)
 			}
 			seenTeams[team] = true
+		}
+		defaultTeam := tenant.DefaultMultiAgentTeam
+		if strings.TrimSpace(defaultTeam) != defaultTeam {
+			return fmt.Errorf("api tenant %q default_multiagent_team must be trimmed", tenantID)
+		}
+		if defaultTeam != "" && len(seenTeams) > 0 && !seenTeams[defaultTeam] {
+			return fmt.Errorf("api tenant %q default_multiagent_team %q must be included in allowed_multiagent_teams", tenantID, defaultTeam)
 		}
 		switch strings.ToLower(strings.TrimSpace(tenant.AnswerPipelineEnforcement)) {
 		case "", "observe", "advisory", "strict":

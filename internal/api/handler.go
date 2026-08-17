@@ -154,6 +154,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	}
 	api.GET("/metrics", AdminMiddleware(), h.getMetrics)
 	api.GET("/usage", h.getTenantUsage)
+	api.GET("/teams", h.listTeams)
 	api.POST("/config/reload", AdminMiddleware(), h.reloadConfig)
 	api.POST("/prompt/init", AdminMiddleware(), h.initPrompts)
 
@@ -165,8 +166,13 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		defer cancel()
 		scenes, healthy := llmcore.CheckConfiguredScenes(ctx)
 		verified := llmcore.AllScenesVerified(scenes)
-		readinessMode := config.Get().ResolveLLMReadinessMode()
-		wikiCfg := config.Get().Wiki
+		runtimeConfig := config.Get()
+		readinessMode := runtimeConfig.ResolveLLMReadinessMode()
+		wikiCfg := runtimeConfig.Wiki
+		teamHealth := multiagent.CheckTeamRouting(runtimeConfig)
+		if !teamHealth.Healthy && h.metrics != nil {
+			h.metrics.ObserveMultiAgentTeamConfigEvent(ctx, "readiness_failure")
+		}
 		wikiConfigured := strings.TrimSpace(wikiCfg.URL) != "" || strings.TrimSpace(wikiCfg.Directory) != ""
 		wikiHealthy := !wikiCfg.Required
 		wikiError := ""
@@ -179,7 +185,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		} else if wikiCfg.Required {
 			wikiError = "required Wiki is not initialized"
 		}
-		ready := healthy && (!wikiCfg.Required || wikiHealthy)
+		ready := healthy && (!wikiCfg.Required || wikiHealthy) && teamHealth.Healthy
 		if wikiCfg.Required && !wikiHealthy {
 			tools.ObserveWikiReadinessFailure(ctx)
 		}
@@ -189,7 +195,8 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		}
 		c.JSON(status, gin.H{
 			"ready": ready, "llm_verified": verified, "llm_readiness_mode": readinessMode, "llm_scenes": scenes,
-			"wiki": gin.H{"configured": wikiConfigured, "required": wikiCfg.Required, "healthy": wikiHealthy, "error": wikiError},
+			"wiki":  gin.H{"configured": wikiConfigured, "required": wikiCfg.Required, "healthy": wikiHealthy, "error": wikiError},
+			"teams": teamHealth,
 		})
 	})
 
@@ -313,10 +320,23 @@ func (h *Handler) createTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "team is only supported for multiagent mode"})
 		return
 	}
+	principal := principalFromGin(c)
+	runtimeConfig := config.Get()
+	tenant, tenantConfigured := runtimeConfig.API.Tenants[principal.TenantID]
 	selectedTeam, teamDigest := "", ""
+	teamSelectionSource := ""
 	if req.Mode == string(orchestrator.ModeMultiAgent) || req.Team != "" {
+		teamRequest := req.Team
+		teamSelectionSource = "explicit"
+		if teamRequest == "" {
+			teamSelectionSource = "global_default"
+			if tenantDefault := strings.TrimSpace(tenant.DefaultMultiAgentTeam); tenantDefault != "" {
+				teamRequest = tenantDefault
+				teamSelectionSource = "tenant_default"
+			}
+		}
 		var err error
-		selectedTeam, teamDigest, err = multiagent.ResolveTeamSelection(req.Team)
+		selectedTeam, teamDigest, err = multiagent.ResolveTeamSelection(teamRequest)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -345,10 +365,19 @@ func (h *Handler) createTask(c *gin.Context) {
 		c.Error(err)
 		return
 	}
-	principal := principalFromGin(c)
-	runtimeConfig := config.Get()
-	tenant, tenantConfigured := runtimeConfig.API.Tenants[principal.TenantID]
 	if selectedTeam != "" && !principal.Admin && !tenantAllowsMultiAgentTeam(tenant, selectedTeam) {
+		usedDefault := req.Team == ""
+		if h.metrics != nil {
+			h.metrics.ObserveMultiAgentTeamSelection(c.Request.Context(), selectedTeam, "forbidden", usedDefault)
+		}
+		log.Warn("Multi-agent team selection rejected",
+			"tenant_id", principal.TenantID,
+			"requested_team", req.Team,
+			"resolved_team", selectedTeam,
+			"team_config_digest", teamDigest,
+			"used_default", usedDefault,
+			"selection_source", teamSelectionSource,
+		)
 		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("multi-agent team %q is not allowed for tenant", selectedTeam)})
 		return
 	}
@@ -390,6 +419,7 @@ func (h *Handler) createTask(c *gin.Context) {
 		Goal:             req.Goal,
 		Workspace:        req.Workspace,
 		Mode:             req.Mode,
+		RequestedTeam:    req.Team,
 		Team:             selectedTeam,
 		TeamConfigDigest: teamDigest,
 		MaxSteps:         req.MaxSteps,
@@ -425,6 +455,21 @@ func (h *Handler) createTask(c *gin.Context) {
 		c.Error(err)
 		return
 	}
+	if selectedTeam != "" {
+		usedDefault := req.Team == ""
+		if h.metrics != nil {
+			h.metrics.ObserveMultiAgentTeamSelection(c.Request.Context(), selectedTeam, "created", usedDefault)
+		}
+		log.Info("Multi-agent task team selected",
+			"task_id", task.ID,
+			"tenant_id", task.TenantID,
+			"requested_team", req.Team,
+			"resolved_team", selectedTeam,
+			"team_config_digest", teamDigest,
+			"used_default", usedDefault,
+			"selection_source", teamSelectionSource,
+		)
+	}
 
 	c.Set(taskIDKey, task.ID)
 	c.JSON(http.StatusCreated, task)
@@ -440,6 +485,36 @@ func tenantAllowsMultiAgentTeam(tenant config.APITenantConfig, team string) bool
 		}
 	}
 	return false
+}
+
+func (h *Handler) listTeams(c *gin.Context) {
+	principal := principalFromGin(c)
+	tenant := config.Get().API.Tenants[principal.TenantID]
+	configured := multiagent.ListTeamSummaries()
+	available := make([]multiagent.TeamSummary, 0, len(configured))
+	defaultTeam := strings.TrimSpace(tenant.DefaultMultiAgentTeam)
+	if defaultTeam == "" {
+		for _, team := range configured {
+			if team.Default {
+				defaultTeam = team.Name
+				break
+			}
+		}
+	}
+	for _, team := range configured {
+		if !principal.Admin && !tenantAllowsMultiAgentTeam(tenant, team.Name) {
+			continue
+		}
+		team.Default = team.Name == defaultTeam
+		available = append(available, team)
+	}
+	if !principal.Admin && !tenantAllowsMultiAgentTeam(tenant, defaultTeam) {
+		defaultTeam = ""
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"default_team": defaultTeam,
+		"teams":        available,
+	})
 }
 
 func (h *Handler) runTaskStep(c *gin.Context) {
@@ -1368,7 +1443,14 @@ func (h *Handler) reloadConfig(c *gin.Context) {
 	cfg, changes, err := config.Reload()
 	if err != nil {
 		log.Error("manual config reload failed", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
+		status := http.StatusInternalServerError
+		if errors.Is(err, config.ErrCrossConfigValidation) {
+			status = http.StatusUnprocessableEntity
+			if h.metrics != nil {
+				h.metrics.ObserveMultiAgentTeamConfigEvent(c.Request.Context(), "reload_rejected")
+			}
+		}
+		c.JSON(status, gin.H{
 			"error": err.Error(),
 		})
 		return

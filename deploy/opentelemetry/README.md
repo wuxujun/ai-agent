@@ -187,6 +187,18 @@ go run ./cmd/wiki-eval \
 告警阈值应根据稳定基线收紧；若真实远程 MCP 的正常 P95 高于 500ms，应先记录至少一周
 基线再调整规则，并保留错误率、熔断和 readiness 告警。
 
+## Team 路由配置告警
+
+Prometheus 自动加载 `prometheus-rules/team-routing-alerts.yml`，覆盖以下配置治理事件：
+
+- Team readiness 在 2 分钟内失败至少 3 次并持续 2 分钟；
+- 15 分钟内出现事务式配置热更新拒绝；
+- 15 分钟内有恢复任务因 Team 配置摘要漂移被 `require_match` 阻断；
+- 5 分钟内至少 5 次租户 Team 白名单拒绝并持续 5 分钟。
+
+热更新拒绝不会替换当前配置。收到告警后先检查服务日志中的具体默认 Team 或租户引用，
+修正配置后重新调用 `/api/config/reload`，再确认 `/ready.teams.healthy=true`。
+
 修改规则或首次加入规则目录后，需要重新创建 Prometheus 容器以加载新挂载；这不会
 删除命名卷中的历史数据：
 
