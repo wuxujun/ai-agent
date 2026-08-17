@@ -39,6 +39,24 @@ func TestTeamsConfig_ConfigOverride(t *testing.T) {
 	}
 }
 
+func TestTeamsConfig_WikiGraphToolBoundary(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.MultiAgent.Team = "wiki_graph" }))
+
+	cfg := multiagent.GetTeamsConfig()
+	team := cfg.GetActiveTeam()
+	if cfg.ActiveTeam != "wiki_graph" {
+		t.Fatalf("active team = %q", cfg.ActiveTeam)
+	}
+	if len(team.Planner.Tools) != 2 || team.Planner.Tools[0] != "wiki_search" || team.Planner.Tools[1] != "wiki_graph" {
+		t.Fatalf("wiki_graph planner tools = %v", team.Planner.Tools)
+	}
+	for _, tool := range team.Planner.Tools {
+		if tool == "wiki_fetch" || tool == "wiki_graph_fetch" {
+			t.Fatalf("internal fetch tool exposed to planner: %v", team.Planner.Tools)
+		}
+	}
+}
+
 func TestTeamsConfig_YAMLParse(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.MultiAgent.Team = ""

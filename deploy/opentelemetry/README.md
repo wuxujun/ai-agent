@@ -168,6 +168,25 @@ curl --fail http://127.0.0.1:9464/metrics | rg '^agent_'
 本地 Compose 栈未包含 Alertmanager；规则状态可在 Prometheus 的 `/alerts` 页面查看。
 需要主动通知时，应在实际部署环境中把这些规则接入已有 Alertmanager 或告警平台。
 
+## Wiki 告警与质量门禁
+
+Prometheus 自动加载 `prometheus-rules/wiki-alerts.yml`，默认覆盖：必需 Wiki readiness
+在 2 分钟内重复失败至少 3 次并持续、5 分钟窗口错误率持续 10 分钟超过 5%、P95 持续 10 分钟超过 500ms，
+以及任意熔断开启事件。应用的 `/api/metrics` 也提供进程内累计调用、错误、平均延迟、
+近似 P95、熔断和 readiness 失败计数，便于没有 Prometheus 时排障。
+
+告警用于发现运行时回归，发布前仍应对实际 Wiki 目录执行内容质量门禁：
+
+```bash
+go run ./cmd/wiki-eval \
+  -directory /srv/knowledge \
+  -input evals/wiki_retrieval.jsonl \
+  -space local
+```
+
+告警阈值应根据稳定基线收紧；若真实远程 MCP 的正常 P95 高于 500ms，应先记录至少一周
+基线再调整规则，并保留错误率、熔断和 readiness 告警。
+
 修改规则或首次加入规则目录后，需要重新创建 Prometheus 容器以加载新挂载；这不会
 删除命名卷中的历史数据：
 

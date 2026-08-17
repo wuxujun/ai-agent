@@ -26,6 +26,9 @@ func (f *fakeMCP) CallTool(_ context.Context, name string, args map[string]any) 
 	if name == searchToolName {
 		return &mcpclient.CallResult{StructuredContent: json.RawMessage(`{"results":[{"slug":"concepts/moe","uri":"wiki://research/concepts/moe","title":"MoE","summary":"summary","excerpt":"excerpt","score":0.94,"confidence":0.9}]}`)}, nil
 	}
+	if name == graphToolName {
+		return &mcpclient.CallResult{StructuredContent: json.RawMessage(`{"root_uri":"wiki://research/concepts/moe","nodes":[{"uri":"wiki://research/concepts/moe"},{"uri":"wiki://research/sources/moe"}],"edges":[{"from":"wiki://research/concepts/moe","to":"wiki://research/sources/moe"}]}`)}, nil
+	}
 	return &mcpclient.CallResult{Text: `{"content":"# MoE\n\nFull page"}`}, nil
 }
 
@@ -149,5 +152,25 @@ func TestInitializeRequiresReadOnlyTools(t *testing.T) {
 	client := &Client{mcp: &fakeMCP{tools: wikiTestTools()[:1]}}
 	if err := client.Initialize(t.Context()); err == nil {
 		t.Fatal("expected missing wiki_content_read to fail initialization")
+	}
+}
+
+func TestClientUsesOptionalWikiGraphSchema(t *testing.T) {
+	transport := &fakeMCP{tools: append(wikiTestTools(), mcpclient.Tool{Name: graphToolName, InputSchema: map[string]any{"properties": map[string]any{
+		"uri": map[string]any{"type": "string"}, "wiki": map[string]any{"type": "string"}, "depth": map[string]any{"type": "integer"}, "direction": map[string]any{"type": "string"},
+	}}})}
+	client := &Client{mcp: transport}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !client.SupportsGraph() {
+		t.Fatal("optional wiki_graph was not discovered")
+	}
+	graph, err := client.Graph(t.Context(), Document{URI: "wiki://research/concepts/moe"}, "research", 2, "outgoing")
+	if err != nil || len(graph.Nodes) != 2 || len(graph.Edges) != 1 {
+		t.Fatalf("graph=%+v err=%v", graph, err)
+	}
+	if got := transport.calls[0].args; !reflect.DeepEqual(got, map[string]any{"uri": "wiki://research/concepts/moe", "wiki": "research", "depth": 2, "direction": "outgoing"}) {
+		t.Fatalf("graph args = %#v", got)
 	}
 }

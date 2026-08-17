@@ -178,6 +178,9 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 			wikiError = "required Wiki is not initialized"
 		}
 		ready := healthy && (!wikiCfg.Required || wikiHealthy)
+		if wikiCfg.Required && !wikiHealthy {
+			tools.ObserveWikiReadinessFailure(ctx)
+		}
 		status := http.StatusOK
 		if !ready {
 			status = http.StatusServiceUnavailable

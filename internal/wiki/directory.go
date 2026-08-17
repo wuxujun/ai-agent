@@ -96,6 +96,8 @@ func (c *DirectoryClient) Initialize(context.Context) error {
 
 func (c *DirectoryClient) Close(context.Context) error { return nil }
 
+func (c *DirectoryClient) SupportsGraph() bool { return c != nil }
+
 // Probe verifies that the local Wiki root remains readable and refreshes the
 // index when its Markdown inventory changed.
 func (c *DirectoryClient) Probe(ctx context.Context) error {
@@ -173,6 +175,73 @@ func (c *DirectoryClient) Search(ctx context.Context, query string, topK int, sp
 		documents = documents[:topK]
 	}
 	return documents, nil
+}
+
+// Graph returns a bounded, read-only link neighborhood from the directory
+// index. Incoming edges are derived from backlinks in the same snapshot.
+func (c *DirectoryClient) Graph(ctx context.Context, document Document, space string, depth int, direction string) (GraphResult, error) {
+	if c == nil || c.root == "" {
+		return GraphResult{}, errors.New("wiki directory client is not initialized")
+	}
+	if strings.TrimSpace(space) == "" {
+		space = "local"
+	}
+	space = strings.Trim(strings.TrimSpace(space), "/")
+	root, direction, err := validateGraphRequest(document, space, depth, direction)
+	if err != nil {
+		return GraphResult{}, err
+	}
+	pages, err := c.ensureIndex(ctx)
+	if err != nil {
+		return GraphResult{}, err
+	}
+	pageBySlug := make(map[string]directoryIndexPage, len(pages))
+	incoming := make(map[string][]string, len(pages))
+	for _, page := range pages {
+		pageBySlug[page.slug] = page
+		for _, target := range page.links {
+			incoming[target] = append(incoming[target], page.slug)
+		}
+	}
+	if _, ok := pageBySlug[root]; !ok {
+		return GraphResult{}, fmt.Errorf("wiki graph root %q was not found", root)
+	}
+	seen := map[string]bool{root: true}
+	frontier := []string{root}
+	edges := make([]GraphEdge, 0)
+	for level := 0; level < depth && len(frontier) > 0; level++ {
+		next := make([]string, 0)
+		for _, slug := range frontier {
+			if direction == "outgoing" || direction == "both" {
+				for _, target := range pageBySlug[slug].links {
+					if _, ok := pageBySlug[target]; !ok {
+						continue
+					}
+					edges = append(edges, GraphEdge{From: graphURI(space, slug), To: graphURI(space, target)})
+					if !seen[target] {
+						seen[target] = true
+						next = append(next, target)
+					}
+				}
+			}
+			if direction == "incoming" || direction == "both" {
+				for _, source := range incoming[slug] {
+					edges = append(edges, GraphEdge{From: graphURI(space, source), To: graphURI(space, slug)})
+					if !seen[source] {
+						seen[source] = true
+						next = append(next, source)
+					}
+				}
+			}
+		}
+		frontier = next
+	}
+	nodes := make([]GraphNode, 0, len(seen))
+	for slug := range seen {
+		page := pageBySlug[slug]
+		nodes = append(nodes, GraphNode{URI: graphURI(space, slug), Slug: slug, Title: page.title, Summary: page.summary})
+	}
+	return normalizeGraphResult(GraphResult{RootURI: graphURI(space, root), Nodes: nodes, Edges: edges}), nil
 }
 
 func (c *DirectoryClient) ensureIndex(ctx context.Context) ([]directoryIndexPage, error) {

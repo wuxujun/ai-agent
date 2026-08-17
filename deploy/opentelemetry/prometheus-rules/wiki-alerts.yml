@@ -1,0 +1,47 @@
+groups:
+  - name: ai-agent-wiki
+    interval: 30s
+    rules:
+      - alert: AIAgentRequiredWikiNotReady
+        expr: increase(agent_wiki_readiness_failures_total[2m]) >= 3
+        for: 2m
+        labels:
+          severity: critical
+          component: wiki
+        annotations:
+          summary: Required Wiki is not ready
+          description: The ai-agent /ready handler has repeatedly observed a required Wiki failure.
+
+      - alert: AIAgentWikiHighErrorRate
+        expr: |
+          sum(rate(agent_wiki_backend_errors_total[5m]))
+            /
+          clamp_min(sum(rate(agent_wiki_backend_calls_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          component: wiki
+        annotations:
+          summary: Wiki backend error rate exceeds 5%
+          description: Wiki search/read failures have exceeded 5% for 10 minutes.
+
+      - alert: AIAgentWikiHighP95Latency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(agent_wiki_backend_latency_ms_bucket[5m]))) > 500
+        for: 10m
+        labels:
+          severity: warning
+          component: wiki
+        annotations:
+          summary: Wiki backend P95 latency exceeds 500 ms
+          description: Wiki search/read P95 latency has exceeded 500 ms for 10 minutes.
+
+      - alert: AIAgentWikiCircuitOpen
+        expr: increase(agent_wiki_circuit_opened_total[5m]) > 0
+        labels:
+          severity: critical
+          component: wiki
+        annotations:
+          summary: Wiki backend circuit breaker opened
+          description: Wiki calls reached the configured consecutive-failure threshold.

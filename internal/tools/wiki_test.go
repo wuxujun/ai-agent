@@ -23,6 +23,18 @@ type failingWikiReader struct {
 	failuresRemaining int
 }
 
+type graphWikiReader struct{ fakeWikiReader }
+
+func (*graphWikiReader) SupportsGraph() bool { return true }
+func (*graphWikiReader) Graph(_ context.Context, document wiki.Document, space string, depth int, direction string) (wiki.GraphResult, error) {
+	root := document.URI
+	return wiki.GraphResult{
+		RootURI: root,
+		Nodes:   []wiki.GraphNode{{URI: root}, {URI: "wiki://" + space + "/sources/moe"}},
+		Edges:   []wiki.GraphEdge{{From: root, To: "wiki://" + space + "/sources/moe"}},
+	}, nil
+}
+
 func (f *failingWikiReader) Search(context.Context, string, int, string) ([]wiki.Document, error) {
 	f.calls++
 	if f.failuresRemaining > 0 {
@@ -74,6 +86,18 @@ func TestWikiBackendCircuitOpensRejectsAndRecovers(t *testing.T) {
 	}
 	if after.BackendAverageLatencyMS < 0 {
 		t.Fatalf("average latency = %f", after.BackendAverageLatencyMS)
+	}
+}
+
+func TestWikiLatencyBuckets(t *testing.T) {
+	tests := []struct {
+		latency time.Duration
+		bucket  int
+	}{{time.Millisecond, 0}, {10 * time.Millisecond, 0}, {11 * time.Millisecond, 1}, {3 * time.Second, len(wikiLatencyBounds)}}
+	for _, test := range tests {
+		if got := wikiLatencyBucket(test.latency); got != test.bucket {
+			t.Errorf("latency %s bucket = %d, want %d", test.latency, got, test.bucket)
+		}
 	}
 }
 
@@ -212,5 +236,35 @@ func TestWikiToolsExposeOnlyReadOperations(t *testing.T) {
 		if tool.RiskLevel() != "low" {
 			t.Fatalf("tool %s risk = %s", tool.Name(), tool.RiskLevel())
 		}
+	}
+}
+
+func TestWikiGraphRegistersOnlyForCapableBackend(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.Wiki.DefaultSpace = "local" }))
+	registry := NewRegistry()
+	if err := RegisterWikiTools(registry, &graphWikiReader{}); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := registry.Get("wiki_graph")
+	if !ok || tool.RiskLevel() != "low" {
+		t.Fatalf("wiki_graph missing or wrong risk: %v %v", ok, tool)
+	}
+	ctx := WithRetrievalExecutionContext(t.Context(), "graph-task", "default")
+	result, err := tool.Execute(ctx, "", map[string]any{"uri": "wiki://local/concepts/moe", "depth": 1, "direction": "both"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Path != "wiki://local/concepts/moe" || !strings.Contains(result.Observation, `"edges"`) {
+		t.Fatalf("graph result = %+v", result)
+	}
+	if _, err := tool.Execute(ctx, "", map[string]any{"uri": "wiki://local/concepts/moe"}); err == nil || !strings.Contains(err.Error(), "at most one") {
+		t.Fatalf("second graph call error = %v", err)
+	}
+	fetch, ok := registry.Get("wiki_graph_fetch")
+	if !ok {
+		t.Fatal("internal wiki_graph_fetch was not registered")
+	}
+	if _, err := fetch.Execute(ctx, "", map[string]any{"uris": []string{"wiki://other/sources/moe"}}); err == nil || !strings.Contains(err.Error(), "tenant space") {
+		t.Fatalf("cross-space graph fetch error = %v", err)
 	}
 }

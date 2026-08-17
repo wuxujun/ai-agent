@@ -98,6 +98,30 @@ func (wikiHTTPWriter) Write(_ context.Context, _ string, evidence []multiagent.S
 	return nil, errors.New("writer did not receive fetched Wiki page evidence")
 }
 
+type wikiGraphHTTPWriter struct{}
+
+func (wikiGraphHTTPWriter) Write(_ context.Context, _ string, evidence []multiagent.StepEvidence, _ []types.Memory) (*multiagent.WriterOutput, error) {
+	seen := make(map[string]bool)
+	for _, item := range evidence {
+		for _, source := range item.Evidence {
+			content := strings.Join(source.Lines, "\n")
+			if source.Path == "wiki://local/entities/vanessa-ruales" && strings.Contains(content, "Harvard") {
+				seen["teacher"] = true
+			}
+			if source.Path == "wiki://local/sources/pbl-course" && strings.Contains(content, "six live classes") {
+				seen["source"] = true
+			}
+		}
+	}
+	if !seen["teacher"] || !seen["source"] {
+		return nil, fmt.Errorf("writer did not receive graph neighbor evidence: %v", seen)
+	}
+	return &multiagent.WriterOutput{
+		FinalAnswer:     "导师具有 Harvard 背景（wiki://local/entities/vanessa-ruales），课程包含 six live classes（wiki://local/sources/pbl-course）。",
+		EvidenceSummary: "Wiki graph neighbors fetched", DraftConfidence: "high",
+	}, nil
+}
+
 func (m *mockExecutor) Execute(ctx context.Context, task *types.Task, decision *planner.PlanDecision) ([]types.StepTrace, error) {
 	return nil, nil
 }
@@ -233,6 +257,7 @@ func TestReadyReportsConfiguredProbeMode(t *testing.T) {
 }
 
 func TestReadyFailsWhenRequiredWikiProbeFails(t *testing.T) {
+	metricsBefore := tools.CurrentWikiMetrics()
 	restore := config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.API.APIKey = ""
 		cfg.LLM.Provider = "openai"
@@ -267,6 +292,9 @@ func TestReadyFailsWhenRequiredWikiProbeFails(t *testing.T) {
 	if response.Ready || !response.Wiki.Configured || !response.Wiki.Required || response.Wiki.Healthy || response.Wiki.Error != "wiki unavailable" {
 		t.Fatalf("readiness response = %+v", response)
 	}
+	if got := tools.CurrentWikiMetrics().ReadinessFailures - metricsBefore.ReadinessFailures; got != 1 {
+		t.Fatalf("Wiki readiness failure delta = %d, want 1", got)
+	}
 }
 
 func TestMetricsIncludesWikiSnapshot(t *testing.T) {
@@ -290,12 +318,13 @@ func TestMetricsIncludesWikiSnapshot(t *testing.T) {
 		Wiki         struct {
 			BackendCalls            int64   `json:"backend_calls"`
 			BackendAverageLatencyMS float64 `json:"backend_average_latency_ms"`
+			BackendP95LatencyMS     float64 `json:"backend_p95_latency_ms"`
 		} `json:"wiki"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Wiki.BackendCalls < 0 || response.Wiki.BackendAverageLatencyMS < 0 {
+	if response.Wiki.BackendCalls < 0 || response.Wiki.BackendAverageLatencyMS < 0 || response.Wiki.BackendP95LatencyMS < 0 {
 		t.Fatalf("metrics response = %+v", response)
 	}
 }
@@ -368,6 +397,87 @@ func TestHTTPMultiAgentSearchesAndFetchesLocalWiki(t *testing.T) {
 	}
 	if !actions["wiki_search"] || !actions["wiki_fetch"] {
 		t.Fatalf("trace actions = %v", actions)
+	}
+}
+
+func TestHTTPMultiAgentWikiGraphFetchesBoundedNeighborPages(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.APIKey = ""
+		cfg.AnswerPipeline.Enabled = false
+		cfg.RAG.ContextMode = "jit"
+		cfg.MultiAgent.Team = "wiki_graph"
+		cfg.Wiki.Directory = root
+		cfg.Wiki.DefaultSpace = "local"
+		cfg.Wiki.SearchTopK = 3
+		cfg.Wiki.FetchMaxItems = 1
+		cfg.Wiki.FetchMaxBytes = 12000
+	}))
+	pages := map[string]string{
+		"concepts/pbl-historical-travel-guide-new-york.md": "# PBL 历史旅行指南：纽约篇\n\n[Vanessa](../entities/vanessa-ruales.md) and [course source](../sources/pbl-course.md).",
+		"entities/vanessa-ruales.md":                       "# Vanessa Ruales\n\nHarvard sociology background.",
+		"sources/pbl-course.md":                            "# PBL Course Source\n\nThe course includes six live classes.",
+	}
+	for path, content := range pages {
+		fullPath := filepath.Join(root, "wiki", filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, err := wiki.NewDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tools.RegisterWikiTools(tools.DefaultRegistry, client); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		tools.Unregister("wiki_search")
+		tools.Unregister("wiki_fetch")
+		tools.Unregister("wiki_graph")
+		tools.Unregister("wiki_graph_fetch")
+	})
+
+	st := store.NewMemoryStore()
+	coordinator := &multiagent.Coordinator{
+		Planner: &wikiHTTPPlanner{}, Researcher: &multiagent.ResearcherAgent{}, Writer: &wikiGraphHTTPWriter{},
+	}
+	engine := &orchestrator.Engine{Mode: orchestrator.ModeMultiAgent, Store: st, Coordinator: coordinator}
+	r := setupTestRouter(t, st, engine)
+
+	create := httptest.NewRecorder()
+	request, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(
+		`{"id":"wiki-graph-http-e2e","goal":"PBL 历史旅行指南的导师和课次是什么？","workspace":"workspace","mode":"multiagent","max_steps":6,"tool_budget":4}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(create, request)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", create.Code, create.Body.String())
+	}
+	run := httptest.NewRecorder()
+	request, _ = http.NewRequest(http.MethodPost, "/api/tasks/wiki-graph-http-e2e/run-all", nil)
+	r.ServeHTTP(run, request)
+	if run.Code != http.StatusAccepted {
+		t.Fatalf("run status = %d: %s", run.Code, run.Body.String())
+	}
+	completed := waitForTaskStatus(t, st, "wiki-graph-http-e2e", types.StatusCompleted)
+	if !strings.Contains(completed.FinalAnswer, "wiki://local/entities/vanessa-ruales") || !strings.Contains(completed.FinalAnswer, "wiki://local/sources/pbl-course") {
+		t.Fatalf("final answer = %q", completed.FinalAnswer)
+	}
+	actions := make(map[string]bool)
+	for _, trace := range completed.Trace {
+		actions[trace.Action] = true
+	}
+	for _, action := range []string{"wiki_search", "wiki_fetch", "wiki_graph", "wiki_graph_fetch"} {
+		if !actions[action] {
+			t.Fatalf("trace actions = %v; missing %s", actions, action)
+		}
 	}
 }
 

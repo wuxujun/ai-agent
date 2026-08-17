@@ -446,8 +446,9 @@ mcp:
   #     # Private/loopback endpoints are rejected unless explicitly enabled.
   #     allow_private_network: false
 
-# Optional read-only LLM Wiki adapter. Only wiki_search and wiki_fetch are
-# registered; write, ingest, commit, schema, and space-management tools are not.
+# Optional read-only LLM Wiki adapter. wiki_search and wiki_fetch are always
+# registered; wiki_graph is added only when supported. Write, ingest, commit,
+# schema, suggestion, and space-management tools are not registered.
 # Changes require a service restart.
 wiki:
   # Streamable HTTP MCP endpoint, for example http://127.0.0.1:18765/mcp.

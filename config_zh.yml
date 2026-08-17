@@ -449,8 +449,9 @@ mcp:
   #     # 私网/回环地址默认拒绝，必须显式开启。
   #     allow_private_network: false
 
-# 可选的只读 LLM Wiki 适配器。仅注册 wiki_search 与 wiki_fetch，
-# 不开放写入、摄取、提交、Schema 或空间管理工具。修改后需要重启服务。
+# 可选的只读 LLM Wiki 适配器。始终注册 wiki_search 与 wiki_fetch；后端支持时
+# 增加 wiki_graph。不开放写入、摄取、提交、Schema、Suggest 或空间管理工具。
+# 修改后需要重启服务。
 wiki:
   # Streamable HTTP MCP 端点，例如 http://127.0.0.1:18765/mcp。
   # 环境变量覆盖：AI_AGENT_WIKI_URL

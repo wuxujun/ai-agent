@@ -88,7 +88,7 @@ func TestExtractApplyAndAuditDoNotPersistModelReason(t *testing.T) {
 }
 
 func TestEligibleSkipsQuarantinedAndLocalContent(t *testing.T) {
-	if Eligible("read_file", "content") || Eligible("web_search", "external content quarantined (instruction_override)") || !Eligible("http_fetch", "Status 200") {
+	if Eligible("read_file", "content") || Eligible("web_search", "external content quarantined (instruction_override)") || !Eligible("http_fetch", "Status 200") || !Eligible("wiki_fetch", "fetched 1 page") {
 		t.Fatal("unexpected eligibility result")
 	}
 }

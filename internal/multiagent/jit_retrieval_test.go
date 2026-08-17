@@ -106,6 +106,36 @@ func TestRetrievalFetchStepsCreatesWikiFetch(t *testing.T) {
 	}
 }
 
+func TestWikiGraphTeamBuildsBoundedAutomaticFollowups(t *testing.T) {
+	ctx := withTeamConfigSnapshot(t.Context(), newTeamConfigSnapshot("wiki_graph", TeamConfig{}))
+	graphSteps := retrievalFollowupSteps(ctx, []StepEvidence{{
+		StepID: "wiki-fetch", Action: "wiki_fetch",
+		Evidence: []types.Evidence{{Path: "wiki://local/concepts/course"}, {Path: "wiki://local/entities/teacher"}},
+	}})
+	if len(graphSteps) != 1 || graphSteps[0].Action != "wiki_graph" || graphSteps[0].GraphURI != "wiki://local/concepts/course" || graphSteps[0].GraphDepth != 2 {
+		t.Fatalf("graph steps = %+v", graphSteps)
+	}
+	fetchSteps := retrievalFollowupSteps(ctx, []StepEvidence{{
+		StepID: "wiki-graph", Action: "wiki_graph",
+		Observation: `{"root_uri":"wiki://local/concepts/course","nodes":[{"uri":"wiki://local/concepts/course"},{"uri":"wiki://local/entities/teacher"},{"uri":"wiki://local/sources/course"},{"uri":"wiki://local/comparisons/ct"},{"uri":"wiki://local/entities/extra"}]}`,
+	}})
+	if len(fetchSteps) != 1 || fetchSteps[0].Action != "wiki_graph_fetch" {
+		t.Fatalf("fetch steps = %+v", fetchSteps)
+	}
+	uris, _ := fetchSteps[0].RepairedParameters["uris"].([]string)
+	if !reflect.DeepEqual(uris, []string{"wiki://local/entities/teacher", "wiki://local/sources/course", "wiki://local/comparisons/ct"}) {
+		t.Fatalf("bounded graph fetch URIs = %v", uris)
+	}
+}
+
+func TestWikiTeamDoesNotBuildGraphFollowup(t *testing.T) {
+	ctx := withTeamConfigSnapshot(t.Context(), newTeamConfigSnapshot("wiki", TeamConfig{}))
+	steps := retrievalFollowupSteps(ctx, []StepEvidence{{StepID: "fetch", Action: "wiki_fetch", Evidence: []types.Evidence{{Path: "wiki://local/concepts/course"}}}})
+	if len(steps) != 0 {
+		t.Fatalf("ordinary Wiki team graph followups = %+v", steps)
+	}
+}
+
 func TestCoordinatorRewritesDriftingFactualPlanToRAG(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"

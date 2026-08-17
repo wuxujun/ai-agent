@@ -42,6 +42,7 @@ type Client struct {
 	mcp         mcpCaller
 	searchProps map[string]any
 	readProps   map[string]any
+	graphProps  map[string]any
 }
 
 type mcpCaller interface {
@@ -81,6 +82,8 @@ func (c *Client) Initialize(ctx context.Context) error {
 			c.searchProps = remote.Properties()
 		case readToolName:
 			c.readProps = remote.Properties()
+		case graphToolName:
+			c.graphProps = remote.Properties()
 		}
 	}
 	if c.searchProps == nil || c.readProps == nil {
@@ -93,6 +96,50 @@ func (c *Client) Initialize(ctx context.Context) error {
 		return fmt.Errorf("%s schema does not expose uri, slug, or path", readToolName)
 	}
 	return nil
+}
+
+func (c *Client) SupportsGraph() bool { return c != nil && c.graphProps != nil }
+
+// Graph calls the optional read-only wiki_graph MCP operation. Its schema is
+// discovered at startup and only supported arguments are sent.
+func (c *Client) Graph(ctx context.Context, document Document, space string, depth int, direction string) (GraphResult, error) {
+	if !c.SupportsGraph() {
+		return GraphResult{}, errors.New("remote Wiki does not expose wiki_graph")
+	}
+	slug, direction, err := validateGraphRequest(document, space, depth, direction)
+	if err != nil {
+		return GraphResult{}, err
+	}
+	uri := strings.TrimSpace(document.URI)
+	if uri == "" {
+		uri = graphURI(strings.Trim(strings.TrimSpace(space), "/"), slug)
+	}
+	arguments := make(map[string]any)
+	switch {
+	case hasAnyProperty(c.graphProps, "uri"):
+		arguments["uri"] = uri
+	case hasAnyProperty(c.graphProps, "slug"):
+		arguments["slug"] = slug
+	case hasAnyProperty(c.graphProps, "path"):
+		arguments["path"] = slug
+	default:
+		return GraphResult{}, errors.New("wiki_graph schema does not expose uri, slug, or path")
+	}
+	setIfSupported(arguments, c.graphProps, "wiki", strings.TrimSpace(space))
+	setIfSupported(arguments, c.graphProps, "depth", depth)
+	setIfSupported(arguments, c.graphProps, "direction", direction)
+	result, err := c.mcp.CallTool(ctx, graphToolName, arguments)
+	if err != nil {
+		return GraphResult{}, err
+	}
+	graph, err := parseGraphResult(result)
+	if err != nil {
+		return GraphResult{}, fmt.Errorf("parse %s result for %s: %w", graphToolName, slug, err)
+	}
+	if graph.RootURI == "" {
+		graph.RootURI = uri
+	}
+	return normalizeGraphResult(graph), nil
 }
 
 // Probe verifies that the remote Wiki still exposes the required read-only
@@ -293,4 +340,26 @@ func parseReadResult(result *mcpclient.CallResult) (string, error) {
 		return content, nil
 	}
 	return "", errors.New("response did not contain page content")
+}
+
+func parseGraphResult(result *mcpclient.CallResult) (GraphResult, error) {
+	if result == nil {
+		return GraphResult{}, errors.New("empty MCP result")
+	}
+	for _, data := range [][]byte{result.StructuredContent, []byte(strings.TrimSpace(result.Text))} {
+		if len(data) == 0 {
+			continue
+		}
+		var envelope struct {
+			Graph GraphResult `json:"graph"`
+		}
+		if err := json.Unmarshal(data, &envelope); err == nil && (len(envelope.Graph.Nodes) > 0 || len(envelope.Graph.Edges) > 0) {
+			return envelope.Graph, nil
+		}
+		var graph GraphResult
+		if err := json.Unmarshal(data, &graph); err == nil && (len(graph.Nodes) > 0 || len(graph.Edges) > 0) {
+			return graph, nil
+		}
+	}
+	return GraphResult{}, errors.New("response did not contain graph nodes or edges")
 }

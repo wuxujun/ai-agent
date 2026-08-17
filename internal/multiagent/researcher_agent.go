@@ -101,14 +101,17 @@ func stepToParams(step ResearchStep) map[string]interface{} {
 		return params
 	}
 	return map[string]interface{}{
-		"pattern": step.FileGlob,    // find_files
-		"glob":    step.FileGlob,    // search_text filter
-		"query":   step.SearchQuery, // search_text / web_search
-		"path":    step.FilePath,    // read_file / write_file / git_diff
-		"content": step.Content,     // write_file
-		"command": step.Command,     // execute_code
-		"args":    step.Args,        // execute_code
-		"url":     step.URL,         // http_fetch
-		"prompt":  step.Prompt,      // analyze_image
+		"pattern":   step.FileGlob,       // find_files
+		"glob":      step.FileGlob,       // search_text filter
+		"query":     step.SearchQuery,    // search_text / web_search
+		"path":      step.FilePath,       // read_file / write_file / git_diff
+		"content":   step.Content,        // write_file
+		"command":   step.Command,        // execute_code
+		"args":      step.Args,           // execute_code
+		"url":       step.URL,            // http_fetch
+		"prompt":    step.Prompt,         // analyze_image
+		"uri":       step.GraphURI,       // wiki_graph
+		"depth":     step.GraphDepth,     // wiki_graph
+		"direction": step.GraphDirection, // wiki_graph
 	}
 }

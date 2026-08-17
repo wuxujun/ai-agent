@@ -232,6 +232,38 @@ is `wiki`, and `/ready` reports a healthy Wiki. Registering tools alone is not
 enough: JIT routing uses the current `wiki.directory` or `wiki.url` setting to
 decide whether Wiki is configured.
 
+Run the offline quality gate against a real Wiki directory:
+
+```bash
+go run ./cmd/wiki-eval \
+  -directory /srv/knowledge \
+  -input evals/wiki_retrieval.jsonl \
+  -space local
+```
+
+The default gates require Recall@K 0.80, first-hit rate 0.60, fetch success
+0.95, keyword coverage 0.80, `wiki://` citation coverage 1.0, zero errors, and
+local search-plus-fetch P95 latency no greater than 500 ms. Cases with
+`expected_graph_uris` additionally require graph-path recall 0.80 and an
+irrelevant-node rate no greater than 0.75; tune them with
+`-min-graph-path-recall` and `-max-irrelevant-node-rate`. Exit code 0 passes,
+1 indicates a quality regression, and 2 indicates invalid input or configuration.
+Copy and adapt the JSONL expected URIs when the business Wiki uses different
+titles or slugs; do not weaken thresholds merely to make a mismatched fixture pass.
+
+When supported by the backend, the service also registers read-only
+`wiki_graph` with outgoing, incoming, or bidirectional depth 1–2 traversal,
+bounded to 100 nodes and 250 edges. No placeholder is registered when a remote
+MCP server omits the operation. Graph URIs must belong to the current tenant's
+Wiki space, and graph output goes through the same prompt-injection controls as
+other Wiki evidence. The `wiki` team's Planner allowlist remains limited to
+`wiki_search`, so ordinary Wiki Q&A keeps the search-to-fetch path. Select
+`AI_AGENT_MULTIAGENT_TEAM=wiki_graph` for relationship-aware questions. That
+team follows a bounded `wiki_search -> wiki_fetch -> wiki_graph ->
+wiki_graph_fetch` chain: at most one graph traversal per task and at most three
+neighbor pages, within the shared 12,000-byte fetch budget. The internal
+neighbor fetch is not exposed to the Planner.
+
 Durable approval recovery is enabled when a 32-byte AES key is supplied as
 base64. Keep the same key on every instance and in the secret manager; losing
 it makes pending approval payloads unrecoverable.

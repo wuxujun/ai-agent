@@ -67,19 +67,22 @@ func (p *PlannerAgent) jsonSchema(actions []string) map[string]any {
 	stepSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":           map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
-			"description":  map[string]any{"type": "string", "description": "What this step investigates"},
-			"action":       map[string]any{"type": "string", "enum": actions},
-			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search / retrieval search tools)"},
-			"file_glob":    map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
-			"file_path":    map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
-			"content":      map[string]any{"type": "string", "description": "Content to write (write_file only)"},
-			"command":      map[string]any{"type": "string", "description": "Command/Interpreter to run (execute_code only)"},
-			"args":         map[string]any{"type": "string", "description": "Space-separated arguments (execute_code only)"},
-			"url":          map[string]any{"type": "string", "description": "Absolute http/https URL to fetch (http_fetch only)"},
-			"prompt":       map[string]any{"type": "string", "description": "Question or analysis instruction (analyze_image only)"},
+			"id":              map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
+			"description":     map[string]any{"type": "string", "description": "What this step investigates"},
+			"action":          map[string]any{"type": "string", "enum": actions},
+			"search_query":    map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search / retrieval search tools)"},
+			"file_glob":       map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
+			"file_path":       map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
+			"content":         map[string]any{"type": "string", "description": "Content to write (write_file only)"},
+			"command":         map[string]any{"type": "string", "description": "Command/Interpreter to run (execute_code only)"},
+			"args":            map[string]any{"type": "string", "description": "Space-separated arguments (execute_code only)"},
+			"url":             map[string]any{"type": "string", "description": "Absolute http/https URL to fetch (http_fetch only)"},
+			"prompt":          map[string]any{"type": "string", "description": "Question or analysis instruction (analyze_image only)"},
+			"graph_uri":       map[string]any{"type": "string", "description": "Root wiki:// URI (wiki_graph only)"},
+			"graph_depth":     map[string]any{"type": "integer", "minimum": 0, "maximum": 2, "description": "Graph depth 1..2; 0 when unused"},
+			"graph_direction": map[string]any{"type": "string", "enum": []string{"", "outgoing", "incoming", "both"}, "description": "Wiki graph direction"},
 		},
-		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt"},
+		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt", "graph_uri", "graph_depth", "graph_direction"},
 		"additionalProperties": false,
 	}
 
@@ -113,19 +116,22 @@ func (p *PlannerAgent) replanJsonSchema(actions []string) map[string]any {
 	stepSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":           map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
-			"description":  map[string]any{"type": "string", "description": "What this step investigates"},
-			"action":       map[string]any{"type": "string", "enum": actions},
-			"search_query": map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search)"},
-			"file_glob":    map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
-			"file_path":    map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
-			"content":      map[string]any{"type": "string", "description": "Content to write (write_file only)"},
-			"command":      map[string]any{"type": "string", "description": "Command/Interpreter to run (execute_code only)"},
-			"args":         map[string]any{"type": "string", "description": "Space-separated arguments (execute_code only)"},
-			"url":          map[string]any{"type": "string", "description": "Absolute http/https URL to fetch (http_fetch only)"},
-			"prompt":       map[string]any{"type": "string", "description": "Question or analysis instruction (analyze_image only)"},
+			"id":              map[string]any{"type": "string", "description": "Unique step ID (step-1, step-2, ...)"},
+			"description":     map[string]any{"type": "string", "description": "What this step investigates"},
+			"action":          map[string]any{"type": "string", "enum": actions},
+			"search_query":    map[string]any{"type": "string", "description": "Keyword or text to search (search_text / web_search)"},
+			"file_glob":       map[string]any{"type": "string", "description": "Glob pattern for find_files or search_text filter"},
+			"file_path":       map[string]any{"type": "string", "description": "Relative file path for read_file / write_file / git_diff"},
+			"content":         map[string]any{"type": "string", "description": "Content to write (write_file only)"},
+			"command":         map[string]any{"type": "string", "description": "Command/Interpreter to run (execute_code only)"},
+			"args":            map[string]any{"type": "string", "description": "Space-separated arguments (execute_code only)"},
+			"url":             map[string]any{"type": "string", "description": "Absolute http/https URL to fetch (http_fetch only)"},
+			"prompt":          map[string]any{"type": "string", "description": "Question or analysis instruction (analyze_image only)"},
+			"graph_uri":       map[string]any{"type": "string", "description": "Root wiki:// URI (wiki_graph only)"},
+			"graph_depth":     map[string]any{"type": "integer", "minimum": 0, "maximum": 2, "description": "Graph depth 1..2; 0 when unused"},
+			"graph_direction": map[string]any{"type": "string", "enum": []string{"", "outgoing", "incoming", "both"}, "description": "Wiki graph direction"},
 		},
-		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt"},
+		"required":             []string{"id", "description", "action", "search_query", "file_glob", "file_path", "content", "command", "args", "url", "prompt", "graph_uri", "graph_depth", "graph_direction"},
 		"additionalProperties": false,
 	}
 
@@ -154,7 +160,7 @@ func plannerResearchActions() []string {
 	for _, name := range names {
 		// Detail tools require candidate IDs that do not exist until their search
 		// step has executed. Coordinator inserts these steps deterministically.
-		if name != "wiki_fetch" && name != "rag_fetch" && name != "memory_get" {
+		if name != "wiki_fetch" && name != "wiki_graph_fetch" && name != "rag_fetch" && name != "memory_get" {
 			result = append(result, name)
 		}
 	}

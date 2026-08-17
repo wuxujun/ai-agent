@@ -39,15 +39,18 @@ type ResearchStep struct {
 	// Action is the tool name to invoke; any tool registered in the tools
 	// package is valid (e.g. find_files, search_text, read_file, write_file,
 	// execute_code, git_diff, http_fetch, web_search).
-	Action      string `json:"action"`
-	SearchQuery string `json:"search_query"` // used by search_text / web_search
-	FileGlob    string `json:"file_glob"`    // used by find_files or search_text filter
-	FilePath    string `json:"file_path"`    // used by read_file / write_file / git_diff
-	Content     string `json:"content"`      // used by write_file
-	Command     string `json:"command"`      // used by execute_code
-	Args        string `json:"args"`         // used by execute_code
-	URL         string `json:"url"`          // used by http_fetch
-	Prompt      string `json:"prompt"`       // used by analyze_image
+	Action         string `json:"action"`
+	SearchQuery    string `json:"search_query"`    // used by search_text / web_search
+	FileGlob       string `json:"file_glob"`       // used by find_files or search_text filter
+	FilePath       string `json:"file_path"`       // used by read_file / write_file / git_diff
+	Content        string `json:"content"`         // used by write_file
+	Command        string `json:"command"`         // used by execute_code
+	Args           string `json:"args"`            // used by execute_code
+	URL            string `json:"url"`             // used by http_fetch
+	Prompt         string `json:"prompt"`          // used by analyze_image
+	GraphURI       string `json:"graph_uri"`       // used by wiki_graph
+	GraphDepth     int    `json:"graph_depth"`     // used by wiki_graph (1..2)
+	GraphDirection string `json:"graph_direction"` // outgoing / incoming / both
 	// RepairedParameters is populated after plan-time argument repair. It is
 	// intentionally excluded from LLM JSON and is shared by approval and execution.
 	RepairedParameters map[string]any `json:"-"`

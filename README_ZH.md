@@ -225,6 +225,31 @@ wiki.default_space is empty`，说明两处空间配置均为空。
 服务进程环境中可见、Team 是否为 `wiki`，以及 `/ready` 中 Wiki 是否健康。配置了目录但仅
 手工注册工具仍不够：JIT 路由以当前 `wiki.directory` 或 `wiki.url` 判断 Wiki 是否已配置。
 
+使用真实 Wiki 目录运行离线质量门禁：
+
+```bash
+go run ./cmd/wiki-eval \
+  -directory /srv/knowledge \
+  -input evals/wiki_retrieval.jsonl \
+  -space local
+```
+
+默认门槛为 Recall@K 0.80、首位命中率 0.60、全文读取成功率 0.95、关键词覆盖率
+0.80、`wiki://` 引用覆盖率 1.0、错误率 0，以及本地搜索加读取 P95 500ms。
+包含 `expected_graph_uris` 的用例还要求图谱路径召回率至少 0.80、无关节点率不超过
+0.75，可通过 `-min-graph-path-recall` 和 `-max-irrelevant-node-rate` 调整。
+门禁通过返回 0，质量不达标返回 1，参数或数据错误返回 2。业务 Wiki 的标题或 slug
+不同于样例时，应复制 JSONL 并修改期望 URI，不能为了通过门禁降低到无意义阈值。
+
+后端支持时还会注册只读 `wiki_graph`，提供 `outgoing`、`incoming` 或双向的 1–2 跳
+页面关系，最多返回 100 个节点和 250 条边。远程 MCP 未声明该工具时不会注册占位工具。
+图谱 URI 必须属于当前租户 Wiki Space，输出与其他 Wiki 内容一样经过 Prompt Injection
+检测。为保持确定性检索，`wiki` Team 的 Planner allowlist 仍只有 `wiki_search`；
+普通 Wiki 问答继续执行搜索到全文读取链路。关系型问题可设置
+`AI_AGENT_MULTIAGENT_TEAM=wiki_graph`，受控执行 `wiki_search -> wiki_fetch ->
+wiki_graph -> wiki_graph_fetch`：每个任务最多一次图遍历、最多读取三个邻居页面，并共享
+12,000 字节读取预算；内部邻居读取工具不会暴露给 Planner。
+
 设置一个 base64 编码的 32 字节 AES 密钥后，会启用审批持久化恢复。所有实例必须从密钥管理服务
 读取同一个密钥；密钥丢失后，尚未消费的审批载荷将无法恢复。
 

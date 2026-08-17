@@ -24,6 +24,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/sourcecredibility"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"github.com/wuxujun/ai-agent/internal/wiki"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -997,7 +998,7 @@ func (c *Coordinator) runResearchPhase(ctx context.Context, task *types.Task, st
 			result.Err = fatalErr
 			return result
 		}
-		if followups := retrievalFetchSteps(batchEvidence); len(followups) > 0 {
+		if followups := retrievalFollowupSteps(ctx, batchEvidence); len(followups) > 0 {
 			// Search candidates are intentionally compact. Fetch selected details
 			// before unrelated remaining work so the Writer receives real evidence,
 			// not just candidate snippets.
@@ -1238,9 +1239,51 @@ func ensureExplicitWorkspaceFileReads(task *types.Task, plan *ResearchPlan) bool
 }
 
 func retrievalFetchSteps(evidence []StepEvidence) []ResearchStep {
+	return retrievalFollowupSteps(context.Background(), evidence)
+}
+
+func retrievalFollowupSteps(ctx context.Context, evidence []StepEvidence) []ResearchStep {
 	steps := make([]ResearchStep, 0, len(evidence))
 	for _, item := range evidence {
-		if item.Failed || (item.Action != "wiki_search" && item.Action != "rag_search" && item.Action != "memory_search") {
+		if item.Failed {
+			continue
+		}
+		if item.Action == "wiki_fetch" && teamConfigFromContext(ctx).ActiveTeam == "wiki_graph" {
+			for _, source := range item.Evidence {
+				if strings.HasPrefix(source.Path, "wiki://") {
+					steps = append(steps, ResearchStep{
+						ID: item.StepID + "-graph", Description: "Read the bounded Wiki relationship graph", Action: "wiki_graph",
+						GraphURI: source.Path, GraphDepth: 2, GraphDirection: "both",
+					})
+					break
+				}
+			}
+			continue
+		}
+		if item.Action == "wiki_graph" && teamConfigFromContext(ctx).ActiveTeam == "wiki_graph" {
+			var graph wiki.GraphResult
+			if json.Unmarshal([]byte(item.Observation), &graph) != nil {
+				continue
+			}
+			uris := make([]string, 0, 3)
+			for _, node := range graph.Nodes {
+				if node.URI == graph.RootURI || !strings.HasPrefix(node.URI, "wiki://") {
+					continue
+				}
+				uris = append(uris, node.URI)
+				if len(uris) == 3 {
+					break
+				}
+			}
+			if len(uris) > 0 {
+				steps = append(steps, ResearchStep{
+					ID: item.StepID + "-fetch", Description: "Fetch selected bounded Wiki graph neighbor pages", Action: "wiki_graph_fetch",
+					RepairedParameters: map[string]any{"uris": uris},
+				})
+			}
+			continue
+		}
+		if item.Action != "wiki_search" && item.Action != "rag_search" && item.Action != "memory_search" {
 			continue
 		}
 		var payload struct {
@@ -2136,6 +2179,8 @@ func buildStepQuery(step ResearchStep) string {
 			return fmt.Sprintf("ids=%v", ids)
 		}
 		return "ids=[]"
+	case "wiki_graph":
+		return fmt.Sprintf("uri=%q depth=%d direction=%q", step.GraphURI, step.GraphDepth, step.GraphDirection)
 	case "analyze_image":
 		return fmt.Sprintf("path=%q prompt=%q", step.FilePath, step.Prompt)
 	default:
@@ -2174,5 +2219,16 @@ func paramsToStep(params map[string]any, step *ResearchStep) {
 	}
 	if url, ok := params["url"].(string); ok {
 		step.URL = url
+	}
+	if uri, ok := params["uri"].(string); ok {
+		step.GraphURI = uri
+	}
+	if depth, ok := params["depth"].(int); ok {
+		step.GraphDepth = depth
+	} else if depth, ok := params["depth"].(float64); ok {
+		step.GraphDepth = int(depth)
+	}
+	if direction, ok := params["direction"].(string); ok {
+		step.GraphDirection = direction
 	}
 }

@@ -326,3 +326,36 @@ func TestDirectoryClientReadRejectsNonMarkdownAndOversizedFiles(t *testing.T) {
 		t.Fatalf("oversized read error = %v", err)
 	}
 }
+
+func TestDirectoryClientGraphReturnsBoundedIncomingAndOutgoingLinks(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"concepts", "entities", "sources"} {
+		if err := os.MkdirAll(filepath.Join(root, "wiki", directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pages := map[string]string{
+		"concepts/course.md":  "# Course\n\n[Teacher](../entities/teacher.md) and [Source](../sources/course.md).",
+		"entities/teacher.md": "# Teacher\n\n[Course](../concepts/course.md).",
+		"sources/course.md":   "# Source\n\nDetails.",
+	}
+	for path, content := range pages {
+		if err := os.WriteFile(filepath.Join(root, "wiki", filepath.FromSlash(path)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	graph, err := client.Graph(t.Context(), Document{URI: "wiki://local/concepts/course"}, "local", 1, "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graph.RootURI != "wiki://local/concepts/course" || len(graph.Nodes) != 3 || len(graph.Edges) != 3 {
+		t.Fatalf("graph = %+v", graph)
+	}
+	if _, err := client.Graph(t.Context(), Document{URI: "wiki://other/concepts/course"}, "local", 1, "both"); err == nil {
+		t.Fatal("cross-space graph URI was accepted")
+	}
+}

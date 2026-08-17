@@ -19,16 +19,20 @@ type WikiMetricsSnapshot struct {
 	BackendCalls            int64   `json:"backend_calls"`
 	BackendErrors           int64   `json:"backend_errors"`
 	BackendAverageLatencyMS float64 `json:"backend_average_latency_ms"`
+	BackendP95LatencyMS     float64 `json:"backend_p95_latency_ms"`
 	CircuitOpened           int64   `json:"circuit_opened"`
 	CircuitRejected         int64   `json:"circuit_rejected"`
+	ReadinessFailures       int64   `json:"readiness_failures"`
 }
 
 var wikiLocalMetrics struct {
-	backendCalls     atomic.Int64
-	backendErrors    atomic.Int64
-	backendLatencyNS atomic.Int64
-	circuitOpened    atomic.Int64
-	circuitRejected  atomic.Int64
+	backendCalls      atomic.Int64
+	backendErrors     atomic.Int64
+	backendLatencyNS  atomic.Int64
+	latencyBuckets    [9]atomic.Int64
+	circuitOpened     atomic.Int64
+	circuitRejected   atomic.Int64
+	readinessFailures atomic.Int64
 }
 
 // CurrentWikiMetrics returns a race-safe process-local Wiki metrics snapshot.
@@ -40,19 +44,27 @@ func CurrentWikiMetrics() WikiMetricsSnapshot {
 	}
 	return WikiMetricsSnapshot{
 		BackendCalls: calls, BackendErrors: wikiLocalMetrics.backendErrors.Load(),
-		BackendAverageLatencyMS: average, CircuitOpened: wikiLocalMetrics.circuitOpened.Load(),
-		CircuitRejected: wikiLocalMetrics.circuitRejected.Load(),
+		BackendAverageLatencyMS: average, BackendP95LatencyMS: wikiLatencyP95MS(calls), CircuitOpened: wikiLocalMetrics.circuitOpened.Load(),
+		CircuitRejected:   wikiLocalMetrics.circuitRejected.Load(),
+		ReadinessFailures: wikiLocalMetrics.readinessFailures.Load(),
 	}
 }
 
 var (
-	wikiMeter              = otel.Meter("ai-agent/wiki")
-	wikiBackendCalls, _    = wikiMeter.Int64Counter("agent.wiki.backend.calls")
-	wikiBackendErrors, _   = wikiMeter.Int64Counter("agent.wiki.backend.errors")
-	wikiBackendLatency, _  = wikiMeter.Float64Histogram("agent.wiki.backend.latency_ms")
-	wikiCircuitOpened, _   = wikiMeter.Int64Counter("agent.wiki.circuit.opened")
-	wikiCircuitRejected, _ = wikiMeter.Int64Counter("agent.wiki.circuit.rejected")
+	wikiMeter                = otel.Meter("ai-agent/wiki")
+	wikiBackendCalls, _      = wikiMeter.Int64Counter("agent.wiki.backend.calls")
+	wikiBackendErrors, _     = wikiMeter.Int64Counter("agent.wiki.backend.errors")
+	wikiBackendLatency, _    = wikiMeter.Float64Histogram("agent.wiki.backend.latency_ms")
+	wikiCircuitOpened, _     = wikiMeter.Int64Counter("agent.wiki.circuit.opened")
+	wikiCircuitRejected, _   = wikiMeter.Int64Counter("agent.wiki.circuit.rejected")
+	wikiReadinessFailures, _ = wikiMeter.Int64Counter("agent.wiki.readiness.failures")
 )
+
+// ObserveWikiReadinessFailure records a required-Wiki readiness failure.
+func ObserveWikiReadinessFailure(ctx context.Context) {
+	wikiLocalMetrics.readinessFailures.Add(1)
+	wikiReadinessFailures.Add(ctx, 1)
+}
 
 type wikiBackendGuard struct {
 	mu        sync.Mutex
@@ -70,6 +82,7 @@ func (g *wikiBackendGuard) call(ctx context.Context, operation string, invoke fu
 	elapsed := time.Since(started)
 	wikiLocalMetrics.backendCalls.Add(1)
 	wikiLocalMetrics.backendLatencyNS.Add(elapsed.Nanoseconds())
+	wikiLocalMetrics.latencyBuckets[wikiLatencyBucket(elapsed)].Add(1)
 	attrs := []attribute.KeyValue{attribute.String("operation", operation)}
 	wikiBackendCalls.Add(ctx, 1, api.WithAttributes(attrs...))
 	wikiBackendLatency.Record(ctx, float64(elapsed)/float64(time.Millisecond), api.WithAttributes(attrs...))
@@ -79,6 +92,38 @@ func (g *wikiBackendGuard) call(ctx context.Context, operation string, invoke fu
 	}
 	g.after(ctx, operation, err)
 	return err
+}
+
+var wikiLatencyBounds = [...]time.Duration{
+	10 * time.Millisecond, 25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond,
+	250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2500 * time.Millisecond,
+}
+
+func wikiLatencyBucket(elapsed time.Duration) int {
+	for index, bound := range wikiLatencyBounds {
+		if elapsed <= bound {
+			return index
+		}
+	}
+	return len(wikiLatencyBounds)
+}
+
+func wikiLatencyP95MS(calls int64) float64 {
+	if calls <= 0 {
+		return 0
+	}
+	target := (calls*95 + 99) / 100
+	var cumulative int64
+	for index := range wikiLocalMetrics.latencyBuckets {
+		cumulative += wikiLocalMetrics.latencyBuckets[index].Load()
+		if cumulative >= target {
+			if index < len(wikiLatencyBounds) {
+				return float64(wikiLatencyBounds[index]) / float64(time.Millisecond)
+			}
+			return 2500
+		}
+	}
+	return 0
 }
 
 func (g *wikiBackendGuard) before(ctx context.Context, operation string) error {
