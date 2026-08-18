@@ -273,6 +273,23 @@ overridable with `AI_AGENT_TEAM_LIFECYCLE_AUDIT_MAX_BYTES`. Integrity responses
 report `max_bytes`, `usage_percent`, and `capacity_status` (`ok`, `warning` at
 80%, or `full`). An append that would exceed the limit is rejected with HTTP
 507 and never truncates or overwrites the audit file.
+To free current-file capacity explicitly, an administrator may POST
+`/api/teams/lifecycle-audits/archive` with `expected_file_digest` from the
+integrity response. The current file is atomically moved into a private archive
+directory and replaced by an empty 0600 file; stale digests return HTTP 409.
+Normal audit queries merge current and archived records by timestamp, so
+rotation never removes history from the API. Archive directories that are
+symlinks are rejected, and no archive is automatically deleted.
+`GET /api/teams/lifecycle-audits/archives` returns a newest-first administrator
+inventory with each archive's name, creation time, digest, record and
+protected/legacy counts, and size. It exposes no filesystem path or record
+content and provides no delete operation.
+Archive success, archive CAS conflicts, capacity rejections, and integrity
+failures are exposed through `multiagent_team_audit_archives`,
+`multiagent_team_audit_archive_conflicts`,
+`multiagent_team_audit_capacity_rejections`, and
+`multiagent_team_audit_integrity_failures`, plus bounded OTel events and
+Prometheus alerts for the failure conditions.
 
 Operational checks:
 

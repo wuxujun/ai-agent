@@ -33,6 +33,9 @@ func TestTeamRoutingPrometheusAlerts(t *testing.T) {
 		"AIAgentRetiredTeamReceivedNewTask":    `outcome="retired"`,
 		"AIAgentTeamLifecycleConflictSpike":    `event="lifecycle_conflict"`,
 		"AIAgentDefaultTeamLifecycleProtected": `event="default_protected"`,
+		"AIAgentTeamAuditIntegrityFailure":     `event="audit_integrity_failure"`,
+		"AIAgentTeamAuditCapacityRejected":     `event="audit_capacity_rejected"`,
+		"AIAgentTeamAuditArchiveConflictSpike": `event="audit_archive_conflict"`,
 	}
 	seen := make(map[string]bool, len(want))
 	for _, group := range document.Groups {

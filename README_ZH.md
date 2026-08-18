@@ -255,6 +255,17 @@ Team 返回 HTTP 422。成功及无变化更新都会输出结构化审计日志
 `AI_AGENT_TEAM_LIFECYCLE_AUDIT_MAX_BYTES` 覆盖。完整性响应返回 `max_bytes`、
 `usage_percent` 和 `capacity_status`（ok、达到 80% 的 warning、full）；预计追加后
 超过上限时返回 HTTP 507，且不会截断或覆盖审计文件。
+管理员可显式调用 `POST /api/teams/lifecycle-audits/archive`，提交完整性响应中的
+`expected_file_digest` 释放当前文件容量。服务将当前文件原子移动到私有归档目录，并
+创建新的 0600 空文件；过期摘要返回 HTTP 409。普通审计查询按时间合并当前与归档记录，
+因此轮转不会让历史从 API 消失；拒绝符号链接归档目录，也不会自动删除任何归档。
+管理员可通过 `GET /api/teams/lifecycle-audits/archives` 按时间倒序查看归档清单，
+包含名称、创建时间、摘要、总记录及 protected/legacy 数量和大小；不暴露文件系统路径、
+记录正文或删除操作。
+归档成功、归档 CAS 冲突、容量拒绝和完整性失败分别通过
+`multiagent_team_audit_archives`、`multiagent_team_audit_archive_conflicts`、
+`multiagent_team_audit_capacity_rejections`、`multiagent_team_audit_integrity_failures`
+及低基数 OTel 事件观测；失败条件同时配置 Prometheus 告警。
 
 可通过以下接口确认运行状态：
 

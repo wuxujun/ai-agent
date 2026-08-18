@@ -1361,6 +1361,55 @@ func TestUpdateTeamLifecycleReturnsInsufficientStorageWhenAuditIsFull(t *testing
 	}
 }
 
+func TestArchiveTeamLifecycleAuditAPIKeepsHistoryQueryable(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	t.Setenv("AI_AGENT_TEAM_LIFECYCLE_AUDIT_FILE", auditPath)
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.APIKey = "audit-archive-admin-key"
+	}))
+	change := multiagent.TeamLifecycleChange{Team: "data", Previous: multiagent.TeamLifecycleActive, Current: multiagent.TeamLifecycleActive, PreviousRevision: "same", Revision: "same"}
+	if _, err := multiagent.AppendTeamLifecycleAudit("default", change); err != nil {
+		t.Fatal(err)
+	}
+	integrity := multiagent.CheckTeamLifecycleAuditIntegrity()
+	r := setupTestRouter(t, store.NewMemoryStore(), nil)
+
+	archive := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"expected_file_digest":%q}`, integrity.FileDigest)
+	req, _ := http.NewRequest(http.MethodPost, "/api/teams/lifecycle-audits/archive", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "audit-archive-admin-key")
+	r.ServeHTTP(archive, req)
+	if archive.Code != http.StatusCreated || !strings.Contains(archive.Body.String(), `"record_count":1`) {
+		t.Fatalf("archive response = %d: %s", archive.Code, archive.Body.String())
+	}
+
+	query := httptest.NewRecorder()
+	queryReq, _ := http.NewRequest(http.MethodGet, "/api/teams/lifecycle-audits", nil)
+	queryReq.Header.Set("X-API-Key", "audit-archive-admin-key")
+	r.ServeHTTP(query, queryReq)
+	if query.Code != http.StatusOK || !strings.Contains(query.Body.String(), `"team":"data"`) {
+		t.Fatalf("archived query = %d: %s", query.Code, query.Body.String())
+	}
+	inventory := httptest.NewRecorder()
+	inventoryReq, _ := http.NewRequest(http.MethodGet, "/api/teams/lifecycle-audits/archives", nil)
+	inventoryReq.Header.Set("X-API-Key", "audit-archive-admin-key")
+	r.ServeHTTP(inventory, inventoryReq)
+	if inventory.Code != http.StatusOK || !strings.Contains(inventory.Body.String(), `"count":1`) || !strings.Contains(inventory.Body.String(), `"file_digest"`) {
+		t.Fatalf("archive inventory = %d: %s", inventory.Code, inventory.Body.String())
+	}
+
+	stale := httptest.NewRecorder()
+	staleReq, _ := http.NewRequest(http.MethodPost, "/api/teams/lifecycle-audits/archive", strings.NewReader(body))
+	staleReq.Header.Set("Content-Type", "application/json")
+	staleReq.Header.Set("X-API-Key", "audit-archive-admin-key")
+	r.ServeHTTP(stale, staleReq)
+	if stale.Code != http.StatusBadRequest {
+		t.Fatalf("empty current archive = %d: %s", stale.Code, stale.Body.String())
+	}
+}
+
 func TestCreateTaskRejectsUnsupportedMode(t *testing.T) {
 	st := store.NewMemoryStore()
 	r := setupTestRouter(t, st, nil)

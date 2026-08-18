@@ -76,3 +76,31 @@ groups:
         annotations:
           summary: A default Team lifecycle change was rejected
           description: An administrator attempted to drain or retire a process or tenant default Team without first moving the default.
+
+      - alert: AIAgentTeamAuditIntegrityFailure
+        expr: increase(agent_multiagent_team_config_events_total{event="audit_integrity_failure"}[15m]) > 0
+        labels:
+          severity: critical
+          component: multiagent-team-routing
+        annotations:
+          summary: Team lifecycle audit integrity validation failed
+          description: The current audit or an archive contains invalid JSON, a changed protected record, or a broken hash link.
+
+      - alert: AIAgentTeamAuditCapacityRejected
+        expr: increase(agent_multiagent_team_config_events_total{event="audit_capacity_rejected"}[15m]) > 0
+        labels:
+          severity: critical
+          component: multiagent-team-routing
+        annotations:
+          summary: Team lifecycle audit reached its capacity limit
+          description: An audit append was rejected; explicitly archive the current file before attempting another lifecycle update.
+
+      - alert: AIAgentTeamAuditArchiveConflictSpike
+        expr: increase(agent_multiagent_team_config_events_total{event="audit_archive_conflict"}[5m]) >= 3
+        for: 5m
+        labels:
+          severity: warning
+          component: multiagent-team-routing
+        annotations:
+          summary: Team lifecycle audit archives repeatedly used stale digests
+          description: Refresh the integrity endpoint and retry with its current file_digest.

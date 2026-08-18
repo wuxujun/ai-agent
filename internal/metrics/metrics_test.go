@@ -214,9 +214,13 @@ func TestCollectorTracksMultiAgentTeamConfigEvents(t *testing.T) {
 	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "lifecycle_changed")
 	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "lifecycle_conflict")
 	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "default_protected")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "audit_archived")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "audit_archive_conflict")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "audit_capacity_rejected")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "audit_integrity_failure")
 	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "unknown")
 	snapshot := collector.Snapshot()
-	if snapshot.MultiAgentTeamReadinessFailures != 1 || snapshot.MultiAgentTeamReloadRejections != 1 || snapshot.MultiAgentTeamLifecycleChanges != 1 || snapshot.MultiAgentTeamLifecycleConflicts != 1 || snapshot.MultiAgentTeamDefaultProtections != 1 {
+	if snapshot.MultiAgentTeamReadinessFailures != 1 || snapshot.MultiAgentTeamReloadRejections != 1 || snapshot.MultiAgentTeamLifecycleChanges != 1 || snapshot.MultiAgentTeamLifecycleConflicts != 1 || snapshot.MultiAgentTeamDefaultProtections != 1 || snapshot.MultiAgentTeamAuditArchives != 1 || snapshot.MultiAgentTeamAuditArchiveConflicts != 1 || snapshot.MultiAgentTeamAuditCapacityRejections != 1 || snapshot.MultiAgentTeamAuditIntegrityFailures != 1 {
 		t.Fatalf("team config event metrics = %+v", snapshot)
 	}
 }

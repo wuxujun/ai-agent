@@ -158,6 +158,8 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	api.PATCH("/teams/:name/lifecycle", AdminMiddleware(), h.updateTeamLifecycle)
 	api.GET("/teams/lifecycle-audits", AdminMiddleware(), h.listTeamLifecycleAudits)
 	api.GET("/teams/lifecycle-audits/integrity", AdminMiddleware(), h.getTeamLifecycleAuditIntegrity)
+	api.POST("/teams/lifecycle-audits/archive", AdminMiddleware(), h.archiveTeamLifecycleAudits)
+	api.GET("/teams/lifecycle-audits/archives", AdminMiddleware(), h.listTeamLifecycleAuditArchives)
 	api.POST("/config/reload", AdminMiddleware(), h.reloadConfig)
 	api.POST("/prompt/init", AdminMiddleware(), h.initPrompts)
 
@@ -600,6 +602,9 @@ func (h *Handler) updateTeamLifecycle(c *gin.Context) {
 		status := http.StatusInternalServerError
 		if errors.Is(auditErr, multiagent.ErrTeamLifecycleAuditFull) {
 			status = http.StatusInsufficientStorage
+			if h.metrics != nil {
+				h.metrics.ObserveMultiAgentTeamConfigEvent(c.Request.Context(), "audit_capacity_rejected")
+			}
 		}
 		c.JSON(status, gin.H{
 			"error":            "Team lifecycle changed but audit persistence failed",
@@ -645,8 +650,56 @@ func (h *Handler) getTeamLifecycleAuditIntegrity(c *gin.Context) {
 	status := http.StatusOK
 	if !integrity.Healthy {
 		status = http.StatusConflict
+		if h.metrics != nil {
+			h.metrics.ObserveMultiAgentTeamConfigEvent(c.Request.Context(), "audit_integrity_failure")
+		}
 	}
 	c.JSON(status, integrity)
+}
+
+type archiveTeamLifecycleAuditsRequest struct {
+	ExpectedFileDigest string `json:"expected_file_digest" binding:"required"`
+}
+
+func (h *Handler) archiveTeamLifecycleAudits(c *gin.Context) {
+	var req archiveTeamLifecycleAuditsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(err)
+		return
+	}
+	archive, err := multiagent.ArchiveTeamLifecycleAudit(req.ExpectedFileDigest)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, multiagent.ErrTeamLifecycleAuditArchiveConflict) {
+			status = http.StatusConflict
+			if h.metrics != nil {
+				h.metrics.ObserveMultiAgentTeamConfigEvent(c.Request.Context(), "audit_archive_conflict")
+			}
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	principal := principalFromGin(c)
+	if h.metrics != nil {
+		h.metrics.ObserveMultiAgentTeamConfigEvent(c.Request.Context(), "audit_archived")
+	}
+	log.Info("Multi-agent Team lifecycle audit archived",
+		"tenant_id", principal.TenantID,
+		"archive", archive.Name,
+		"file_digest", archive.FileDigest,
+		"record_count", archive.RecordCount,
+		"file_size_bytes", archive.FileSizeBytes,
+	)
+	c.JSON(http.StatusCreated, archive)
+}
+
+func (h *Handler) listTeamLifecycleAuditArchives(c *gin.Context) {
+	archives, err := multiagent.ListTeamLifecycleAuditArchives()
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"archives": archives, "count": len(archives)})
 }
 
 func (h *Handler) runTaskStep(c *gin.Context) {

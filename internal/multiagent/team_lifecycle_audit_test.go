@@ -127,3 +127,78 @@ func TestTeamLifecycleAuditCapacityRejectsWithoutOverwriting(t *testing.T) {
 		t.Fatalf("capacity status = %+v", status)
 	}
 }
+
+func TestArchiveTeamLifecycleAuditPreservesQueryableHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	for _, id := range []string{"first", "second"} {
+		if _, err := appendTeamLifecycleAuditFile(path, TeamLifecycleAuditRecord{ID: id, Timestamp: time.Now(), ActorTenant: "admin", Team: "data"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := checkTeamLifecycleAuditFile(path)
+	archived, err := archiveTeamLifecycleAuditFile(path, before.FileDigest, time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.RecordCount != 2 || archived.FileDigest != before.FileDigest || archived.Name == "" {
+		t.Fatalf("archive = %+v", archived)
+	}
+	archives, err := listTeamLifecycleAuditArchives(path)
+	if err != nil || len(archives) != 1 || archives[0].Name != archived.Name || !archives[0].CreatedAt.Equal(archived.CreatedAt) {
+		t.Fatalf("archive inventory = %+v err=%v", archives, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("new current file info=%v err=%v", info, err)
+	}
+	records, hasMore, err := listTeamLifecycleAuditFile(path, TeamLifecycleAuditFilter{}, 10, 0)
+	if err != nil || hasMore || len(records) != 2 {
+		t.Fatalf("archived query = %+v has_more=%v err=%v", records, hasMore, err)
+	}
+	if _, err := appendTeamLifecycleAuditFile(path, TeamLifecycleAuditRecord{ID: "third", Timestamp: time.Now().Add(time.Second), ActorTenant: "admin", Team: "data"}); err != nil {
+		t.Fatal(err)
+	}
+	records, _, err = listTeamLifecycleAuditFile(path, TeamLifecycleAuditFilter{}, 10, 0)
+	if err != nil || len(records) != 3 || records[0].ID != "third" {
+		t.Fatalf("combined query = %+v err=%v", records, err)
+	}
+	after := checkTeamLifecycleAuditFile(path)
+	if !after.Healthy || after.ArchiveCount != 1 || after.ArchivedRecords != 2 || after.RecordCount != 3 {
+		t.Fatalf("combined integrity = %+v", after)
+	}
+	if _, err := archiveTeamLifecycleAuditFile(path, before.FileDigest, time.Now()); !errors.Is(err, ErrTeamLifecycleAuditArchiveConflict) {
+		t.Fatalf("stale archive digest error = %v", err)
+	}
+}
+
+func TestArchiveTimestamp(t *testing.T) {
+	got := archiveTimestamp("team-lifecycle-audit-20260818T120000.123456789Z-abcdef.jsonl")
+	want := time.Date(2026, 8, 18, 12, 0, 0, 123456789, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("archive timestamp = %v, want %v", got, want)
+	}
+	if got := archiveTimestamp("unexpected.jsonl"); !got.IsZero() {
+		t.Fatalf("unexpected archive timestamp = %v", got)
+	}
+}
+
+func TestArchiveTeamLifecycleAuditRejectsSymlinkArchiveDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	if _, err := appendTeamLifecycleAuditFile(path, TeamLifecycleAuditRecord{ID: "first", Timestamp: time.Now(), ActorTenant: "admin", Team: "data"}); err != nil {
+		t.Fatal(err)
+	}
+	integrity := checkTeamLifecycleAuditFile(path)
+	target := filepath.Join(dir, "outside")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, teamLifecycleAuditArchiveDir(path)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archiveTeamLifecycleAuditFile(path, integrity.FileDigest, time.Now()); err == nil {
+		t.Fatal("expected symlink archive directory rejection")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("current audit moved after rejection: %v", err)
+	}
+}
