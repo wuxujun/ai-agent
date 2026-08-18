@@ -941,8 +941,30 @@ func TestCreateTaskPersistsValidatedTeamSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.RequestedTeam != "wiki_graph" || got.Team != "wiki_graph" || got.TeamConfigDigest == "" {
+	if got.RequestedTeam != "wiki_graph" || got.TeamSelectionSource != "explicit" || got.Team != "wiki_graph" || got.TeamConfigDigest == "" {
 		t.Fatalf("persisted team selection=%+v", got)
+	}
+}
+
+func TestCreateTaskPersistsGlobalDefaultSelectionSource(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.MultiAgent.Team = "software"
+	}))
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"id":"task-global-default-source","goal":"x","workspace":"./testdata","mode":"multiagent"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	got, err := st.GetTask(t.Context(), "task-global-default-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RequestedTeam != "" || got.TeamSelectionSource != "global_default" || got.Team != "software" || got.TeamConfigDigest == "" {
+		t.Fatalf("persisted global default selection = %+v", got)
 	}
 }
 
@@ -1001,6 +1023,9 @@ func TestCreateTaskEnforcesTenantTeamAllowlist(t *testing.T) {
 	snapshot := mc.Snapshot()
 	if snapshot.MultiAgentTeamTasksCreated != 1 || snapshot.MultiAgentTeamTasksCreatedByTeam["wiki"] != 1 || snapshot.MultiAgentTeamSelectionRejections != 1 || snapshot.MultiAgentTeamDefaultUnavailable != 0 {
 		t.Fatalf("team selection metrics = %+v", snapshot)
+	}
+	if snapshot.MultiAgentTeamTasksCreatedBySource["explicit"] != 1 || snapshot.MultiAgentTeamRejectionsBySource["explicit"] != 1 {
+		t.Fatalf("explicit source metrics = %+v", snapshot)
 	}
 }
 
@@ -1072,6 +1097,9 @@ func TestCreateTaskCountsUnavailableDefaultTeam(t *testing.T) {
 	if snapshot.MultiAgentTeamSelectionRejections != 1 || snapshot.MultiAgentTeamDefaultUnavailable != 1 {
 		t.Fatalf("default team metrics = %+v", snapshot)
 	}
+	if snapshot.MultiAgentTeamRejectionsBySource["global_default"] != 1 {
+		t.Fatalf("global default rejection metrics = %+v", snapshot)
+	}
 }
 
 func TestTenantDefaultTeamOverridesGlobalDefault(t *testing.T) {
@@ -1087,7 +1115,10 @@ func TestTenantDefaultTeamOverridesGlobalDefault(t *testing.T) {
 		}
 	}))
 	st := store.NewMemoryStore()
-	r := setupTestRouter(t, st, nil)
+	mc := metrics.NewCollector()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api.RegisterRoutes(r, st, nil, mc)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"id":"tenant-own-default","goal":"x","workspace":"./testdata","mode":"multiagent"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1100,7 +1131,7 @@ func TestTenantDefaultTeamOverridesGlobalDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.RequestedTeam != "" || created.Team != "wiki_graph" || created.TeamConfigDigest == "" {
+	if created.RequestedTeam != "" || created.TeamSelectionSource != "tenant_default" || created.Team != "wiki_graph" || created.TeamConfigDigest == "" {
 		t.Fatalf("tenant default task = %+v", created)
 	}
 
@@ -1109,16 +1140,20 @@ func TestTenantDefaultTeamOverridesGlobalDefault(t *testing.T) {
 	req.Header.Set("X-API-Key", "tenant-own-default-key")
 	r.ServeHTTP(w, req)
 	var response struct {
-		DefaultTeam string                   `json:"default_team"`
-		Teams       []multiagent.TeamSummary `json:"teams"`
+		DefaultTeam   string                   `json:"default_team"`
+		DefaultSource string                   `json:"default_source"`
+		Teams         []multiagent.TeamSummary `json:"teams"`
 	}
-	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &response) != nil || response.DefaultTeam != "wiki_graph" {
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &response) != nil || response.DefaultTeam != "wiki_graph" || response.DefaultSource != "tenant_default" {
 		t.Fatalf("tenant Team list = %d: %s", w.Code, w.Body.String())
 	}
 	for _, team := range response.Teams {
 		if team.Default != (team.Name == "wiki_graph") {
 			t.Fatalf("tenant default marker = %+v", response.Teams)
 		}
+	}
+	if got := mc.Snapshot().MultiAgentTeamTasksCreatedBySource["tenant_default"]; got != 1 {
+		t.Fatalf("tenant default source metric = %d", got)
 	}
 }
 
@@ -1139,13 +1174,14 @@ func TestListTeamsFiltersForTenantAndHidesUnavailableDefault(t *testing.T) {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
 	var response struct {
-		DefaultTeam string                   `json:"default_team"`
-		Teams       []multiagent.TeamSummary `json:"teams"`
+		DefaultTeam   string                   `json:"default_team"`
+		DefaultSource string                   `json:"default_source"`
+		Teams         []multiagent.TeamSummary `json:"teams"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.DefaultTeam != "" {
+	if response.DefaultTeam != "" || response.DefaultSource != "" {
 		t.Fatalf("unavailable default team exposed as %q", response.DefaultTeam)
 	}
 	if len(response.Teams) != 2 || response.Teams[0].Name != "wiki" || response.Teams[1].Name != "wiki_graph" {
@@ -1178,13 +1214,14 @@ func TestListTeamsAdminSeesAllConfiguredTeams(t *testing.T) {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
 	var response struct {
-		DefaultTeam string                   `json:"default_team"`
-		Teams       []multiagent.TeamSummary `json:"teams"`
+		DefaultTeam   string                   `json:"default_team"`
+		DefaultSource string                   `json:"default_source"`
+		Teams         []multiagent.TeamSummary `json:"teams"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.DefaultTeam != "software" || len(response.Teams) <= 1 {
+	if response.DefaultTeam != "software" || response.DefaultSource != "global_default" || len(response.Teams) <= 1 {
 		t.Fatalf("admin team response = %+v", response)
 	}
 }

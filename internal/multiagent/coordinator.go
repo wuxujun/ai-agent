@@ -194,6 +194,12 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 		attribute.String("multiagent.resume_config_policy", string(teamSnapshot.ResumePolicy)),
 		attribute.String("multiagent.runtime.configured", string(configuredRuntime)),
 	)
+	if err := enforceTeamLifecycleResumePolicy(task, teamSnapshot); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Team is retired")
+		log.Warn("Multi-agent resume blocked because Team is retired", "task_id", task.ID, "error", err)
+		return nil
+	}
 	traceCountBeforeConfigCheck := len(task.Trace)
 	if err := enforceTeamConfigResumePolicy(task, teamSnapshot); err != nil {
 		if c.Metrics != nil {

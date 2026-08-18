@@ -77,7 +77,7 @@ func TestListTeamSummariesIsSortedAndRedacted(t *testing.T) {
 		if i > 0 && summaries[i-1].Name >= summary.Name {
 			t.Fatalf("team summaries are not strictly sorted: %q then %q", summaries[i-1].Name, summary.Name)
 		}
-		if summary.Name == "" || summary.ConfigDigest == "" || summary.Workflow == "" || summary.Runtime == "" {
+		if summary.Name == "" || summary.ConfigDigest == "" || summary.Workflow == "" || summary.Runtime == "" || summary.Lifecycle != multiagent.TeamLifecycleActive || !summary.Selectable {
 			t.Fatalf("incomplete team summary: %+v", summary)
 		}
 		if summary.Default {

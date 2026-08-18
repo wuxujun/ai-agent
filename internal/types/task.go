@@ -92,25 +92,26 @@ type ApprovalResult struct {
 }
 
 type Task struct {
-	ID               string     `json:"id"`
-	TenantID         string     `json:"tenant_id"`
-	SessionID        string     `json:"session_id,omitempty"`
-	SequenceNo       int64      `json:"sequence_no,omitempty"`
-	CreatedAt        time.Time  `json:"created_at,omitempty"`
-	UpdatedAt        time.Time  `json:"updated_at,omitempty"`
-	Goal             string     `json:"goal"`
-	Status           TaskStatus `json:"status"`
-	Mode             string     `json:"mode,omitempty"`
-	RequestedTeam    string     `json:"requested_team,omitempty"`
-	Team             string     `json:"team,omitempty"`
-	TeamConfigDigest string     `json:"team_config_digest,omitempty"`
-	MaxSteps         int        `json:"max_steps"`
-	StepCount        int        `json:"step_count"`
-	Workspace        string     `json:"workspace"`
-	Hypothesis       string     `json:"hypothesis"`
-	Unresolved       []string   `json:"unresolved"`
-	ToolBudget       int        `json:"tool_budget"`
-	TokenBudget      int        `json:"token_budget"`
+	ID                  string     `json:"id"`
+	TenantID            string     `json:"tenant_id"`
+	SessionID           string     `json:"session_id,omitempty"`
+	SequenceNo          int64      `json:"sequence_no,omitempty"`
+	CreatedAt           time.Time  `json:"created_at,omitempty"`
+	UpdatedAt           time.Time  `json:"updated_at,omitempty"`
+	Goal                string     `json:"goal"`
+	Status              TaskStatus `json:"status"`
+	Mode                string     `json:"mode,omitempty"`
+	RequestedTeam       string     `json:"requested_team,omitempty"`
+	TeamSelectionSource string     `json:"team_selection_source,omitempty"`
+	Team                string     `json:"team,omitempty"`
+	TeamConfigDigest    string     `json:"team_config_digest,omitempty"`
+	MaxSteps            int        `json:"max_steps"`
+	StepCount           int        `json:"step_count"`
+	Workspace           string     `json:"workspace"`
+	Hypothesis          string     `json:"hypothesis"`
+	Unresolved          []string   `json:"unresolved"`
+	ToolBudget          int        `json:"tool_budget"`
+	TokenBudget         int        `json:"token_budget"`
 	// LLMCallBudget and LLMCostBudgetUSD override process defaults when positive.
 	// Accumulated values are persisted so resumed tasks retain their quota state.
 	LLMCallBudget       int                `json:"llm_call_budget"`

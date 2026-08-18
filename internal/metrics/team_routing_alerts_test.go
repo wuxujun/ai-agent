@@ -29,6 +29,8 @@ func TestTeamRoutingPrometheusAlerts(t *testing.T) {
 		"AIAgentTeamConfigReloadRejected":    `event="reload_rejected"`,
 		"AIAgentTeamConfigDriftBlockedTask":  `outcome="blocked"`,
 		"AIAgentTeamSelectionForbiddenSpike": `outcome="forbidden"`,
+		"AIAgentDrainingTeamReceivedNewTask": `outcome="draining"`,
+		"AIAgentRetiredTeamReceivedNewTask":  `outcome="retired"`,
 	}
 	seen := make(map[string]bool, len(want))
 	for _, group := range document.Groups {

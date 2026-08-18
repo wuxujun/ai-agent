@@ -15,6 +15,7 @@ resume_config_policy: "require_match"
 
 teams:
   wiki_suggest:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
@@ -42,6 +43,7 @@ teams:
         was applied. Return schema-valid JSON only.
 
   wiki_graph:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
@@ -71,6 +73,7 @@ teams:
         wiki:// source, state gaps, and return schema-valid JSON only.
 
   wiki:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
@@ -111,6 +114,7 @@ teams:
         7. Return JSON only.
 
   software:
+    lifecycle: "active"
     # Compatibility fallback when multiagent.runtime is omitted from config.yaml.
     runtime: "legacy"
     workflow: "planner_researcher_writer"
@@ -209,6 +213,7 @@ teams:
            - Do not begin with boilerplate such as "Based on the Wiki pages in the knowledge base".
 
   data:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
@@ -285,6 +290,7 @@ teams:
   # Reviewed topology: Planner -> Critic -> Executor -> Verifier.
   # Switch with active_team above or AI_AGENT_MULTIAGENT_TEAM=software_reviewed.
   software_reviewed:
+    lifecycle: "active"
     # Enable the canary explicitly with AI_AGENT_MULTIAGENT_RUNTIME=dag.
     runtime: "legacy"
     workflow: "planner_critic_executor_verifier"
@@ -398,6 +404,7 @@ teams:
   # Optimized for RAG-first retrieval over internal documents, wikis, and SOPs.
   # Switch with active_team above or AI_AGENT_MULTIAGENT_TEAM=kb_qa.
   kb_qa:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:

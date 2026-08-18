@@ -34,6 +34,11 @@ func CheckTeamRouting(runtime *config.Config) TeamRoutingHealth {
 	}
 	health.Configured = true
 	health.TeamCount = len(teams.Teams)
+	for _, team := range teams.Teams {
+		if !validTeamLifecycle(team.Lifecycle) {
+			health.InvalidReferenceCount++
+		}
+	}
 	activeTeam := strings.TrimSpace(teams.ActiveTeam)
 	if runtime != nil {
 		if configured := strings.TrimSpace(runtime.MultiAgent.Team); configured != "" {
@@ -41,13 +46,15 @@ func CheckTeamRouting(runtime *config.Config) TeamRoutingHealth {
 		}
 	}
 	health.ActiveTeam = activeTeam
-	if _, ok := teams.Teams[activeTeam]; activeTeam == "" || !ok {
+	activeConfig, ok := teams.Teams[activeTeam]
+	if activeTeam == "" || !ok || normalizeTeamLifecycle(activeConfig.Lifecycle) != TeamLifecycleActive {
 		health.InvalidReferenceCount++
 	}
 	if runtime != nil {
 		for _, tenant := range runtime.API.Tenants {
 			if tenantDefault := strings.TrimSpace(tenant.DefaultMultiAgentTeam); tenantDefault != "" {
-				if _, ok := teams.Teams[tenantDefault]; !ok {
+				team, ok := teams.Teams[tenantDefault]
+				if !ok || normalizeTeamLifecycle(team.Lifecycle) != TeamLifecycleActive {
 					health.InvalidReferenceCount++
 				}
 			}
@@ -73,14 +80,28 @@ func ValidateTeamRoutingConfig(runtime *config.Config) error {
 	if err != nil {
 		return err
 	}
+	teamNames := make([]string, 0, len(teams.Teams))
+	for teamName := range teams.Teams {
+		teamNames = append(teamNames, teamName)
+	}
+	sort.Strings(teamNames)
+	for _, teamName := range teamNames {
+		if !validTeamLifecycle(teams.Teams[teamName].Lifecycle) {
+			return fmt.Errorf("Team %q lifecycle must be active, draining, or retired", teamName)
+		}
+	}
 	activeTeam := strings.TrimSpace(teams.ActiveTeam)
 	if runtime != nil {
 		if configured := strings.TrimSpace(runtime.MultiAgent.Team); configured != "" {
 			activeTeam = configured
 		}
 	}
-	if _, ok := teams.Teams[activeTeam]; activeTeam == "" || !ok {
+	activeConfig, ok := teams.Teams[activeTeam]
+	if activeTeam == "" || !ok {
 		return fmt.Errorf("default Team %q is not configured", activeTeam)
+	}
+	if normalizeTeamLifecycle(activeConfig.Lifecycle) != TeamLifecycleActive {
+		return fmt.Errorf("default Team %q is %s", activeTeam, normalizeTeamLifecycle(activeConfig.Lifecycle))
 	}
 	if runtime == nil {
 		return nil
@@ -93,8 +114,12 @@ func ValidateTeamRoutingConfig(runtime *config.Config) error {
 	for _, tenantID := range tenantIDs {
 		tenant := runtime.API.Tenants[tenantID]
 		if tenantDefault := strings.TrimSpace(tenant.DefaultMultiAgentTeam); tenantDefault != "" {
-			if _, ok := teams.Teams[tenantDefault]; !ok {
+			teamConfig, ok := teams.Teams[tenantDefault]
+			if !ok {
 				return fmt.Errorf("api tenant %q uses unconfigured default Team %q", tenantID, tenantDefault)
+			}
+			if normalizeTeamLifecycle(teamConfig.Lifecycle) != TeamLifecycleActive {
+				return fmt.Errorf("api tenant %q uses %s default Team %q", tenantID, normalizeTeamLifecycle(teamConfig.Lifecycle), tenantDefault)
 			}
 			if len(tenant.AllowedMultiAgentTeams) > 0 && !containsExact(tenant.AllowedMultiAgentTeams, tenantDefault) {
 				return fmt.Errorf("api tenant %q default Team %q is not included in its allowlist", tenantID, tenantDefault)
@@ -116,4 +141,9 @@ func containsExact(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func validTeamLifecycle(value TeamLifecycle) bool {
+	normalized := strings.ToLower(strings.TrimSpace(string(value)))
+	return normalized == "" || normalized == string(TeamLifecycleActive) || normalized == string(TeamLifecycleDraining) || normalized == string(TeamLifecycleRetired)
 }

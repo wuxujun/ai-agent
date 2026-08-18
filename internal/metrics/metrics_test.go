@@ -181,20 +181,29 @@ func TestCollectorTracksMultiAgentRuntimeRollout(t *testing.T) {
 
 func TestCollectorTracksMultiAgentTeamSelections(t *testing.T) {
 	collector := NewCollector()
-	collector.ObserveMultiAgentTeamSelection(t.Context(), "wiki", "created", false)
-	collector.ObserveMultiAgentTeamSelection(t.Context(), "wiki", "created", true)
-	collector.ObserveMultiAgentTeamSelection(t.Context(), "software", "forbidden", true)
+	collector.ObserveMultiAgentTeamSelection(t.Context(), "wiki", "created", "explicit")
+	collector.ObserveMultiAgentTeamSelection(t.Context(), "wiki", "created", "tenant_default")
+	collector.ObserveMultiAgentTeamSelection(t.Context(), "software", "forbidden", "global_default")
+	collector.ObserveMultiAgentTeamSelection(t.Context(), "legacy-team", "draining", "explicit")
+	collector.ObserveMultiAgentTeamSelection(t.Context(), "removed-team", "retired", "explicit")
 
 	snapshot := collector.Snapshot()
 	if snapshot.MultiAgentTeamTasksCreated != 2 || snapshot.MultiAgentTeamTasksCreatedByTeam["wiki"] != 2 {
 		t.Fatalf("created team metrics = %+v", snapshot)
 	}
-	if snapshot.MultiAgentTeamSelectionRejections != 1 || snapshot.MultiAgentTeamDefaultUnavailable != 1 {
+	if snapshot.MultiAgentTeamSelectionRejections != 3 || snapshot.MultiAgentTeamDefaultUnavailable != 1 || snapshot.MultiAgentTeamDrainingRejections != 1 || snapshot.MultiAgentTeamRetiredRejections != 1 {
 		t.Fatalf("rejected team metrics = %+v", snapshot)
+	}
+	if snapshot.MultiAgentTeamTasksCreatedBySource["explicit"] != 1 || snapshot.MultiAgentTeamTasksCreatedBySource["tenant_default"] != 1 || snapshot.MultiAgentTeamRejectionsBySource["global_default"] != 1 || snapshot.MultiAgentTeamRejectionsBySource["explicit"] != 2 {
+		t.Fatalf("team source metrics = %+v", snapshot)
 	}
 	snapshot.MultiAgentTeamTasksCreatedByTeam["wiki"] = 99
 	if got := collector.Snapshot().MultiAgentTeamTasksCreatedByTeam["wiki"]; got != 2 {
 		t.Fatalf("snapshot map aliases collector state: %d", got)
+	}
+	snapshot.MultiAgentTeamTasksCreatedBySource["explicit"] = 99
+	if got := collector.Snapshot().MultiAgentTeamTasksCreatedBySource["explicit"]; got != 1 {
+		t.Fatalf("source snapshot map aliases collector state: %d", got)
 	}
 }
 

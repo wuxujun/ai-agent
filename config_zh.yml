@@ -62,26 +62,26 @@ api:
   # jwt/introspection/hybrid 模式允许策略租户省略 api_key；admin 始终由本地配置决定，
   # 不会直接信任 JWT 中自报的管理员字段。
   # 上面的旧版 api_key 仍作为“default”管理员身份。
-  # tenants:
-  #   project_a:
-  #     api_key: "<secret>"
-  #     admin: false
-  #     workspace_root: "./workspace/tenants/project_a"
-  #     # 留空或省略时可使用全部已配置 Team；非管理员租户配置后只能使用列表内 Team。
-  #     default_multiagent_team: wiki
-  #     allowed_multiagent_teams:
-  #       - wiki
-  #       - wiki_graph
-  #     daily_llm_call_budget: 100
-  #     daily_llm_cost_budget_usd: 10
-  #     answer_pipeline_enforcement: strict
-  #     answer_pipeline_required_stages:
-  #       - fact_freshness_check
-  #       - numeric_consistency_check
-  #       - answer_uncertainty_calibrate
-  #       - safety_guard_output
-  #     # 除非 wiki.default_space 明确用于跨租户共享，否则应配置租户专属 Wiki 空间。
-  #     wiki_space: "project-a"
+  tenants:
+    project_a:
+      # api_key: "XKT#2026"
+      admin: false
+      workspace_root: "./workspace/demo"
+      # 留空或省略时可使用全部已配置 Team；非管理员租户配置后只能使用列表内 Team。
+      default_multiagent_team: wiki
+      allowed_multiagent_teams:
+        - wiki
+        - wiki_graph
+      # daily_llm_call_budget: 100
+      # daily_llm_cost_budget_usd: 10
+      # answer_pipeline_enforcement: strict
+      # answer_pipeline_required_stages:
+        # - fact_freshness_check
+        # - numeric_consistency_check
+        # - answer_uncertainty_calibrate
+        # - safety_guard_output
+      # 除非 wiki.default_space 明确用于跨租户共享，否则应配置租户专属 Wiki 空间。
+      wiki_space: "project-a"
 
 # 存储配置
 store:

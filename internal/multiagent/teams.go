@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -23,11 +24,32 @@ type Workflow string
 
 type OrchestrationRuntime string
 
+type TeamLifecycle string
+
 const (
 	WorkflowResearch Workflow = "planner_researcher_writer"
 	WorkflowReviewed Workflow = "planner_critic_executor_verifier"
 	WorkflowAdaptive Workflow = "adaptive"
 )
+
+const (
+	TeamLifecycleActive   TeamLifecycle = "active"
+	TeamLifecycleDraining TeamLifecycle = "draining"
+	TeamLifecycleRetired  TeamLifecycle = "retired"
+)
+
+var ErrTeamNotAcceptingNewTasks = errors.New("multi-agent Team is not accepting new tasks")
+
+type TeamAdmissionError struct {
+	Team      string
+	Lifecycle TeamLifecycle
+}
+
+func (e *TeamAdmissionError) Error() string {
+	return fmt.Sprintf("%s: %q is %s", ErrTeamNotAcceptingNewTasks, e.Team, e.Lifecycle)
+}
+
+func (e *TeamAdmissionError) Unwrap() error { return ErrTeamNotAcceptingNewTasks }
 
 const (
 	RuntimeLegacy OrchestrationRuntime = "legacy"
@@ -165,6 +187,7 @@ func agentPromptSelector(agentCfg AgentConfig) promptmanager.Selector {
 }
 
 type TeamConfig struct {
+	Lifecycle        TeamLifecycle         `yaml:"lifecycle" json:"lifecycle,omitempty"`
 	Runtime          OrchestrationRuntime  `yaml:"runtime" json:"runtime,omitempty"`
 	DAGCanaryPercent int                   `yaml:"dag_canary_percent" json:"dag_canary_percent,omitempty"`
 	Workflow         Workflow              `yaml:"workflow" json:"workflow"`
@@ -201,6 +224,8 @@ type TeamsConfig struct {
 // prompts, models, role configuration, and tool allowlists.
 type TeamSummary struct {
 	Name         string               `json:"name"`
+	Lifecycle    TeamLifecycle        `json:"lifecycle"`
+	Selectable   bool                 `json:"selectable"`
 	Workflow     Workflow             `json:"workflow"`
 	Runtime      OrchestrationRuntime `json:"runtime"`
 	ConfigDigest string               `json:"config_digest"`
@@ -223,6 +248,9 @@ func withForceLegacyRuntime(ctx context.Context) context.Context {
 
 func newTeamConfigSnapshot(activeTeam string, team TeamConfig) teamConfigSnapshot {
 	canonicalTeam := team
+	// Lifecycle controls admission only. Draining an existing Team must not
+	// change its execution digest or block already-pinned tasks from resuming.
+	canonicalTeam.Lifecycle = ""
 	if parseOrchestrationRuntime(string(canonicalTeam.Runtime)) == RuntimeLegacy {
 		canonicalTeam.Runtime = ""
 	}
@@ -321,6 +349,10 @@ func GetTeamsConfig() *TeamsConfig {
 // the process default for backward compatibility.
 func ResolveTeamSelection(requested string) (string, string, error) {
 	cfg := GetTeamsConfig()
+	return resolveTeamSelection(cfg, requested)
+}
+
+func resolveTeamSelection(cfg *TeamsConfig, requested string) (string, string, error) {
 	team := strings.TrimSpace(requested)
 	if team == "" {
 		team = strings.TrimSpace(cfg.ActiveTeam)
@@ -328,6 +360,10 @@ func ResolveTeamSelection(requested string) (string, string, error) {
 	teamConfig, ok := cfg.Teams[team]
 	if !ok || team == "" {
 		return "", "", fmt.Errorf("multi-agent team %q is not configured", team)
+	}
+	lifecycle := normalizeTeamLifecycle(teamConfig.Lifecycle)
+	if lifecycle != TeamLifecycleActive {
+		return team, "", &TeamAdmissionError{Team: team, Lifecycle: lifecycle}
 	}
 	return team, newTeamConfigSnapshot(team, teamConfig).Digest, nil
 }
@@ -345,9 +381,12 @@ func ListTeamSummaries() []TeamSummary {
 	summaries := make([]TeamSummary, 0, len(names))
 	for _, name := range names {
 		team := cfg.Teams[name]
+		lifecycle := normalizeTeamLifecycle(team.Lifecycle)
 		snapshot := newTeamConfigSnapshot(name, team)
 		summaries = append(summaries, TeamSummary{
 			Name:         name,
+			Lifecycle:    lifecycle,
+			Selectable:   lifecycle == TeamLifecycleActive,
 			Workflow:     parseWorkflow(string(team.Workflow)),
 			Runtime:      parseOrchestrationRuntime(string(team.Runtime)),
 			ConfigDigest: snapshot.Digest,
@@ -355,6 +394,17 @@ func ListTeamSummaries() []TeamSummary {
 		})
 	}
 	return summaries
+}
+
+func normalizeTeamLifecycle(value TeamLifecycle) TeamLifecycle {
+	switch strings.ToLower(strings.TrimSpace(string(value))) {
+	case string(TeamLifecycleDraining):
+		return TeamLifecycleDraining
+	case string(TeamLifecycleRetired):
+		return TeamLifecycleRetired
+	default:
+		return TeamLifecycleActive
+	}
 }
 
 func parseResumeConfigPolicy(value string) ResumeConfigPolicy {

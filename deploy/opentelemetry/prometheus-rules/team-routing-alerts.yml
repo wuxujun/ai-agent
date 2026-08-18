@@ -39,3 +39,21 @@ groups:
         annotations:
           summary: Tenant Team selection rejections increased
           description: At least five non-admin task requests selected Teams outside their tenant allowlists within five minutes.
+
+      - alert: AIAgentDrainingTeamReceivedNewTask
+        expr: increase(agent_multiagent_team_selections_total{outcome="draining"}[15m]) > 0
+        labels:
+          severity: warning
+          component: multiagent-team-routing
+        annotations:
+          summary: A draining Team received a new task request
+          description: A client is still routing new work to a Team that has entered draining lifecycle.
+
+      - alert: AIAgentRetiredTeamReceivedNewTask
+        expr: increase(agent_multiagent_team_selections_total{outcome="retired"}[15m]) > 0
+        labels:
+          severity: warning
+          component: multiagent-team-routing
+        annotations:
+          summary: A retired Team received a new task request
+          description: A client is routing new work to a Team that has been retired and cannot execute new or existing work.

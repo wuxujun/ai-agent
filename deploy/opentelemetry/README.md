@@ -195,6 +195,8 @@ Prometheus 自动加载 `prometheus-rules/team-routing-alerts.yml`，覆盖以�
 - 15 分钟内出现事务式配置热更新拒绝；
 - 15 分钟内有恢复任务因 Team 配置摘要漂移被 `require_match` 阻断；
 - 5 分钟内至少 5 次租户 Team 白名单拒绝并持续 5 分钟。
+- 15 分钟内有任何新任务继续请求 draining Team。
+- 15 分钟内有任何新任务继续请求 retired Team。
 
 热更新拒绝不会替换当前配置。收到告警后先检查服务日志中的具体默认 Team 或租户引用，
 修正配置后重新调用 `/api/config/reload`，再确认 `/ready.teams.healthy=true`。

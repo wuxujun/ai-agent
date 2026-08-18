@@ -16,6 +16,7 @@ resume_config_policy: "require_match"
 
 teams:
   wiki_suggest:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
@@ -39,6 +40,7 @@ teams:
         wiki:// 目标并说明需要人工审核，绝不能声称已应用修改。仅返回符合 Schema 的 JSON。
 
   wiki_graph:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
@@ -65,6 +67,7 @@ teams:
         wiki:// 引用，明确说明证据缺口，并且仅返回符合 Schema 的 JSON。
 
   wiki:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
@@ -105,6 +108,7 @@ teams:
         7. 仅返回 JSON。
 
   software:
+    lifecycle: "active"
     # 在您的环境中验证固定 Research 工作流正常运行后，可切换至 "dag" 运行时。
     runtime: "legacy"
     workflow: "planner_researcher_writer"
@@ -196,6 +200,7 @@ teams:
            - 不要以“根据知识库中的 Wiki 页面”等套话开头。
 
   data:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:
@@ -264,6 +269,7 @@ teams:
   # 审查拓扑：Planner -> Critic -> Executor -> Verifier。
   # 可通过上方 active_team 切换，或设置环境变量 AI_AGENT_MULTIAGENT_TEAM=software_reviewed。
   software_reviewed:
+    lifecycle: "active"
     # 通过环境变量 AI_AGENT_MULTIAGENT_RUNTIME=dag 可显式启用金丝雀模式。
     runtime: "legacy"
     workflow: "planner_critic_executor_verifier"
@@ -377,6 +383,7 @@ teams:
   # 专为 RAG 优先检索设计，覆盖内部文档、Wiki、SOP 和政策文件。
   # 可通过上方 active_team 切换，或设置环境变量 AI_AGENT_MULTIAGENT_TEAM=kb_qa。
   kb_qa:
+    lifecycle: "active"
     runtime: "legacy"
     workflow: "planner_researcher_writer"
     planner:

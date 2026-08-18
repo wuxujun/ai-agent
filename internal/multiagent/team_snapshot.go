@@ -2,13 +2,31 @@ package multiagent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
-const teamConfigChangedReason = "team_config_changed"
+const (
+	teamConfigChangedReason = "team_config_changed"
+	teamRetiredReason       = "team_retired"
+)
+
+var ErrTeamRetired = errors.New("multi-agent Team is retired")
+
+// enforceTeamLifecycleResumePolicy keeps draining Teams available to already
+// admitted tasks while preventing a retired Team from executing more work.
+func enforceTeamLifecycleResumePolicy(task *types.Task, snapshot teamConfigSnapshot) error {
+	if normalizeTeamLifecycle(snapshot.Team.Lifecycle) != TeamLifecycleRetired {
+		removeUnresolvedReason(task, teamRetiredReason)
+		return nil
+	}
+	task.Status = types.StatusPartial
+	appendUnresolvedReason(task, teamRetiredReason)
+	return fmt.Errorf("%w: %q", ErrTeamRetired, snapshot.ActiveTeam)
+}
 
 type persistedTeamConfig struct {
 	ActiveTeam string `json:"active_team"`

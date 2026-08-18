@@ -228,10 +228,21 @@ applies when `team` is omitted and the current default Team is resolved.
 Set `api.tenants.<tenant>.default_multiagent_team` to give a tenant its own
 default; it must be configured in `teams.yaml` and, when an allowlist is
 present, included in that allowlist. Resolution order is request Team, tenant
-default, then process default.
+default, then process default. Task responses persist this decision as
+`team_selection_source` (`explicit`, `tenant_default`, or `global_default`),
+and `GET /api/teams` reports the effective `default_source`.
 The server also validates the default Team and every tenant allowlist against
 `teams.yaml` during startup; invalid references are fatal instead of allowing a
 partially ready process to accept traffic.
+
+Each Team may set `lifecycle: active` (the default), `lifecycle: draining`, or
+`lifecycle: retired`. Draining Teams reject new tasks with HTTP 409 but remain
+available to pinned historical tasks. Retired Teams reject new tasks and pause
+existing tasks with the `team_retired` unresolved reason until the Team is
+reactivated. Process and tenant defaults must always
+reference an active Team. Lifecycle does not change the execution configuration
+digest. Rejections are emitted as `outcome=draining` or `outcome=retired` and
+counted by their corresponding lifecycle metric.
 
 Operational checks:
 
@@ -524,7 +535,7 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 | Method | Path | Description |
 |:---|:---|:---|
 | `GET` | `/api/teams` | List Teams available to the authenticated tenant (safe routing metadata only) |
-| `GET` | `/api/metrics` | Local performance metrics, including Wiki, Team selection/rejection, durable approval, and DAG/Legacy rollout counters |
+| `GET` | `/api/metrics` | Local performance metrics, including Wiki, Team selection/rejection grouped by Team and source, durable approval, and DAG/Legacy rollout counters |
 | `POST` | `/api/config/reload` | Transactionally hot-reload config after core and Team-reference validation; cross-config rejection returns 422 without changing revision |
 | `POST` | `/api/prompt/init` | Admin: idempotently initialize missing `teams.yaml` prompts in Langfuse |
 | `GET` | `/ping` | Health check → `{"message":"pong"}` |

@@ -82,6 +82,7 @@ func TestStores(t *testing.T) {
 				Status:              types.StatusCreated,
 				Mode:                "multiagent",
 				RequestedTeam:       "wiki_graph",
+				TeamSelectionSource: "explicit",
 				Team:                "wiki_graph",
 				TeamConfigDigest:    "team-digest",
 				MaxSteps:            10,
@@ -158,8 +159,8 @@ func TestStores(t *testing.T) {
 			if retrieved.Mode != task.Mode {
 				t.Errorf("expected Mode %q, got %q", task.Mode, retrieved.Mode)
 			}
-			if retrieved.RequestedTeam != task.RequestedTeam || retrieved.Team != task.Team || retrieved.TeamConfigDigest != task.TeamConfigDigest {
-				t.Errorf("expected requested/team/digest %q/%q/%q, got %q/%q/%q", task.RequestedTeam, task.Team, task.TeamConfigDigest, retrieved.RequestedTeam, retrieved.Team, retrieved.TeamConfigDigest)
+			if retrieved.RequestedTeam != task.RequestedTeam || retrieved.TeamSelectionSource != task.TeamSelectionSource || retrieved.Team != task.Team || retrieved.TeamConfigDigest != task.TeamConfigDigest {
+				t.Errorf("expected requested/source/team/digest %q/%q/%q/%q, got %q/%q/%q/%q", task.RequestedTeam, task.TeamSelectionSource, task.Team, task.TeamConfigDigest, retrieved.RequestedTeam, retrieved.TeamSelectionSource, retrieved.Team, retrieved.TeamConfigDigest)
 			}
 			if retrieved.MaxSteps != task.MaxSteps {
 				t.Errorf("expected MaxSteps %d, got %d", task.MaxSteps, retrieved.MaxSteps)

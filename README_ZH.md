@@ -221,9 +221,17 @@ wiki.default_space is empty`，说明两处空间配置均为空。
 默认 Team 同样受此白名单约束。
 可通过 `api.tenants.<tenant>.default_multiagent_team` 设置租户自己的默认 Team；
 该 Team 必须存在于 `teams.yaml`，配置白名单时还必须包含在白名单中。解析顺序为：
-请求显式 Team、租户默认 Team、进程默认 Team。
+请求显式 Team、租户默认 Team、进程默认 Team。任务响应通过 `team_selection_source`
+持久化 `explicit`、`tenant_default` 或 `global_default`，`GET /api/teams` 同时返回
+当前有效的 `default_source`。
 服务启动时还会根据 `teams.yaml` 校验默认 Team 和全部租户白名单；引用不存在时
 直接拒绝启动，避免处于部分就绪状态的进程接收流量。
+
+每个 Team 可设置 `lifecycle: active`（默认）、`lifecycle: draining` 或
+`lifecycle: retired`。draining Team 创建新任务返回 HTTP 409，但允许已锁定的历史任务
+恢复；retired Team 同时拒绝新任务并以 `team_retired` 未解决原因暂停存量任务，直到重新
+激活 Team。进程和租户默认值必须指向 active Team。生命周期不改变执行配置
+摘要；拒绝分别发送 `outcome=draining`、`outcome=retired` 并计入对应生命周期指标。
 
 可通过以下接口确认运行状态：
 
@@ -481,7 +489,7 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 | 方法 | 路径 | 说明 |
 |:---|:---|:---|
 | `GET` | `/api/teams` | 查询当前租户可用 Team（仅返回安全的路由元数据） |
-| `GET` | `/api/metrics` | 本地性能指标，包含 Wiki、Team 选择/拒绝、持久化审批及 DAG/Legacy 灰度计数 |
+| `GET` | `/api/metrics` | 本地性能指标，包含 Wiki、按 Team/来源分组的选择与拒绝、持久化审批及 DAG/Legacy 灰度计数 |
 | `POST` | `/api/config/reload` | 核心配置和 Team 引用校验通过后事务式热重载；跨配置校验拒绝返回 422 且 revision 不变 |
 | `GET` | `/ping` | 健康检查 → `{"message":"pong"}` |
 | `GET` | `/ready` | LLM 与必需 Wiki 就绪检查；依赖异常时返回 503 |

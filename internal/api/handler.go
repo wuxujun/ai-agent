@@ -338,7 +338,26 @@ func (h *Handler) createTask(c *gin.Context) {
 		var err error
 		selectedTeam, teamDigest, err = multiagent.ResolveTeamSelection(teamRequest)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			status := http.StatusBadRequest
+			if errors.Is(err, multiagent.ErrTeamNotAcceptingNewTasks) {
+				status = http.StatusConflict
+				outcome := "draining"
+				var admissionErr *multiagent.TeamAdmissionError
+				if errors.As(err, &admissionErr) {
+					outcome = string(admissionErr.Lifecycle)
+				}
+				if h.metrics != nil {
+					h.metrics.ObserveMultiAgentTeamSelection(c.Request.Context(), selectedTeam, outcome, teamSelectionSource)
+				}
+				log.Warn("Non-active multi-agent Team rejected new task",
+					"tenant_id", principal.TenantID,
+					"requested_team", req.Team,
+					"resolved_team", selectedTeam,
+					"team_lifecycle", outcome,
+					"selection_source", teamSelectionSource,
+				)
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
 	}
@@ -368,7 +387,7 @@ func (h *Handler) createTask(c *gin.Context) {
 	if selectedTeam != "" && !principal.Admin && !tenantAllowsMultiAgentTeam(tenant, selectedTeam) {
 		usedDefault := req.Team == ""
 		if h.metrics != nil {
-			h.metrics.ObserveMultiAgentTeamSelection(c.Request.Context(), selectedTeam, "forbidden", usedDefault)
+			h.metrics.ObserveMultiAgentTeamSelection(c.Request.Context(), selectedTeam, "forbidden", teamSelectionSource)
 		}
 		log.Warn("Multi-agent team selection rejected",
 			"tenant_id", principal.TenantID,
@@ -413,21 +432,22 @@ func (h *Handler) createTask(c *gin.Context) {
 	}
 
 	task := &types.Task{
-		ID:               taskID,
-		TenantID:         principal.TenantID,
-		SessionID:        req.SessionID,
-		Goal:             req.Goal,
-		Workspace:        req.Workspace,
-		Mode:             req.Mode,
-		RequestedTeam:    req.Team,
-		Team:             selectedTeam,
-		TeamConfigDigest: teamDigest,
-		MaxSteps:         req.MaxSteps,
-		ToolBudget:       req.ToolBudget,
-		TokenBudget:      req.TokenBudget,
-		LLMCallBudget:    req.LLMCallBudget,
-		LLMCostBudgetUSD: req.LLMCostBudgetUSD,
-		Status:           types.StatusCreated,
+		ID:                  taskID,
+		TenantID:            principal.TenantID,
+		SessionID:           req.SessionID,
+		Goal:                req.Goal,
+		Workspace:           req.Workspace,
+		Mode:                req.Mode,
+		RequestedTeam:       req.Team,
+		TeamSelectionSource: teamSelectionSource,
+		Team:                selectedTeam,
+		TeamConfigDigest:    teamDigest,
+		MaxSteps:            req.MaxSteps,
+		ToolBudget:          req.ToolBudget,
+		TokenBudget:         req.TokenBudget,
+		LLMCallBudget:       req.LLMCallBudget,
+		LLMCostBudgetUSD:    req.LLMCostBudgetUSD,
+		Status:              types.StatusCreated,
 	}
 	if task.SessionID != "" {
 		sessions, ok := h.store.(store.SessionStore)
@@ -458,7 +478,7 @@ func (h *Handler) createTask(c *gin.Context) {
 	if selectedTeam != "" {
 		usedDefault := req.Team == ""
 		if h.metrics != nil {
-			h.metrics.ObserveMultiAgentTeamSelection(c.Request.Context(), selectedTeam, "created", usedDefault)
+			h.metrics.ObserveMultiAgentTeamSelection(c.Request.Context(), selectedTeam, "created", teamSelectionSource)
 		}
 		log.Info("Multi-agent task team selected",
 			"task_id", task.ID,
@@ -493,7 +513,9 @@ func (h *Handler) listTeams(c *gin.Context) {
 	configured := multiagent.ListTeamSummaries()
 	available := make([]multiagent.TeamSummary, 0, len(configured))
 	defaultTeam := strings.TrimSpace(tenant.DefaultMultiAgentTeam)
+	defaultSource := "tenant_default"
 	if defaultTeam == "" {
+		defaultSource = "global_default"
 		for _, team := range configured {
 			if team.Default {
 				defaultTeam = team.Name
@@ -510,10 +532,12 @@ func (h *Handler) listTeams(c *gin.Context) {
 	}
 	if !principal.Admin && !tenantAllowsMultiAgentTeam(tenant, defaultTeam) {
 		defaultTeam = ""
+		defaultSource = ""
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"default_team": defaultTeam,
-		"teams":        available,
+		"default_team":   defaultTeam,
+		"default_source": defaultSource,
+		"teams":          available,
 	})
 }
 
