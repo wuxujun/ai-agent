@@ -25,12 +25,14 @@ func TestTeamRoutingPrometheusAlerts(t *testing.T) {
 		t.Fatalf("parse Team routing alert rules: %v", err)
 	}
 	want := map[string]string{
-		"AIAgentTeamRoutingNotReady":         `event="readiness_failure"`,
-		"AIAgentTeamConfigReloadRejected":    `event="reload_rejected"`,
-		"AIAgentTeamConfigDriftBlockedTask":  `outcome="blocked"`,
-		"AIAgentTeamSelectionForbiddenSpike": `outcome="forbidden"`,
-		"AIAgentDrainingTeamReceivedNewTask": `outcome="draining"`,
-		"AIAgentRetiredTeamReceivedNewTask":  `outcome="retired"`,
+		"AIAgentTeamRoutingNotReady":           `event="readiness_failure"`,
+		"AIAgentTeamConfigReloadRejected":      `event="reload_rejected"`,
+		"AIAgentTeamConfigDriftBlockedTask":    `outcome="blocked"`,
+		"AIAgentTeamSelectionForbiddenSpike":   `outcome="forbidden"`,
+		"AIAgentDrainingTeamReceivedNewTask":   `outcome="draining"`,
+		"AIAgentRetiredTeamReceivedNewTask":    `outcome="retired"`,
+		"AIAgentTeamLifecycleConflictSpike":    `event="lifecycle_conflict"`,
+		"AIAgentDefaultTeamLifecycleProtected": `event="default_protected"`,
 	}
 	seen := make(map[string]bool, len(want))
 	for _, group := range document.Groups {

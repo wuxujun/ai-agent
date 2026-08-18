@@ -244,6 +244,36 @@ reference an active Team. Lifecycle does not change the execution configuration
 digest. Rejections are emitted as `outcome=draining` or `outcome=retired` and
 counted by their corresponding lifecycle metric.
 
+`GET /api/teams` also returns `config_revision`. An administrator can update a
+non-default Team with `PATCH /api/teams/:name/lifecycle`, supplying both
+`lifecycle` and that value as `expected_revision`. A stale revision returns
+HTTP 409, and attempts to drain or retire a process or tenant default return
+HTTP 422. Successful and no-op changes emit a structured audit log containing
+the actor tenant, old/new lifecycle, old/new revision, and `changed` flag. The
+write atomically replaces only `teams.yaml`; deployment-managed translated
+examples such as `teams_zh.yml` are not runtime state.
+Lifecycle changes, stale-revision conflicts, and default-Team protection are
+reported as `multiagent_team_lifecycle_changes`,
+`multiagent_team_lifecycle_conflicts`, and
+`multiagent_team_default_protections`, with matching bounded OTel events.
+Successful and no-op lifecycle requests are also appended to a durable JSONL
+audit at `data/team-lifecycle-audit.jsonl` (override with
+`AI_AGENT_TEAM_LIFECYCLE_AUDIT_FILE`). Administrators can query newest-first
+records through `GET /api/teams/lifecycle-audits?limit=50&offset=0`. The audit
+query also accepts exact `team` and boolean `changed` filters. The audit file is
+created with mode 0600 and each append is fsynced.
+New records are protected by a SHA-256 chain over their canonical JSON and the
+previous protected-record hash. Existing pre-chain records remain readable and
+are reported as legacy. Administrators can call
+`GET /api/teams/lifecycle-audits/integrity`; a healthy chain returns HTTP 200,
+while malformed JSON, a changed record, or a broken link returns HTTP 409.
+Append refuses to extend an invalid protected chain.
+The audit has a non-destructive hard capacity limit of 64 MiB by default,
+overridable with `AI_AGENT_TEAM_LIFECYCLE_AUDIT_MAX_BYTES`. Integrity responses
+report `max_bytes`, `usage_percent`, and `capacity_status` (`ok`, `warning` at
+80%, or `full`). An append that would exceed the limit is rejected with HTTP
+507 and never truncates or overwrites the audit file.
+
 Operational checks:
 
 - `GET /ready` reports Wiki health and `teams.configured`, `healthy`, `active_team`, `team_count`, and invalid reference count. An invalid active Team or tenant Team allowlist reference causes a 503.

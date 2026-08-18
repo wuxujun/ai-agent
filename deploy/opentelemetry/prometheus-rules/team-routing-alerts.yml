@@ -57,3 +57,22 @@ groups:
         annotations:
           summary: A retired Team received a new task request
           description: A client is routing new work to a Team that has been retired and cannot execute new or existing work.
+
+      - alert: AIAgentTeamLifecycleConflictSpike
+        expr: increase(agent_multiagent_team_config_events_total{event="lifecycle_conflict"}[5m]) >= 3
+        for: 5m
+        labels:
+          severity: warning
+          component: multiagent-team-routing
+        annotations:
+          summary: Team lifecycle updates repeatedly used stale revisions
+          description: Multiple lifecycle changes conflicted with a newer teams.yaml revision; refresh GET /api/teams before retrying.
+
+      - alert: AIAgentDefaultTeamLifecycleProtected
+        expr: increase(agent_multiagent_team_config_events_total{event="default_protected"}[15m]) > 0
+        labels:
+          severity: warning
+          component: multiagent-team-routing
+        annotations:
+          summary: A default Team lifecycle change was rejected
+          description: An administrator attempted to drain or retire a process or tenant default Team without first moving the default.

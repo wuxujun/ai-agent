@@ -197,6 +197,8 @@ Prometheus 自动加载 `prometheus-rules/team-routing-alerts.yml`，覆盖以�
 - 5 分钟内至少 5 次租户 Team 白名单拒绝并持续 5 分钟。
 - 15 分钟内有任何新任务继续请求 draining Team。
 - 15 分钟内有任何新任务继续请求 retired Team。
+- 5 分钟内至少 3 次生命周期更新使用过期 revision，并持续 5 分钟。
+- 15 分钟内出现任何默认 Team drain/retire 保护拒绝。
 
 热更新拒绝不会替换当前配置。收到告警后先检查服务日志中的具体默认 Team 或租户引用，
 修正配置后重新调用 `/api/config/reload`，再确认 `/ready.teams.healthy=true`。

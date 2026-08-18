@@ -233,6 +233,29 @@ wiki.default_space is empty`，说明两处空间配置均为空。
 激活 Team。进程和租户默认值必须指向 active Team。生命周期不改变执行配置
 摘要；拒绝分别发送 `outcome=draining`、`outcome=retired` 并计入对应生命周期指标。
 
+`GET /api/teams` 还会返回 `config_revision`。管理员可调用
+`PATCH /api/teams/:name/lifecycle`，同时提交 `lifecycle` 和该修订号作为
+`expected_revision`。过期修订号返回 HTTP 409；试图 drain 或 retire 进程/租户默认
+Team 返回 HTTP 422。成功及无变化更新都会输出结构化审计日志，包含操作者租户、前后
+生命周期、前后修订号及 `changed`。写入仅原子替换运行时 `teams.yaml`；部署管理的
+`teams_zh.yml` 等翻译示例不属于运行时状态。
+生命周期变更、过期 revision 冲突和默认 Team 保护分别通过
+`multiagent_team_lifecycle_changes`、`multiagent_team_lifecycle_conflicts`、
+`multiagent_team_default_protections` 及对应低基数 OTel 事件观测。
+成功及 no-op 生命周期请求还会追加到持久化 JSONL 审计文件
+`data/team-lifecycle-audit.jsonl`，可用 `AI_AGENT_TEAM_LIFECYCLE_AUDIT_FILE`
+覆盖路径。管理员通过 `GET /api/teams/lifecycle-audits?limit=50&offset=0`
+按时间倒序分页查询，并可使用精确 `team` 和布尔 `changed` 过滤；文件以 0600
+创建，每条追加都会 fsync。
+新记录使用 SHA-256 链保护，哈希覆盖规范 JSON 和上一条受保护记录哈希；链功能上线前
+的记录继续可读，并明确计入 legacy。管理员可调用
+`GET /api/teams/lifecycle-audits/integrity`，健康返回 HTTP 200，JSON 损坏、记录被改写
+或链断裂返回 HTTP 409；受保护链无效时拒绝继续追加。
+审计默认采用非破坏性的 64 MiB 硬上限，可通过
+`AI_AGENT_TEAM_LIFECYCLE_AUDIT_MAX_BYTES` 覆盖。完整性响应返回 `max_bytes`、
+`usage_percent` 和 `capacity_status`（ok、达到 80% 的 warning、full）；预计追加后
+超过上限时返回 HTTP 507，且不会截断或覆盖审计文件。
+
 可通过以下接口确认运行状态：
 
 - `GET /ready`：查看 Wiki 状态及 `teams.configured`、`healthy`、`active_team`、`team_count` 和无效引用数；默认 Team 或租户 Team 白名单引用不存在时返回 503。

@@ -71,6 +71,9 @@ type Snapshot struct {
 	MultiAgentTeamDefaultUnavailable   int64            `json:"multiagent_team_default_unavailable"`
 	MultiAgentTeamReadinessFailures    int64            `json:"multiagent_team_readiness_failures"`
 	MultiAgentTeamReloadRejections     int64            `json:"multiagent_team_reload_rejections"`
+	MultiAgentTeamLifecycleChanges     int64            `json:"multiagent_team_lifecycle_changes"`
+	MultiAgentTeamLifecycleConflicts   int64            `json:"multiagent_team_lifecycle_conflicts"`
+	MultiAgentTeamDefaultProtections   int64            `json:"multiagent_team_default_protections"`
 	MultiAgentDAGCalls                 int64            `json:"multiagent_dag_calls"`
 	MultiAgentDAGCompletions           int64            `json:"multiagent_dag_completions"`
 	MultiAgentDAGFailures              int64            `json:"multiagent_dag_failures"`
@@ -840,20 +843,28 @@ func (c *Collector) ObserveMultiAgentTeamSelection(ctx context.Context, team, ou
 	))
 }
 
-// ObserveMultiAgentTeamConfigEvent records bounded operational failures for
-// Team readiness and transactional config reload validation.
+// ObserveMultiAgentTeamConfigEvent records bounded Team configuration events.
 func (c *Collector) ObserveMultiAgentTeamConfigEvent(ctx context.Context, event string) {
-	if event != "readiness_failure" && event != "reload_rejected" {
+	switch event {
+	case "readiness_failure", "reload_rejected", "lifecycle_changed", "lifecycle_conflict", "default_protected":
+	default:
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	c.mu.Lock()
-	if event == "readiness_failure" {
+	switch event {
+	case "readiness_failure":
 		c.s.MultiAgentTeamReadinessFailures++
-	} else {
+	case "reload_rejected":
 		c.s.MultiAgentTeamReloadRejections++
+	case "lifecycle_changed":
+		c.s.MultiAgentTeamLifecycleChanges++
+	case "lifecycle_conflict":
+		c.s.MultiAgentTeamLifecycleConflicts++
+	case "default_protected":
+		c.s.MultiAgentTeamDefaultProtections++
 	}
 	c.mu.Unlock()
 	c.multiAgentTeamConfigEvents.Add(ctx, 1, api.WithAttributes(attribute.String("event", event)))

@@ -211,9 +211,12 @@ func TestCollectorTracksMultiAgentTeamConfigEvents(t *testing.T) {
 	collector := NewCollector()
 	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "readiness_failure")
 	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "reload_rejected")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "lifecycle_changed")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "lifecycle_conflict")
+	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "default_protected")
 	collector.ObserveMultiAgentTeamConfigEvent(t.Context(), "unknown")
 	snapshot := collector.Snapshot()
-	if snapshot.MultiAgentTeamReadinessFailures != 1 || snapshot.MultiAgentTeamReloadRejections != 1 {
+	if snapshot.MultiAgentTeamReadinessFailures != 1 || snapshot.MultiAgentTeamReloadRejections != 1 || snapshot.MultiAgentTeamLifecycleChanges != 1 || snapshot.MultiAgentTeamLifecycleConflicts != 1 || snapshot.MultiAgentTeamDefaultProtections != 1 {
 		t.Fatalf("team config event metrics = %+v", snapshot)
 	}
 }

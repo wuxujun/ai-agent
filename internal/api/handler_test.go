@@ -1214,15 +1214,150 @@ func TestListTeamsAdminSeesAllConfiguredTeams(t *testing.T) {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
 	var response struct {
-		DefaultTeam   string                   `json:"default_team"`
-		DefaultSource string                   `json:"default_source"`
-		Teams         []multiagent.TeamSummary `json:"teams"`
+		DefaultTeam    string                   `json:"default_team"`
+		DefaultSource  string                   `json:"default_source"`
+		ConfigRevision string                   `json:"config_revision"`
+		Teams          []multiagent.TeamSummary `json:"teams"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.DefaultTeam != "software" || response.DefaultSource != "global_default" || len(response.Teams) <= 1 {
+	if response.DefaultTeam != "software" || response.DefaultSource != "global_default" || response.ConfigRevision == "" || len(response.Teams) <= 1 {
 		t.Fatalf("admin team response = %+v", response)
+	}
+}
+
+func TestUpdateTeamLifecycleRequiresAdminAndSupportsNoOpCAS(t *testing.T) {
+	t.Setenv("AI_AGENT_TEAM_LIFECYCLE_AUDIT_FILE", filepath.Join(t.TempDir(), "lifecycle-audit.jsonl"))
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.MultiAgent.Team = "wiki_suggest"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-user":  {APIKey: "team-user-key", Admin: false},
+			"tenant-admin": {APIKey: "team-admin-key", Admin: true},
+		}
+	}))
+	r := gin.New()
+	mc := metrics.NewCollector()
+	api.RegisterRoutes(r, store.NewMemoryStore(), nil, mc)
+
+	list := httptest.NewRecorder()
+	listReq, _ := http.NewRequest(http.MethodGet, "/api/teams", nil)
+	listReq.Header.Set("X-API-Key", "team-admin-key")
+	r.ServeHTTP(list, listReq)
+	var listed struct {
+		ConfigRevision string `json:"config_revision"`
+	}
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &listed) != nil || listed.ConfigRevision == "" {
+		t.Fatalf("list response = %d %s", list.Code, list.Body.String())
+	}
+	body := fmt.Sprintf(`{"lifecycle":"active","expected_revision":%q}`, listed.ConfigRevision)
+
+	forbidden := httptest.NewRecorder()
+	forbiddenReq, _ := http.NewRequest(http.MethodPatch, "/api/teams/wiki_suggest/lifecycle", strings.NewReader(body))
+	forbiddenReq.Header.Set("Content-Type", "application/json")
+	forbiddenReq.Header.Set("X-API-Key", "team-user-key")
+	r.ServeHTTP(forbidden, forbiddenReq)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("non-admin status = %d: %s", forbidden.Code, forbidden.Body.String())
+	}
+
+	updated := httptest.NewRecorder()
+	updatedReq, _ := http.NewRequest(http.MethodPatch, "/api/teams/wiki_suggest/lifecycle", strings.NewReader(body))
+	updatedReq.Header.Set("Content-Type", "application/json")
+	updatedReq.Header.Set("X-API-Key", "team-admin-key")
+	r.ServeHTTP(updated, updatedReq)
+	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), `"changed":false`) {
+		t.Fatalf("admin no-op status = %d: %s", updated.Code, updated.Body.String())
+	}
+	if !strings.Contains(updated.Body.String(), `"audit"`) {
+		t.Fatalf("lifecycle audit missing: %s", updated.Body.String())
+	}
+
+	stale := httptest.NewRecorder()
+	staleReq, _ := http.NewRequest(http.MethodPatch, "/api/teams/wiki_suggest/lifecycle", strings.NewReader(`{"lifecycle":"active","expected_revision":"stale"}`))
+	staleReq.Header.Set("Content-Type", "application/json")
+	staleReq.Header.Set("X-API-Key", "team-admin-key")
+	r.ServeHTTP(stale, staleReq)
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale revision status = %d: %s", stale.Code, stale.Body.String())
+	}
+
+	protected := httptest.NewRecorder()
+	protectedReq, _ := http.NewRequest(http.MethodPatch, "/api/teams/wiki_suggest/lifecycle", strings.NewReader(fmt.Sprintf(`{"lifecycle":"draining","expected_revision":%q}`, listed.ConfigRevision)))
+	protectedReq.Header.Set("Content-Type", "application/json")
+	protectedReq.Header.Set("X-API-Key", "team-admin-key")
+	r.ServeHTTP(protected, protectedReq)
+	if protected.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("default protection status = %d: %s", protected.Code, protected.Body.String())
+	}
+	snapshot := mc.Snapshot()
+	if snapshot.MultiAgentTeamLifecycleChanges != 0 || snapshot.MultiAgentTeamLifecycleConflicts != 1 || snapshot.MultiAgentTeamDefaultProtections != 1 {
+		t.Fatalf("lifecycle API metrics = %+v", snapshot)
+	}
+	audits := httptest.NewRecorder()
+	auditsReq, _ := http.NewRequest(http.MethodGet, "/api/teams/lifecycle-audits?limit=1", nil)
+	auditsReq.Header.Set("X-API-Key", "team-admin-key")
+	r.ServeHTTP(audits, auditsReq)
+	if audits.Code != http.StatusOK || !strings.Contains(audits.Body.String(), `"actor_tenant":"tenant-admin"`) {
+		t.Fatalf("lifecycle audits = %d: %s", audits.Code, audits.Body.String())
+	}
+	filteredAudits := httptest.NewRecorder()
+	filteredAuditsReq, _ := http.NewRequest(http.MethodGet, "/api/teams/lifecycle-audits?team=wiki_suggest&changed=false", nil)
+	filteredAuditsReq.Header.Set("X-API-Key", "team-admin-key")
+	r.ServeHTTP(filteredAudits, filteredAuditsReq)
+	if filteredAudits.Code != http.StatusOK || !strings.Contains(filteredAudits.Body.String(), `"changed":false`) {
+		t.Fatalf("filtered lifecycle audits = %d: %s", filteredAudits.Code, filteredAudits.Body.String())
+	}
+	invalidFilter := httptest.NewRecorder()
+	invalidFilterReq, _ := http.NewRequest(http.MethodGet, "/api/teams/lifecycle-audits?changed=sometimes", nil)
+	invalidFilterReq.Header.Set("X-API-Key", "team-admin-key")
+	r.ServeHTTP(invalidFilter, invalidFilterReq)
+	if invalidFilter.Code != http.StatusBadRequest {
+		t.Fatalf("invalid audit filter status = %d: %s", invalidFilter.Code, invalidFilter.Body.String())
+	}
+	forbiddenAudits := httptest.NewRecorder()
+	forbiddenAuditsReq, _ := http.NewRequest(http.MethodGet, "/api/teams/lifecycle-audits", nil)
+	forbiddenAuditsReq.Header.Set("X-API-Key", "team-user-key")
+	r.ServeHTTP(forbiddenAudits, forbiddenAuditsReq)
+	if forbiddenAudits.Code != http.StatusForbidden {
+		t.Fatalf("non-admin lifecycle audits status = %d: %s", forbiddenAudits.Code, forbiddenAudits.Body.String())
+	}
+	integrity := httptest.NewRecorder()
+	integrityReq, _ := http.NewRequest(http.MethodGet, "/api/teams/lifecycle-audits/integrity", nil)
+	integrityReq.Header.Set("X-API-Key", "team-admin-key")
+	r.ServeHTTP(integrity, integrityReq)
+	if integrity.Code != http.StatusOK || !strings.Contains(integrity.Body.String(), `"protected_records":1`) {
+		t.Fatalf("lifecycle audit integrity = %d: %s", integrity.Code, integrity.Body.String())
+	}
+}
+
+func TestUpdateTeamLifecycleReturnsInsufficientStorageWhenAuditIsFull(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "full-audit.jsonl")
+	legacy := `{"id":"legacy","timestamp":"2026-08-18T00:00:00Z","actor_tenant":"admin","team":"data","changed":false}` + "\n"
+	if err := os.WriteFile(auditPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AI_AGENT_TEAM_LIFECYCLE_AUDIT_FILE", auditPath)
+	t.Setenv("AI_AGENT_TEAM_LIFECYCLE_AUDIT_MAX_BYTES", "128")
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.MultiAgent.Team = "wiki_suggest"
+		cfg.API.APIKey = "audit-capacity-admin-key"
+	}))
+	r := setupTestRouter(t, store.NewMemoryStore(), nil)
+	revision, err := multiagent.TeamsConfigRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"lifecycle":"active","expected_revision":%q}`, revision)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPatch, "/api/teams/data/lifecycle", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "audit-capacity-admin-key")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInsufficientStorage || !strings.Contains(w.Body.String(), `"audit_persisted":false`) {
+		t.Fatalf("capacity status = %d: %s", w.Code, w.Body.String())
 	}
 }
 
