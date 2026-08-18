@@ -1,92 +1,174 @@
-# Bug Hunt Report — ai-agent
+# Bug Status Report — ai-agent
 
-**Method:** Dynamic workflow — 3 scoped zones → 6 finder rounds (loop-until-dry) → 3-skeptic adversarial verification → synthesis.
-**Coverage:** 18,680 LOC / 105 files / 16 packages · 159 agents · **642k / 2M tokens** spent.
-**Result:** 46 candidates → **18 confirmed** (survived majority-refute review). Rankings reflect verifier-assigned severity.
-**Date:** 2026/06/22
+**Original audit:** 2026/06/22 · 18 confirmed findings
 
-> ⚠️ One finder round (`security:r6`) and two verifier votes were dropped by API safeguards — bugs #6 and #13 were confirmed by 2/2 rather than 3/3. All others are 3/3.
+**Current verification:** 2026/08/18
 
----
+**Method:** source review against every original finding, regression-test mapping,
+full Go test suite, and `go vet`.
 
-## 🔴 Critical
+## Executive Summary
 
-**1. Default `eino` mode executes high-risk tools with NO approval gate** — `internal/orchestrator/eino.go:216-230`
-The `RiskLevelHigh` approval loop (`SuspendForApproval`) exists **only** in `runLegacyNext`. The default mode is `eino`, whose `executeDecision` calls `Executor.Execute` directly with no risk check — and `step`/`adk` share the gap. In the documented default config, `execute_code` (runs bash/python/go) and `write_file` run with **zero human approval**; the entire approve/reject gate is dead code outside legacy mode.
-→ *Hoist the approval loop into a shared pre-execute hook used by all modes.*
+The original report is largely resolved:
 
----
+- **17 of 18 original findings are fixed or effectively mitigated.**
+- **#11 (`apply_patch` TOCTOU) is only partially fixed.** The final path
+  component is protected on Unix, but ancestor-directory swaps and Windows
+  reparse-point behavior remain unresolved.
+- **Four current findings are tracked below:** two semaphore bugs, one shutdown
+  classification bug, and the residual filesystem security issue.
 
-## 🟠 High
+The highest-impact original issues — approval bypass, stale approval dispatch,
+`git_diff` argument injection, authentication fail-open, and redirect SSRF —
+all have concrete fixes in the current tree.
 
-**2. Shutdown rollback races the live run-all goroutine** — `internal/api/handler.go:143-180`
-On shutdown timeout, the rollback loop does `GetTask → Status=Paused → SaveFullTask` while the unfinished background goroutine is still writing the same row. Last-writer-wins: a task ends up `Failed` (defeating resume) or `Paused` over a real completed result.
-→ *Use atomic `TryTransitionTaskStatus`, or only roll back goroutines that have exited.*
+## Current Open Findings
 
-**3. `dispatchApproval` resolves the WRONG approval on a stale ID** — `internal/orchestrator/approval_bus.go:139-144`
-When `ResolveApprovalByID` fails (duplicate/redelivered Pub/Sub message, already-resolved), the code falls through to `ResolveApproval(taskID)`, which resolves the task's *current* pending approval regardless of ID match. A stale "approve" for action A can silently **auto-approve a different high-risk action B** the user never saw.
-→ *Only fall back when `ApprovalID == ""`.*
+### 🟠 A. `apply_patch` remains vulnerable to ancestor-directory TOCTOU
 
-**4. `MockPlanner` panics (index-out-of-range) on `Trace[2]` at step 2** — `internal/planner/mock.go:70-82`
-The final `else` unconditionally reads `task.Trace[2]`. Reached when `StepCount==2` but the guarded happy-path condition is false (2-entry or evidence-less trace). Since `MockPlanner` is wired as `FallbackPlanner.Secondary`, any real LLM failure at step 2 **crashes the planning goroutine** instead of degrading.
-→ *Bounds-check `len(task.Trace) > 2`.*
+**Location:** `internal/tools/apply_patch.go:156-199`,
+`internal/policy/nofollow_windows.go`
 
-**5. `git_diff` path allows argument injection → arbitrary file write** — `internal/tools/git_diff.go:39-56`
-`Validate()` rejects `/` and `..` but not leading `-`. The path is appended as a bare positional arg with no `--` separator, so `--output=/tmp/evil` is parsed as a git flag, writing the diff outside the sandbox. `git_diff` is `RiskLevelLow` (no approval), so an LLM-controlled param escapes the policy sandbox.
-→ *Insert literal `--` before the path and/or reject `-` prefix.*
+`applySearchReplaceBlocks` validates the path, then opens the final file with
+`O_NOFOLLOW`. This prevents following a symlink in the final path component on
+Unix, but it does not prevent an ancestor directory from being replaced with a
+symlink between validation and open:
 
----
+```text
+workspace/safe/file.txt
+          ^ `safe` can be swapped after validation
+```
 
-## 🟡 Medium
+Normal `open(path, O_NOFOLLOW)` may still follow symlinks in intermediate path
+components. On Windows, the project defines `O_NOFOLLOW` as `0`, so the same
+protection is not present for reparse points.
 
-**6. `web_search` uses a plain `http.Client` — SSRF via redirects** — `internal/tools/web_search.go:56-70` *(2/2)*
-Doesn't use `policy.SafeHTTPClient`; follows up to 10 redirects with no IP validation. A 3xx `Location` to `169.254.169.254` or loopback is fetched and returned to the planner.
-→ *Use `policy.SafeHTTPClient(...)` like the other fetch tools.*
+**Impact:** A process able to mutate the workspace concurrently may redirect a
+patch write outside the validated workspace.
 
-**7. Auth disabled (fail-open) when API key unset** — `internal/api/middleware.go:42-46`
-Empty key → `c.Next()`, opening the entire `/api` surface (task creation, run-all, approve, config reload) to anonymous callers. A forgotten env var or hot-reload clearing the key silently disables auth.
-→ *Fail closed: refuse to start or 503.*
-
-**8. Non-constant-time API key comparison (timing side-channel)** — `internal/api/middleware.go:59`
-`clientKey != expectedKey` short-circuits on first mismatch, leaking the key byte-by-byte to a latency-measuring attacker. Sole auth gate for the whole API.
-→ *Use `crypto/subtle.ConstantTimeCompare`.*
-
-**9. Token usage always 0 for default provider** — `internal/planner/provider.go:141-151`
-`parseOpenAIResponses` reads Chat-Completions fields (`prompt_tokens`/`completion_tokens`), but the Responses API returns `input_tokens`/`output_tokens`. Budget/metrics accounting is broken for the default provider.
-→ *Read `input_tokens`/`output_tokens` with legacy fallback.*
-
-**10. `IncCompleted()` inflated by adaptive-depth loop** — `internal/multiagent/coordinator.go:564-569`
-`runWritePhase` increments the completed counter every iteration; the adaptive loop runs up to 3×, so one task counts as 2–3 completions.
-→ *Increment once after the loop terminates.*
-
-**11. `apply_patch` TOCTOU symlink window** — `internal/tools/apply_patch.go:62-75,155-175`
-Validates path once via `ValidateReadPath`, then `os.ReadFile`/`os.WriteFile` the string later. A symlink swap in the window writes outside the sandbox. Independent of the known `write.go` TOCTOU.
-→ *Open with `O_NOFOLLOW` or re-validate the resolved path before write.*
+**Recommended fix:** On Linux, open relative to a trusted workspace directory
+descriptor with `openat2` and `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, with a
+carefully reviewed `openat` fallback where needed. Implement the corresponding
+reparse-point-safe handle strategy on Windows. Add a regression test that swaps
+an ancestor directory, not only a test where the final file is a symlink.
 
 ---
 
-## ⚪ Low
+### 🟡 B. Resizable semaphore can leak capacity during waiter cancellation
 
-| # | Bug | Location | Fix |
-|---|-----|----------|-----|
-| 12 | `MemoryStore.SaveFullTask` spawns duplicate async embedding goroutines (guard read under lock, write later in goroutine) | `internal/store/memory.go:41-80` | Reserve the index slot synchronously |
-| 13 | Gemini stream reads only `Parts[0].Text`, dropping extra parts → corrupted JSON *(2/2)* | `internal/planner/gemini_provider.go:54-61` | Iterate all `Parts` |
-| 14 | Mixed embedding dims (local 128 vs remote 768/1536) → `CosineSimilarity` silently returns 0, degrading RAG | `internal/memory/embed.go:24-37` | Tag dim/model; warn on mismatch |
-| 15 | `SuspendForApproval` can drop a delivered approval when ctx fires simultaneously (select race) *(2/3)* | `internal/orchestrator/engine.go:340-390` | Non-blocking drain of `ch` after `ctx.Done()` |
-| 16 | `getOllamaEmbedding` returns success on empty embedding (unlike OpenAI/Gemini) → nil vector, no fallback | `internal/memory/embed.go:212-219` | Error on `len==0` |
-| 17 | `taskSem` capacity cached at startup, ignores `max_concurrent_tasks` hot-reload | `internal/api/handler.go:66-76` | Resizable limiter or document restart-required |
-| 18 | `RedisStore.ensureTaskIndexes` migration guarded by process-local mutex → every instance runs full backfill | `internal/store/redis.go:232-282` | Redis `SET NX` distributed lock |
+**Location:** `internal/api/handler.go:1745-1790`
 
----
+`wakeWaiters` increments `current` and closes a waiter's channel. If that
+channel and `ctx.Done()` become ready at the same time, Go may select the
+cancellation branch. The waiter has already been removed from `waiters`, so the
+cancellation path cannot find it and does not return the granted reservation.
 
-## Patterns worth noting
+**Impact:** Each occurrence leaves `current` one too high. Repeated races can
+eventually make the API reject or indefinitely queue work despite having free
+execution capacity.
 
-- **The approval/risk gate is the single biggest theme** (#1, #3, #7, #8, #15) — the high-risk gating story is incomplete across orchestrator modes and the auth layer that fronts it.
-- **Sandbox escapes via argv/symlink** (#5, #11) and **SSRF** (#6) — tool input validation isn't uniform; `git_diff`/`web_search` bypass the policy patterns the other tools follow.
-- **Embedding/RAG silent degradation** (#14, #16) — failures return zero-similarity or nil vectors with no signal.
+**Recommended fix:** Give each waiter an explicit pending/granted/cancelled
+state under the semaphore lock. A cancelled waiter that was already granted
+must release that grant before returning false. Add a deterministic regression
+test for cancellation racing with wake-up.
 
 ---
 
-### Recommended starting point
+### 🟡 C. Concurrency-limit reload can wake waiters with a stale limit
 
-Highest-impact, smallest-diff fixes: **#1** (default-mode approval bypass) and **#5** (git_diff argument injection).
+**Location:** `internal/api/handler.go:714-720, 980-993, 1745-1790`
+
+Each caller passes its captured limit to both `Acquire` and `Release`. After a
+hot reload reduces `max_concurrent_tasks`, a task acquired under the old limit
+can later call `Release(oldLimit)`. Its `wakeWaiters(oldLimit)` may admit more
+work than the new configuration permits.
+
+**Impact:** A reduced concurrency limit is not reliably enforced until all
+old-limit holders have exited; mixed callers can repeatedly wake waiters using
+different limits.
+
+**Recommended fix:** Store one authoritative limit inside the semaphore and
+provide a synchronized `Resize(newLimit)` operation. `Acquire` and `Release`
+should not accept independent limit values. Test both limit increase and limit
+decrease while holders and waiters are active.
+
+---
+
+### ⚪ D. Shutdown rollback infers cancellation from final-answer length
+
+**Location:** `internal/api/handler.go:270-300`
+
+Shutdown rollback treats a failed task with an empty or short final answer as a
+likely cancellation and transitions it to `paused`. A genuine failure such as
+`timeout`, `invalid plan`, or `tool failed` may therefore be resurrected. A
+long cancellation message may have the opposite result.
+
+**Impact:** Task state after restart may not reflect the real terminal cause,
+leading to unintended retries or missed resumptions.
+
+**Recommended fix:** Persist a structured failure/termination kind and only
+roll back explicit shutdown or cancellation failures. Do not classify failure
+origin using human-readable text length.
+
+## Original Findings — Current Status
+
+| # | Original finding | Status | Current evidence |
+|---:|---|---|---|
+| 1 | Default Eino bypassed high-risk approval | **Fixed** | Shared `Engine.enforceApprovals` gates high-risk actions before execution; Eino and legacy/step call it, while ADK exposes confirmation requirements. Regression coverage exists in `internal/orchestrator/eino_test.go` and ADK tests. |
+| 2 | Shutdown rollback raced live `run-all` | **Fixed** | Shutdown skips rollback for still-running reservations and uses `TryTransitionTaskStatus` CAS. Covered by `internal/api/graceful_shutdown_test.go`. Finding D above tracks a separate classification weakness. |
+| 3 | Stale approval ID resolved a different approval | **Fixed** | `dispatchApproval` falls back by task ID only when `ApprovalID` is empty. Non-empty stale IDs are ignored. Covered by `TestApprovalBusNoFallbackOnNonEmptyApprovalID`. |
+| 4 | `MockPlanner` indexed `Trace[2]` unsafely | **Fixed** | It bounds-checks the trace and falls back to the last trace. Covered by `TestMockPlannerNoPanicOnShortTrace`. |
+| 5 | `git_diff` allowed option/argument injection | **Fixed** | Leading `-` is rejected, execution revalidates parameters, and `--` separates options from the path. Covered by `internal/tools/git_diff_test.go`. |
+| 6 | `web_search` followed unsafe redirects | **Fixed** | It uses `policy.SafeHTTPClient`, whose tests cover private redirect and dial targets. |
+| 7 | Missing API key disabled authentication | **Fixed** | Production API-key mode fails closed with 503 when no key is configured. Test-mode bypass remains explicitly limited to tests. |
+| 8 | API key comparison was not constant-time | **Fixed** | `constantTimeKeyMatch` uses `subtle.ConstantTimeEq` and `subtle.ConstantTimeCompare`. |
+| 9 | Responses API token usage remained zero | **Fixed** | Parser reads `input_tokens`/`output_tokens`, falls back to legacy names, and handles streamed usage. Covered by `provider_usage_test.go`. |
+| 10 | Adaptive-depth loop inflated completion metrics | **Fixed** | Completion is incremented after the loop resolves rather than once per depth iteration. |
+| 11 | `apply_patch` symlink TOCTOU | **Partially fixed** | Final-component symlinks are blocked with `O_NOFOLLOW` on Unix and tested, but ancestor swaps and Windows behavior remain open as finding A. |
+| 12 | MemoryStore launched duplicate embedding jobs | **Fixed** | The indexing reservation is written synchronously before starting the goroutine. Covered by duplicate/index-gate tests. |
+| 13 | Gemini stream discarded parts after `Parts[0]` | **Fixed** | Streaming code iterates every returned part. |
+| 14 | Mixed embedding dimensions silently degraded RAG | **Mitigated** | Mismatches are counted/warned and retrieval falls back to keyword overlap. The system still does not persist a full embedding model identity, but the reported silent-zero behavior is removed. |
+| 15 | Approval could be lost when context fired concurrently | **Fixed** | The context branch performs a non-blocking second receive before returning cancellation. |
+| 16 | Ollama accepted an empty embedding | **Fixed** | Empty embedding responses return an error and can trigger fallback. |
+| 17 | Concurrency capacity was cached at startup | **Partially superseded** | Request paths now read the hot configuration dynamically. Finding C identifies a new stale-release flaw in the replacement semaphore design. |
+| 18 | Redis index migration used only a process mutex | **Fixed** | Migration uses a Redis `SETNX` lock plus completion marker and double-check. |
+
+## Verification
+
+Commands run during the 2026/08/18 review:
+
+```bash
+go test ./...
+go test ./internal/multiagent
+go vet ./...
+```
+
+The first full-suite run was inside a restricted sandbox. All packages passed
+except `internal/multiagent`, where `httptest.NewServer` could not bind a local
+ephemeral port (`operation not permitted`). Re-running that package with local
+loopback listening allowed passed successfully. `go vet ./...` also passed.
+
+These results validate the existing regression suite but do not prove absence
+of races that require a specific interleaving, particularly findings B and C.
+
+## Recommended Priority
+
+1. **P0/P1 security:** close the ancestor-directory and Windows path-resolution
+   gap in finding A.
+2. **P1 reliability:** redesign the semaphore around explicit waiter state and
+   a single authoritative limit, addressing B and C together.
+3. **P2 correctness:** replace shutdown text heuristics with a structured
+   termination reason.
+4. Add regression tests for all three areas before marking this report clear.
+
+## Current Risk Pattern
+
+The project has moved beyond the original broad approval/authentication gaps.
+The remaining risks concentrate in:
+
+- filesystem resolution under concurrent mutation and across platforms;
+- concurrency state transitions during cancellation and hot reload;
+- durable task-state classification during shutdown and recovery.
+
+Future bug hunts should prioritize these state-machine boundaries, plus
+cross-instance approval, lifecycle-audit, Wiki/MCP, and hot-reload behavior.
