@@ -32,6 +32,10 @@ func TestDirectoryClientSearchAndReadRepositoryLayout(t *testing.T) {
 	if err := client.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	status := client.Status()
+	if status.Backend != "directory" || status.SearchMode != SearchModeLegacy || status.PageCount != 2 || status.IndexVersion == "" || status.IndexBuiltAtUnixMS == 0 || status.LastRefreshSuccessUnixMS == 0 || status.ServingStaleSnapshot {
+		t.Fatalf("directory status = %+v", status)
+	}
 	documents, err := client.Search(t.Context(), "agent routing", 3, "engineering")
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +83,51 @@ func TestDirectoryClientRanksChineseTitleAndPhraseAboveBodyFrequency(t *testing.
 	}
 }
 
+func TestDirectoryClientSearchExplainPreservesRankingAndDetails(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki")
+	for _, category := range []string{"concepts", "sources"} {
+		if err := os.MkdirAll(filepath.Join(wikiRoot, category), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "concepts", "guide.md"), []byte("# Historical Travel Guide\n\n[Course source](../sources/course.md)\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "sources", "course.md"), []byte("# Course Source\n\nOriginal material.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewDirectory(root)
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want, err := client.Search(t.Context(), "Historical Travel Guide", 5, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents, explanations, err := client.SearchWithExplain(t.Context(), "Historical Travel Guide", 5, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != len(want) || len(explanations) != len(documents) {
+		t.Fatalf("documents=%+v want=%+v explanations=%+v", documents, want, explanations)
+	}
+	for index := range documents {
+		if documents[index].URI != want[index].URI || documents[index].Score != want[index].Score || explanations[index].URI != documents[index].URI || explanations[index].FinalScore != documents[index].Score {
+			t.Fatalf("index=%d document=%+v want=%+v explanation=%+v", index, documents[index], want[index], explanations[index])
+		}
+		if explanations[index].IndexVersion == "" || explanations[index].NavigationMultiplier != 1 {
+			t.Fatalf("explanation=%+v", explanations[index])
+		}
+	}
+	if explanations[0].BaseScore == 0 || explanations[0].FieldScores["title"] == 0 || len(explanations[0].PhraseMatches) == 0 || len(explanations[0].MatchedTerms) != 3 {
+		t.Fatalf("root explanation=%+v", explanations[0])
+	}
+	if len(explanations) < 2 || explanations[1].LinkBoost == 0 || explanations[1].BaseScore != 0 {
+		t.Fatalf("linked explanation=%+v", explanations)
+	}
+}
+
 func TestDirectoryClientIndexRefreshesAfterFileChange(t *testing.T) {
 	root := t.TempDir()
 	wikiRoot := filepath.Join(root, "wiki")
@@ -103,9 +152,115 @@ func TestDirectoryClientIndexRefreshesAfterFileChange(t *testing.T) {
 	if err := os.Chtimes(path, future, future); err != nil {
 		t.Fatal(err)
 	}
+	if err := client.Probe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	documents, err := client.Search(t.Context(), "Vanessa", 5, "local")
 	if err != nil || len(documents) != 1 || documents[0].Title != "Vanessa Ruales" {
 		t.Fatalf("refreshed search = %+v, err=%v", documents, err)
+	}
+}
+
+func TestDirectoryClientAutomaticRefreshPublishesNewSnapshot(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki", "concepts")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(wikiRoot, "guide.md")
+	if err := os.WriteFile(path, []byte("# Initial Guide\n\nOld content."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewDirectory(root, WithSearchMode(SearchModeBM25), WithRefreshInterval(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	initial := client.indexSnapshot.Load()
+	if initial == nil {
+		t.Fatal("initial snapshot was not published")
+	}
+	if err := os.WriteFile(path, []byte("# Updated Guide\n\nAtomic snapshot content."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client.nextRefresh.Store(time.Now().Add(-time.Second).UnixNano())
+	documents, err := client.Search(t.Context(), "Atomic snapshot", 5, "local")
+	if err != nil || len(documents) != 1 || documents[0].Title != "Updated Guide" {
+		t.Fatalf("refreshed documents=%+v err=%v", documents, err)
+	}
+	updated := client.indexSnapshot.Load()
+	if updated == nil || updated == initial || updated.version == initial.version {
+		t.Fatalf("snapshot was not atomically replaced: initial=%p updated=%p", initial, updated)
+	}
+}
+
+func TestDirectoryClientZeroRefreshIntervalRequiresProbe(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki", "concepts")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(wikiRoot, "guide.md")
+	if err := os.WriteFile(path, []byte("# Initial Guide\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewDirectory(root, WithRefreshInterval(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("# Updated Guide\n\nProbe only phrase."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if documents, err := client.Search(t.Context(), "Probe only phrase", 5, "local"); err != nil || len(documents) != 0 {
+		t.Fatalf("unprobed documents=%+v err=%v", documents, err)
+	}
+	if err := client.Probe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if documents, err := client.Search(t.Context(), "Probe only phrase", 5, "local"); err != nil || len(documents) != 1 {
+		t.Fatalf("probed documents=%+v err=%v", documents, err)
+	}
+}
+
+func TestDirectoryClientRefreshFailureKeepsLastCompleteSnapshot(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki", "concepts")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "stable.md"), []byte("# Stable Guide\n\nKnown good content."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewDirectory(root, WithRefreshInterval(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	initial := client.indexSnapshot.Load()
+	if err := os.WriteFile(filepath.Join(wikiRoot, "oversized.md"), make([]byte, maxDirectoryPageBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client.nextRefresh.Store(time.Now().Add(-time.Second).UnixNano())
+	documents, err := client.Search(t.Context(), "Stable Guide", 5, "local")
+	if err != nil || len(documents) != 1 || documents[0].Slug != "concepts/stable" {
+		t.Fatalf("stale snapshot documents=%+v err=%v", documents, err)
+	}
+	if client.indexSnapshot.Load() != initial {
+		t.Fatal("failed refresh replaced the complete snapshot")
+	}
+	if err := client.Probe(t.Context()); err == nil {
+		t.Fatal("Probe did not report the refresh failure")
+	}
+	status := client.Status()
+	if !status.ServingStaleSnapshot || status.ConsecutiveRefreshFailures < 2 || status.PageCount != 1 || status.IndexVersion == "" {
+		t.Fatalf("failed refresh status = %+v", status)
 	}
 }
 
@@ -357,6 +512,70 @@ func TestDirectoryClientGraphReturnsBoundedIncomingAndOutgoingLinks(t *testing.T
 	}
 	if _, err := client.Graph(t.Context(), Document{URI: "wiki://other/concepts/course"}, "local", 1, "both"); err == nil {
 		t.Fatal("cross-space graph URI was accepted")
+	}
+}
+
+func TestDirectoryClientGraphBoundsHubExpansionByRootRelevance(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki")
+	for _, category := range []string{"concepts", "entities", "sources"} {
+		if err := os.MkdirAll(filepath.Join(wikiRoot, category), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootContent := "# PBL Historical Travel Guide\n\n[Catalog](../sources/catalog.md) [Course](../sources/course.md)"
+	if err := os.WriteFile(filepath.Join(wikiRoot, "concepts", "guide.md"), []byte(rootContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalogLinks := make([]string, 0, 20)
+	for index := 0; index < 20; index++ {
+		slug := fmt.Sprintf("distractor-%02d", index)
+		catalogLinks = append(catalogLinks, fmt.Sprintf("[%s](../concepts/%s.md)", slug, slug))
+		if err := os.WriteFile(filepath.Join(wikiRoot, "concepts", slug+".md"), []byte("# Unrelated Topic\n\nGeneric catalog entry."), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "sources", "catalog.md"), []byte("# Catalog\n\n"+strings.Join(catalogLinks, " ")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "sources", "course.md"), []byte("# Course Source\n\n[Mentor](../entities/mentor.md)"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "entities", "mentor.md"), []byte("# Vanessa Mentor\n\nMentor for the PBL Historical Travel Guide."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	graph, err := client.Graph(t.Context(), Document{URI: "wiki://local/concepts/guide"}, "local", 2, "outgoing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Nodes) > defaultDirectoryGraphMaxNodes {
+		t.Fatalf("graph nodes=%d exceeds local bound", len(graph.Nodes))
+	}
+	foundMentor := false
+	for _, node := range graph.Nodes {
+		if node.Slug == "entities/mentor" {
+			foundMentor = true
+		}
+	}
+	if !foundMentor {
+		t.Fatalf("root-relevant second-hop mentor missing from graph: %+v", graph.Nodes)
+	}
+	for _, edge := range graph.Edges {
+		fromFound, toFound := false, false
+		for _, node := range graph.Nodes {
+			fromFound = fromFound || node.URI == edge.From
+			toFound = toFound || node.URI == edge.To
+		}
+		if !fromFound || !toFound {
+			t.Fatalf("edge references a pruned node: %+v", edge)
+		}
 	}
 }
 

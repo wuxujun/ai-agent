@@ -63,7 +63,7 @@ func TestRepositoryTeamsDeclareLangfusePromptSeeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(seeds) != 10 {
-		t.Fatalf("repository teams define %d prompt seeds, want 10", len(seeds))
+	if len(seeds) != 16 {
+		t.Fatalf("repository teams define %d prompt seeds, want 16", len(seeds))
 	}
 }

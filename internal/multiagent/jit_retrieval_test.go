@@ -107,6 +107,26 @@ func TestRetrievalFetchStepsCreatesWikiFetch(t *testing.T) {
 	}
 }
 
+func TestRetrievalFetchStepsDiversifiesWikiPageCategories(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.Wiki.FetchMaxItems = 3 }))
+	steps := retrievalFetchSteps([]StepEvidence{{
+		StepID: "wiki-step", Action: "wiki_search",
+		Observation: `{"count":5,"results":[` +
+			`{"id":"root","slug":"concepts/pbl-new-york"},` +
+			`{"id":"course-source","slug":"sources/pbl-new-york-course"},` +
+			`{"id":"generic-concept","slug":"concepts/course-design"},` +
+			`{"id":"comparison","slug":"comparisons/client-facing"},` +
+			`{"id":"mentor","slug":"entities/vanessa"}]}`,
+	}})
+	if len(steps) != 1 || steps[0].Action != "wiki_fetch" {
+		t.Fatalf("steps = %+v", steps)
+	}
+	ids, _ := steps[0].RepairedParameters["ids"].([]string)
+	if !reflect.DeepEqual(ids, []string{"root", "course-source", "mentor"}) {
+		t.Fatalf("diversified Wiki fetch ids = %v", ids)
+	}
+}
+
 func TestWikiGraphTeamBuildsBoundedAutomaticFollowups(t *testing.T) {
 	ctx := withTeamConfigSnapshot(t.Context(), newTeamConfigSnapshot("wiki_graph", TeamConfig{}))
 	graphSteps := retrievalFollowupSteps(ctx, []StepEvidence{{

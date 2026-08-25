@@ -455,7 +455,7 @@ mcp:
   #     allow_private_network: false
 
 # 可选的只读 LLM Wiki 适配器。始终注册 wiki_search 与 wiki_fetch；后端支持时
-# 增加 wiki_graph。不开放写入、摄取、提交、Schema、Suggest 或空间管理工具。
+# 增加 wiki_graph 与 wiki_suggest。不开放写入、摄取、提交、Schema 或空间管理工具。
 # 修改后需要重启服务。
 wiki:
   # Streamable HTTP MCP 端点，例如 http://127.0.0.1:18765/mcp。
@@ -471,8 +471,19 @@ wiki:
   # 共享的默认空间。多租户隔离优先使用 api.tenants.<tenant>.wiki_space。
   # 环境变量覆盖：AI_AGENT_WIKI_DEFAULT_SPACE
   default_space: ""
+  # 本地目录排序器：bm25 或 legacy；回退时使用 legacy。修改后需要重启。
+  # 环境变量覆盖：AI_AGENT_WIKI_LOCAL_SEARCH_MODE
+  local_search_mode: "bm25"
+  # 本地目录惰性变更检查间隔（秒）；0 表示仅通过 Probe 检查。
+  # 环境变量覆盖：AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS
+  local_refresh_interval_seconds: 30
+  # 本地图扩展返回的最大节点数；0 使用内置默认值。
+  # 环境变量覆盖：AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES
+  local_graph_max_nodes: 12
   timeout_seconds: 15
-  search_top_k: 5
+  # 搜索候选数大于全文读取预算，便于在不增加 fetch 数量的前提下
+  # 优先选取已链接的来源页、实体页等不同类别。
+  search_top_k: 8
   fetch_max_items: 3
   fetch_max_bytes: 12000
   # 连续后端失败达到该阈值后临时拒绝 Wiki 调用；任一值为 0 时禁用熔断。

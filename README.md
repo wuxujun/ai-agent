@@ -199,6 +199,10 @@ Local-directory mode reads an llm-wiki checkout directly.
 ```bash
 export AI_AGENT_WIKI_DIRECTORY=/srv/knowledge
 export AI_AGENT_WIKI_DEFAULT_SPACE=local
+# BM25 is the default; set legacy for immediate rollback after restart.
+export AI_AGENT_WIKI_LOCAL_SEARCH_MODE=bm25
+export AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS=30
+export AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES=12
 export AI_AGENT_MULTIAGENT_TEAM=wiki
 ```
 

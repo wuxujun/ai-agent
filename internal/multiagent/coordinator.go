@@ -1370,7 +1370,8 @@ func retrievalFollowupSteps(ctx context.Context, evidence []StepEvidence) []Rese
 		}
 		var payload struct {
 			Results []struct {
-				ID string `json:"id"`
+				ID   string `json:"id"`
+				Slug string `json:"slug"`
 			} `json:"results"`
 		}
 		if json.Unmarshal([]byte(item.Observation), &payload) != nil {
@@ -1384,12 +1385,16 @@ func retrievalFollowupSteps(ctx context.Context, evidence []StepEvidence) []Rese
 			limit = 3
 		}
 		ids := make([]string, 0, min(limit, len(payload.Results)))
-		for _, candidate := range payload.Results {
-			if candidate.ID != "" {
-				ids = append(ids, candidate.ID)
-			}
-			if len(ids) >= limit {
-				break
+		if item.Action == "wiki_search" {
+			ids = selectWikiFetchCandidateIDs(payload.Results, limit)
+		} else {
+			for _, candidate := range payload.Results {
+				if candidate.ID != "" {
+					ids = append(ids, candidate.ID)
+				}
+				if len(ids) >= limit {
+					break
+				}
 			}
 		}
 		if len(ids) == 0 {
@@ -1409,6 +1414,50 @@ func retrievalFollowupSteps(ctx context.Context, evidence []StepEvidence) []Rese
 		})
 	}
 	return steps
+}
+
+func selectWikiFetchCandidateIDs(candidates []struct {
+	ID   string `json:"id"`
+	Slug string `json:"slug"`
+}, limit int) []string {
+	if limit <= 0 || len(candidates) == 0 {
+		return nil
+	}
+	selected := make(map[string]bool, limit)
+	categories := make(map[string]bool, limit)
+	ids := make([]string, 0, min(limit, len(candidates)))
+	add := func(candidateID, slug string) {
+		if candidateID == "" || selected[candidateID] || len(ids) >= limit {
+			return
+		}
+		selected[candidateID] = true
+		categories[wikiSlugCategory(slug)] = true
+		ids = append(ids, candidateID)
+	}
+	add(candidates[0].ID, candidates[0].Slug)
+	for _, category := range []string{"sources", "entities", "comparisons", "concepts"} {
+		if categories[category] || len(ids) >= limit {
+			continue
+		}
+		for _, candidate := range candidates {
+			if wikiSlugCategory(candidate.Slug) == category {
+				add(candidate.ID, candidate.Slug)
+				break
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		add(candidate.ID, candidate.Slug)
+	}
+	return ids
+}
+
+func wikiSlugCategory(slug string) string {
+	category, _, found := strings.Cut(strings.Trim(strings.TrimSpace(slug), "/"), "/")
+	if !found {
+		return ""
+	}
+	return category
 }
 
 // partitionBatch returns the largest safe batch from the front of steps.

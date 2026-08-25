@@ -3,3 +3,28 @@
 {"name":"pbl-course-source","query":"PBL 历史旅行指南 课程来源","expected_uris":["wiki://local/sources/pbl-historical-travel-guide-new-york-course"],"expected_keywords":["PBL"],"top_k":5}
 {"name":"vanessa-ruales","query":"Vanessa Ruales 导师","expected_uris":["wiki://local/entities/vanessa-ruales"],"expected_keywords":["Vanessa","哈佛大学"],"top_k":5}
 {"name":"client-facing-comparison","query":"面向客户与非面向客户的教学","expected_uris":["wiki://local/comparisons/client-facing-vs-non-client-facing-instruction"],"expected_keywords":["CT","NCT","面向客户","非面向客户"],"top_k":5}
+{"name":"project-vs-problem-learning","query":"项目式学习与问题式学习","expected_uris":["wiki://local/comparisons/project-based-vs-problem-based-learning"],"top_k":5}
+{"name":"thinktown-product-types","query":"Thinktown 学习产品类型比较","expected_uris":["wiki://local/comparisons/thinktown-learning-product-types"],"top_k":5}
+{"name":"competition-information-evaluation","query":"学术竞赛信息评估","expected_uris":["wiki://local/concepts/academic-competition-information-evaluation"],"top_k":5}
+{"name":"project-advising-design","query":"项目制与学术顾问课程设计","expected_uris":["wiki://local/concepts/project-based-and-academic-advising-design"],"top_k":5}
+{"name":"pbl-assessment-implementation","query":"项目式学习的评价与实施","expected_uris":["wiki://local/concepts/project-based-learning-assessment-and-implementation"],"top_k":5}
+{"name":"pbl-definition-design","query":"项目式学习的定义与设计","expected_uris":["wiki://local/concepts/project-based-learning-definition-and-design"],"top_k":5}
+{"name":"pbl-evidence-boundary","query":"项目式学习的证据与效果边界","expected_uris":["wiki://local/concepts/project-based-learning-evidence"],"top_k":5}
+{"name":"student-achievement-boundary","query":"学生成果主张的证据边界","expected_uris":["wiki://local/concepts/student-achievement-claims"],"top_k":5}
+{"name":"thinktown-product-system","query":"Thinktown 学习产品体系","expected_uris":["wiki://local/concepts/thinktown-learning-product-system"],"top_k":5}
+{"name":"thinktown-education-entity","query":"Thinktown Education","expected_uris":["wiki://local/entities/thinktown-education"],"top_k":5}
+{"name":"farshad-fortin-review","query":"Farshad Fortin 2026 PBL 伞式综述","expected_uris":["wiki://local/sources/external-farshad-fortin-2026-pbl-umbrella-review"],"top_k":5}
+{"name":"guo-higher-education-review","query":"Guo 2020 高等教育 PBL 综述","expected_uris":["wiki://local/sources/external-guo-2020-higher-education-pbl-review"],"top_k":5}
+{"name":"ieo-opentrack-format","query":"IEO 官方赛制 OpenTrack","expected_uris":["wiki://local/sources/external-ieo-format-regulations-and-opentrack"],"top_k":5}
+{"name":"kokotsaki-literature-review","query":"Kokotsaki 2016 PBL 文献综述","expected_uris":["wiki://local/sources/external-kokotsaki-2016-pbl-literature-review"],"top_k":5}
+{"name":"loyens-thinking-review","query":"Loyens 2023 PBL 高阶思维综述","expected_uris":["wiki://local/sources/external-loyens-2023-thinking-in-pbl-review"],"top_k":5}
+{"name":"pblworks-gold-standard","query":"PBLWorks Gold Standard 项目设计要素","expected_uris":["wiki://local/sources/external-pblworks-gold-standard-project-design"],"top_k":5}
+{"name":"saavedra-ap-rct","query":"Saavedra 2022 AP PBL 随机试验","expected_uris":["wiki://local/sources/external-saavedra-2022-pbl-ap-rct"],"top_k":5}
+{"name":"savery-problem-based-definition","query":"Savery 2006 问题式学习定义","expected_uris":["wiki://local/sources/external-savery-2006-problem-based-learning"],"top_k":5}
+{"name":"waterloo-sin-format","query":"Waterloo SIN Exam 官方赛制","expected_uris":["wiki://local/sources/external-waterloo-sin-exam-format"],"top_k":5}
+{"name":"thinktown-source-catalog","query":"Thinktown 课程与产品资料目录","expected_uris":["wiki://local/sources/thinktown-course-and-product-sources"],"top_k":5}
+{"name":"no-answer-nonce-alpha","query":"zzqv nonexistent wiki topic alpha 94721","expect_no_results":true,"top_k":5}
+{"name":"no-answer-nonce-beta","query":"不存在条目测试词乙 58319 zzqx","expect_no_results":true,"top_k":5}
+{"name":"no-answer-nonce-gamma","query":"qvzx imaginary curriculum gamma 76243","expect_no_results":true,"top_k":5}
+{"name":"no-answer-nonce-delta","query":"未收录概念校验丁 41867 xqvz","expect_no_results":true,"top_k":5}
+{"name":"no-answer-nonce-epsilon","query":"zxqv absent knowledge epsilon 23659","expect_no_results":true,"top_k":5}

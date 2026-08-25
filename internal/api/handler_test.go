@@ -69,6 +69,9 @@ type mockExecutor struct{}
 type failingWikiReadiness struct{}
 
 func (failingWikiReadiness) Check(context.Context) error { return errors.New("wiki unavailable") }
+func (failingWikiReadiness) Status() any {
+	return map[string]any{"backend": "directory", "serving_stale_snapshot": true}
+}
 
 type wikiHTTPPlanner struct{}
 
@@ -375,12 +378,16 @@ func TestReadyFailsWhenRequiredWikiProbeFails(t *testing.T) {
 			Required   bool   `json:"required"`
 			Healthy    bool   `json:"healthy"`
 			Error      string `json:"error"`
+			Status     struct {
+				Backend              string `json:"backend"`
+				ServingStaleSnapshot bool   `json:"serving_stale_snapshot"`
+			} `json:"status"`
 		} `json:"wiki"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Ready || !response.Wiki.Configured || !response.Wiki.Required || response.Wiki.Healthy || response.Wiki.Error != "wiki unavailable" {
+	if response.Ready || !response.Wiki.Configured || !response.Wiki.Required || response.Wiki.Healthy || response.Wiki.Error != "wiki unavailable" || response.Wiki.Status.Backend != "directory" || !response.Wiki.Status.ServingStaleSnapshot {
 		t.Fatalf("readiness response = %+v", response)
 	}
 	if got := tools.CurrentWikiMetrics().ReadinessFailures - metricsBefore.ReadinessFailures; got != 1 {

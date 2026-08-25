@@ -164,6 +164,9 @@ type Config struct {
 		Directory                      string `mapstructure:"directory"`
 		AuthorizationEnv               string `mapstructure:"authorization_env"`
 		DefaultSpace                   string `mapstructure:"default_space"`
+		LocalSearchMode                string `mapstructure:"local_search_mode"`
+		LocalRefreshIntervalSeconds    int    `mapstructure:"local_refresh_interval_seconds"`
+		LocalGraphMaxNodes             int    `mapstructure:"local_graph_max_nodes"`
 		TimeoutSeconds                 int    `mapstructure:"timeout_seconds"`
 		SearchTopK                     int    `mapstructure:"search_top_k"`
 		FetchMaxItems                  int    `mapstructure:"fetch_max_items"`
@@ -570,8 +573,11 @@ func setupViper() {
 	viper.SetDefault("wiki.directory", "")
 	viper.SetDefault("wiki.authorization_env", "")
 	viper.SetDefault("wiki.default_space", "")
+	viper.SetDefault("wiki.local_search_mode", "bm25")
+	viper.SetDefault("wiki.local_refresh_interval_seconds", 30)
+	viper.SetDefault("wiki.local_graph_max_nodes", 12)
 	viper.SetDefault("wiki.timeout_seconds", 15)
-	viper.SetDefault("wiki.search_top_k", 5)
+	viper.SetDefault("wiki.search_top_k", 8)
 	viper.SetDefault("wiki.fetch_max_items", 3)
 	viper.SetDefault("wiki.fetch_max_bytes", 12000)
 	viper.SetDefault("wiki.circuit_breaker_failure_threshold", 3)
@@ -624,6 +630,9 @@ func setupViper() {
 	_ = viper.BindEnv("wiki.directory", "AI_AGENT_WIKI_DIRECTORY")
 	_ = viper.BindEnv("wiki.authorization_env", "AI_AGENT_WIKI_AUTHORIZATION_ENV")
 	_ = viper.BindEnv("wiki.default_space", "AI_AGENT_WIKI_DEFAULT_SPACE")
+	_ = viper.BindEnv("wiki.local_search_mode", "AI_AGENT_WIKI_LOCAL_SEARCH_MODE")
+	_ = viper.BindEnv("wiki.local_refresh_interval_seconds", "AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS")
+	_ = viper.BindEnv("wiki.local_graph_max_nodes", "AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES")
 	_ = viper.BindEnv("search.url", "AI_AGENT_SEARCH_URL")
 	_ = viper.BindEnv("search.api_key", "FIRECRAWL_API_KEY")
 	_ = viper.BindEnv("langfuse.public_key", "LANGFUSE_PUBLIC_KEY")
@@ -1518,6 +1527,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Wiki.Required && strings.TrimSpace(c.Wiki.URL) == "" && strings.TrimSpace(c.Wiki.Directory) == "" {
 		return fmt.Errorf("wiki.url or wiki.directory must not be empty when wiki.required is true")
+	}
+	if mode := strings.ToLower(strings.TrimSpace(c.Wiki.LocalSearchMode)); mode != "" && mode != "legacy" && mode != "bm25" {
+		return fmt.Errorf("wiki.local_search_mode must be legacy or bm25")
+	}
+	if c.Wiki.LocalRefreshIntervalSeconds < 0 {
+		return fmt.Errorf("wiki.local_refresh_interval_seconds must not be negative")
+	}
+	if c.Wiki.LocalGraphMaxNodes < 0 || c.Wiki.LocalGraphMaxNodes > 100 {
+		return fmt.Errorf("wiki.local_graph_max_nodes must be between 0 and 100")
 	}
 	if c.Wiki.TimeoutSeconds < 0 || c.Wiki.SearchTopK < 0 || c.Wiki.FetchMaxItems < 0 || c.Wiki.FetchMaxBytes < 0 || c.Wiki.CircuitBreakerFailureThreshold < 0 || c.Wiki.CircuitBreakerCooldownSeconds < 0 {
 		return fmt.Errorf("wiki timeout and retrieval limits must be >= 0")

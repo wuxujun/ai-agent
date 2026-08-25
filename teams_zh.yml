@@ -9,7 +9,7 @@
 # Research→Reviewed 的升级路由仅在 legacy 模式下生效。
 # 可通过环境变量 AI_AGENT_MULTIAGENT_RUNTIME=dag 强制切换至 DAG 运行时。
 
-active_team: "software" # 可选值："software" | "software_reviewed" | "data" | "kb_qa" | "wiki" | "wiki_graph" | "wiki_suggest"
+active_team: "kb_qa" # 可选值："software" | "software_reviewed" | "data" | "kb_qa" | "wiki" | "wiki_graph" | "wiki_suggest"
 # require_match 可防止恢复任务时静默切换提示词或模型。
 # 如需刻意切换，请设置 AI_AGENT_MULTIAGENT_RESUME_CONFIG_POLICY=use_latest。
 resume_config_policy: "require_match"
@@ -21,6 +21,8 @@ teams:
     workflow: "planner_researcher_writer"
     planner:
       name: "Wiki 策展建议规划师"
+      prompt_name: "teams/wiki-suggest/planner"
+      prompt_label: "production"
       tools: ["wiki_search", "wiki_suggest"]
       llm_scene: "multiagent_planner"
       system_prompt: |
@@ -34,6 +36,8 @@ teams:
       name: "只读 Wiki 策展员"
     writer:
       name: "Wiki 建议审核员"
+      prompt_name: "teams/wiki-suggest/writer"
+      prompt_label: "production"
       llm_scene: "multiagent_writer"
       system_prompt: |
         只能报告提供的只读 Wiki 策展建议，按可能重复、缺失链接和相关页面分组，引用
@@ -45,6 +49,8 @@ teams:
     workflow: "planner_researcher_writer"
     planner:
       name: "Wiki 图谱规划师"
+      prompt_name: "teams/wiki-graph/planner"
+      prompt_label: "production"
       tools: ["wiki_search", "wiki_graph"]
       llm_scene: "multiagent_planner"
       system_prompt: |
@@ -61,6 +67,8 @@ teams:
       name: "有界 Wiki 图谱检索员"
     writer:
       name: "Wiki 图谱答案综合师"
+      prompt_name: "teams/wiki-graph/writer"
+      prompt_label: "production"
       llm_scene: "multiagent_writer"
       system_prompt: |
         只能依据提供的 Wiki 页面与图谱证据回答。区分图关系与页面事实，为事实结论提供
@@ -72,6 +80,8 @@ teams:
     workflow: "planner_researcher_writer"
     planner:
       name: "Wiki 搜索规划师"
+      prompt_name: "teams/wiki/planner"
+      prompt_label: "production"
       tools: ["wiki_search"]
       llm_scene: "multiagent_planner"
       system_prompt: |
@@ -92,6 +102,8 @@ teams:
       name: "只读 Wiki 检索员"
     writer:
       name: "Wiki 答案综合师"
+      prompt_name: "teams/wiki/writer"
+      prompt_label: "production"
       llm_scene: "multiagent_writer"
       system_prompt: |
         你只能使用提供的 Wiki 证据回答用户问题。
@@ -105,7 +117,10 @@ teams:
         5. 每个来源只在末尾的“参考资料”章节列出一次，格式为：
            [1] [来源标题或文件名](来源 URL)。
         6. evidence_summary 应简要说明使用了哪些 Wiki 证据。
-        7. 仅返回 JSON。
+        7. 不得合并名称相近课程中的人物、日期、门槛或交付细节。优先使用标题精确
+           匹配的编译页面及其明确链接的来源/实体页面；无法消解的版本差异应作为
+           冲突报告，不能拼接成同一事实。
+        8. 仅返回 JSON。
 
   software:
     lifecycle: "active"

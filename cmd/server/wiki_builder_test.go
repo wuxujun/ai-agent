@@ -39,6 +39,10 @@ func TestBuildWikiRuntimeFromLocalDirectory(t *testing.T) {
 	if _, ok := registry.Get("wiki_fetch"); !ok {
 		t.Fatal("local wiki_fetch was not registered")
 	}
+	status, ok := runtime.Status().(wiki.DirectoryStatus)
+	if !ok || status.Backend != "directory" || status.PageCount != 1 || status.IndexVersion == "" {
+		t.Fatalf("local Wiki status = %#v", runtime.Status())
+	}
 }
 
 func (f *fakeWikiClient) Initialize(context.Context) error { f.initialized = true; return nil }

@@ -25,11 +25,25 @@ type wikiRuntime struct {
 	client wikiClient
 }
 
+type localWikiStatusProvider interface {
+	Status() wiki.DirectoryStatus
+}
+
 func (r *wikiRuntime) Check(ctx context.Context) error {
 	if r == nil || r.client == nil {
 		return fmt.Errorf("wiki is not configured or initialized")
 	}
 	return r.client.Probe(ctx)
+}
+
+func (r *wikiRuntime) Status() any {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	if provider, ok := r.client.(localWikiStatusProvider); ok {
+		return provider.Status()
+	}
+	return map[string]any{"backend": "remote"}
 }
 
 func newWikiClient(cfg wiki.Config) (wikiClient, error) { return wiki.New(cfg) }
@@ -44,7 +58,11 @@ func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, regist
 		return runtime, nil
 	}
 	if strings.TrimSpace(cfg.Wiki.Directory) != "" {
-		client, err := wiki.NewDirectory(cfg.Wiki.Directory)
+		client, err := wiki.NewDirectory(cfg.Wiki.Directory,
+			wiki.WithSearchMode(cfg.Wiki.LocalSearchMode),
+			wiki.WithRefreshInterval(time.Duration(cfg.Wiki.LocalRefreshIntervalSeconds)*time.Second),
+			wiki.WithGraphMaxNodes(cfg.Wiki.LocalGraphMaxNodes),
+		)
 		if err == nil {
 			err = client.Initialize(ctx)
 		}
@@ -59,7 +77,12 @@ func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, regist
 			return nil, err
 		}
 		runtime.client = client
-		slog.Info("read-only local Wiki initialized", "directory", cfg.Wiki.Directory)
+		slog.Info("read-only local Wiki initialized",
+			"directory", cfg.Wiki.Directory,
+			"search_mode", cfg.Wiki.LocalSearchMode,
+			"refresh_interval_seconds", cfg.Wiki.LocalRefreshIntervalSeconds,
+			"graph_max_nodes", cfg.Wiki.LocalGraphMaxNodes,
+		)
 		return runtime, nil
 	}
 	authorization := ""

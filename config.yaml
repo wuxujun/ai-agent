@@ -453,8 +453,8 @@ mcp:
   #     allow_private_network: false
 
 # Optional read-only LLM Wiki adapter. wiki_search and wiki_fetch are always
-# registered; wiki_graph is added only when supported. Write, ingest, commit,
-# schema, suggestion, and space-management tools are not registered.
+# registered; wiki_graph and wiki_suggest are added only when supported. Write,
+# ingest, commit, schema, and space-management tools are not registered.
 # Changes require a service restart.
 wiki:
   # Streamable HTTP MCP endpoint, for example http://127.0.0.1:18765/mcp.
@@ -471,8 +471,19 @@ wiki:
   # Shared fallback space. Prefer api.tenants.<tenant>.wiki_space for isolation.
   # Env override: AI_AGENT_WIKI_DEFAULT_SPACE
   default_space: ""
+  # Local directory ranker: bm25 or legacy. Use legacy for rollback. Changes require restart.
+  # Env override: AI_AGENT_WIKI_LOCAL_SEARCH_MODE
+  local_search_mode: "bm25"
+  # Seconds between lazy local-directory change checks. 0 means Probe-only.
+  # Env override: AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS
+  local_refresh_interval_seconds: 30
+  # Maximum nodes returned by local graph expansion. 0 uses the built-in default.
+  # Env override: AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES
+  local_graph_max_nodes: 12
   timeout_seconds: 15
-  search_top_k: 5
+  # Keep discovery wider than the fetch budget so category diversification can
+  # select linked source/entity pages without increasing full-page reads.
+  search_top_k: 8
   fetch_max_items: 3
   fetch_max_bytes: 12000
   # Consecutive backend failures before temporarily rejecting Wiki calls.

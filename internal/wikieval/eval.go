@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -27,62 +28,79 @@ type Case struct {
 	GraphDirection         string   `json:"graph_direction,omitempty"`
 	SuggestLimit           int      `json:"suggest_limit,omitempty"`
 	TopK                   int      `json:"top_k,omitempty"`
+	ExpectNoResults        bool     `json:"expect_no_results,omitempty"`
 }
 
 type Thresholds struct {
-	MinRecallAtK           float64
-	MinFirstHitRate        float64
-	MinFetchSuccessRate    float64
-	MinKeywordCoverage     float64
-	MinCitationCoverage    float64
-	MaxErrorRate           float64
-	MaxP95LatencyMS        int64
-	MinGraphPathRecall     float64
-	MaxIrrelevantNodeRate  float64
-	MinSuggestionRecall    float64
-	MaxSuggestionNoiseRate float64
+	MinRecallAtK                 float64
+	MinPrecisionAtK              float64
+	MinNDCGAtK                   float64
+	MinFirstHitRate              float64
+	MinTop3HitRate               float64
+	MinFetchSuccessRate          float64
+	MinKeywordCoverage           float64
+	MinCitationCoverage          float64
+	MaxErrorRate                 float64
+	MaxP95LatencyMS              int64
+	MinGraphPathRecall           float64
+	MaxIrrelevantNodeRate        float64
+	MinSuggestionRecall          float64
+	MaxSuggestionNoiseRate       float64
+	MaxNoAnswerFalsePositiveRate float64
 }
 
 type CaseResult struct {
-	Name                string   `json:"name"`
-	Query               string   `json:"query"`
-	ReturnedURIs        []string `json:"returned_uris,omitempty"`
-	RecallAtK           float64  `json:"recall_at_k"`
-	FirstHit            bool     `json:"first_hit"`
-	ReciprocalRank      float64  `json:"reciprocal_rank"`
-	FetchSucceeded      bool     `json:"fetch_succeeded"`
-	KeywordCoverage     float64  `json:"keyword_coverage"`
-	CitationCoverage    float64  `json:"citation_coverage"`
-	GraphPathRecall     float64  `json:"graph_path_recall,omitempty"`
-	IrrelevantNodeRate  float64  `json:"irrelevant_node_rate,omitempty"`
-	GraphNodes          int      `json:"graph_nodes,omitempty"`
-	GraphEdges          int      `json:"graph_edges,omitempty"`
-	SuggestionRecall    float64  `json:"suggestion_recall,omitempty"`
-	SuggestionNoiseRate float64  `json:"suggestion_noise_rate,omitempty"`
-	SuggestionCount     int      `json:"suggestion_count,omitempty"`
-	SuggestionEvaluated bool     `json:"-"`
-	LatencyMS           int64    `json:"latency_ms"`
-	Error               string   `json:"error,omitempty"`
+	Name                  string                   `json:"name"`
+	Query                 string                   `json:"query"`
+	ReturnedURIs          []string                 `json:"returned_uris,omitempty"`
+	SearchExplanations    []wiki.SearchExplanation `json:"search_explanations,omitempty"`
+	RecallAtK             float64                  `json:"recall_at_k"`
+	PrecisionAtK          float64                  `json:"precision_at_k"`
+	NDCGAtK               float64                  `json:"ndcg_at_k"`
+	FirstHit              bool                     `json:"first_hit"`
+	Top3Hit               bool                     `json:"top3_hit"`
+	ReciprocalRank        float64                  `json:"reciprocal_rank"`
+	FetchSucceeded        bool                     `json:"fetch_succeeded"`
+	KeywordCoverage       float64                  `json:"keyword_coverage"`
+	CitationCoverage      float64                  `json:"citation_coverage"`
+	GraphPathRecall       float64                  `json:"graph_path_recall,omitempty"`
+	IrrelevantNodeRate    float64                  `json:"irrelevant_node_rate,omitempty"`
+	GraphNodes            int                      `json:"graph_nodes,omitempty"`
+	GraphEdges            int                      `json:"graph_edges,omitempty"`
+	SuggestionRecall      float64                  `json:"suggestion_recall,omitempty"`
+	SuggestionNoiseRate   float64                  `json:"suggestion_noise_rate,omitempty"`
+	SuggestionCount       int                      `json:"suggestion_count,omitempty"`
+	SuggestionEvaluated   bool                     `json:"-"`
+	NoAnswerExpected      bool                     `json:"no_answer_expected,omitempty"`
+	NoAnswerFalsePositive bool                     `json:"no_answer_false_positive,omitempty"`
+	LatencyMS             int64                    `json:"latency_ms"`
+	Error                 string                   `json:"error,omitempty"`
 }
 
 type Summary struct {
-	Cases               int      `json:"cases"`
-	RecallAtK           float64  `json:"recall_at_k"`
-	FirstHitRate        float64  `json:"first_hit_rate"`
-	MeanReciprocalRank  float64  `json:"mean_reciprocal_rank"`
-	FetchSuccessRate    float64  `json:"fetch_success_rate"`
-	KeywordCoverage     float64  `json:"keyword_coverage"`
-	CitationCoverage    float64  `json:"citation_coverage"`
-	ErrorRate           float64  `json:"error_rate"`
-	P95LatencyMS        int64    `json:"p95_latency_ms"`
-	GraphCases          int      `json:"graph_cases"`
-	GraphPathRecall     float64  `json:"graph_path_recall,omitempty"`
-	IrrelevantNodeRate  float64  `json:"irrelevant_node_rate,omitempty"`
-	SuggestionCases     int      `json:"suggestion_cases"`
-	SuggestionRecall    float64  `json:"suggestion_recall,omitempty"`
-	SuggestionNoiseRate float64  `json:"suggestion_noise_rate,omitempty"`
-	ThresholdsPassed    bool     `json:"thresholds_passed"`
-	FailedThresholds    []string `json:"failed_thresholds,omitempty"`
+	Cases                     int      `json:"cases"`
+	PositiveCases             int      `json:"positive_cases"`
+	NoAnswerCases             int      `json:"no_answer_cases"`
+	RecallAtK                 float64  `json:"recall_at_k"`
+	PrecisionAtK              float64  `json:"precision_at_k"`
+	NDCGAtK                   float64  `json:"ndcg_at_k"`
+	FirstHitRate              float64  `json:"first_hit_rate"`
+	Top3HitRate               float64  `json:"top3_hit_rate"`
+	MeanReciprocalRank        float64  `json:"mean_reciprocal_rank"`
+	FetchSuccessRate          float64  `json:"fetch_success_rate"`
+	KeywordCoverage           float64  `json:"keyword_coverage"`
+	CitationCoverage          float64  `json:"citation_coverage"`
+	ErrorRate                 float64  `json:"error_rate"`
+	P95LatencyMS              int64    `json:"p95_latency_ms"`
+	GraphCases                int      `json:"graph_cases"`
+	GraphPathRecall           float64  `json:"graph_path_recall,omitempty"`
+	IrrelevantNodeRate        float64  `json:"irrelevant_node_rate,omitempty"`
+	SuggestionCases           int      `json:"suggestion_cases"`
+	SuggestionRecall          float64  `json:"suggestion_recall,omitempty"`
+	SuggestionNoiseRate       float64  `json:"suggestion_noise_rate,omitempty"`
+	NoAnswerFalsePositiveRate float64  `json:"no_answer_false_positive_rate,omitempty"`
+	ThresholdsPassed          bool     `json:"thresholds_passed"`
+	FailedThresholds          []string `json:"failed_thresholds,omitempty"`
 }
 
 type Reader interface {
@@ -96,6 +114,10 @@ type GraphReader interface {
 
 type SuggestReader interface {
 	Suggest(context.Context, wiki.Document, string, int) (wiki.SuggestResult, error)
+}
+
+type ExplainReader interface {
+	SearchWithExplain(context.Context, string, int, string) ([]wiki.Document, []wiki.SearchExplanation, error)
 }
 
 func LoadJSONL(reader io.Reader) ([]Case, error) {
@@ -129,8 +151,8 @@ func validateCase(item Case) error {
 	if strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Query) == "" {
 		return errors.New("name and query are required")
 	}
-	if len(item.ExpectedURIs) == 0 {
-		return errors.New("expected_uris must not be empty")
+	if item.ExpectNoResults == (len(item.ExpectedURIs) > 0) {
+		return errors.New("exactly one of expected_uris or expect_no_results=true is required")
 	}
 	if item.TopK < 0 || item.TopK > 20 {
 		return errors.New("top_k must be between 0 and 20")
@@ -164,7 +186,7 @@ func validateCase(item Case) error {
 }
 
 func Evaluate(ctx context.Context, reader Reader, space string, item Case, defaultTopK int) CaseResult {
-	result := CaseResult{Name: item.Name, Query: item.Query}
+	result := CaseResult{Name: item.Name, Query: item.Query, NoAnswerExpected: item.ExpectNoResults}
 	if reader == nil {
 		result.Error = "Wiki reader is nil"
 		return result
@@ -177,7 +199,13 @@ func Evaluate(ctx context.Context, reader Reader, space string, item Case, defau
 		topK = 5
 	}
 	started := time.Now()
-	documents, err := reader.Search(ctx, item.Query, topK, space)
+	var documents []wiki.Document
+	var err error
+	if explainReader, ok := reader.(ExplainReader); ok {
+		documents, result.SearchExplanations, err = explainReader.SearchWithExplain(ctx, item.Query, topK, space)
+	} else {
+		documents, err = reader.Search(ctx, item.Query, topK, space)
+	}
 	if err != nil {
 		result.Error = err.Error()
 		result.LatencyMS = time.Since(started).Milliseconds()
@@ -191,6 +219,7 @@ func Evaluate(ctx context.Context, reader Reader, space string, item Case, defau
 	citations := 0
 	firstRank := 0
 	var fetchDocument wiki.Document
+	dcg := float64(0)
 	for index, document := range documents {
 		result.ReturnedURIs = append(result.ReturnedURIs, document.URI)
 		if strings.HasPrefix(document.URI, "wiki://") {
@@ -198,14 +227,32 @@ func Evaluate(ctx context.Context, reader Reader, space string, item Case, defau
 		}
 		if expected[document.URI] {
 			hits++
+			dcg += 1 / math.Log2(float64(index)+2)
 			if firstRank == 0 {
 				firstRank = index + 1
 				fetchDocument = document
 			}
 		}
 	}
+	if item.ExpectNoResults {
+		result.NoAnswerFalsePositive = len(documents) > 0
+		result.LatencyMS = time.Since(started).Milliseconds()
+		return result
+	}
 	result.RecallAtK = float64(hits) / float64(len(expected))
+	if topK > 0 {
+		result.PrecisionAtK = float64(hits) / float64(topK)
+	}
+	idealHits := min(len(expected), topK)
+	idcg := float64(0)
+	for rank := 0; rank < idealHits; rank++ {
+		idcg += 1 / math.Log2(float64(rank)+2)
+	}
+	if idcg > 0 {
+		result.NDCGAtK = dcg / idcg
+	}
 	result.FirstHit = len(documents) > 0 && expected[documents[0].URI]
+	result.Top3Hit = firstRank > 0 && firstRank <= 3
 	if firstRank > 0 {
 		result.ReciprocalRank = 1 / float64(firstRank)
 	}
@@ -272,15 +319,28 @@ func Summarize(results []CaseResult, thresholds Thresholds) Summary {
 	}
 	latencies := make([]int64, 0, len(results))
 	for _, result := range results {
-		summary.RecallAtK += result.RecallAtK
-		summary.MeanReciprocalRank += result.ReciprocalRank
-		summary.KeywordCoverage += result.KeywordCoverage
-		summary.CitationCoverage += result.CitationCoverage
-		if result.FirstHit {
-			summary.FirstHitRate++
-		}
-		if result.FetchSucceeded {
-			summary.FetchSuccessRate++
+		if result.NoAnswerExpected {
+			summary.NoAnswerCases++
+			if result.NoAnswerFalsePositive {
+				summary.NoAnswerFalsePositiveRate++
+			}
+		} else {
+			summary.PositiveCases++
+			summary.RecallAtK += result.RecallAtK
+			summary.PrecisionAtK += result.PrecisionAtK
+			summary.NDCGAtK += result.NDCGAtK
+			summary.MeanReciprocalRank += result.ReciprocalRank
+			summary.KeywordCoverage += result.KeywordCoverage
+			summary.CitationCoverage += result.CitationCoverage
+			if result.FirstHit {
+				summary.FirstHitRate++
+			}
+			if result.Top3Hit {
+				summary.Top3HitRate++
+			}
+			if result.FetchSucceeded {
+				summary.FetchSuccessRate++
+			}
 		}
 		if result.Error != "" {
 			summary.ErrorRate++
@@ -297,14 +357,22 @@ func Summarize(results []CaseResult, thresholds Thresholds) Summary {
 		}
 		latencies = append(latencies, result.LatencyMS)
 	}
-	denominator := float64(len(results))
-	summary.RecallAtK /= denominator
-	summary.FirstHitRate /= denominator
-	summary.MeanReciprocalRank /= denominator
-	summary.FetchSuccessRate /= denominator
-	summary.KeywordCoverage /= denominator
-	summary.CitationCoverage /= denominator
-	summary.ErrorRate /= denominator
+	if summary.PositiveCases > 0 {
+		denominator := float64(summary.PositiveCases)
+		summary.RecallAtK /= denominator
+		summary.PrecisionAtK /= denominator
+		summary.NDCGAtK /= denominator
+		summary.FirstHitRate /= denominator
+		summary.Top3HitRate /= denominator
+		summary.MeanReciprocalRank /= denominator
+		summary.FetchSuccessRate /= denominator
+		summary.KeywordCoverage /= denominator
+		summary.CitationCoverage /= denominator
+	}
+	summary.ErrorRate /= float64(len(results))
+	if summary.NoAnswerCases > 0 {
+		summary.NoAnswerFalsePositiveRate /= float64(summary.NoAnswerCases)
+	}
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 	summary.P95LatencyMS = latencies[(len(latencies)*95-1)/100]
 	if summary.GraphCases > 0 {
@@ -326,7 +394,10 @@ func failedThresholds(summary Summary, thresholds Thresholds) []string {
 		text   string
 	}{
 		{summary.RecallAtK < thresholds.MinRecallAtK, fmt.Sprintf("recall_at_k %.3f < %.3f", summary.RecallAtK, thresholds.MinRecallAtK)},
+		{summary.PrecisionAtK < thresholds.MinPrecisionAtK, fmt.Sprintf("precision_at_k %.3f < %.3f", summary.PrecisionAtK, thresholds.MinPrecisionAtK)},
+		{summary.NDCGAtK < thresholds.MinNDCGAtK, fmt.Sprintf("ndcg_at_k %.3f < %.3f", summary.NDCGAtK, thresholds.MinNDCGAtK)},
 		{summary.FirstHitRate < thresholds.MinFirstHitRate, fmt.Sprintf("first_hit_rate %.3f < %.3f", summary.FirstHitRate, thresholds.MinFirstHitRate)},
+		{summary.Top3HitRate < thresholds.MinTop3HitRate, fmt.Sprintf("top3_hit_rate %.3f < %.3f", summary.Top3HitRate, thresholds.MinTop3HitRate)},
 		{summary.FetchSuccessRate < thresholds.MinFetchSuccessRate, fmt.Sprintf("fetch_success_rate %.3f < %.3f", summary.FetchSuccessRate, thresholds.MinFetchSuccessRate)},
 		{summary.KeywordCoverage < thresholds.MinKeywordCoverage, fmt.Sprintf("keyword_coverage %.3f < %.3f", summary.KeywordCoverage, thresholds.MinKeywordCoverage)},
 		{summary.CitationCoverage < thresholds.MinCitationCoverage, fmt.Sprintf("citation_coverage %.3f < %.3f", summary.CitationCoverage, thresholds.MinCitationCoverage)},
@@ -336,6 +407,7 @@ func failedThresholds(summary Summary, thresholds Thresholds) []string {
 		{summary.GraphCases > 0 && summary.IrrelevantNodeRate > thresholds.MaxIrrelevantNodeRate, fmt.Sprintf("irrelevant_node_rate %.3f > %.3f", summary.IrrelevantNodeRate, thresholds.MaxIrrelevantNodeRate)},
 		{summary.SuggestionCases > 0 && summary.SuggestionRecall < thresholds.MinSuggestionRecall, fmt.Sprintf("suggestion_recall %.3f < %.3f", summary.SuggestionRecall, thresholds.MinSuggestionRecall)},
 		{summary.SuggestionCases > 0 && summary.SuggestionNoiseRate > thresholds.MaxSuggestionNoiseRate, fmt.Sprintf("suggestion_noise_rate %.3f > %.3f", summary.SuggestionNoiseRate, thresholds.MaxSuggestionNoiseRate)},
+		{summary.NoAnswerCases > 0 && summary.NoAnswerFalsePositiveRate > thresholds.MaxNoAnswerFalsePositiveRate, fmt.Sprintf("no_answer_false_positive_rate %.3f > %.3f", summary.NoAnswerFalsePositiveRate, thresholds.MaxNoAnswerFalsePositiveRate)},
 	}
 	failures := make([]string, 0)
 	for _, check := range checks {

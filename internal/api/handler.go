@@ -66,6 +66,10 @@ type WikiReadinessChecker interface {
 	Check(context.Context) error
 }
 
+type wikiStatusProvider interface {
+	Status() any
+}
+
 // activeRun is a uniquely allocated reservation token stored in
 // Handler.activeTasks. The token's pointer identity is what callers compare
 // against; the cancel function is the bgCtx cancel that cancelTask should fire.
@@ -190,6 +194,10 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		} else if wikiCfg.Required {
 			wikiError = "required Wiki is not initialized"
 		}
+		var wikiStatus any
+		if provider, ok := h.wikiReady.(wikiStatusProvider); ok {
+			wikiStatus = provider.Status()
+		}
 		ready := healthy && (!wikiCfg.Required || wikiHealthy) && teamHealth.Healthy
 		if wikiCfg.Required && !wikiHealthy {
 			tools.ObserveWikiReadinessFailure(ctx)
@@ -200,7 +208,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		}
 		c.JSON(status, gin.H{
 			"ready": ready, "llm_verified": verified, "llm_readiness_mode": readinessMode, "llm_scenes": scenes,
-			"wiki":  gin.H{"configured": wikiConfigured, "required": wikiCfg.Required, "healthy": wikiHealthy, "error": wikiError},
+			"wiki":  gin.H{"configured": wikiConfigured, "required": wikiCfg.Required, "healthy": wikiHealthy, "error": wikiError, "status": wikiStatus},
 			"teams": teamHealth,
 		})
 	})

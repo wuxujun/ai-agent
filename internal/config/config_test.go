@@ -79,7 +79,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 2 || cfg.RAG.JITRetrievalMaxCycles != 2 || cfg.RAG.JITFetchMaxItems != 3 || cfg.RAG.JITRAGFetchMaxBytes != 6000 || cfg.RAG.JITMemoryFetchMaxBytes != 2000 {
 		t.Errorf("unexpected RAG JIT defaults: %+v", cfg.RAG)
 	}
-	if cfg.Wiki.URL != "" || cfg.Wiki.TimeoutSeconds != 15 || cfg.Wiki.SearchTopK != 5 || cfg.Wiki.FetchMaxItems != 3 || cfg.Wiki.FetchMaxBytes != 12000 || cfg.Wiki.CircuitBreakerFailureThreshold != 3 || cfg.Wiki.CircuitBreakerCooldownSeconds != 30 || cfg.Wiki.AllowPrivateNetwork || cfg.Wiki.Required {
+	if cfg.Wiki.URL != "" || cfg.Wiki.LocalSearchMode != "bm25" || cfg.Wiki.LocalRefreshIntervalSeconds != 30 || cfg.Wiki.LocalGraphMaxNodes != 12 || cfg.Wiki.TimeoutSeconds != 15 || cfg.Wiki.SearchTopK != 8 || cfg.Wiki.FetchMaxItems != 3 || cfg.Wiki.FetchMaxBytes != 12000 || cfg.Wiki.CircuitBreakerFailureThreshold != 3 || cfg.Wiki.CircuitBreakerCooldownSeconds != 30 || cfg.Wiki.AllowPrivateNetwork || cfg.Wiki.Required {
 		t.Errorf("unexpected Wiki defaults: %+v", cfg.Wiki)
 	}
 	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
@@ -117,6 +117,9 @@ func TestValidateWikiSettings(t *testing.T) {
 		func(cfg *Config) { cfg.Wiki.FetchMaxBytes = -1 },
 		func(cfg *Config) { cfg.Wiki.CircuitBreakerFailureThreshold = -1 },
 		func(cfg *Config) { cfg.Wiki.CircuitBreakerCooldownSeconds = -1 },
+		func(cfg *Config) { cfg.Wiki.LocalSearchMode = "semantic" },
+		func(cfg *Config) { cfg.Wiki.LocalRefreshIntervalSeconds = -1 },
+		func(cfg *Config) { cfg.Wiki.LocalGraphMaxNodes = 101 },
 	} {
 		cfg = valid()
 		mutate(cfg)
@@ -137,6 +140,20 @@ func TestMultiAgentEnvironmentOverrides(t *testing.T) {
 	cfg := LoadConfig()
 	if cfg.MultiAgent.Team != "software" || cfg.MultiAgent.Runtime != "legacy" || cfg.MultiAgent.DAGCanaryPercent != 5 {
 		t.Fatalf("multiagent env overrides = %+v", cfg.MultiAgent)
+	}
+}
+
+func TestWikiLocalSearchModeEnvironmentOverride(t *testing.T) {
+	resetConfig()
+	defer resetConfig()
+	t.Setenv("TEST_NO_CONFIG", "true")
+	t.Setenv("AI_AGENT_WIKI_LOCAL_SEARCH_MODE", "bm25")
+	t.Setenv("AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS", "45")
+	t.Setenv("AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES", "20")
+
+	cfg := LoadConfig()
+	if cfg.Wiki.LocalSearchMode != "bm25" || cfg.Wiki.LocalRefreshIntervalSeconds != 45 || cfg.Wiki.LocalGraphMaxNodes != 20 {
+		t.Fatalf("wiki local settings = %+v", cfg.Wiki)
 	}
 }
 

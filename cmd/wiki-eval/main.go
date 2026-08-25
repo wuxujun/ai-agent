@@ -22,12 +22,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	input := flags.String("input", "evals/wiki_retrieval.jsonl", "JSONL evaluation dataset")
 	directory := flags.String("directory", os.Getenv("AI_AGENT_WIKI_DIRECTORY"), "llm-wiki checkout root or wiki directory")
 	space := flags.String("space", firstNonEmpty(os.Getenv("AI_AGENT_WIKI_DEFAULT_SPACE"), "local"), "Wiki space used to construct result URIs")
+	searchMode := flags.String("search-mode", firstNonEmpty(os.Getenv("AI_AGENT_WIKI_LOCAL_SEARCH_MODE"), wiki.SearchModeBM25), "local search ranker: legacy or bm25")
 	topK := flags.Int("top-k", 5, "default search result limit")
 	caseTimeout := flags.Duration("case-timeout", 10*time.Second, "timeout per case")
 	format := flags.String("format", "text", "output format: text or json")
 	thresholds := wikieval.Thresholds{}
 	flags.Float64Var(&thresholds.MinRecallAtK, "min-recall", 0.80, "minimum mean Recall@K")
+	flags.Float64Var(&thresholds.MinPrecisionAtK, "min-precision", 0, "minimum mean Precision@K")
+	flags.Float64Var(&thresholds.MinNDCGAtK, "min-ndcg", 0, "minimum mean NDCG@K")
 	flags.Float64Var(&thresholds.MinFirstHitRate, "min-first-hit-rate", 0.60, "minimum top-1 expected-page hit rate")
+	flags.Float64Var(&thresholds.MinTop3HitRate, "min-top3-hit-rate", 0, "minimum top-3 expected-page hit rate")
 	flags.Float64Var(&thresholds.MinFetchSuccessRate, "min-fetch-success-rate", 0.95, "minimum expected-page fetch success rate")
 	flags.Float64Var(&thresholds.MinKeywordCoverage, "min-keyword-coverage", 0.80, "minimum expected keyword coverage")
 	flags.Float64Var(&thresholds.MinCitationCoverage, "min-citation-coverage", 1.0, "minimum wiki:// URI coverage")
@@ -37,6 +41,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.Float64Var(&thresholds.MaxIrrelevantNodeRate, "max-irrelevant-node-rate", 0.75, "maximum unrelated graph-node rate")
 	flags.Float64Var(&thresholds.MinSuggestionRecall, "min-suggestion-recall", 0.80, "minimum expected Wiki suggestion recall")
 	flags.Float64Var(&thresholds.MaxSuggestionNoiseRate, "max-suggestion-noise-rate", 0.60, "maximum unexpected Wiki suggestion rate")
+	flags.Float64Var(&thresholds.MaxNoAnswerFalsePositiveRate, "max-no-answer-false-positive-rate", 1, "maximum false-positive rate for no-answer cases")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -55,7 +60,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	client, err := wiki.NewDirectory(*directory)
+	client, err := wiki.NewDirectory(*directory, wiki.WithSearchMode(*searchMode))
 	if err == nil {
 		err = client.Initialize(context.Background())
 	}
@@ -79,13 +84,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_ = encoder.Encode(summary)
 	} else {
 		for _, result := range results {
-			fmt.Fprintf(stdout, "%s recall=%.3f first=%t rr=%.3f fetch=%t keywords=%.3f citations=%.3f graph_recall=%.3f irrelevant=%.3f nodes=%d edges=%d suggestion_recall=%.3f suggestion_noise=%.3f suggestions=%d latency=%dms error=%s\n",
-				result.Name, result.RecallAtK, result.FirstHit, result.ReciprocalRank, result.FetchSucceeded,
+			fmt.Fprintf(stdout, "%s recall=%.3f precision=%.3f ndcg=%.3f first=%t top3=%t rr=%.3f no_answer=%t false_positive=%t fetch=%t keywords=%.3f citations=%.3f graph_recall=%.3f irrelevant=%.3f nodes=%d edges=%d suggestion_recall=%.3f suggestion_noise=%.3f suggestions=%d latency=%dms error=%s\n",
+				result.Name, result.RecallAtK, result.PrecisionAtK, result.NDCGAtK, result.FirstHit, result.Top3Hit, result.ReciprocalRank, result.NoAnswerExpected, result.NoAnswerFalsePositive, result.FetchSucceeded,
 				result.KeywordCoverage, result.CitationCoverage, result.GraphPathRecall, result.IrrelevantNodeRate,
 				result.GraphNodes, result.GraphEdges, result.SuggestionRecall, result.SuggestionNoiseRate, result.SuggestionCount, result.LatencyMS, result.Error)
 		}
-		fmt.Fprintf(stdout, "summary cases=%d recall=%.3f first_hit=%.3f mrr=%.3f fetch=%.3f keywords=%.3f citations=%.3f graph_cases=%d graph_recall=%.3f irrelevant=%.3f suggestion_cases=%d suggestion_recall=%.3f suggestion_noise=%.3f errors=%.3f p95=%dms passed=%t failures=%s\n",
-			summary.Cases, summary.RecallAtK, summary.FirstHitRate, summary.MeanReciprocalRank,
+		fmt.Fprintf(stdout, "summary cases=%d positive_cases=%d no_answer_cases=%d recall=%.3f precision=%.3f ndcg=%.3f first_hit=%.3f top3_hit=%.3f mrr=%.3f no_answer_false_positive=%.3f fetch=%.3f keywords=%.3f citations=%.3f graph_cases=%d graph_recall=%.3f irrelevant=%.3f suggestion_cases=%d suggestion_recall=%.3f suggestion_noise=%.3f errors=%.3f p95=%dms passed=%t failures=%s\n",
+			summary.Cases, summary.PositiveCases, summary.NoAnswerCases, summary.RecallAtK, summary.PrecisionAtK, summary.NDCGAtK, summary.FirstHitRate, summary.Top3HitRate, summary.MeanReciprocalRank, summary.NoAnswerFalsePositiveRate,
 			summary.FetchSuccessRate, summary.KeywordCoverage, summary.CitationCoverage, summary.GraphCases,
 			summary.GraphPathRecall, summary.IrrelevantNodeRate, summary.SuggestionCases, summary.SuggestionRecall, summary.SuggestionNoiseRate, summary.ErrorRate,
 			summary.P95LatencyMS, summary.ThresholdsPassed, strings.Join(summary.FailedThresholds, "; "))
@@ -97,7 +102,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func validThresholds(value wikieval.Thresholds) bool {
-	for _, metric := range []float64{value.MinRecallAtK, value.MinFirstHitRate, value.MinFetchSuccessRate, value.MinKeywordCoverage, value.MinCitationCoverage, value.MaxErrorRate, value.MinGraphPathRecall, value.MaxIrrelevantNodeRate, value.MinSuggestionRecall, value.MaxSuggestionNoiseRate} {
+	for _, metric := range []float64{value.MinRecallAtK, value.MinPrecisionAtK, value.MinNDCGAtK, value.MinFirstHitRate, value.MinTop3HitRate, value.MinFetchSuccessRate, value.MinKeywordCoverage, value.MinCitationCoverage, value.MaxErrorRate, value.MinGraphPathRecall, value.MaxIrrelevantNodeRate, value.MinSuggestionRecall, value.MaxSuggestionNoiseRate, value.MaxNoAnswerFalsePositiveRate} {
 		if metric < 0 || metric > 1 {
 			return false
 		}

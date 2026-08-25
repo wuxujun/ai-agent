@@ -2,6 +2,7 @@ package wikieval
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -44,11 +45,23 @@ func TestLoadEvaluateAndSummarize(t *testing.T) {
 		t.Fatalf("cases=%+v err=%v", cases, err)
 	}
 	result := Evaluate(t.Context(), evalReader{}, "local", cases[0], 5)
-	if result.RecallAtK != 1 || result.FirstHit || result.ReciprocalRank != 0.5 || !result.FetchSucceeded || result.KeywordCoverage != 1 || result.CitationCoverage != 1 {
+	if result.RecallAtK != 1 || result.PrecisionAtK != 1.0/3.0 || result.NDCGAtK != 1/math.Log2(3) || result.FirstHit || !result.Top3Hit || result.ReciprocalRank != 0.5 || !result.FetchSucceeded || result.KeywordCoverage != 1 || result.CitationCoverage != 1 {
 		t.Fatalf("result=%+v", result)
 	}
 	summary := Summarize([]CaseResult{result}, Thresholds{MinRecallAtK: 1, MinFetchSuccessRate: 1, MinKeywordCoverage: 1, MinCitationCoverage: 1, MaxErrorRate: 0, MaxP95LatencyMS: 1000})
 	if !summary.ThresholdsPassed || summary.MeanReciprocalRank != 0.5 {
+		t.Fatalf("summary=%+v", summary)
+	}
+}
+
+func TestEvaluateNoAnswerCaseAndFalsePositiveGate(t *testing.T) {
+	item := Case{Name: "no-answer", Query: "unknown", ExpectNoResults: true}
+	result := Evaluate(t.Context(), evalReader{}, "local", item, 5)
+	if !result.NoAnswerExpected || !result.NoAnswerFalsePositive || result.FetchSucceeded {
+		t.Fatalf("result=%+v", result)
+	}
+	summary := Summarize([]CaseResult{result}, Thresholds{MaxNoAnswerFalsePositiveRate: 0})
+	if summary.ThresholdsPassed || summary.NoAnswerCases != 1 || summary.NoAnswerFalsePositiveRate != 1 {
 		t.Fatalf("summary=%+v", summary)
 	}
 }
@@ -94,6 +107,9 @@ func TestEvaluateSuggestionQualityAndThresholds(t *testing.T) {
 func TestLoadRejectsInvalidCaseAndThresholdsFail(t *testing.T) {
 	if _, err := LoadJSONL(strings.NewReader(`{"name":"bad","query":"q","expected_uris":["https://example.test"]}`)); err == nil {
 		t.Fatal("invalid URI accepted")
+	}
+	if _, err := LoadJSONL(strings.NewReader(`{"name":"bad","query":"q","expected_uris":["wiki://local/x"],"expect_no_results":true}`)); err == nil {
+		t.Fatal("ambiguous no-answer case accepted")
 	}
 	if _, err := LoadJSONL(strings.NewReader(`{"name":"bad-graph","query":"q","expected_uris":["wiki://local/x"],"expected_graph_uris":["wiki://local/y"],"graph_depth":3}`)); err == nil {
 		t.Fatal("invalid graph depth accepted")

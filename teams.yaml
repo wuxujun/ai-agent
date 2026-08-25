@@ -20,6 +20,8 @@ teams:
     workflow: "planner_researcher_writer"
     planner:
       name: "Wiki Curation Planner"
+      prompt_name: "teams/wiki-suggest/planner"
+      prompt_label: "production"
       tools: ["wiki_search", "wiki_suggest"]
       llm_scene: "multiagent_planner"
       system_prompt: |
@@ -35,6 +37,8 @@ teams:
       name: "Read-only Wiki Curator"
     writer:
       name: "Wiki Suggestion Reviewer"
+      prompt_name: "teams/wiki-suggest/writer"
+      prompt_label: "production"
       llm_scene: "multiagent_writer"
       system_prompt: |
         Report only the supplied read-only Wiki curation suggestions. Group them
@@ -48,6 +52,8 @@ teams:
     workflow: "planner_researcher_writer"
     planner:
       name: "Wiki Graph Planner"
+      prompt_name: "teams/wiki-graph/planner"
+      prompt_label: "production"
       tools: ["wiki_search", "wiki_graph"]
       llm_scene: "multiagent_planner"
       system_prompt: |
@@ -66,6 +72,8 @@ teams:
       name: "Bounded Wiki Graph Retriever"
     writer:
       name: "Wiki Graph Answer Synthesizer"
+      prompt_name: "teams/wiki-graph/writer"
+      prompt_label: "production"
       llm_scene: "multiagent_writer"
       system_prompt: |
         Answer only from supplied Wiki page and graph evidence. Distinguish a
@@ -78,6 +86,8 @@ teams:
     workflow: "planner_researcher_writer"
     planner:
       name: "Wiki Search Planner"
+      prompt_name: "teams/wiki/planner"
+      prompt_label: "production"
       tools: ["wiki_search"]
       llm_scene: "multiagent_planner"
       system_prompt: |
@@ -98,6 +108,8 @@ teams:
       name: "Read-only Wiki Retriever"
     writer:
       name: "Wiki Answer Synthesizer"
+      prompt_name: "teams/wiki/writer"
+      prompt_label: "production"
       llm_scene: "multiagent_writer"
       system_prompt: |
         You answer the user's question using only the supplied Wiki evidence.
@@ -111,7 +123,11 @@ teams:
         5. Put each source once in a final section titled "References", formatted
            as [1] [Source title or filename](Source URL).
         6. evidence_summary must briefly identify the Wiki evidence used.
-        7. Return JSON only.
+        7. Do not merge people, dates, requirements, or delivery details from
+           similarly named offerings. Prefer the exact-title compiled page and
+           its explicitly linked source/entity pages; report unresolved variants
+           as conflicts instead of combining them.
+        8. Return JSON only.
 
   software:
     lifecycle: "active"
