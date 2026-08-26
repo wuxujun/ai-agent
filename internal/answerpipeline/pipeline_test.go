@@ -68,7 +68,7 @@ func TestInputRefusalReusesInputSafetyDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if guard.calls != 0 || len(report.Stages) != 5 || report.Stages[4].Reason != "covered_by_input_guard" {
+	if guard.calls != 0 || len(report.Stages) != 6 || stageStatus(report, safetyStage) != "passed" {
 		t.Fatalf("calls=%d report=%+v", guard.calls, report)
 	}
 }
@@ -95,7 +95,7 @@ func TestDraftVerifierFindingsFeedUnifiedUncertaintyAudit(t *testing.T) {
 	if capture.task == nil || len(capture.task.Trace[0].Evidence) != 1 {
 		t.Fatalf("uncertainty input = %+v", capture.task)
 	}
-	if len(report.Stages) != 6 || report.Stages[0].Name != "answer_verify" || report.Stages[0].Status != "warned" {
+	if len(report.Stages) != 7 || report.Stages[0].Name != "answer_verify" || report.Stages[0].Status != "warned" {
 		t.Fatalf("stages = %+v", report.Stages)
 	}
 	finding := report.Stages[0].Findings[0]

@@ -101,7 +101,7 @@ func TestMultiAgentDraftFlowsThroughUnifiedPipeline(t *testing.T) {
 	if len(task.Unresolved) != 1 || task.Unresolved[0] != "final_answer_not_fully_supported" {
 		t.Fatalf("unresolved = %v", task.Unresolved)
 	}
-	if len(task.AnswerAudit.Stages) != 6 || task.AnswerAudit.Stages[0].Name != "answer_verify" {
+	if len(task.AnswerAudit.Stages) != 7 || task.AnswerAudit.Stages[0].Name != "answer_verify" {
 		t.Fatalf("audit stages = %+v", task.AnswerAudit.Stages)
 	}
 	finding := task.AnswerAudit.Stages[0].Findings[0]

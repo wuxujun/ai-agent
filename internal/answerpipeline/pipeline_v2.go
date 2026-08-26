@@ -66,6 +66,7 @@ func (p *DefaultPipeline) processV2(ctx context.Context, task *types.Task, mode 
 	if hasBlockedInput(task) {
 		for _, spec := range []struct{ name, status string }{
 			{citationStage, "not_applicable"},
+			{wikiCitationIntegrityStage, "not_applicable"},
 			{factfreshness.TraceAction, "not_applicable"},
 			{numericconsistency.TraceAction, "not_applicable"},
 			{uncertainty.TraceAction, "not_applicable"},
@@ -93,6 +94,7 @@ func (p *DefaultPipeline) processV2(ctx context.Context, task *types.Task, mode 
 	p.runEvidenceAuditsV2(ctx, task, report, prior, budget, cfg.StageTokenBudgets, cfg.StageTimeoutSeconds, cfg.ParallelAudits && !llmcore.TaskCostBudgetEnabled(ctx), now)
 	p.runUncertaintyV2(ctx, task, report, prior, budget, cfg.StageTokenBudgets, cfg.StageTimeoutSeconds, now)
 	p.runSafetyV2(ctx, task, report, prior, safetyLease, safetyLeaseDenied, cfg.StageTokenBudgets, cfg.StageTimeoutSeconds, now)
+	p.runWikiCitationIntegrity(task, report, prior)
 	finishV2(report, task, cfg.RequiredStages, cfg.OnRequiredStageFailure)
 	p.observeReport(mode, report)
 	return report, nil

@@ -46,6 +46,13 @@ func (r *wikiRuntime) Status() any {
 	return map[string]any{"backend": "remote"}
 }
 
+func (r *wikiRuntime) Read(ctx context.Context, document wiki.Document, space string) (wiki.Document, error) {
+	if r == nil || r.client == nil {
+		return wiki.Document{}, fmt.Errorf("wiki is not configured or initialized")
+	}
+	return r.client.Read(ctx, document, space)
+}
+
 func newWikiClient(cfg wiki.Config) (wikiClient, error) { return wiki.New(cfg) }
 
 func buildWikiRuntime(ctx context.Context, cfg *config.Config, registry *tools.Registry) (*wikiRuntime, error) {

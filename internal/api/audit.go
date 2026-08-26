@@ -202,7 +202,7 @@ func validTaskStatus(status types.TaskStatus) bool {
 
 func validAuditStage(stage string) bool {
 	switch stage {
-	case "answer_verify", "citation_verify", "fact_freshness_check", "numeric_consistency_check", "answer_uncertainty_calibrate", "safety_guard_output":
+	case "answer_verify", "citation_verify", "wiki_citation_integrity", "fact_freshness_check", "numeric_consistency_check", "answer_uncertainty_calibrate", "safety_guard_output":
 		return true
 	default:
 		return false

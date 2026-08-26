@@ -162,6 +162,7 @@ answer_pipeline:
   parallel_audits: true
   on_required_stage_failure: partial
   required_stages:
+    - wiki_citation_integrity
     - fact_freshness_check
     - numeric_consistency_check
     - answer_uncertainty_calibrate
@@ -486,6 +487,11 @@ wiki:
   search_top_k: 8
   fetch_max_items: 3
   fetch_max_bytes: 12000
+  # Task-local candidate IDs are released at task completion. These limits are
+  # a bounded fallback for abandoned or interrupted tasks; 0 uses the built-in default.
+  # Env: AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS / AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS
+  candidate_cache_max_tasks: 1024
+  candidate_cache_ttl_seconds: 1800
   # Consecutive backend failures before temporarily rejecting Wiki calls.
   # Set either value to 0 to disable the circuit breaker.
   circuit_breaker_failure_threshold: 3

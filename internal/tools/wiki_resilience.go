@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,16 +24,24 @@ type WikiMetricsSnapshot struct {
 	CircuitOpened           int64   `json:"circuit_opened"`
 	CircuitRejected         int64   `json:"circuit_rejected"`
 	ReadinessFailures       int64   `json:"readiness_failures"`
+	CandidateCacheTasks     int64   `json:"candidate_cache_tasks"`
+	CandidateCacheReleased  int64   `json:"candidate_cache_released"`
+	CandidateCacheExpired   int64   `json:"candidate_cache_expired"`
+	CandidateCacheEvicted   int64   `json:"candidate_cache_evicted"`
 }
 
 var wikiLocalMetrics struct {
-	backendCalls      atomic.Int64
-	backendErrors     atomic.Int64
-	backendLatencyNS  atomic.Int64
-	latencyBuckets    [9]atomic.Int64
-	circuitOpened     atomic.Int64
-	circuitRejected   atomic.Int64
-	readinessFailures atomic.Int64
+	backendCalls           atomic.Int64
+	backendErrors          atomic.Int64
+	backendLatencyNS       atomic.Int64
+	latencyBuckets         [9]atomic.Int64
+	circuitOpened          atomic.Int64
+	circuitRejected        atomic.Int64
+	readinessFailures      atomic.Int64
+	candidateCacheTasks    atomic.Int64
+	candidateCacheReleased atomic.Int64
+	candidateCacheExpired  atomic.Int64
+	candidateCacheEvicted  atomic.Int64
 }
 
 // CurrentWikiMetrics returns a race-safe process-local Wiki metrics snapshot.
@@ -45,20 +54,89 @@ func CurrentWikiMetrics() WikiMetricsSnapshot {
 	return WikiMetricsSnapshot{
 		BackendCalls: calls, BackendErrors: wikiLocalMetrics.backendErrors.Load(),
 		BackendAverageLatencyMS: average, BackendP95LatencyMS: wikiLatencyP95MS(calls), CircuitOpened: wikiLocalMetrics.circuitOpened.Load(),
-		CircuitRejected:   wikiLocalMetrics.circuitRejected.Load(),
-		ReadinessFailures: wikiLocalMetrics.readinessFailures.Load(),
+		CircuitRejected:        wikiLocalMetrics.circuitRejected.Load(),
+		ReadinessFailures:      wikiLocalMetrics.readinessFailures.Load(),
+		CandidateCacheTasks:    wikiLocalMetrics.candidateCacheTasks.Load(),
+		CandidateCacheReleased: wikiLocalMetrics.candidateCacheReleased.Load(),
+		CandidateCacheExpired:  wikiLocalMetrics.candidateCacheExpired.Load(),
+		CandidateCacheEvicted:  wikiLocalMetrics.candidateCacheEvicted.Load(),
 	}
 }
 
 var (
-	wikiMeter                = otel.Meter("ai-agent/wiki")
-	wikiBackendCalls, _      = wikiMeter.Int64Counter("agent.wiki.backend.calls")
-	wikiBackendErrors, _     = wikiMeter.Int64Counter("agent.wiki.backend.errors")
-	wikiBackendLatency, _    = wikiMeter.Float64Histogram("agent.wiki.backend.latency_ms")
-	wikiCircuitOpened, _     = wikiMeter.Int64Counter("agent.wiki.circuit.opened")
-	wikiCircuitRejected, _   = wikiMeter.Int64Counter("agent.wiki.circuit.rejected")
-	wikiReadinessFailures, _ = wikiMeter.Int64Counter("agent.wiki.readiness.failures")
+	wikiMeter                     = otel.Meter("ai-agent/wiki")
+	wikiBackendCalls, _           = wikiMeter.Int64Counter("agent.wiki.backend.calls")
+	wikiBackendErrors, _          = wikiMeter.Int64Counter("agent.wiki.backend.errors")
+	wikiBackendLatency, _         = wikiMeter.Float64Histogram("agent.wiki.backend.latency_ms")
+	wikiCircuitOpened, _          = wikiMeter.Int64Counter("agent.wiki.circuit.opened")
+	wikiCircuitRejected, _        = wikiMeter.Int64Counter("agent.wiki.circuit.rejected")
+	wikiReadinessFailures, _      = wikiMeter.Int64Counter("agent.wiki.readiness.failures")
+	wikiCandidateCacheTasks, _    = wikiMeter.Int64UpDownCounter("agent.wiki.candidate_cache.tasks")
+	wikiCandidateCacheRemovals, _ = wikiMeter.Int64Counter("agent.wiki.candidate_cache.removals")
 )
+
+var wikiCacheOwners = struct {
+	sync.Mutex
+	byTask map[string]map[*wikiCache]struct{}
+}{byTask: make(map[string]map[*wikiCache]struct{})}
+
+func registerWikiCacheOwner(taskKey string, cache *wikiCache) {
+	wikiCacheOwners.Lock()
+	defer wikiCacheOwners.Unlock()
+	owners := wikiCacheOwners.byTask[taskKey]
+	if owners == nil {
+		owners = make(map[*wikiCache]struct{})
+		wikiCacheOwners.byTask[taskKey] = owners
+	}
+	owners[cache] = struct{}{}
+}
+
+func unregisterWikiCacheOwner(taskKey string, cache *wikiCache) {
+	wikiCacheOwners.Lock()
+	defer wikiCacheOwners.Unlock()
+	owners := wikiCacheOwners.byTask[taskKey]
+	delete(owners, cache)
+	if len(owners) == 0 {
+		delete(wikiCacheOwners.byTask, taskKey)
+	}
+}
+
+// ReleaseWikiTaskCache actively drops task-local Wiki candidate IDs after a
+// task reaches a terminal state. It is idempotent and tenant-scoped.
+func ReleaseWikiTaskCache(taskID, tenantID string) {
+	taskKey := strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(taskID)
+	if strings.TrimSpace(taskID) == "" {
+		return
+	}
+	wikiCacheOwners.Lock()
+	owners := make([]*wikiCache, 0, len(wikiCacheOwners.byTask[taskKey]))
+	for cache := range wikiCacheOwners.byTask[taskKey] {
+		owners = append(owners, cache)
+	}
+	wikiCacheOwners.Unlock()
+	for _, cache := range owners {
+		cache.release(taskKey)
+	}
+}
+
+func observeWikiCacheTaskAdded() {
+	wikiLocalMetrics.candidateCacheTasks.Add(1)
+	wikiCandidateCacheTasks.Add(context.Background(), 1)
+}
+
+func observeWikiCacheRemoval(reason string) {
+	wikiLocalMetrics.candidateCacheTasks.Add(-1)
+	switch reason {
+	case "terminal":
+		wikiLocalMetrics.candidateCacheReleased.Add(1)
+	case "expired":
+		wikiLocalMetrics.candidateCacheExpired.Add(1)
+	case "capacity":
+		wikiLocalMetrics.candidateCacheEvicted.Add(1)
+	}
+	wikiCandidateCacheTasks.Add(context.Background(), -1)
+	wikiCandidateCacheRemovals.Add(context.Background(), 1, api.WithAttributes(attribute.String("reason", reason)))
+}
 
 // ObserveWikiReadinessFailure records a required-Wiki readiness failure.
 func ObserveWikiReadinessFailure(ctx context.Context) {

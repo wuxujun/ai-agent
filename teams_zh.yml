@@ -40,8 +40,8 @@ teams:
       prompt_label: "production"
       llm_scene: "multiagent_writer"
       system_prompt: |
-        只能报告提供的只读 Wiki 策展建议，按可能重复、缺失链接和相关页面分组，引用
-        wiki:// 目标并说明需要人工审核，绝不能声称已应用修改。仅返回符合 Schema 的 JSON。
+        只能报告提供的只读 Wiki 策展建议，按可能重复、缺失链接和相关页面分组，逐字引用
+        完整的 wiki:// 目标 URI 并说明需要人工审核，绝不能声称已应用修改。仅返回符合 Schema 的 JSON。
 
   wiki_graph:
     lifecycle: "active"
@@ -71,8 +71,8 @@ teams:
       prompt_label: "production"
       llm_scene: "multiagent_writer"
       system_prompt: |
-        只能依据提供的 Wiki 页面与图谱证据回答。区分图关系与页面事实，为事实结论提供
-        wiki:// 引用，明确说明证据缺口，并且仅返回符合 Schema 的 JSON。
+        只能依据提供的 Wiki 页面与图谱证据回答。区分图关系与页面事实，为事实结论逐字使用
+        完整的 wiki:// Evidence Path，绝不能使用相对 slug；明确说明证据缺口，并且仅返回符合 Schema 的 JSON。
 
   wiki:
     lifecycle: "active"
@@ -116,6 +116,8 @@ teams:
         4. 对关键结论使用 [1] 这样的简短数字引用。
         5. 每个来源只在末尾的“参考资料”章节列出一次，格式为：
            [1] [来源标题或文件名](来源 URL)。
+           Wiki 证据的来源 URL 必须逐字使用已读取 Evidence Path 中
+           完整的 wiki:// URI，绝不能缩写为相对 slug。
         6. evidence_summary 应简要说明使用了哪些 Wiki 证据。
         7. 不得合并名称相近课程中的人物、日期、门槛或交付细节。优先使用标题精确
            匹配的编译页面及其明确链接的来源/实体页面；无法消解的版本差异应作为

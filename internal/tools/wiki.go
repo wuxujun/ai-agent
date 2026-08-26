@@ -53,32 +53,69 @@ type wikiTaskCache struct {
 }
 
 type wikiCache struct {
-	mu    sync.Mutex
-	tasks map[string]*wikiTaskCache
+	mu       sync.Mutex
+	tasks    map[string]*wikiTaskCache
+	now      func() time.Time
+	maxTasks int
+	ttl      time.Duration
 }
 
-func newWikiCache() *wikiCache { return &wikiCache{tasks: make(map[string]*wikiTaskCache)} }
+func newWikiCache() *wikiCache {
+	maxTasks := config.Get().Wiki.CandidateCacheMaxTasks
+	if maxTasks <= 0 {
+		maxTasks = 1024
+	}
+	ttlSeconds := config.Get().Wiki.CandidateCacheTTLSeconds
+	if ttlSeconds <= 0 {
+		ttlSeconds = 1800
+	}
+	return &wikiCache{tasks: make(map[string]*wikiTaskCache), now: time.Now, maxTasks: maxTasks, ttl: time.Duration(ttlSeconds) * time.Second}
+}
 
-func (c *wikiCache) task(key string) *wikiTaskCache {
-	now := time.Now()
+func (c *wikiCache) prune(now time.Time) {
 	for taskKey, task := range c.tasks {
-		if now.Sub(task.updatedAt) > 30*time.Minute {
+		if now.Sub(task.updatedAt) > c.ttl {
 			delete(c.tasks, taskKey)
+			unregisterWikiCacheOwner(taskKey, c)
+			observeWikiCacheRemoval("expired")
 		}
 	}
+}
+
+func (c *wikiCache) task(key string, create bool) *wikiTaskCache {
+	now := c.now()
+	c.prune(now)
 	task := c.tasks[key]
-	if task == nil {
+	if task == nil && create {
+		if len(c.tasks) >= c.maxTasks {
+			oldestKey := ""
+			var oldest time.Time
+			for candidateKey, candidateTask := range c.tasks {
+				if oldestKey == "" || candidateTask.updatedAt.Before(oldest) || candidateTask.updatedAt.Equal(oldest) && candidateKey < oldestKey {
+					oldestKey, oldest = candidateKey, candidateTask.updatedAt
+				}
+			}
+			if oldestKey != "" {
+				delete(c.tasks, oldestKey)
+				unregisterWikiCacheOwner(oldestKey, c)
+				observeWikiCacheRemoval("capacity")
+			}
+		}
 		task = &wikiTaskCache{candidates: make(map[string]wikiCandidate), fetched: make(map[string]bool)}
 		c.tasks[key] = task
+		registerWikiCacheOwner(key, c)
+		observeWikiCacheTaskAdded()
 	}
-	task.updatedAt = now
+	if task != nil {
+		task.updatedAt = now
+	}
 	return task
 }
 
 func (c *wikiCache) replace(taskKey string, candidates []wikiCandidate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := c.task(taskKey)
+	task := c.task(taskKey, true)
 	task.candidates = make(map[string]wikiCandidate, len(candidates))
 	task.fetched = make(map[string]bool)
 	for _, candidate := range candidates {
@@ -89,7 +126,10 @@ func (c *wikiCache) replace(taskKey string, candidates []wikiCandidate) {
 func (c *wikiCache) selectCandidates(taskKey string, ids []string) ([]wikiCandidate, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := c.task(taskKey)
+	task := c.task(taskKey, false)
+	if task == nil {
+		return nil, fmt.Errorf("wiki candidate %q not found; call wiki_search first", ids[0])
+	}
 	selected := make([]wikiCandidate, 0, len(ids))
 	for _, id := range ids {
 		candidate, ok := task.candidates[id]
@@ -106,7 +146,10 @@ func (c *wikiCache) selectCandidates(taskKey string, ids []string) ([]wikiCandid
 func (c *wikiCache) markFetched(taskKey string, ids []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := c.task(taskKey)
+	task := c.task(taskKey, false)
+	if task == nil {
+		return
+	}
 	for _, id := range ids {
 		task.fetched[id] = true
 	}
@@ -115,7 +158,7 @@ func (c *wikiCache) markFetched(taskKey string, ids []string) {
 func (c *wikiCache) reserveGraph(taskKey string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := c.task(taskKey)
+	task := c.task(taskKey, true)
 	if task.graphCalls >= 1 {
 		return errors.New("wiki_graph permits at most one call per task")
 	}
@@ -126,7 +169,10 @@ func (c *wikiCache) reserveGraph(taskKey string) error {
 func (c *wikiCache) releaseGraph(taskKey string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := c.task(taskKey)
+	task := c.task(taskKey, false)
+	if task == nil {
+		return
+	}
 	if task.graphCalls > 0 {
 		task.graphCalls--
 	}
@@ -135,7 +181,7 @@ func (c *wikiCache) releaseGraph(taskKey string) {
 func (c *wikiCache) reserveSuggest(taskKey string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := c.task(taskKey)
+	task := c.task(taskKey, true)
 	if task.suggestCalls >= 1 {
 		return errors.New("wiki_suggest permits at most one call per task")
 	}
@@ -146,10 +192,25 @@ func (c *wikiCache) reserveSuggest(taskKey string) error {
 func (c *wikiCache) releaseSuggest(taskKey string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := c.task(taskKey)
+	task := c.task(taskKey, false)
+	if task == nil {
+		return
+	}
 	if task.suggestCalls > 0 {
 		task.suggestCalls--
 	}
+}
+
+func (c *wikiCache) release(taskKey string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.tasks[taskKey]; !ok {
+		return false
+	}
+	delete(c.tasks, taskKey)
+	unregisterWikiCacheOwner(taskKey, c)
+	observeWikiCacheRemoval("terminal")
+	return true
 }
 
 type wikiSearchTool struct {

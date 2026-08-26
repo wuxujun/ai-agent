@@ -171,6 +171,8 @@ type Config struct {
 		SearchTopK                     int    `mapstructure:"search_top_k"`
 		FetchMaxItems                  int    `mapstructure:"fetch_max_items"`
 		FetchMaxBytes                  int    `mapstructure:"fetch_max_bytes"`
+		CandidateCacheMaxTasks         int    `mapstructure:"candidate_cache_max_tasks"`
+		CandidateCacheTTLSeconds       int    `mapstructure:"candidate_cache_ttl_seconds"`
 		CircuitBreakerFailureThreshold int    `mapstructure:"circuit_breaker_failure_threshold"`
 		CircuitBreakerCooldownSeconds  int    `mapstructure:"circuit_breaker_cooldown_seconds"`
 		AllowPrivateNetwork            bool   `mapstructure:"allow_private_network"`
@@ -525,7 +527,7 @@ func setupViper() {
 	viper.SetDefault("answer_pipeline.stage_timeout_seconds", 20)
 	viper.SetDefault("answer_pipeline.parallel_audits", true)
 	viper.SetDefault("answer_pipeline.on_required_stage_failure", "partial")
-	viper.SetDefault("answer_pipeline.required_stages", []string{"fact_freshness_check", "numeric_consistency_check", "answer_uncertainty_calibrate", "safety_guard_output"})
+	viper.SetDefault("answer_pipeline.required_stages", []string{"wiki_citation_integrity", "fact_freshness_check", "numeric_consistency_check", "answer_uncertainty_calibrate", "safety_guard_output"})
 	viper.SetDefault("answer_pipeline.stage_token_budgets", map[string]int{"citation_verify": 600, "fact_freshness_check": 900, "numeric_consistency_check": 900, "answer_uncertainty_calibrate": 1000, "safety_guard_output": 600})
 	viper.SetDefault("llm.provider", llmprovider.OpenAIResponses)
 	viper.SetDefault("llm.timeout_seconds", 30)
@@ -580,6 +582,8 @@ func setupViper() {
 	viper.SetDefault("wiki.search_top_k", 8)
 	viper.SetDefault("wiki.fetch_max_items", 3)
 	viper.SetDefault("wiki.fetch_max_bytes", 12000)
+	viper.SetDefault("wiki.candidate_cache_max_tasks", 1024)
+	viper.SetDefault("wiki.candidate_cache_ttl_seconds", 1800)
 	viper.SetDefault("wiki.circuit_breaker_failure_threshold", 3)
 	viper.SetDefault("wiki.circuit_breaker_cooldown_seconds", 30)
 	viper.SetDefault("wiki.allow_private_network", false)
@@ -633,6 +637,8 @@ func setupViper() {
 	_ = viper.BindEnv("wiki.local_search_mode", "AI_AGENT_WIKI_LOCAL_SEARCH_MODE")
 	_ = viper.BindEnv("wiki.local_refresh_interval_seconds", "AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS")
 	_ = viper.BindEnv("wiki.local_graph_max_nodes", "AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES")
+	_ = viper.BindEnv("wiki.candidate_cache_max_tasks", "AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS")
+	_ = viper.BindEnv("wiki.candidate_cache_ttl_seconds", "AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS")
 	_ = viper.BindEnv("search.url", "AI_AGENT_SEARCH_URL")
 	_ = viper.BindEnv("search.api_key", "FIRECRAWL_API_KEY")
 	_ = viper.BindEnv("langfuse.public_key", "LANGFUSE_PUBLIC_KEY")
@@ -1540,6 +1546,9 @@ func (c *Config) Validate() error {
 	if c.Wiki.TimeoutSeconds < 0 || c.Wiki.SearchTopK < 0 || c.Wiki.FetchMaxItems < 0 || c.Wiki.FetchMaxBytes < 0 || c.Wiki.CircuitBreakerFailureThreshold < 0 || c.Wiki.CircuitBreakerCooldownSeconds < 0 {
 		return fmt.Errorf("wiki timeout and retrieval limits must be >= 0")
 	}
+	if c.Wiki.CandidateCacheMaxTasks < 0 || c.Wiki.CandidateCacheTTLSeconds < 0 {
+		return fmt.Errorf("wiki candidate cache max tasks and TTL must be >= 0")
+	}
 	if c.Wiki.SearchTopK > 10 {
 		return fmt.Errorf("wiki.search_top_k must not exceed 10")
 	}
@@ -1780,7 +1789,7 @@ func (c *Config) Validate() error {
 
 func knownAnswerPipelineStage(stage string) bool {
 	switch strings.TrimSpace(stage) {
-	case "citation_verify", "fact_freshness_check", "numeric_consistency_check", "answer_uncertainty_calibrate", "safety_guard_output":
+	case "citation_verify", "wiki_citation_integrity", "fact_freshness_check", "numeric_consistency_check", "answer_uncertainty_calibrate", "safety_guard_output":
 		return true
 	default:
 		return false

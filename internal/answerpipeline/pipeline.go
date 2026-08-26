@@ -19,7 +19,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/uncertainty"
 )
 
-const Version = "p2-v1"
+const Version = "p2-v3"
 
 type TokenObserver func(types.TokenUsage, string)
 type ReportObserver func(string, *types.AnswerAuditReport)
@@ -120,7 +120,7 @@ func boundedAuditValue(value string, limit int) string {
 
 func isPipelineAuditAction(action string) bool {
 	switch action {
-	case "citation_verify", factfreshness.TraceAction, numericconsistency.TraceAction, uncertainty.TraceAction, "safety_guard_output":
+	case "citation_verify", wikiCitationIntegrityStage, factfreshness.TraceAction, numericconsistency.TraceAction, uncertainty.TraceAction, "safety_guard_output":
 		return true
 	default:
 		return false

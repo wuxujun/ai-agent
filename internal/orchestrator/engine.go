@@ -641,6 +641,7 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	defer func() {
 		if types.IsTerminalTaskStatus(task.Status) {
 			tools.ClearRetrievalContext(task.ID)
+			tools.ReleaseWikiTaskCache(task.ID, task.TenantID)
 		}
 	}()
 	wasCompleted := task.Status == types.StatusCompleted

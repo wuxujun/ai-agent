@@ -203,6 +203,8 @@ export AI_AGENT_WIKI_DEFAULT_SPACE=local
 export AI_AGENT_WIKI_LOCAL_SEARCH_MODE=bm25
 export AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS=30
 export AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES=12
+export AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS=1024
+export AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS=1800
 export AI_AGENT_MULTIAGENT_TEAM=wiki
 ```
 
@@ -223,6 +225,27 @@ candidates. For multi-tenant deployments, configure
 `api.tenants.<tenant>.wiki_space`; use `wiki.default_space` only for a shared or
 single-tenant Wiki. The error `has no api.tenants.<id>.wiki_space and
 wiki.default_space is empty` means neither space setting is present.
+
+Wiki candidate IDs are scoped to tenant and task. Their cache is actively
+released when a task becomes terminal; the maximum-task and TTL settings bound
+state retained for interrupted tasks. `/api/metrics` exposes current entries
+and cumulative terminal-release, expiry, and capacity-eviction counts under
+`wiki.candidate_cache_*`.
+
+Authenticated clients can resolve a citation without treating `wiki://` as a
+network protocol:
+
+```http
+GET /api/wiki/pages/local/concepts/pbl-historical-travel-guide-new-york
+X-API-Key: <tenant credential>
+```
+
+The endpoint returns structured JSON containing the canonical `wiki://` URI
+and Markdown content. The requested Space must equal the tenant's configured
+`wiki_space` (or the shared `wiki.default_space` fallback). Slugs are restricted
+to clean relative Markdown paths; traversal, hidden paths, non-Markdown files,
+and cross-Space reads are rejected. Responses use `private, no-store` and are
+not rendered as HTML.
 
 Task creation may override the process default with `team` when `mode` is
 `multiagent`. To restrict non-admin tenants, set
@@ -300,6 +323,13 @@ Operational checks:
 - `GET /ready` reports Wiki health and `teams.configured`, `healthy`, `active_team`, `team_count`, and invalid reference count. An invalid active Team or tenant Team allowlist reference causes a 503.
 - `GET /api/metrics` reports `wiki.backend_calls`, `backend_errors`, average latency, and circuit-breaker counters to administrators.
 - Multi-Agent logs should show `team=wiki`, then `action=wiki_search`, followed by `action=wiki_fetch` for a successful retrieval.
+- The answer audit includes a deterministic `wiki_citation_integrity` stage. It
+  warns when a Wiki-backed answer has no `wiki://` citation or cites an invalid,
+  cross-space, search-only, or otherwise unfetched URI; it makes no LLM call and
+  remains non-blocking while pipeline enforcement is `observe`. The stage is
+  required by default: under `advisory` the same finding makes the task partial
+  while retaining the answer, and under `strict` it also sets
+  `publishable=false`. Valid fetched citations continue to publish in all modes.
 
 If `wiki_search` is not selected, verify that the service was restarted, the
 Wiki directory/URL exists in the service process environment, the active team

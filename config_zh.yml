@@ -166,6 +166,7 @@ answer_pipeline:
   # 必需阶段失败后的任务状态：partial 或其他受支持策略。
   on_required_stage_failure: partial
   required_stages:
+    - wiki_citation_integrity
     - fact_freshness_check
     - numeric_consistency_check
     - answer_uncertainty_calibrate
@@ -486,6 +487,10 @@ wiki:
   search_top_k: 8
   fetch_max_items: 3
   fetch_max_bytes: 12000
+  # 任务完成时会主动释放候选 ID；以下限制用于兜底清理被中断或遗留的任务；0 使用内置默认值。
+  # 环境变量：AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS / AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS
+  candidate_cache_max_tasks: 1024
+  candidate_cache_ttl_seconds: 1800
   # 连续后端失败达到该阈值后临时拒绝 Wiki 调用；任一值为 0 时禁用熔断。
   circuit_breaker_failure_threshold: 3
   circuit_breaker_cooldown_seconds: 30

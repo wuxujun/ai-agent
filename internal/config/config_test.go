@@ -79,8 +79,11 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RAG.ContextMode != "jit" || cfg.RAG.JITSearchMaxCalls != 2 || cfg.RAG.JITRetrievalMaxCycles != 2 || cfg.RAG.JITFetchMaxItems != 3 || cfg.RAG.JITRAGFetchMaxBytes != 6000 || cfg.RAG.JITMemoryFetchMaxBytes != 2000 {
 		t.Errorf("unexpected RAG JIT defaults: %+v", cfg.RAG)
 	}
-	if cfg.Wiki.URL != "" || cfg.Wiki.LocalSearchMode != "bm25" || cfg.Wiki.LocalRefreshIntervalSeconds != 30 || cfg.Wiki.LocalGraphMaxNodes != 12 || cfg.Wiki.TimeoutSeconds != 15 || cfg.Wiki.SearchTopK != 8 || cfg.Wiki.FetchMaxItems != 3 || cfg.Wiki.FetchMaxBytes != 12000 || cfg.Wiki.CircuitBreakerFailureThreshold != 3 || cfg.Wiki.CircuitBreakerCooldownSeconds != 30 || cfg.Wiki.AllowPrivateNetwork || cfg.Wiki.Required {
+	if cfg.Wiki.URL != "" || cfg.Wiki.LocalSearchMode != "bm25" || cfg.Wiki.LocalRefreshIntervalSeconds != 30 || cfg.Wiki.LocalGraphMaxNodes != 12 || cfg.Wiki.TimeoutSeconds != 15 || cfg.Wiki.SearchTopK != 8 || cfg.Wiki.FetchMaxItems != 3 || cfg.Wiki.FetchMaxBytes != 12000 || cfg.Wiki.CandidateCacheMaxTasks != 1024 || cfg.Wiki.CandidateCacheTTLSeconds != 1800 || cfg.Wiki.CircuitBreakerFailureThreshold != 3 || cfg.Wiki.CircuitBreakerCooldownSeconds != 30 || cfg.Wiki.AllowPrivateNetwork || cfg.Wiki.Required {
 		t.Errorf("unexpected Wiki defaults: %+v", cfg.Wiki)
+	}
+	if len(cfg.AnswerPipeline.RequiredStages) == 0 || cfg.AnswerPipeline.RequiredStages[0] != "wiki_citation_integrity" {
+		t.Errorf("unexpected answer pipeline required stages: %v", cfg.AnswerPipeline.RequiredStages)
 	}
 	if cfg.LLM.PlannerTraceMaxItems != 4 || cfg.LLM.PlannerObservationMaxChars != 800 || cfg.LLM.PlannerEvidenceMaxItems != 8 || cfg.LLM.PlannerEvidenceLineMaxChars != 300 || cfg.LLM.PlannerTraceMaxChars != 5000 {
 		t.Errorf("unexpected planner trace budget defaults: %+v", cfg.LLM)
@@ -115,6 +118,8 @@ func TestValidateWikiSettings(t *testing.T) {
 		func(cfg *Config) { cfg.Wiki.SearchTopK = 11 },
 		func(cfg *Config) { cfg.Wiki.FetchMaxItems = 11 },
 		func(cfg *Config) { cfg.Wiki.FetchMaxBytes = -1 },
+		func(cfg *Config) { cfg.Wiki.CandidateCacheMaxTasks = -1 },
+		func(cfg *Config) { cfg.Wiki.CandidateCacheTTLSeconds = -1 },
 		func(cfg *Config) { cfg.Wiki.CircuitBreakerFailureThreshold = -1 },
 		func(cfg *Config) { cfg.Wiki.CircuitBreakerCooldownSeconds = -1 },
 		func(cfg *Config) { cfg.Wiki.LocalSearchMode = "semantic" },
@@ -150,9 +155,11 @@ func TestWikiLocalSearchModeEnvironmentOverride(t *testing.T) {
 	t.Setenv("AI_AGENT_WIKI_LOCAL_SEARCH_MODE", "bm25")
 	t.Setenv("AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS", "45")
 	t.Setenv("AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES", "20")
+	t.Setenv("AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS", "64")
+	t.Setenv("AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS", "90")
 
 	cfg := LoadConfig()
-	if cfg.Wiki.LocalSearchMode != "bm25" || cfg.Wiki.LocalRefreshIntervalSeconds != 45 || cfg.Wiki.LocalGraphMaxNodes != 20 {
+	if cfg.Wiki.LocalSearchMode != "bm25" || cfg.Wiki.LocalRefreshIntervalSeconds != 45 || cfg.Wiki.LocalGraphMaxNodes != 20 || cfg.Wiki.CandidateCacheMaxTasks != 64 || cfg.Wiki.CandidateCacheTTLSeconds != 90 {
 		t.Fatalf("wiki local settings = %+v", cfg.Wiki)
 	}
 }
@@ -923,6 +930,12 @@ func TestValidateAPITenants(t *testing.T) {
 	cfg.API.Tenants["tenant-b"] = APITenantConfig{APIKey: "other-key", DefaultMultiAgentTeam: " wiki", AllowedMultiAgentTeams: []string{"wiki"}}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "default_multiagent_team must be trimmed") {
 		t.Fatalf("untrimmed tenant default error = %v", err)
+	}
+}
+
+func TestKnownAnswerPipelineStageIncludesWikiCitationIntegrity(t *testing.T) {
+	if !knownAnswerPipelineStage("wiki_citation_integrity") {
+		t.Fatal("wiki_citation_integrity should be configurable as an answer pipeline stage")
 	}
 }
 

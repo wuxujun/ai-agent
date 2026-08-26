@@ -23,6 +23,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"github.com/wuxujun/ai-agent/internal/wiki"
 )
 
 var log = logger.Component("api")
@@ -59,11 +60,18 @@ type Handler struct {
 	// so the executing instance can pick them up.
 	approvalBus *orchestrator.ApprovalBus
 	wikiReady   WikiReadinessChecker
+	wikiPages   WikiPageReader
 }
 
 // WikiReadinessChecker probes the configured read-only Wiki dependency.
 type WikiReadinessChecker interface {
 	Check(context.Context) error
+}
+
+// WikiPageReader is the read-only page boundary used by the authenticated
+// browser API. Implementations retain their normal path and backend checks.
+type WikiPageReader interface {
+	Read(context.Context, wiki.Document, string) (wiki.Document, error)
 }
 
 type wikiStatusProvider interface {
@@ -157,6 +165,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		sessions.GET("/:id/memories", h.listSessionMemories)
 	}
 	api.GET("/metrics", AdminMiddleware(), h.getMetrics)
+	api.GET("/wiki/pages/:space/*slug", h.getWikiPage)
 	api.GET("/usage", h.getTenantUsage)
 	api.GET("/teams", h.listTeams)
 	api.PATCH("/teams/:name/lifecycle", AdminMiddleware(), h.updateTeamLifecycle)
@@ -220,6 +229,9 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 // called during application construction, before the HTTP server starts.
 func (h *Handler) SetWikiReadinessChecker(checker WikiReadinessChecker) {
 	h.wikiReady = checker
+	if reader, ok := checker.(WikiPageReader); ok {
+		h.wikiPages = reader
+	}
 }
 
 // Wait blocks until all background run-all goroutines complete. Call during shutdown.

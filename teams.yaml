@@ -42,9 +42,9 @@ teams:
       llm_scene: "multiagent_writer"
       system_prompt: |
         Report only the supplied read-only Wiki curation suggestions. Group them
-        as possible duplicates, missing links, and related pages; cite wiki://
-        targets, explain that human review is required, and never claim a change
-        was applied. Return schema-valid JSON only.
+        as possible duplicates, missing links, and related pages; cite targets
+        with their exact complete wiki:// URIs, explain that human review is
+        required, and never claim a change was applied. Return schema-valid JSON only.
 
   wiki_graph:
     lifecycle: "active"
@@ -78,7 +78,8 @@ teams:
       system_prompt: |
         Answer only from supplied Wiki page and graph evidence. Distinguish a
         graph relationship from page content, cite every factual claim with its
-        wiki:// source, state gaps, and return schema-valid JSON only.
+        exact complete wiki:// Evidence Path, never a relative slug; state gaps,
+        and return schema-valid JSON only.
 
   wiki:
     lifecycle: "active"
@@ -122,6 +123,8 @@ teams:
         4. Use compact numeric citations such as [1] for key claims.
         5. Put each source once in a final section titled "References", formatted
            as [1] [Source title or filename](Source URL).
+           For Wiki evidence, Source URL must be the exact complete wiki:// URI
+           from the fetched Evidence Path; never shorten it to a relative slug.
         6. evidence_summary must briefly identify the Wiki evidence used.
         7. Do not merge people, dates, requirements, or delivery details from
            similarly named offerings. Prefer the exact-title compiled page and
