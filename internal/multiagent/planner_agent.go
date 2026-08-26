@@ -226,7 +226,7 @@ func (p *PlannerAgent) Plan(ctx context.Context, goal, workspace string, memorie
 	callCtx := llmcore.WithPromptBinding(ctx, resolvedPrompt.Binding)
 	systemPrompt := withPlannerArtifactPolicy(resolvedPrompt.Content)
 	if hasConfiguredPrompt(activeTeam.Planner) {
-		log.Info("Using team-configured system prompt for PlannerAgent", "task_id", taskID, "team", teamSnapshot.ActiveTeam, "agent_name", activeTeam.Planner.Name, "prompt_name", activeTeam.Planner.PromptName)
+		log.Info("Using team-configured system prompt for PlannerAgent", "task_id", taskID, "agent_name", activeTeam.Planner.Name, "prompt_name", activeTeam.Planner.PromptName)
 	}
 	if activeTeam.Planner.Provider != "" || activeTeam.Planner.Model != "" || activeTeam.Planner.LLMScene != "" {
 		cfg = GetLLMConfig(activeTeam.Planner, config.LLMSceneMultiAgentPlanner)
@@ -330,7 +330,7 @@ func (p *PlannerAgent) Replan(ctx context.Context, goal, workspace string, trace
 		}
 		promptBinding = resolvedPrompt.Binding
 		systemPrompt = withPlannerArtifactPolicy(resolvedPrompt.Content) + "\n\nCRITICAL: One of the previous execution steps has FAILED. You must analyze the execution history, explain in thought_summary why it failed, and generate revised next steps to achieve the goal. Do not repeat the exact same failed step unless you use different arguments or parameters."
-		log.Info("Using team-configured system prompt for ReplannerAgent", "task_id", taskID, "team", teamSnapshot.ActiveTeam, "agent_name", activeTeam.Planner.Name, "prompt_name", activeTeam.Planner.PromptName)
+		log.Info("Using team-configured system prompt for ReplannerAgent", "task_id", taskID, "agent_name", activeTeam.Planner.Name, "prompt_name", activeTeam.Planner.PromptName)
 	} else {
 		resolvedPrompt, promptErr := resolveAgentPromptDetailsForTask(ctx, AgentConfig{}, "multiagent_replanner_prompt", replannerSystemPrompt)
 		if promptErr != nil {

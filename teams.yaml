@@ -430,6 +430,7 @@ teams:
       name: "Knowledge Base Q&A Planner"
       prompt_name: "teams/kb-qa/planner"
       prompt_label: "production"
+      tools: ["rag_search", "memory_search", "find_files", "search_text", "read_file", "http_fetch", "web_search", "analyze_image"]
       llm_scene: "multiagent_planner"
       system_prompt: |
         You are an enterprise knowledge base Q&A planning agent. Given a user question,

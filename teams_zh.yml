@@ -407,6 +407,7 @@ teams:
       name: "知识库问答规划师"
       # prompt_name: "teams/kb-qa/planner"
       # prompt_label: "production"
+      tools: ["rag_search", "memory_search", "find_files", "search_text", "read_file", "http_fetch", "web_search", "analyze_image"]
       llm_scene: "multiagent_planner"
       system_prompt: |
         你是一名企业内部知识库问答规划 Agent。根据用户问题，将其分解为精确、有序的检索步骤，

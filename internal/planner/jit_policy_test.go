@@ -96,6 +96,48 @@ func TestPreferredJITSearchActionPrefersConfiguredWikiDirectory(t *testing.T) {
 	}
 }
 
+func TestPreferredJITSearchActionHonorsKBQARAGFirstPolicy(t *testing.T) {
+	tools.Register(jitWikiSearchStub{})
+	t.Cleanup(func() { tools.Unregister("wiki_search") })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+		cfg.Wiki.Directory = "/tmp/read-only-wiki"
+	}))
+	action, ok := PreferredJITSearchAction(&types.Task{Team: "kb_qa", Goal: "学术顾问？"})
+	if !ok || action != "rag_search" {
+		t.Fatalf("kb_qa routed to %q, ok=%t; want rag_search", action, ok)
+	}
+}
+
+func TestPreferredJITSearchActionLetsKBQAFallBackToWiki(t *testing.T) {
+	tools.Register(jitWikiSearchStub{})
+	t.Cleanup(func() { tools.Unregister("wiki_search") })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = ""
+		cfg.Wiki.Directory = "/tmp/read-only-wiki"
+	}))
+	action, ok := PreferredJITSearchAction(&types.Task{Team: "kb_qa", Goal: "学术顾问？"})
+	if !ok || action != "wiki_search" {
+		t.Fatalf("kb_qa fallback routed to %q, ok=%t; want wiki_search", action, ok)
+	}
+}
+
+func TestPreferredJITSearchActionKeepsWikiTeamOnWiki(t *testing.T) {
+	tools.Register(jitWikiSearchStub{})
+	t.Cleanup(func() { tools.Unregister("wiki_search") })
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.RAG.ContextMode = "jit"
+		cfg.RAG.SearchURL = "https://rag.test/mcp"
+		cfg.Wiki.Directory = "/tmp/read-only-wiki"
+	}))
+	action, ok := PreferredJITSearchAction(&types.Task{Team: "wiki", Goal: "学术顾问？"})
+	if !ok || action != "wiki_search" {
+		t.Fatalf("wiki team routed to %q, ok=%t; want wiki_search", action, ok)
+	}
+}
+
 func TestNextJITRetrievalDecisionFetchesWikiCandidates(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"

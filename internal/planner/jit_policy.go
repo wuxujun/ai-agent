@@ -132,8 +132,8 @@ func samePlanDecision(left, right *PlanDecision) bool {
 }
 
 // PreferredJITSearchAction returns the deterministic first retrieval action for
-// an external factual lookup. RAG is preferred when configured; local memory is
-// the compatibility fallback when no current external endpoint is available.
+// an external factual lookup. Team-specific source policy is applied before the
+// legacy process-wide fallback so JIT routing cannot bypass a Team's contract.
 func PreferredJITSearchAction(task *types.Task) (string, bool) {
 	if task == nil || !strings.EqualFold(strings.TrimSpace(config.Get().RAG.ContextMode), "jit") || !RequiresFactualEvidence(task) {
 		return "", false
@@ -141,11 +141,19 @@ func PreferredJITSearchAction(task *types.Task) (string, bool) {
 	if goalExplicitlyTargetsMemory(task.Goal) {
 		return "memory_search", true
 	}
+	team := strings.ToLower(strings.TrimSpace(task.Team))
+	if team == "kb_qa" && strings.TrimSpace(config.Get().RAG.SearchURL) != "" {
+		return "rag_search", true
+	}
 	wikiConfig := config.Get().Wiki
-	if strings.TrimSpace(wikiConfig.URL) != "" || strings.TrimSpace(wikiConfig.Directory) != "" {
+	wikiReady := strings.TrimSpace(wikiConfig.URL) != "" || strings.TrimSpace(wikiConfig.Directory) != ""
+	if wikiReady {
 		if _, ready := tools.Get("wiki_search"); ready {
 			return "wiki_search", true
 		}
+	}
+	if team == "wiki" || team == "wiki_graph" || team == "wiki_suggest" {
+		return "", false
 	}
 	if strings.TrimSpace(config.Get().RAG.SearchURL) != "" {
 		return "rag_search", true

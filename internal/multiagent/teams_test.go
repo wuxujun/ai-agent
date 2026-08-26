@@ -67,6 +67,27 @@ func TestTeamsConfig_WikiSuggestToolBoundary(t *testing.T) {
 	}
 }
 
+func TestTeamsConfig_KBQAExcludesWikiTools(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.MultiAgent.Team = "kb_qa" }))
+
+	cfg := multiagent.GetTeamsConfig()
+	team := cfg.GetActiveTeam()
+	tools := make(map[string]bool, len(team.Planner.Tools))
+	for _, tool := range team.Planner.Tools {
+		tools[tool] = true
+	}
+	for _, required := range []string{"rag_search", "memory_search"} {
+		if !tools[required] {
+			t.Fatalf("kb_qa planner tools missing %q: %v", required, team.Planner.Tools)
+		}
+	}
+	for _, forbidden := range []string{"wiki_search", "wiki_graph", "wiki_suggest"} {
+		if tools[forbidden] {
+			t.Fatalf("kb_qa planner exposes Wiki tool %q: %v", forbidden, team.Planner.Tools)
+		}
+	}
+}
+
 func TestListTeamSummariesIsSortedAndRedacted(t *testing.T) {
 	summaries := multiagent.ListTeamSummaries()
 	if len(summaries) == 0 {

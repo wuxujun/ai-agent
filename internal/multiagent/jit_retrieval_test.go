@@ -207,15 +207,18 @@ func TestWikiSuggestWriterReceivesOnlySuggestionEvidence(t *testing.T) {
 }
 
 func TestCoordinatorRewritesDriftingFactualPlanToRAG(t *testing.T) {
+	tools.Register(wikiOnlySearchStub{})
+	t.Cleanup(func() { tools.Unregister("wiki_search") })
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.RAG.ContextMode = "jit"
 		cfg.RAG.SearchURL = "https://rag.test/mcp"
 		cfg.RAG.JITFetchMaxItems = 2
+		cfg.Wiki.Directory = "/tmp/read-only-wiki"
 	}))
 	researcher := &jitResearcher{}
 	plannerCalls := 0
 	coordinator := &Coordinator{Planner: driftingJITPlanner{calls: &plannerCalls}, Researcher: researcher, Writer: jitWriter{}}
-	task := &types.Task{ID: "multiagent-jit-drift", Goal: "数学科学术顾问有哪个人？", Status: types.StatusCreated, MaxSteps: 10, ToolBudget: 10, Workspace: "."}
+	task := &types.Task{ID: "multiagent-jit-drift", Team: "kb_qa", Goal: "数学科学术顾问有哪个人？", Status: types.StatusCreated, MaxSteps: 10, ToolBudget: 10, Workspace: "."}
 	if err := coordinator.Run(context.Background(), task); err != nil {
 		t.Fatalf("coordinator run: %v", err)
 	}

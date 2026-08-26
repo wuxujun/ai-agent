@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -16,7 +17,7 @@ import (
 func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error {
 	ctx, span := tracer.Start(ctx, "engine.next_multiagent")
 	defer span.End()
-	teamName := multiagent.GetTeamsConfig().ActiveTeam
+	teamName := multiAgentTeamName(task)
 
 	span.SetAttributes(
 		attribute.String("agent.task.id", task.ID),
@@ -58,6 +59,18 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 		"steps", task.StepCount,
 	)
 	return nil
+}
+
+// multiAgentTeamName returns the task-pinned Team used by the Coordinator.
+// The process default is only a compatibility fallback for legacy tasks that
+// were created without an explicit Team.
+func multiAgentTeamName(task *types.Task) string {
+	if task != nil {
+		if team := strings.TrimSpace(task.Team); team != "" {
+			return team
+		}
+	}
+	return multiagent.GetTeamsConfig().ActiveTeam
 }
 
 // CanResumeTask identifies the narrow terminal-state exception used for a

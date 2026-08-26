@@ -739,7 +739,7 @@ func (c *Coordinator) runPlanPhase(ctx context.Context, task *types.Task) (*Rese
 		log.Info("Adjusted research plan to JIT retrieval route", "task_id", task.ID, "action", plan.Steps[0].Action)
 	}
 	if enforceControlledWikiInitialPlan(ctx, task, plan) {
-		log.Info("Reduced controlled Wiki initial plan to one search", "task_id", task.ID, "team", teamConfigFromContext(ctx).ActiveTeam)
+		log.Info("Reduced controlled Wiki initial plan to one search", "task_id", task.ID)
 	}
 	if enforceWorkspaceResearchPlan(task, plan) {
 		log.Info("Adjusted research plan to workspace discovery route", "task_id", task.ID)
