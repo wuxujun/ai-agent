@@ -137,9 +137,11 @@ func TestPublishStillDeliversToLiveSubscribers(t *testing.T) {
 
 func TestTerminalStepEventIncludesAggregatedTokenUsage(t *testing.T) {
 	task := &types.Task{
-		ID:          "task-token-event",
-		Status:      types.StatusCompleted,
-		FinalAnswer: "done",
+		ID:           "task-token-event",
+		Status:       types.StatusCompleted,
+		FinalAnswer:  "done",
+		ErrorCode:    "sample_error",
+		ErrorMessage: "Sample public error.",
 		Trace: []types.StepTrace{
 			{TokenUsage: types.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
 			{TokenUsage: types.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
@@ -149,6 +151,9 @@ func TestTerminalStepEventIncludesAggregatedTokenUsage(t *testing.T) {
 	event := terminalStepEvent(task.ID, task)
 	if event.TokenUsage == nil {
 		t.Fatal("terminal event TokenUsage is nil")
+	}
+	if event.ErrorCode != task.ErrorCode || event.ErrorMessage != task.ErrorMessage {
+		t.Fatalf("terminal error = %q/%q, want %q/%q", event.ErrorCode, event.ErrorMessage, task.ErrorCode, task.ErrorMessage)
 	}
 	if event.TokenUsage.PromptTokens != 17 ||
 		event.TokenUsage.CompletionTokens != 8 ||

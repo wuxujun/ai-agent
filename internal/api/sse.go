@@ -15,13 +15,15 @@ import (
 
 // StepEvent is a Server-Sent Event payload pushed to the client after each step.
 type StepEvent struct {
-	TaskID     string                 `json:"task_id"`
-	Status     types.TaskStatus       `json:"status"`
-	Step       *types.StepTrace       `json:"step,omitempty"`
-	Final      string                 `json:"final_answer,omitempty"`
-	Token      string                 `json:"token,omitempty"` // For streaming tokens
-	TokenUsage *types.TokenUsage      `json:"token_usage,omitempty"`
-	Approval   *types.ApprovalRequest `json:"approval,omitempty"`
+	TaskID       string                 `json:"task_id"`
+	Status       types.TaskStatus       `json:"status"`
+	Step         *types.StepTrace       `json:"step,omitempty"`
+	Final        string                 `json:"final_answer,omitempty"`
+	ErrorCode    string                 `json:"error_code,omitempty"`
+	ErrorMessage string                 `json:"error_message,omitempty"`
+	Token        string                 `json:"token,omitempty"` // For streaming tokens
+	TokenUsage   *types.TokenUsage      `json:"token_usage,omitempty"`
+	Approval     *types.ApprovalRequest `json:"approval,omitempty"`
 }
 
 func (e StepEvent) isTerminal() bool {
@@ -232,10 +234,12 @@ func (h *Handler) streamTask(c *gin.Context) {
 func terminalStepEvent(taskID string, task *types.Task) StepEvent {
 	usage := aggregateTokenUsage(task)
 	return StepEvent{
-		TaskID:     taskID,
-		Status:     task.Status,
-		Final:      task.FinalAnswer,
-		TokenUsage: &usage,
+		TaskID:       taskID,
+		Status:       task.Status,
+		Final:        task.FinalAnswer,
+		ErrorCode:    task.ErrorCode,
+		ErrorMessage: task.ErrorMessage,
+		TokenUsage:   &usage,
 	}
 }
 

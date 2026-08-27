@@ -120,6 +120,8 @@ type Task struct {
 	LLMEstimatedCostUSD float64            `json:"llm_estimated_cost_usd"`
 	Trace               []StepTrace        `json:"trace"`
 	FinalAnswer         string             `json:"final_answer"`
+	ErrorCode           string             `json:"error_code,omitempty"`
+	ErrorMessage        string             `json:"error_message,omitempty"`
 	Memories            []Memory           `json:"memories,omitempty"`
 	AnswerAudit         *AnswerAuditReport `json:"answer_audit,omitempty"`
 }

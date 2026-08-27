@@ -748,11 +748,24 @@ func TestCancelTask_Active(t *testing.T) {
 	if wCancel.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", wCancel.Code)
 	}
+	var cancelResponse struct {
+		ErrorCode    string `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+	}
+	if err := json.Unmarshal(wCancel.Body.Bytes(), &cancelResponse); err != nil {
+		t.Fatal(err)
+	}
+	if cancelResponse.ErrorCode != "task_canceled" || cancelResponse.ErrorMessage != "Task was canceled via API." {
+		t.Fatalf("cancel response error = %q/%q", cancelResponse.ErrorCode, cancelResponse.ErrorMessage)
+	}
 
 	// Verify that the task status is failed/canceled in the store
 	updatedTask := waitForTaskStatus(t, st, "task-active", types.StatusFailed)
 	if updatedTask.Status != types.StatusFailed {
 		t.Errorf("expected status failed, got %s", updatedTask.Status)
+	}
+	if updatedTask.FinalAnswer != "" || updatedTask.ErrorCode != "task_canceled" || updatedTask.ErrorMessage != "Task was canceled via API." {
+		t.Fatalf("stored cancellation = answer %q code %q message %q", updatedTask.FinalAnswer, updatedTask.ErrorCode, updatedTask.ErrorMessage)
 	}
 }
 

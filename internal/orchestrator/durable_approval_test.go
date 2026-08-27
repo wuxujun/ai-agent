@@ -302,3 +302,14 @@ func TestRunAllCancellationPreservesDurableAwaitingApproval(t *testing.T) {
 		t.Fatalf("task cancellation state = status %s answer %q", task.Status, task.FinalAnswer)
 	}
 }
+
+func TestRecoverableApprovalTaskRecognizesStructuredCancellation(t *testing.T) {
+	for _, code := range []string{"task_canceled", "client_disconnected", "execution_timeout"} {
+		t.Run(code, func(t *testing.T) {
+			task := &types.Task{Status: types.StatusFailed, ErrorCode: code}
+			if !isRecoverableApprovalTask(task) {
+				t.Fatalf("structured cancellation %q should remain recoverable", code)
+			}
+		})
+	}
+}

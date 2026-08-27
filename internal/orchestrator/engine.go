@@ -692,7 +692,10 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 			}
 			safeFailure := sanitize.Secrets(err.Error())
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				safeFailure = "task canceled: " + safeFailure
+				engineLog.Info("task execution canceled", "task_id", task.ID, "error", safeFailure)
+				code, message := cancellationResult(ctx)
+				_ = SetTaskCanceled(task, code, message)
+				return
 			}
 			engineLog.Error("step execution failed", "task_id", task.ID, "error", safeFailure)
 			_ = SetTaskFailed(task, safeFailure)
@@ -824,7 +827,15 @@ func isRecoverableApprovalTask(task *types.Task) bool {
 	if task.Status == types.StatusAwaitingApproval {
 		return true
 	}
-	return task.Status == types.StatusFailed && strings.Contains(strings.ToLower(task.FinalAnswer), "context canceled")
+	if task.Status != types.StatusFailed {
+		return false
+	}
+	switch task.ErrorCode {
+	case "task_canceled", "client_disconnected", "execution_timeout":
+		return true
+	default:
+		return strings.Contains(strings.ToLower(task.FinalAnswer), "context canceled")
+	}
 }
 
 // recentSessionMemories provides read-after-completion semantics even while
@@ -1532,7 +1543,8 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 			span.RecordError(ctx.Err())
 			span.SetStatus(codes.Error, "context canceled")
 			if !e.preserveDurableApprovalOnCancellation(task, ctx.Err()) {
-				_ = SetTaskFailed(task, "task canceled: "+ctx.Err().Error())
+				code, message := cancellationResult(ctx)
+				_ = SetTaskCanceled(task, code, message)
 			}
 			return ctx.Err()
 		default:
@@ -1544,6 +1556,14 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "run_all failed")
 			return err
+		}
+		if ctx.Err() != nil {
+			engineLog.Warn("task canceled after execution step", "task_id", task.ID, "error", ctx.Err())
+			if !e.preserveDurableApprovalOnCancellation(task, ctx.Err()) {
+				code, message := cancellationResult(ctx)
+				_ = SetTaskCanceled(task, code, message)
+			}
+			return ctx.Err()
 		}
 
 		if e.Store != nil {
@@ -1570,6 +1590,19 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	engineLog.Info("task finished", "task_id", task.ID, "status", string(task.Status), "final_answer", task.FinalAnswer)
 	span.SetAttributes(attribute.Int("agent.task.final_answer_chars", len([]rune(task.FinalAnswer))))
 	return nil
+}
+
+func cancellationResult(ctx context.Context) (string, string) {
+	if errors.Is(executionCancellationCause(ctx), ErrClientDisconnected) {
+		return "client_disconnected", "Task was canceled because the streaming client disconnected."
+	}
+	if errors.Is(executionCancellationCause(ctx), ErrTaskCanceledViaAPI) {
+		return "task_canceled", "Task was canceled via API."
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "execution_timeout", "Task execution timed out."
+	}
+	return "task_canceled", "Task was canceled."
 }
 
 func stepFindTextFiles(ctx context.Context, task *types.Task) error {

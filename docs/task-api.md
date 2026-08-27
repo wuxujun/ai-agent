@@ -174,11 +174,16 @@ curl -sS \
 
 关键响应字段包括：
 
-- `status`、`final_answer`、`trace`；
+- `status`、`final_answer`、`error_code`、`error_message`、`trace`；
 - `team`、`team_selection_source`、`team_config_digest`；
 - `step_count`、`tool_budget`、`token_budget`；
 - `llm_calls`、`llm_estimated_cost_usd`；
 - `answer_audit`（启用答案流水线时）。
+
+任务因客户端断开、主动取消或执行超时而失败时，`final_answer` 保持为空，
+对外错误分别通过 `error_code` 和 `error_message` 返回。上游地址、内部场景名及
+原始 LLM 错误只记录在服务日志中，不写入 Task 响应。其他业务失败继续保留原有
+`final_answer` 兼容行为。
 
 ### 5.2 查询 Task 列表
 
@@ -232,8 +237,9 @@ curl -N \
 ```json
 {
   "task_id": "task-demo-001",
-  "status": "completed",
-  "final_answer": "...",
+  "status": "failed",
+  "error_code": "client_disconnected",
+  "error_message": "Task was canceled because the streaming client disconnected.",
   "token_usage": {
     "prompt_tokens": 100,
     "completion_tokens": 50,
@@ -288,6 +294,17 @@ curl -sS \
   -X DELETE \
   -H "X-API-Key: ${API_KEY}" \
   "${API_BASE_URL}/api/tasks/${TASK_ID}/cancel"
+```
+
+本实例内的活动 Task 接受取消信号后返回：
+
+```json
+{
+  "message": "task cancellation signal sent",
+  "task_id": "task-demo-001",
+  "error_code": "task_canceled",
+  "error_message": "Task was canceled via API."
+}
 ```
 
 本实例运行中的 Task 通常返回 `200`。集群模式下远端取消信号可能返回 `202`。Task 不存在返回 `404`；非运行状态返回 `400`。

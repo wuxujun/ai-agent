@@ -883,7 +883,10 @@ func (h *Handler) runAll(c *gin.Context) {
 	bgBase := context.WithoutCancel(c.Request.Context())
 	bgCtx, bgCancel := orchestrator.WithPausableTimeout(bgBase, timeout)
 	owner := uuid.NewString()
-	run := &activeRun{cancel: bgCancel, owner: owner}
+	run := &activeRun{
+		cancel: func() { orchestrator.CancelExecution(bgCtx, orchestrator.ErrTaskCanceledViaAPI) },
+		owner:  owner,
+	}
 
 	h.activeTasksMu.Lock()
 	if _, exists := h.activeTasks[task.ID]; exists {
@@ -1001,7 +1004,7 @@ func (h *Handler) runAll(c *gin.Context) {
 			limit = 10
 		}
 		if !h.taskSem.Acquire(bgCtx, limit) {
-			_ = orchestrator.SetTaskFailed(task, "task canceled: "+bgCtx.Err().Error())
+			_ = orchestrator.SetTaskCanceled(task, "task_canceled", "Task was canceled.")
 			saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer saveCancel()
 			if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
@@ -1070,7 +1073,7 @@ func (h *Handler) runAll(c *gin.Context) {
 			select {
 			case <-clientGone:
 				log.Info("stream run-all: client disconnected, cancelling task", "task_id", task.ID)
-				bgCancel()
+				orchestrator.CancelExecution(bgCtx, orchestrator.ErrClientDisconnected)
 				return
 			case <-errChan:
 				// Drain any remaining events
@@ -1695,8 +1698,10 @@ func (h *Handler) cancelTask(c *gin.Context) {
 
 	if h.CancelTaskByID(taskID) {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "task cancellation signal sent",
-			"task_id": taskID,
+			"message":       "task cancellation signal sent",
+			"task_id":       taskID,
+			"error_code":    "task_canceled",
+			"error_message": "Task was canceled via API.",
 		})
 		return
 	}
@@ -1728,8 +1733,10 @@ func (h *Handler) cancelTask(c *gin.Context) {
 	}
 
 	if task.Status == types.StatusRunning {
-		task.Status = types.StatusFailed
-		task.FinalAnswer = "Failed: task canceled via API"
+		if err := orchestrator.SetTaskCanceled(task, "task_canceled", "Task was canceled via API."); err != nil {
+			c.Error(err)
+			return
+		}
 		if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
 			c.Error(saveErr)
 			return

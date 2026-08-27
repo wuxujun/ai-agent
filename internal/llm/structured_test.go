@@ -40,6 +40,13 @@ func (f *fallbackCaller) CallJSON(_ context.Context, cfg Config, _, _ string, _ 
 
 type retryCaller struct{ calls int }
 
+type canceledFallbackCaller struct{ calls []string }
+
+func (c *canceledFallbackCaller) CallJSON(_ context.Context, cfg Config, _, _ string, _ map[string]any, _ any) (types.TokenUsage, error) {
+	c.calls = append(c.calls, cfg.Scene)
+	return types.TokenUsage{}, context.Canceled
+}
+
 func (r *retryCaller) CallJSON(_ context.Context, _ Config, _, _ string, _ map[string]any, _ any) (types.TokenUsage, error) {
 	r.calls++
 	if r.calls == 1 {
@@ -157,6 +164,22 @@ func TestCallJSONFallsBackAndCombinesUsage(t *testing.T) {
 	}
 	if len(capture.reliabilityEvents) != 1 || capture.reliabilityEvents[0].Kind != ReliabilityFallbackSucceeded {
 		t.Fatalf("reliability events = %+v", capture.reliabilityEvents)
+	}
+}
+
+func TestCallJSONDoesNotFallbackAfterCancellation(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{"fallback": {Model: "backup"}}
+	}))
+	caller := &canceledFallbackCaller{}
+	runtime := NewRuntime(caller, nil)
+
+	_, err := runtime.CallJSON(context.Background(), Config{Scene: "primary", Provider: "openai", Model: "primary", FallbackScene: "fallback"}, "system", "user", nil, &struct{}{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CallJSON error = %v, want context.Canceled", err)
+	}
+	if len(caller.calls) != 1 || caller.calls[0] != "primary" {
+		t.Fatalf("LLM scenes called = %v, want primary only", caller.calls)
 	}
 }
 

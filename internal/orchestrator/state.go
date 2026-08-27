@@ -53,6 +53,8 @@ func SetTaskPartial(task *types.Task, finalAnswer, completionReason string) erro
 		"total_tokens", usage.TotalTokens,
 	)
 	task.FinalAnswer = finalAnswer
+	task.ErrorCode = ""
+	task.ErrorMessage = ""
 	return nil
 }
 
@@ -75,6 +77,8 @@ func SetTaskCompleted(task *types.Task, finalAnswer string) error {
 		"total_tokens", usage.TotalTokens,
 	)
 	task.FinalAnswer = finalAnswer
+	task.ErrorCode = ""
+	task.ErrorMessage = ""
 	return nil
 }
 
@@ -85,5 +89,22 @@ func SetTaskFailed(task *types.Task, reason string) error {
 	}
 	log.Error("task marked as failed", "task_id", task.ID, "reason", reason)
 	task.FinalAnswer = "Failed: " + reason
+	task.ErrorCode = ""
+	task.ErrorMessage = ""
+	return nil
+}
+
+// SetTaskCanceled records a cancellation without exposing internal execution
+// details through the user-facing final_answer field.
+func SetTaskCanceled(task *types.Task, code, message string) error {
+	if task.Status != types.StatusFailed {
+		if err := TransitionTask(task, types.StatusFailed); err != nil {
+			return err
+		}
+	}
+	log.Info("task marked as canceled", "task_id", task.ID, "error_code", code)
+	task.FinalAnswer = ""
+	task.ErrorCode = code
+	task.ErrorMessage = message
 	return nil
 }

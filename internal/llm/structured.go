@@ -410,7 +410,9 @@ func (r *Runtime) callStructured(ctx context.Context, cfg Config, visited map[st
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		var streamErr *streamingOutputError
-		if cfg.FallbackScene != "" && !visited[cfg.FallbackScene] && !IsTaskBudgetError(err) && !errors.As(err, &streamErr) {
+		if cfg.FallbackScene != "" && !visited[cfg.FallbackScene] && !IsTaskBudgetError(err) &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil &&
+			!errors.As(err, &streamErr) {
 			visited[cfg.Scene] = true
 			visited[cfg.FallbackScene] = true
 			span.SetAttributes(attribute.Bool("llm.fallback.triggered", true), attribute.String("llm.fallback.scene", cfg.FallbackScene))
