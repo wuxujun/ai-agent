@@ -11,6 +11,7 @@ dist
 /logs
 /sample
 /notes
+/.worktrees/
 # Local Langfuse deployment checkout (tracked submodule changes remain visible).
 /deploy/langfuse/
 AGENTS.md
