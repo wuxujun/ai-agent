@@ -277,6 +277,10 @@ func parseGoldClaims(content []byte, scope Scope, pageURI string) ([]GoldClaim, 
 		for _, match := range matches {
 			claim.EvidenceURIs = append(claim.EvidenceURIs, match[1])
 		}
+		withoutEvidence := evidenceLinkPattern.ReplaceAllString(body, "")
+		if strings.Contains(withoutEvidence, "[evidence]") {
+			return nil, fmt.Errorf("line %d has malformed evidence citation", lineNumber+1)
+		}
 		supersedes := supersedesPattern.FindAllStringSubmatch(body, -1)
 		if len(supersedes) > 1 {
 			return nil, fmt.Errorf("line %d has multiple supersedes URIs", lineNumber+1)
@@ -284,8 +288,7 @@ func parseGoldClaims(content []byte, scope Scope, pageURI string) ([]GoldClaim, 
 		if len(supersedes) == 1 {
 			claim.Supersedes = supersedes[0][1]
 		}
-		text := evidenceLinkPattern.ReplaceAllString(body, "")
-		text = supersedesPattern.ReplaceAllString(text, "")
+		text := supersedesPattern.ReplaceAllString(withoutEvidence, "")
 		claim.Text = strings.TrimSpace(text)
 		claims = append(claims, claim)
 	}
@@ -405,12 +408,16 @@ func collectProjectSources(project *ProjectCorpus, sources map[string][]corpusSo
 		if _, exists := sessions[session.ID]; exists {
 			return fmt.Errorf("duplicate session ID %q", session.ID)
 		}
+		sessionURI := (EvidenceRef{Scheme: "session", ID: session.ID}).URI()
+		if _, err := ParseEvidenceURI(sessionURI); err != nil {
+			return fmt.Errorf("session evidence URI is invalid for %q", session.ID)
+		}
 		recorded, err := parseTimestamp("session", session.RecordedAt)
 		if err != nil {
 			return err
 		}
 		sessions[session.ID] = recorded
-		addSource(sources, scope, EvidenceRef{Scheme: "session", ID: session.ID}.URI(), recorded, true)
+		addSource(sources, scope, sessionURI, recorded, true)
 		for _, task := range session.Tasks {
 			if strings.TrimSpace(task.ID) == "" {
 				return fmt.Errorf("task requires ID")
@@ -442,10 +449,16 @@ func collectProjectSources(project *ProjectCorpus, sources map[string][]corpusSo
 		if _, exists := memories[memory.ID]; exists {
 			return fmt.Errorf("duplicate memory ID %q", memory.ID)
 		}
-		if _, exists := sessions[memory.SessionID]; !exists {
+		memoryURI := (EvidenceRef{Scheme: "memory", ID: memory.ID}).URI()
+		if _, err := ParseEvidenceURI(memoryURI); err != nil {
+			return fmt.Errorf("memory evidence URI is invalid for %q", memory.ID)
+		}
+		sessionAt, exists := sessions[memory.SessionID]
+		if !exists {
 			return fmt.Errorf("memory %q references unknown session %q", memory.ID, memory.SessionID)
 		}
-		if _, exists := tasks[memory.TaskID]; !exists {
+		taskAt, exists := tasks[memory.TaskID]
+		if !exists {
 			return fmt.Errorf("memory %q references unknown task %q", memory.ID, memory.TaskID)
 		}
 		if taskSessions[memory.TaskID] != memory.SessionID {
@@ -455,8 +468,14 @@ func collectProjectSources(project *ProjectCorpus, sources map[string][]corpusSo
 		if err != nil {
 			return err
 		}
+		if recorded.Before(sessionAt) {
+			return fmt.Errorf("memory timestamp precedes session for %q", memory.ID)
+		}
+		if recorded.Before(taskAt) {
+			return fmt.Errorf("memory timestamp precedes task for %q", memory.ID)
+		}
 		memories[memory.ID] = struct{}{}
-		addSource(sources, scope, EvidenceRef{Scheme: "memory", ID: memory.ID}.URI(), recorded, true)
+		addSource(sources, scope, memoryURI, recorded, true)
 	}
 	for _, claim := range project.Claims {
 		page, err := ParseEvidenceURI(claim.PageURI)

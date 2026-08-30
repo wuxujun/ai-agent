@@ -42,6 +42,13 @@ func TestFixtureTypes_UseSnakeCaseJSONFields(t *testing.T) {
 	}
 }
 
+func TestParseGoldClaims_RejectsMalformedEvidenceCitation(t *testing.T) {
+	content := []byte("- Current owner is Mei Lin. [evidence](task://owner) [evidence](task://bad uri)\n")
+	if _, err := parseGoldClaims(content, Scope{TenantID: "tenant-a", ProjectID: "atlas"}, "wiki://atlas/projects/current"); err == nil || !strings.Contains(err.Error(), "malformed evidence citation") {
+		t.Fatalf("expected malformed evidence citation error, got %v", err)
+	}
+}
+
 func TestCorpusValidate_RejectsInvalidProvenance(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -71,6 +78,10 @@ func TestCorpusValidate_RejectsInvalidProvenance(t *testing.T) {
 		{name: "memory references missing session", corpus: corpusWithMissingMemorySession(), wantErr: "unknown session"},
 		{name: "memory references missing task", corpus: corpusWithMissingMemoryTask(), wantErr: "unknown task"},
 		{name: "memory task belongs to another session", corpus: corpusWithMismatchedMemoryTask(), wantErr: "does not belong to session"},
+		{name: "memory predates referenced session", corpus: corpusWithMemoryTimestamp("2026-09-01T08:00:00Z"), wantErr: "memory timestamp precedes session"},
+		{name: "memory predates referenced task", corpus: corpusWithMemoryTimestamp("2026-09-01T09:30:00Z"), wantErr: "memory timestamp precedes task"},
+		{name: "session ID must synthesize canonical URI", corpus: corpusWithInvalidSessionID(), wantErr: "session evidence URI"},
+		{name: "memory ID must synthesize canonical URI", corpus: corpusWithInvalidMemoryID(), wantErr: "memory evidence URI"},
 		{name: "task requires canonical evidence URI", corpus: corpusWithMissingTaskEvidenceURI(), wantErr: "task evidence URI"},
 		{name: "task predates session", corpus: corpusWithTaskBeforeSession(), wantErr: "task timestamp"},
 		{name: "invalid session RFC3339 timestamp", corpus: corpusWithInvalidSessionTimestamp(), wantErr: "invalid session timestamp"},
@@ -223,6 +234,24 @@ func corpusWithMismatchedMemoryTask() *Corpus {
 		}},
 	})
 	p.Memories = []MemoryFixture{{ID: "m", SessionID: "session-atlas", TaskID: "second", RecordedAt: "2026-09-02T13:00:00Z"}}
+	return corpusWithProjects(p)
+}
+
+func corpusWithMemoryTimestamp(recordedAt string) *Corpus {
+	p := projectCorpus("tenant-a", "atlas", "atlas", "new", "2026-09-01T10:00:00Z")
+	p.Memories = []MemoryFixture{{ID: "m", SessionID: "session-atlas", TaskID: "new", RecordedAt: recordedAt}}
+	return corpusWithProjects(p)
+}
+
+func corpusWithInvalidSessionID() *Corpus {
+	p := projectCorpus("tenant-a", "atlas", "atlas", "new", "2026-09-01T10:00:00Z")
+	p.Sessions[0].ID = "bad/id"
+	return corpusWithProjects(p)
+}
+
+func corpusWithInvalidMemoryID() *Corpus {
+	p := projectCorpus("tenant-a", "atlas", "atlas", "new", "2026-09-01T10:00:00Z")
+	p.Memories = []MemoryFixture{{ID: "bad/id", SessionID: "session-atlas", TaskID: "new", RecordedAt: "2026-09-01T11:00:00Z"}}
 	return corpusWithProjects(p)
 }
 
