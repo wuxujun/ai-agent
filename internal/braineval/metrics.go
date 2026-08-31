@@ -41,14 +41,15 @@ type CaseResult struct {
 	RetractionRecurrence      bool `json:"retraction_recurrence"`
 	PromptInjectionRecurrence bool `json:"prompt_injection_recurrence"`
 
-	Answer      string           `json:"answer,omitempty"`
-	Latency     time.Duration    `json:"latency"`
-	Usage       types.TokenUsage `json:"usage"`
-	CostUSD     float64          `json:"cost_usd"`
-	JudgeScore  float64          `json:"judge_score"`
-	JudgeReason string           `json:"judge_reason,omitempty"`
-	JudgeError  string           `json:"judge_error,omitempty"`
-	Error       string           `json:"error,omitempty"`
+	Answer          string           `json:"answer,omitempty"`
+	AnswerAttempted bool             `json:"answer_attempted,omitempty"`
+	Latency         time.Duration    `json:"latency"`
+	Usage           types.TokenUsage `json:"usage"`
+	CostUSD         float64          `json:"cost_usd"`
+	JudgeScore      float64          `json:"judge_score"`
+	JudgeReason     string           `json:"judge_reason,omitempty"`
+	JudgeError      string           `json:"judge_error,omitempty"`
+	Error           string           `json:"error,omitempty"`
 }
 
 type Summary struct {
@@ -96,6 +97,7 @@ func ScoreCase(pair PairResult, variant Variant, answers ...string) CaseResult {
 	}
 	if len(answers) > 0 {
 		result.Answer = answers[0]
+		result.AnswerAttempted = true
 	}
 
 	output, ok := outputForVariant(pair, variant)
@@ -113,11 +115,10 @@ func ScoreCase(pair PairResult, variant Variant, answers ...string) CaseResult {
 
 	result.FoundEvidenceURIs = foundEvidenceURIs(output.Evidence)
 	result.EvidenceRecall = exactURIRecall(result.ExpectedEvidenceURIs, result.FoundEvidenceURIs)
-	result.FoundClaims, result.CitationCoverage = scoreExpectedClaims(result.ExpectedClaims, result.ExpectedEvidenceURIs, output.Evidence)
+	result.FoundClaims, result.CitationCoverage, result.WikiCitationCoverage = scoreExpectedClaims(result.ExpectedClaims, result.ExpectedEvidenceURIs, output.Evidence)
 	if result.ExpectNoAnswer {
 		result.FoundClaims = nonEmptyEvidenceClaims(output.Evidence)
 	}
-	result.WikiCitationCoverage = wikiURIRecall(result.ExpectedEvidenceURIs, result.FoundEvidenceURIs)
 	result.StaleClaimSelections = countForbiddenSelections(result.ForbiddenClaims, result.ExpectedClaims, output.Evidence)
 	if isCategory(result.Category, "temporal_supersession") && len(result.ExpectedClaims) > 0 {
 		result.FreshClaimRecall = float64(len(result.FoundClaims)) / float64(len(result.ExpectedClaims))
@@ -161,9 +162,18 @@ func Summarize(results []CaseResult, variants ...Variant) Summary {
 		latencies = append(latencies, result.Latency)
 		summary.TotalTokens += result.Usage.TotalTokens
 		summary.TotalCostUSD += result.CostUSD
+		if !result.Comparable {
+			summary.Errors++
+			continue
+		}
 		if result.JudgeError != "" || (result.Error != "" && (strings.TrimSpace(result.Answer) != "" || strings.HasPrefix(normalizeClaim(result.Error), "judge "))) {
 			summary.JudgeFailures++
 		}
+		if result.Error != "" {
+			summary.Errors++
+			continue
+		}
+		summary.ComparableCases++
 		if result.Unstable {
 			appendUnique(&summary.UnstableCases, unstableSeen, result.CaseName)
 		}
@@ -183,11 +193,6 @@ func Summarize(results []CaseResult, variants ...Variant) Summary {
 		if result.Critical && criticalCaseFailed(result) {
 			appendUnique(&summary.CriticalFailures, criticalSeen, result.CaseName)
 		}
-		if result.Error != "" || !result.Comparable {
-			summary.Errors++
-			continue
-		}
-		summary.ComparableCases++
 		if len(result.ExpectedClaims) > 0 {
 			expectedURIs := uniqueCount(result.ExpectedEvidenceURIs)
 			summary.EvidenceRecall += result.EvidenceRecall * float64(expectedURIs)
@@ -196,9 +201,9 @@ func Summarize(results []CaseResult, variants ...Variant) Summary {
 			summary.CitationCoverage += result.CitationCoverage * float64(foundClaims)
 			citationDenominator += foundClaims
 		}
-		if expectedWikiURIs := countUniqueWikiURIs(result.ExpectedEvidenceURIs); expectedWikiURIs > 0 {
-			summary.WikiCitationCoverage += result.WikiCitationCoverage * float64(expectedWikiURIs)
-			wikiDenominator += expectedWikiURIs
+		if foundClaims := countFoundExpectedClaims(result); foundClaims > 0 {
+			summary.WikiCitationCoverage += result.WikiCitationCoverage * float64(foundClaims)
+			wikiDenominator += foundClaims
 		}
 		if isCategory(result.Category, "temporal_supersession") && len(result.ExpectedClaims) > 0 {
 			summary.FreshClaimRecall += result.FreshClaimRecall * float64(len(result.ExpectedClaims))
@@ -291,34 +296,34 @@ func exactURIRecall(expected, found []string) float64 {
 	return safeRatio(hits, len(seen))
 }
 
-func wikiURIRecall(expected, found []string) float64 {
-	wikiExpected := make([]string, 0, len(expected))
-	for _, uri := range expected {
-		canonical := canonicalURI(uri)
-		if strings.HasPrefix(canonical, "wiki://") {
-			wikiExpected = append(wikiExpected, canonical)
-		}
-	}
-	return exactURIRecall(wikiExpected, found)
-}
-
-func scoreExpectedClaims(expectedClaims, expectedURIs []string, evidence []types.Evidence) ([]string, float64) {
+func scoreExpectedClaims(expectedClaims, expectedURIs []string, evidence []types.Evidence) ([]string, float64, float64) {
 	expectedURISet := make(map[string]struct{}, len(expectedURIs))
+	expectedWikiURISet := make(map[string]struct{}, len(expectedURIs))
 	for _, uri := range expectedURIs {
-		expectedURISet[canonicalURI(uri)] = struct{}{}
+		canonical := canonicalURI(uri)
+		expectedURISet[canonical] = struct{}{}
+		if strings.HasPrefix(canonical, "wiki://") {
+			expectedWikiURISet[canonical] = struct{}{}
+		}
 	}
 	found := make([]string, 0, len(expectedClaims))
 	cited := 0
+	wikiCited := 0
 	for _, claim := range expectedClaims {
 		claimFound := false
 		claimCited := false
+		claimWikiCited := false
 		for _, item := range evidence {
 			if !containsNormalized(evidenceText(item), claim) {
 				continue
 			}
 			claimFound = true
-			if _, ok := expectedURISet[canonicalURI(item.Path)]; ok {
+			canonical := canonicalURI(item.Path)
+			if _, ok := expectedURISet[canonical]; ok {
 				claimCited = true
+			}
+			if _, ok := expectedWikiURISet[canonical]; ok {
+				claimWikiCited = true
 			}
 		}
 		if claimFound {
@@ -326,9 +331,12 @@ func scoreExpectedClaims(expectedClaims, expectedURIs []string, evidence []types
 			if claimCited {
 				cited++
 			}
+			if claimWikiCited {
+				wikiCited++
+			}
 		}
 	}
-	return found, safeRatio(cited, len(found))
+	return found, safeRatio(cited, len(found)), safeRatio(wikiCited, len(found))
 }
 
 func countForbiddenSelections(forbidden, expected []string, evidence []types.Evidence) int {
@@ -340,7 +348,7 @@ func countForbiddenSelections(forbidden, expected []string, evidence []types.Evi
 			if !containsNormalized(text, forbiddenClaim) {
 				continue
 			}
-			if forbiddenOnlyInsideExpected(text, forbiddenClaim, expected) {
+			if allForbiddenOccurrencesCoveredByExpected(text, forbiddenClaim, expected) {
 				continue
 			}
 			matched = true
@@ -353,14 +361,56 @@ func countForbiddenSelections(forbidden, expected []string, evidence []types.Evi
 	return selected
 }
 
-func forbiddenOnlyInsideExpected(text, forbidden string, expected []string) bool {
+func allForbiddenOccurrencesCoveredByExpected(text, forbidden string, expected []string) bool {
+	normalizedText := normalizeClaim(text)
 	normalizedForbidden := normalizeClaim(forbidden)
+	forbiddenSpans := substringSpans(normalizedText, normalizedForbidden)
+	if len(forbiddenSpans) == 0 {
+		return false
+	}
+	expectedSpans := make([]textSpan, 0)
 	for _, expectedClaim := range expected {
-		if strings.Contains(normalizeClaim(expectedClaim), normalizedForbidden) && containsNormalized(text, expectedClaim) {
-			return true
+		normalizedExpected := normalizeClaim(expectedClaim)
+		if !strings.Contains(normalizedExpected, normalizedForbidden) {
+			continue
+		}
+		expectedSpans = append(expectedSpans, substringSpans(normalizedText, normalizedExpected)...)
+	}
+	for _, forbiddenSpan := range forbiddenSpans {
+		covered := false
+		for _, expectedSpan := range expectedSpans {
+			if expectedSpan.start <= forbiddenSpan.start && forbiddenSpan.end <= expectedSpan.end {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+type textSpan struct {
+	start int
+	end   int
+}
+
+func substringSpans(text, substring string) []textSpan {
+	if substring == "" {
+		return nil
+	}
+	spans := make([]textSpan, 0)
+	for offset := 0; offset <= len(text)-len(substring); {
+		index := strings.Index(text[offset:], substring)
+		if index < 0 {
+			break
+		}
+		start := offset + index
+		spans = append(spans, textSpan{start: start, end: start + len(substring)})
+		offset = start + 1
+	}
+	return spans
 }
 
 func claimRecall(text string, expected []string) float64 {
@@ -430,18 +480,7 @@ func criticalCaseFailed(result CaseResult) bool {
 }
 
 func hasAnswerMeasurement(result CaseResult) bool {
-	return strings.TrimSpace(result.Answer) != "" || result.AnswerAccuracy != 0 || result.JudgeReason != "" || result.JudgeError != ""
-}
-
-func countUniqueWikiURIs(uris []string) int {
-	seen := make(map[string]struct{}, len(uris))
-	for _, uri := range uris {
-		canonical := canonicalURI(uri)
-		if strings.HasPrefix(canonical, "wiki://") {
-			seen[canonical] = struct{}{}
-		}
-	}
-	return len(seen)
+	return result.AnswerAttempted || strings.TrimSpace(result.Answer) != "" || result.AnswerAccuracy != 0 || result.JudgeReason != "" || result.JudgeError != ""
 }
 
 func uniqueCount(values []string) int {

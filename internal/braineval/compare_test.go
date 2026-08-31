@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 func TestCompare_CriticalLeakBlocksP1(t *testing.T) {
@@ -28,6 +30,31 @@ func TestCompare_OfflineGatePassesWithoutAnswerOrTokens(t *testing.T) {
 	got := Compare(baseline, candidate, testThresholds(), GateOffline)
 	if !got.Passed() {
 		t.Fatalf("offline gate failed: %#v", got.Failures)
+	}
+}
+
+func TestCompare_WikiGateRejectsExpectedPageWithoutClaimCitation(t *testing.T) {
+	pair := PairResult{
+		Case: Case{
+			Name:                 "irrelevant-wiki-page",
+			ExpectedClaims:       []string{"Project owner is Mei Lin"},
+			ExpectedEvidenceURIs: []string{"wiki://atlas-north/projects/decisions"},
+		},
+		Comparable: true,
+		Candidate: VariantOutput{Variant: VariantBrain, Evidence: []types.Evidence{
+			{Path: "wiki://atlas-north/projects/decisions", Lines: []string{"Unrelated page"}},
+			{Path: "memory://owner", Lines: []string{"Project owner is Mei Lin"}},
+		}},
+	}
+	candidate := Summarize([]CaseResult{ScoreCase(pair, VariantBrain)})
+	candidate.FreshClaimRecall = 1
+	baseline := passingSummary(VariantBaseline)
+	baseline.EvidenceRecall = .8
+	candidate.P95Latency = baseline.P95Latency
+
+	got := Compare(baseline, candidate, testThresholds(), GateOffline)
+	if got.Passed() || !slices.ContainsFunc(got.Failures, func(failure string) bool { return containsNormalized(failure, "wiki citation coverage") }) {
+		t.Fatalf("irrelevant Wiki page passed citation gate: %#v", got)
 	}
 }
 

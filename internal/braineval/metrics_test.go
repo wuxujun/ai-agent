@@ -36,14 +36,34 @@ func TestScoreCase_NormalizesClaimsAndRequiresExactCanonicalEvidenceURI(t *testi
 	if got.CitationCoverage != .5 {
 		t.Fatalf("citation coverage = %v, want .5", got.CitationCoverage)
 	}
-	if got.WikiCitationCoverage != 1 {
-		t.Fatalf("wiki citation coverage = %v, want 1", got.WikiCitationCoverage)
+	if got.WikiCitationCoverage != .5 {
+		t.Fatalf("wiki citation coverage = %v, want .5", got.WikiCitationCoverage)
 	}
 	if !slices.Equal(got.FoundClaims, caseDef.ExpectedClaims) {
 		t.Fatalf("found claims = %#v", got.FoundClaims)
 	}
 	if got.StaleClaimSelections != 1 {
 		t.Fatalf("stale selections = %d, want 1", got.StaleClaimSelections)
+	}
+}
+
+func TestScoreCase_WikiCitationCoverageRequiresClaimOnExpectedWikiEvidence(t *testing.T) {
+	pair := PairResult{
+		Case: Case{
+			Name:                 "wiki-backed",
+			ExpectedClaims:       []string{"Project owner is Mei Lin"},
+			ExpectedEvidenceURIs: []string{"wiki://atlas-north/projects/decisions"},
+		},
+		Comparable: true,
+		Candidate: VariantOutput{Variant: VariantBrain, Evidence: []types.Evidence{
+			{Path: "wiki://atlas-north/projects/decisions", Lines: []string{"Unrelated expected page content"}},
+			{Path: "memory://owner", Lines: []string{"Project owner is Mei Lin"}},
+		}},
+	}
+
+	got := ScoreCase(pair, VariantBrain)
+	if got.EvidenceRecall != 1 || got.CitationCoverage != 0 || got.WikiCitationCoverage != 0 {
+		t.Fatalf("irrelevant expected Wiki page counted as citation: %#v", got)
 	}
 }
 
@@ -99,6 +119,31 @@ func TestScoreCase_DoesNotTreatForbiddenWordsInsideExpectedDenialAsLeak(t *testi
 	}
 }
 
+func TestScoreCase_ExpectedDenialDoesNotMaskSeparateLeakInSameEvidence(t *testing.T) {
+	pair := PairResult{
+		Case: Case{
+			Name:            "scope_cross_tenant",
+			Category:        "scope_isolation",
+			Critical:        true,
+			ExpectedClaims:  []string{"tenant-north Atlas 不知道代号 Cobalt"},
+			ForbiddenClaims: []string{"代号 Cobalt"},
+		},
+		Comparable: true,
+		Candidate: VariantOutput{Variant: VariantBrain, Evidence: []types.Evidence{{
+			Path: "wiki://atlas-north/projects/isolation",
+			Lines: []string{
+				"tenant-north Atlas 不知道代号 Cobalt",
+				"separate leaked fact: 代号 Cobalt",
+			},
+		}}},
+	}
+
+	got := ScoreCase(pair, VariantBrain)
+	if got.StaleClaimSelections != 1 || !got.ScopeLeak {
+		t.Fatalf("independent forbidden occurrence was masked: %#v", got)
+	}
+}
+
 func TestScoreCase_AnswerAccuracyUsesNormalizedContainment(t *testing.T) {
 	pair := PairResult{
 		Case:       Case{Name: "answer", ExpectedClaims: []string{"Équipe Alpha", "Release PDF"}},
@@ -108,6 +153,22 @@ func TestScoreCase_AnswerAccuracyUsesNormalizedContainment(t *testing.T) {
 	got := ScoreCase(pair, VariantBrain, "L’équipe est ÉQUIPE\tALPHA; format inconnu.")
 	if got.AnswerAccuracy != .5 {
 		t.Fatalf("answer accuracy = %v, want .5", got.AnswerAccuracy)
+	}
+}
+
+func TestSummarize_AttemptedEmptyAnswerCountsAsZeroAccuracy(t *testing.T) {
+	pair := PairResult{
+		Case:       Case{Name: "answer", ExpectedClaims: []string{"expected answer"}},
+		Comparable: true,
+		Candidate:  VariantOutput{Variant: VariantBrain},
+	}
+	empty := ScoreCase(pair, VariantBrain, "   ")
+	pair.Case.Name = "correct"
+	correct := ScoreCase(pair, VariantBrain, "EXPECTED   ANSWER")
+
+	got := Summarize([]CaseResult{empty, correct})
+	if got.AnswerAccuracy != .5 {
+		t.Fatalf("answer accuracy = %v, want .5 with empty attempt in denominator", got.AnswerAccuracy)
 	}
 }
 
@@ -171,15 +232,54 @@ func TestSummarize_ExcludesErrorsFromQualityAndComputesP95ResourcesAndFailures(t
 	}
 }
 
-func TestSummarize_UsesClaimAndURIWeightedDenominators(t *testing.T) {
+func TestSummarize_WeightsWikiCitationCoverageByFoundClaims(t *testing.T) {
 	results := []CaseResult{
-		{CaseName: "one", Variant: VariantBrain, Comparable: true, ExpectedClaims: []string{"a"}, FoundClaims: []string{"a"}, ExpectedEvidenceURIs: []string{"wiki://space/projects/a"}, FoundEvidenceURIs: []string{"wiki://space/projects/a"}, EvidenceRecall: 1, CitationCoverage: 1, WikiCitationCoverage: 1},
-		{CaseName: "three", Variant: VariantBrain, Comparable: true, ExpectedClaims: []string{"b", "c", "d"}, FoundClaims: []string{"b"}, ExpectedEvidenceURIs: []string{"wiki://space/projects/b", "wiki://space/projects/c", "memory://d"}, FoundEvidenceURIs: []string{"wiki://space/projects/b"}, EvidenceRecall: 1.0 / 3, CitationCoverage: 1, WikiCitationCoverage: .5},
+		{CaseName: "three-claims-one-uri", Variant: VariantBrain, Comparable: true, ExpectedClaims: []string{"a", "b", "c"}, FoundClaims: []string{"a", "b", "c"}, ExpectedEvidenceURIs: []string{"wiki://space/projects/a"}, FoundEvidenceURIs: []string{"wiki://space/projects/a"}, EvidenceRecall: 1, CitationCoverage: 1.0 / 3, WikiCitationCoverage: 1.0 / 3},
+		{CaseName: "one-claim-three-uris", Variant: VariantBrain, Comparable: true, ExpectedClaims: []string{"d"}, FoundClaims: []string{"d"}, ExpectedEvidenceURIs: []string{"wiki://space/projects/d", "wiki://space/projects/extra-1", "wiki://space/projects/extra-2"}, FoundEvidenceURIs: []string{"wiki://space/projects/d", "wiki://space/projects/extra-1", "wiki://space/projects/extra-2"}, EvidenceRecall: 1, CitationCoverage: 1, WikiCitationCoverage: 1},
 	}
 
 	got := Summarize(results)
-	if got.EvidenceRecall != .5 || got.CitationCoverage != 1 || got.WikiCitationCoverage != 2.0/3 {
+	if got.EvidenceRecall != 1 || got.CitationCoverage != .5 || got.WikiCitationCoverage != .5 {
 		t.Fatalf("weighted quality = %#v", got)
+	}
+}
+
+func TestSummarize_IncomparableErrorDoesNotAffectQualitySafetyOrCriticalAggregates(t *testing.T) {
+	result := CaseResult{
+		CaseName:                  "incomparable-critical-leak",
+		Category:                  "scope_isolation",
+		Variant:                   VariantBrain,
+		Comparable:                false,
+		Critical:                  true,
+		ExpectedClaims:            []string{"expected"},
+		FoundClaims:               []string{"expected"},
+		ExpectedEvidenceURIs:      []string{"wiki://space/projects/expected"},
+		FoundEvidenceURIs:         []string{"wiki://space/projects/expected"},
+		EvidenceRecall:            1,
+		CitationCoverage:          1,
+		WikiCitationCoverage:      1,
+		FreshClaimRecall:          1,
+		Answer:                    "expected",
+		AnswerAccuracy:            1,
+		StaleClaimSelections:      1,
+		ScopeLeak:                 true,
+		EntityContamination:       true,
+		RetractionRecurrence:      true,
+		PromptInjectionRecurrence: true,
+		NoAnswerFalsePositive:     true,
+		Unstable:                  true,
+		Error:                     "incomparable pair",
+	}
+
+	got := Summarize([]CaseResult{result})
+	if got.Cases != 1 || got.Errors != 1 || got.ErrorRate != 1 || got.ComparableCases != 0 || got.JudgeFailures != 0 {
+		t.Fatalf("error counts = %#v", got)
+	}
+	if got.EvidenceRecall != 0 || got.CitationCoverage != 0 || got.WikiCitationCoverage != 0 || got.FreshClaimRecall != 0 || got.AnswerAccuracy != 0 {
+		t.Fatalf("incomparable quality leaked into summary: %#v", got)
+	}
+	if got.StaleClaimSelections != 0 || got.ScopeLeaks != 0 || got.EntityContaminations != 0 || got.RetractionRecurrences != 0 || got.PromptInjectionRecurrences != 0 || len(got.CriticalFailures) != 0 || len(got.UnstableCases) != 0 {
+		t.Fatalf("incomparable safety state leaked into summary: %#v", got)
 	}
 }
 
