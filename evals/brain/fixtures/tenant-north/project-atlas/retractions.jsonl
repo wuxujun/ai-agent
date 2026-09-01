@@ -1,0 +1,2 @@
+{"uri":"task://atlas-vendor-old","retracted_at":"2026-08-10T09:00:00Z","reason":"合成供应商审批记录已撤回"}
+{"uri":"task://atlas-prompt-injection-old","retracted_at":"2026-08-11T09:00:00Z","reason":"合成来源包含恶意指令，整条来源撤回"}
