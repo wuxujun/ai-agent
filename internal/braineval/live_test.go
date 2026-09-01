@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -90,6 +92,70 @@ func TestLiveRunner_RunPairUsesOneWriterContractForBothArms(t *testing.T) {
 	}
 }
 
+func TestNewLiveLLMRunner_SnapshotsScenesForAllMatchedCalls(t *testing.T) {
+	noFallback := ""
+	writerRetries := 1
+	judgeRetries := 0
+	price := 2.0
+	restore := config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes[config.LLMSceneTaskFinalizer] = config.LLMEndpointConfig{
+			Provider:                "openai",
+			APIKey:                  "writer-secret",
+			Model:                   "writer-frozen",
+			FallbackScene:           &noFallback,
+			MaxRetries:              &writerRetries,
+			InputCostPerMillionUSD:  &price,
+			OutputCostPerMillionUSD: &price,
+		}
+		cfg.LLM.Scenes[config.LLMSceneAnswerVerifier] = config.LLMEndpointConfig{
+			Provider:                "openai",
+			APIKey:                  "judge-secret",
+			Model:                   "judge-frozen",
+			FallbackScene:           &noFallback,
+			MaxRetries:              &judgeRetries,
+			InputCostPerMillionUSD:  &price,
+			OutputCostPerMillionUSD: &price,
+		}
+	})
+	runner, err := NewLiveLLMRunner(LiveOptions{Repetitions: 2, MaxTotalTokens: 100, MaxTotalCostUSD: 1})
+	restore()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &sceneSnapshotCaller{}
+	ctx := llmcore.WithRuntime(context.Background(), llmcore.NewRuntime(caller, nil))
+	pair := PairResult{
+		Case:       Case{Name: "snapshot", Query: "owner", ExpectedClaims: []string{"Mei Lin"}},
+		Baseline:   VariantOutput{Variant: VariantBaseline},
+		Candidate:  VariantOutput{Variant: VariantBrain},
+		Comparable: true,
+	}
+	got, err := runner.RunPair(ctx, pair)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Comparable {
+		t.Fatalf("pair = %#v", got)
+	}
+
+	configs := caller.Configs()
+	if len(configs) != 8 {
+		t.Fatalf("LLM calls = %d, want 8", len(configs))
+	}
+	for i, cfg := range configs {
+		wantModel := "writer-frozen"
+		wantRetries := writerRetries
+		if i%2 == 1 {
+			wantModel = "judge-frozen"
+			wantRetries = judgeRetries
+		}
+		if cfg.Model != wantModel || cfg.MaxRetries != wantRetries || cfg.FallbackScene != "" {
+			t.Fatalf("call %d config = %+v, want model=%q retries=%d and no fallback", i, cfg, wantModel, wantRetries)
+		}
+	}
+}
+
 func TestLiveRunner_DoesNotRetryCanceledWriterOrFailedJudge(t *testing.T) {
 	t.Run("writer context cancellation", func(t *testing.T) {
 		answerer := &fakeLiveAnswerer{answers: []AnswerResult{{Answer: "partial", Usage: types.TokenUsage{TotalTokens: 7}}}, errs: []error{context.Canceled}}
@@ -110,7 +176,7 @@ func TestLiveRunner_DoesNotRetryCanceledWriterOrFailedJudge(t *testing.T) {
 		r := NewLiveRunner(answerer, judge, LiveOptions{Repetitions: 3, MaxTotalTokens: 100, MaxTotalCostUSD: 1})
 
 		got, err := r.RunVariant(context.Background(), Case{Name: "judge", Query: "owner", ExpectedClaims: []string{"Mei Lin"}}, VariantOutput{Variant: VariantBrain})
-		if err == nil || judge.Calls() != 1 || answerer.Calls() != 1 {
+		if !errors.Is(err, ErrLiveJudgeFailed) || judge.Calls() != 1 || answerer.Calls() != 1 {
 			t.Fatalf("error=%v writer calls=%d judge calls=%d", err, answerer.Calls(), judge.Calls())
 		}
 		result := got.CaseResult
@@ -121,6 +187,33 @@ func TestLiveRunner_DoesNotRetryCanceledWriterOrFailedJudge(t *testing.T) {
 			t.Fatalf("judge failure did not fail live summary: %#v", summary)
 		}
 	})
+}
+
+func TestLiveRunner_CancellationAfterWriterPreservesAnswerAndSkipsJudge(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	answerer := &cancelingLiveAnswerer{
+		cancel: cancel,
+		result: AnswerResult{
+			Answer:  "Mei Lin",
+			Usage:   types.TokenUsage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7},
+			CostUSD: .07,
+			Latency: time.Second,
+		},
+	}
+	judge := &fakeLiveJudge{}
+	runner := NewLiveRunner(answerer, judge, LiveOptions{Repetitions: 1, MaxTotalTokens: 100, MaxTotalCostUSD: 1})
+
+	got, err := runner.RunVariant(ctx, Case{Name: "cancel-after-writer", Query: "owner", ExpectedClaims: []string{"Mei Lin"}}, VariantOutput{Variant: VariantBrain})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	if judge.Calls() != 0 {
+		t.Fatalf("judge calls = %d, want zero", judge.Calls())
+	}
+	result := got.CaseResult
+	if result.Answer != answerer.result.Answer || result.Usage != answerer.result.Usage || result.CostUSD != answerer.result.CostUSD || result.Latency != answerer.result.Latency || !result.AnswerAttempted {
+		t.Fatalf("completed writer result was not preserved: %#v", result)
+	}
 }
 
 func TestBudgetTracker_RejectsReservationBeforeMutatingTotals(t *testing.T) {
@@ -179,6 +272,37 @@ func TestLiveRunner_BudgetIncludesWriterAndJudgeAndStopsBeforeNextCall(t *testin
 	}
 }
 
+func TestLiveRunner_ConcurrentCallsAtomicallyAdmitAndAccountForBudget(t *testing.T) {
+	answerer := &concurrentBudgetAnswerer{}
+	judge := &fakeLiveJudge{}
+	runner := NewLiveRunner(answerer, judge, LiveOptions{Repetitions: 1, MaxTotalTokens: 10, MaxTotalCostUSD: 1})
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for range 20 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			_, _ = runner.RunVariant(context.Background(), Case{Name: "concurrent-budget", Query: "q"}, VariantOutput{Variant: VariantBaseline})
+		}()
+	}
+	close(start)
+	workers.Wait()
+
+	if calls := answerer.calls.Load(); calls != 1 {
+		t.Fatalf("writer calls = %d, want one admitted call", calls)
+	}
+	if maxActive := answerer.maxActive.Load(); maxActive != 1 {
+		t.Fatalf("maximum concurrent writer calls = %d, want 1", maxActive)
+	}
+	if judge.Calls() != 0 {
+		t.Fatalf("judge calls = %d, want zero after writer exhausted budget", judge.Calls())
+	}
+	if tokens, _ := runner.Budget().Used(); tokens != 10 {
+		t.Fatalf("used tokens = %d, want 10", tokens)
+	}
+}
+
 func TestLiveRunner_RunPairBudgetFailurePreservesBothArmResults(t *testing.T) {
 	answerer := &fakeLiveAnswerer{answers: []AnswerResult{
 		{Answer: "baseline", Usage: types.TokenUsage{TotalTokens: 2}},
@@ -208,9 +332,64 @@ func TestLiveRunner_RunPairBudgetFailurePreservesBothArmResults(t *testing.T) {
 	}
 }
 
+func TestLiveRunner_RunPairPropagatesInfrastructureErrorsButKeepsJudgeFailuresInGate(t *testing.T) {
+	t.Run("writer infrastructure error", func(t *testing.T) {
+		writerErr := errors.New("writer transport unavailable")
+		answerer := &fakeLiveAnswerer{
+			answers: []AnswerResult{{Answer: "partial", Usage: types.TokenUsage{TotalTokens: 2}}, {Answer: "candidate"}},
+			errs:    []error{writerErr},
+		}
+		runner := NewLiveRunner(answerer, &fakeLiveJudge{}, LiveOptions{Repetitions: 1, MaxTotalTokens: 100, MaxTotalCostUSD: 1})
+		pair := PairResult{
+			Case:       Case{Name: "writer-infra", Query: "q"},
+			Baseline:   VariantOutput{Variant: VariantBaseline},
+			Candidate:  VariantOutput{Variant: VariantBrain},
+			Comparable: true,
+		}
+
+		got, err := runner.RunPair(context.Background(), pair)
+		if !errors.Is(err, writerErr) {
+			t.Fatalf("error = %v, want writer infrastructure error", err)
+		}
+		if got.Comparable || got.Baseline.CaseResult.Comparable || got.Candidate.CaseResult.Comparable {
+			t.Fatalf("failed pair remained comparable: %#v", got)
+		}
+		if answerer.Calls() != 1 {
+			t.Fatalf("writer calls = %d, candidate ran after baseline infrastructure failure", answerer.Calls())
+		}
+	})
+
+	t.Run("judge failure is gate-only", func(t *testing.T) {
+		judgeErr := errors.New("judge unavailable")
+		answerer := &fakeLiveAnswerer{answers: []AnswerResult{{Answer: "baseline"}, {Answer: "candidate"}}}
+		judge := &fakeLiveJudge{
+			results: []JudgeResult{{Usage: types.TokenUsage{TotalTokens: 1}}, {Score: 1, Reason: "ok", Usage: types.TokenUsage{TotalTokens: 1}}},
+			errs:    []error{judgeErr},
+		}
+		runner := NewLiveRunner(answerer, judge, LiveOptions{Repetitions: 1, MaxTotalTokens: 100, MaxTotalCostUSD: 1})
+		pair := PairResult{
+			Case:       Case{Name: "judge-gate", Query: "q"},
+			Baseline:   VariantOutput{Variant: VariantBaseline},
+			Candidate:  VariantOutput{Variant: VariantBrain},
+			Comparable: true,
+		}
+
+		got, err := runner.RunPair(context.Background(), pair)
+		if err != nil {
+			t.Fatalf("gate-only judge error propagated: %v", err)
+		}
+		if !got.Comparable || got.Baseline.JudgeError == "" || got.Candidate.JudgeError == "" {
+			t.Fatalf("judge failure was not retained for the gate: %#v", got)
+		}
+		if answerer.Calls() != 2 || judge.Calls() != 2 {
+			t.Fatalf("matched calls writer=%d judge=%d, want 2 each", answerer.Calls(), judge.Calls())
+		}
+	})
+}
+
 func TestFinalizerAnswerer_UsesOnlyDeterministicEvidenceContract(t *testing.T) {
 	finalizer := &recordingFinalizer{answer: "Mei Lin", usage: types.TokenUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}}
-	answerer := FinalizerAnswerer{Finalizer: finalizer, Scene: "task_finalizer"}
+	answerer := FinalizerAnswerer{Finalizer: finalizer, Config: llmcore.Config{Scene: "task_finalizer", InputCostPerMillionUSD: 2, OutputCostPerMillionUSD: 3}}
 	c := Case{Name: "owner", Scope: scopeAtlas, Query: "who owns release?"}
 	out := VariantOutput{Variant: VariantBrain, Evidence: []types.Evidence{{Path: "wiki://atlas/projects/owner", Query: "owner", Lines: []string{"Mei Lin"}}}}
 
@@ -218,7 +397,7 @@ func TestFinalizerAnswerer_UsesOnlyDeterministicEvidenceContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Answer != "Mei Lin" || got.Usage != finalizer.usage || got.Latency < 0 {
+	if got.Answer != "Mei Lin" || got.Usage != finalizer.usage || math.Abs(got.CostUSD-26.0/1_000_000) > 1e-12 || got.Latency < 0 {
 		t.Fatalf("answer = %#v", got)
 	}
 	task := finalizer.task
@@ -239,7 +418,7 @@ func TestLLMJudge_UsesAnswerVerifierAndStrictSchema(t *testing.T) {
 	ctx := llmcore.WithRuntime(context.Background(), llmcore.NewRuntime(caller, nil))
 	c := Case{Name: "owner", Query: "who owns release?", ExpectedClaims: []string{"Mei Lin"}, ForbiddenClaims: []string{"Ari Chen"}}
 
-	got, err := (LLMJudge{}).Judge(ctx, c, "Mei Lin owns release")
+	got, err := (LLMJudge{Config: llmcore.Config{Scene: config.LLMSceneAnswerVerifier}}).Judge(ctx, c, "Mei Lin owns release")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,29 +446,32 @@ func TestLLMJudge_RejectsOutOfRangeScoreAndPreservesUsage(t *testing.T) {
 	caller := &recordingStructuredCaller{response: `{"score":1.1,"reason":"invalid"}`, usage: types.TokenUsage{TotalTokens: 9}}
 	ctx := llmcore.WithRuntime(context.Background(), llmcore.NewRuntime(caller, nil))
 
-	got, err := (LLMJudge{}).Judge(ctx, Case{Name: "invalid", Query: "q"}, "answer")
+	got, err := (LLMJudge{Config: llmcore.Config{Scene: config.LLMSceneAnswerVerifier}}).Judge(ctx, Case{Name: "invalid", Query: "q"}, "answer")
 	if err == nil || got.Usage.TotalTokens != 9 {
 		t.Fatalf("result=%#v error=%v", got, err)
 	}
 }
 
 func TestValidateLiveSceneConfigs_FailsClosed(t *testing.T) {
-	valid := llmcore.Config{Scene: "task_finalizer", Provider: "openai", Model: "writer", APIKey: "secret", MaxRetries: 1}
+	valid := llmcore.Config{Scene: "task_finalizer", Provider: "openai", Model: "writer", APIKey: "secret", MaxRetries: 1, InputCostPerMillionUSD: 1, OutputCostPerMillionUSD: 1}
 	tests := []struct {
 		name   string
 		writer llmcore.Config
 		judge  llmcore.Config
 		want   string
 	}{
-		{name: "valid", writer: valid, judge: llmcore.Config{Scene: "answer_verifier", Provider: "openai", Model: "judge", APIKey: "secret"}},
+		{name: "valid", writer: valid, judge: llmcore.Config{Scene: "answer_verifier", Provider: "openai", Model: "judge", APIKey: "secret", InputCostPerMillionUSD: 1, OutputCostPerMillionUSD: 1}},
 		{name: "missing provider", writer: llmcore.Config{Scene: "task_finalizer", Model: "writer", APIKey: "secret"}, judge: valid, want: "provider"},
 		{name: "missing model", writer: llmcore.Config{Scene: "task_finalizer", Provider: "openai", APIKey: "secret"}, judge: valid, want: "model"},
 		{name: "missing credential", writer: llmcore.Config{Scene: "task_finalizer", Provider: "openai", Model: "writer"}, judge: valid, want: "credential"},
 		{name: "too many retries", writer: valid, judge: llmcore.Config{Scene: "answer_verifier", Provider: "openai", Model: "judge", APIKey: "secret", MaxRetries: 2}, want: "max_retries"},
+		{name: "fallback writer", writer: llmcore.Config{Scene: "task_finalizer", Provider: "openai", Model: "writer", APIKey: "secret", FallbackScene: "backup"}, judge: valid, want: "fallback"},
+		{name: "missing input pricing", writer: llmcore.Config{Scene: "task_finalizer", Provider: "openai", Model: "writer", APIKey: "secret", OutputCostPerMillionUSD: 1}, judge: valid, want: "input pricing"},
+		{name: "missing output pricing", writer: llmcore.Config{Scene: "task_finalizer", Provider: "openai", Model: "writer", APIKey: "secret", InputCostPerMillionUSD: 1}, judge: valid, want: "output pricing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateLiveSceneConfigs(tt.writer, tt.judge)
+			err := validateLiveSceneConfigs(tt.writer, tt.judge, 1)
 			if tt.want == "" && err != nil {
 				t.Fatal(err)
 			}
@@ -297,6 +479,13 @@ func TestValidateLiveSceneConfigs_FailsClosed(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+	if err := validateLiveSceneConfigs(
+		llmcore.Config{Scene: "task_finalizer", Provider: "openai", Model: "writer", APIKey: "secret"},
+		llmcore.Config{Scene: "answer_verifier", Provider: "openai", Model: "judge", APIKey: "secret"},
+		0,
+	); err != nil {
+		t.Fatalf("uncapped validation rejected absent pricing: %v", err)
 	}
 }
 
@@ -345,6 +534,36 @@ type fakeLiveJudge struct {
 	results []JudgeResult
 	errs    []error
 	calls   int
+}
+
+type concurrentBudgetAnswerer struct {
+	calls     atomic.Int32
+	active    atomic.Int32
+	maxActive atomic.Int32
+}
+
+type cancelingLiveAnswerer struct {
+	cancel context.CancelFunc
+	result AnswerResult
+}
+
+func (a *cancelingLiveAnswerer) Answer(context.Context, Case, VariantOutput) (AnswerResult, error) {
+	a.cancel()
+	return a.result, nil
+}
+
+func (a *concurrentBudgetAnswerer) Answer(context.Context, Case, VariantOutput) (AnswerResult, error) {
+	a.calls.Add(1)
+	active := a.active.Add(1)
+	for {
+		maximum := a.maxActive.Load()
+		if active <= maximum || a.maxActive.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	a.active.Add(-1)
+	return AnswerResult{Answer: "answer", Usage: types.TokenUsage{TotalTokens: 10}}, nil
 }
 
 func (f *fakeLiveJudge) Judge(_ context.Context, c Case, answer string) (JudgeResult, error) {
@@ -396,6 +615,31 @@ type recordingStructuredCaller struct {
 	systemPrompt string
 	userPrompt   string
 	schema       map[string]any
+}
+
+type sceneSnapshotCaller struct {
+	mu      sync.Mutex
+	configs []llmcore.Config
+}
+
+func (c *sceneSnapshotCaller) CallJSON(_ context.Context, cfg llmcore.Config, _, _ string, _ map[string]any, dest any) (types.TokenUsage, error) {
+	c.mu.Lock()
+	c.configs = append(c.configs, cfg)
+	c.mu.Unlock()
+	response := `{"final_answer":"Mei Lin","evidence_summary":"matched","confidence":"high"}`
+	if cfg.Scene == config.LLMSceneAnswerVerifier {
+		response = `{"score":1,"reason":"matched"}`
+	}
+	if err := json.Unmarshal([]byte(response), dest); err != nil {
+		return types.TokenUsage{}, err
+	}
+	return types.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, nil
+}
+
+func (c *sceneSnapshotCaller) Configs() []llmcore.Config {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]llmcore.Config(nil), c.configs...)
 }
 
 func (c *recordingStructuredCaller) CallJSON(_ context.Context, cfg llmcore.Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
