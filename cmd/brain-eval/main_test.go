@@ -160,6 +160,40 @@ func TestRun_LiveNeverFallsBackOffline(t *testing.T) {
 	}
 }
 
+func TestRun_LiveZeroBudgetsUseSafeDefaultsAndRunConfigPreflight(t *testing.T) {
+	t.Parallel()
+
+	liveChecks := 0
+	var executedOptions runOptions
+	code := run([]string{
+		"-input", "ignored-by-fake.yaml",
+		"-mode", "live",
+		"-max-total-tokens", "0",
+		"-max-total-cost-usd", "0",
+	}, io.Discard, io.Discard, dependencies{
+		execute: func(_ context.Context, options runOptions) (EvalReport, error) {
+			executedOptions = options
+			return safePassingReport(braineval.GateLive), nil
+		},
+		liveConfigReady: func() error {
+			liveChecks++
+			return nil
+		},
+	})
+	if code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if liveChecks != 1 {
+		t.Fatalf("live config preflight calls=%d want 1", liveChecks)
+	}
+	if executedOptions.MaxTotalTokens != 50000 {
+		t.Fatalf("effective max total tokens=%d want 50000", executedOptions.MaxTotalTokens)
+	}
+	if executedOptions.MaxTotalCostUSD != 2 {
+		t.Fatalf("effective max total cost USD=%v want 2", executedOptions.MaxTotalCostUSD)
+	}
+}
+
 func TestRun_OfflineSkipsLiveConfigCheck(t *testing.T) {
 	t.Parallel()
 
@@ -246,6 +280,23 @@ func TestSanitizeError_RedactsSensitiveFragments(t *testing.T) {
 	for _, want := range []string{"Authorization=[REDACTED]", "Cookie=[REDACTED]", "api_key=[REDACTED]", "https://api.example.com/v1/chat?[REDACTED]", "[REDACTED_PATH]", "provider response body=[REDACTED]"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("sanitizeError=%q want substring %q", got, want)
+		}
+	}
+}
+
+func TestSanitizeError_RedactsMultilineProviderResponseBody(t *testing.T) {
+	t.Parallel()
+
+	raw := "request failed before body: provider response body:\n" +
+		`{"secret":"value"}` + "\nraw-tail-secret"
+	got := sanitizeError(raw)
+
+	if !strings.Contains(got, "request failed before body: provider response body=[REDACTED]") {
+		t.Fatalf("sanitizeError=%q want ordinary context and redaction marker", got)
+	}
+	for _, forbidden := range []string{`{"secret":"value"}`, "raw-tail-secret"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitizeError leaked %q: %s", forbidden, got)
 		}
 	}
 }

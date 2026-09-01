@@ -29,7 +29,7 @@ const (
 var (
 	urlQueryPattern      = regexp.MustCompile(`\b([a-z][a-z0-9+.-]*://[^\s?]+)\?[^\s]+`)
 	absolutePathPattern  = regexp.MustCompile(`(^|[\s(])(/[^ \t\r\n:]+(?:/[^ \t\r\n:]+)*\.(?:ya?ml|jsonl|md))`)
-	providerBodyPattern  = regexp.MustCompile(`(?i)\b(?:provider\s+)?response body\b\s*[:=]\s*.*`)
+	providerBodyPattern  = regexp.MustCompile(`(?is)\b(?:provider\s+)?response body\b\s*[:=]\s*.*`)
 	whitespaceRunPattern = regexp.MustCompile(`\s+`)
 	authorizationPattern = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^\s,;]+`)
 	cookiePattern        = regexp.MustCompile(`(?i)\bcookie\b\s*[:=]\s*[^\s,;]+`)
@@ -111,8 +111,8 @@ func parseRunOptions(args []string, stderr io.Writer) (runOptions, error) {
 	flags.StringVar(&options.Mode, "mode", modeOffline, "evaluation mode: offline or live")
 	flags.StringVar(&options.Format, "format", formatText, "output format: text or json")
 	flags.IntVar(&options.Repetitions, "repetitions", braineval.DefaultLiveRepetitions, "live repetitions per case")
-	flags.IntVar(&options.MaxTotalTokens, "max-total-tokens", braineval.DefaultLiveMaxTotalTokens, "live total token budget; 0 disables")
-	flags.Float64Var(&options.MaxTotalCostUSD, "max-total-cost-usd", braineval.DefaultLiveMaxTotalCostUSD, "live total USD budget; 0 disables")
+	flags.IntVar(&options.MaxTotalTokens, "max-total-tokens", braineval.DefaultLiveMaxTotalTokens, "live total token budget; 0 uses safe default")
+	flags.Float64Var(&options.MaxTotalCostUSD, "max-total-cost-usd", braineval.DefaultLiveMaxTotalCostUSD, "live total USD budget; 0 uses safe default")
 	if err := flags.Parse(args); err != nil {
 		return runOptions{}, err
 	}
@@ -140,6 +140,12 @@ func parseRunOptions(args []string, stderr io.Writer) (runOptions, error) {
 	if options.MaxTotalCostUSD < 0 || math.IsNaN(options.MaxTotalCostUSD) || math.IsInf(options.MaxTotalCostUSD, 0) {
 		fmt.Fprintln(stderr, "max-total-cost-usd must be finite and non-negative")
 		return runOptions{}, errors.New("invalid max-total-cost-usd")
+	}
+	if options.MaxTotalTokens == 0 {
+		options.MaxTotalTokens = braineval.DefaultLiveMaxTotalTokens
+	}
+	if options.MaxTotalCostUSD == 0 {
+		options.MaxTotalCostUSD = braineval.DefaultLiveMaxTotalCostUSD
 	}
 	return options, nil
 }
