@@ -1,3 +1,10 @@
+---
+title: "Atlas 发布计划与启动状态"
+summary: "项目发布负责人、截止日、交付格式、迁移风险、启动前置条件、同步安排、正式评审、启动依赖、报告端点、外部供应商与撤回来源处理。"
+tags: [发布负责人, 截止日, 交付格式, 迁移风险, 启动前置条件, 同步安排, 正式评审, 启动依赖, 报告端点, 外部供应商, 撤回来源]
+aliases: ["Atlas 发布计划", "Atlas 启动状态", "Atlas 发布说明"]
+---
+
 # Atlas Launch Brief
 
 Current synthetic launch synthesis and retraction-safe status.
