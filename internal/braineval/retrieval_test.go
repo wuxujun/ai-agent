@@ -226,6 +226,52 @@ func TestWikiRetriever_IsolatesScopeAndRevalidatesURI(t *testing.T) {
 	}
 }
 
+func TestWikiRetriever_SearchSkipsDirectoryNavigationPages(t *testing.T) {
+	root := t.TempDir()
+	brain := filepath.Join(root, "brain")
+	if err := os.MkdirAll(brain, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brain, "_index.md"), []byte("# Navigation\n\nnavonlymarker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	atlas := projectCorpus("tenant-north", "project-atlas", "atlas", "task-atlas", "2026-09-02T10:00:00Z")
+	atlas.Fixture.Root = root
+	retriever, err := NewWikiRetriever(context.Background(), corpusWithProjects(atlas))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := retriever.Search(context.Background(), scopeAtlas, "navonlymarker", BranchCandidateLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("navigation page returned as evidence: %#v", candidates)
+	}
+}
+
+func TestWikiRetriever_SearchRejectsNonNavigationInvalidURI(t *testing.T) {
+	root := t.TempDir()
+	brain := filepath.Join(root, "brain")
+	if err := os.MkdirAll(brain, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brain, "orphan.md"), []byte("# Orphan\n\ninvalidonlymarker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	atlas := projectCorpus("tenant-north", "project-atlas", "atlas", "task-atlas", "2026-09-02T10:00:00Z")
+	atlas.Fixture.Root = root
+	retriever, err := NewWikiRetriever(context.Background(), corpusWithProjects(atlas))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retriever.Search(context.Background(), scopeAtlas, "invalidonlymarker", BranchCandidateLimit); err == nil {
+		t.Fatal("expected non-navigation invalid URI to remain fail-closed")
+	}
+}
+
 type fakeRetriever struct{}
 
 func (fakeRetriever) Search(context.Context, Scope, string, int) ([]Candidate, error) {

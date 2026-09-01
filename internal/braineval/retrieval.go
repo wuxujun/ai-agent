@@ -264,6 +264,9 @@ func (r *WikiRetriever) Search(ctx context.Context, scope Scope, query string, l
 	limit = boundedBranchLimit(limit)
 	candidates := make([]Candidate, 0, min(limit, len(documents)))
 	for _, document := range documents {
+		if isWikiNavigationDocument(document.Slug) {
+			continue
+		}
 		if err := validateWikiURI(document.URI, project.space); err != nil {
 			return nil, err
 		}
@@ -278,6 +281,11 @@ func (r *WikiRetriever) Search(ctx context.Context, scope Scope, query string, l
 		candidates[i].Rank = i + 1
 	}
 	return candidates, nil
+}
+
+func isWikiNavigationDocument(slug string) bool {
+	base := strings.ToLower(filepath.Base(slug))
+	return base == "index" || base == "_index" || base == "log"
 }
 
 func (r *WikiRetriever) Fetch(ctx context.Context, scope Scope, candidate Candidate) (types.Evidence, error) {
