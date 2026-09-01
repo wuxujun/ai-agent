@@ -240,7 +240,7 @@ func NewWikiRetriever(ctx context.Context, corpus *Corpus) (*WikiRetriever, erro
 	}
 	retriever := &WikiRetriever{projects: make(map[string]wikiProject, len(corpus.Projects))}
 	for key, project := range corpus.Projects {
-		client, err := wiki.NewDirectory(filepath.Join(project.Fixture.Root, "brain"))
+		client, err := wiki.NewDirectory(filepath.Join(project.Fixture.Root, "brain"), wiki.WithSearchMode(wiki.SearchModeBM25))
 		if err != nil {
 			return nil, fmt.Errorf("create Wiki directory for scope %q: %w", key, err)
 		}

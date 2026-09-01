@@ -33,6 +33,69 @@ func TestOfflineRunner_ChangesOnlyBrainVisibility(t *testing.T) {
 	}
 }
 
+func TestOfflineRunner_BrainEvidenceOverridesStaleMemory(t *testing.T) {
+	memory := &stubRetriever{candidates: []Candidate{{URI: "memory://owner-old", Snippet: "Ari Chen", Rank: 1}}}
+	brain := &stubRetriever{candidates: []Candidate{{URI: "wiki://atlas-north/projects/decisions", Snippet: "Mei Lin", Rank: 1}}}
+	r := testOfflineRunner(memory, brain, nil)
+
+	pair, err := r.RunPair(context.Background(), Case{Name: "current-owner", Scope: scopeAtlas, Query: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pair.Candidate.Candidates) != 2 ||
+		!slices.ContainsFunc(pair.Candidate.Candidates, func(c Candidate) bool { return c.URI == "memory://owner-old" }) ||
+		!slices.ContainsFunc(pair.Candidate.Candidates, func(c Candidate) bool { return c.URI == "wiki://atlas-north/projects/decisions" }) {
+		t.Fatalf("candidate set lost a retrieval branch: %#v", pair.Candidate.Candidates)
+	}
+	if len(pair.Candidate.Evidence) != 1 || pair.Candidate.Evidence[0].Path != "wiki://atlas-north/projects/decisions" {
+		t.Fatalf("candidate evidence=%#v, want only current Brain evidence", pair.Candidate.Evidence)
+	}
+}
+
+func TestOfflineRunner_FallsBackToMemoryWhenBrainIsEmpty(t *testing.T) {
+	memory := &stubRetriever{candidates: []Candidate{{URI: "memory://owner", Snippet: "Ari Chen", Rank: 1}}}
+	r := testOfflineRunner(memory, &stubRetriever{}, nil)
+
+	pair, err := r.RunPair(context.Background(), Case{Name: "memory-fallback", Scope: scopeAtlas, Query: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for variant, evidence := range map[string][]types.Evidence{
+		"baseline":  pair.Baseline.Evidence,
+		"candidate": pair.Candidate.Evidence,
+	} {
+		if len(evidence) != 1 || evidence[0].Path != "memory://owner" {
+			t.Fatalf("%s evidence=%#v, want memory fallback", variant, evidence)
+		}
+	}
+}
+
+func TestOfflineRunner_SelectsMultipleBrainFactsAheadOfMemory(t *testing.T) {
+	memory := &stubRetriever{candidates: []Candidate{
+		{URI: "memory://owner-old", Snippet: "Ari Chen", Rank: 1},
+		{URI: "memory://region-old", Snippet: "Virginia", Rank: 2},
+	}}
+	brain := &stubRetriever{candidates: []Candidate{
+		{URI: "wiki://atlas-north/projects/owner", Snippet: "Mei Lin", Rank: 1},
+		{URI: "wiki://atlas-north/projects/region", Snippet: "Oregon", Rank: 2},
+	}}
+	r := testOfflineRunner(memory, brain, nil)
+
+	pair, err := r.RunPair(context.Background(), Case{Name: "two-current-facts", Scope: scopeAtlas, Query: "owner region"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"wiki://atlas-north/projects/owner", "wiki://atlas-north/projects/region"}
+	if len(pair.Candidate.Evidence) != len(want) {
+		t.Fatalf("candidate evidence=%#v, want two Brain facts", pair.Candidate.Evidence)
+	}
+	for index, uri := range want {
+		if pair.Candidate.Evidence[index].Path != uri {
+			t.Fatalf("evidence[%d]=%q, want %q", index, pair.Candidate.Evidence[index].Path, uri)
+		}
+	}
+}
+
 func TestOfflineRunner_DoesNotRetryFailedBranch(t *testing.T) {
 	memory := &stubRetriever{searchErr: errors.New("memory unavailable")}
 	r := testOfflineRunner(memory, &stubRetriever{}, nil)

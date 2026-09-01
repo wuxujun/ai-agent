@@ -51,6 +51,32 @@ func TestDirectoryBM25RanksExactTitleAndRejectsWeakPartialMatch(t *testing.T) {
 	}
 }
 
+func TestDirectoryBM25ChineseQuestionRetrievesFactSentence(t *testing.T) {
+	root := t.TempDir()
+	wikiRoot := filepath.Join(root, "wiki", "projects")
+	if err := os.MkdirAll(wikiRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wikiRoot, "release.md"), []byte("# 发布决策\n\n当前发布负责人是梅琳。\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewDirectory(root, WithSearchMode(SearchModeBM25))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	documents, err := client.Search(t.Context(), "请问目前负责上线发布工作的人究竟是谁", 5, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 1 || documents[0].Slug != "projects/release" {
+		t.Fatalf("documents=%+v, want projects/release", documents)
+	}
+}
+
 func TestDirectoryRejectsUnknownSearchMode(t *testing.T) {
 	if _, err := NewDirectory(t.TempDir(), WithSearchMode("semantic")); err == nil {
 		t.Fatal("unknown search mode accepted")

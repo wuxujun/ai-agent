@@ -134,6 +134,7 @@ func (r *OfflineRunner) planEvidence(ctx context.Context, caseDef Case, variant 
 	}
 	rankedBranches := make([][]Candidate, 0, len(branches))
 	fetchers := make(map[string]Retriever, len(branches))
+	brainCandidates := 0
 	for _, branch := range branches {
 		if err := ctx.Err(); err != nil {
 			output.Err = err.Error()
@@ -160,12 +161,24 @@ func (r *OfflineRunner) planEvidence(ctx context.Context, caseDef Case, variant 
 		for i := range filtered {
 			filtered[i].Rank = i + 1
 		}
+		if branch.name == "brain" {
+			brainCandidates = len(filtered)
+		}
 		rankedBranches = append(rankedBranches, filtered)
 		fetchers[branch.name] = branch.retriever
 	}
 
 	output.Candidates = MergeRRF(rankedBranches, RRFK)
-	evidence, err := SelectEvidence(ctx, branchEvidenceRetriever{fetchers: fetchers}, caseDef.Scope, output.Candidates, output.Limits.EvidenceItems, output.Limits.EvidenceBytes)
+	evidenceCandidates := output.Candidates
+	if variant == VariantBrain && brainCandidates > 0 {
+		evidenceCandidates = make([]Candidate, 0, brainCandidates)
+		for _, candidate := range output.Candidates {
+			if candidate.Branch == "brain" {
+				evidenceCandidates = append(evidenceCandidates, candidate)
+			}
+		}
+	}
+	evidence, err := SelectEvidence(ctx, branchEvidenceRetriever{fetchers: fetchers}, caseDef.Scope, evidenceCandidates, output.Limits.EvidenceItems, output.Limits.EvidenceBytes)
 	if err != nil {
 		output.Err = fmt.Sprintf("select evidence: %v", err)
 		return output

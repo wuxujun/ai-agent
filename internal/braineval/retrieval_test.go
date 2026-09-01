@@ -226,6 +226,24 @@ func TestWikiRetriever_IsolatesScopeAndRevalidatesURI(t *testing.T) {
 	}
 }
 
+func TestWikiRetriever_UsesBM25ForChineseInterpretiveQuestion(t *testing.T) {
+	atlasRoot := writeBrainRoot(t, "# 发布决策\n\n当前发布负责人是梅琳。\n")
+	atlas := projectCorpus("tenant-north", "project-atlas", "atlas", "task-atlas", "2026-09-02T10:00:00Z")
+	atlas.Fixture.Root = atlasRoot
+	retriever, err := NewWikiRetriever(context.Background(), corpusWithProjects(atlas))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, err := retriever.Search(context.Background(), scopeAtlas, "请问目前负责上线发布工作的人究竟是谁", BranchCandidateLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].URI != "wiki://atlas/projects/current" {
+		t.Fatalf("candidates=%+v, want wiki://atlas/projects/current", candidates)
+	}
+}
+
 func TestWikiRetriever_SearchSkipsDirectoryNavigationPages(t *testing.T) {
 	root := t.TempDir()
 	brain := filepath.Join(root, "brain")

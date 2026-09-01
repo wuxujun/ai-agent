@@ -207,7 +207,7 @@ func (c *DirectoryClient) searchBM25(query string, _ []string, phrase, compactPh
 			}
 		}
 	}
-	minimumMatches := directoryBM25MinimumMatches(len(queryTokens))
+	minimumMatches := directoryBM25MinimumMatches(query, len(queryTokens))
 	qualifiedDocuments := activeDocuments[:0]
 	for _, documentID := range activeDocuments {
 		detail := &scores[documentID]
@@ -308,11 +308,17 @@ func directoryBM25RankBetter(left, right directoryBM25Rank) bool {
 	return left.score > right.score
 }
 
-func directoryBM25MinimumMatches(tokens int) int {
+func directoryBM25MinimumMatches(query string, tokens int) int {
 	if tokens <= 2 {
 		return tokens
 	}
-	return int(math.Ceil(float64(tokens) * 0.6))
+	minimum := int(math.Ceil(float64(tokens) * 0.6))
+	for _, current := range query {
+		if unicode.Is(unicode.Han, current) {
+			return min(minimum, 2)
+		}
+	}
+	return minimum
 }
 
 func applyDirectoryBM25PhraseBoost(page directoryIndexPage, phrase, compactPhrase string, detail *directoryBM25Score, explain bool) {
