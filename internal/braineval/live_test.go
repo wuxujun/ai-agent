@@ -414,19 +414,25 @@ func TestFinalizerAnswerer_UsesOnlyDeterministicEvidenceContract(t *testing.T) {
 }
 
 func TestLLMJudge_UsesAnswerVerifierAndStrictSchema(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			config.LLMSceneAnswerVerifier: {Routes: []config.LLMRouteRule{{TargetScene: "routed-judge", Intents: []string{"coding"}}}},
+			"routed-judge":                {Model: "wrong-routed-model"},
+		}
+	}))
 	caller := &recordingStructuredCaller{response: `{"score":0.75,"reason":"mostly correct"}`, usage: types.TokenUsage{PromptTokens: 8, CompletionTokens: 2, TotalTokens: 10}}
-	ctx := llmcore.WithRuntime(context.Background(), llmcore.NewRuntime(caller, nil))
+	ctx := llmcore.WithRuntime(llmcore.WithRoutingHints(context.Background(), config.LLMRoutingHints{Intent: "coding"}), llmcore.NewRuntime(caller, nil))
 	c := Case{Name: "owner", Query: "who owns release?", ExpectedClaims: []string{"Mei Lin"}, ForbiddenClaims: []string{"Ari Chen"}}
 
-	got, err := (LLMJudge{Config: llmcore.Config{Scene: config.LLMSceneAnswerVerifier}}).Judge(ctx, c, "Mei Lin owns release")
+	got, err := (LLMJudge{Config: llmcore.Config{Scene: config.LLMSceneAnswerVerifier, Model: "judge-frozen"}}).Judge(ctx, c, "Mei Lin owns release")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Score != .75 || got.Reason != "mostly correct" || got.Usage != caller.usage {
 		t.Fatalf("judge result = %#v", got)
 	}
-	if caller.cfg.Scene != "answer_verifier" {
-		t.Fatalf("scene = %q", caller.cfg.Scene)
+	if caller.cfg.Scene != "answer_verifier" || caller.cfg.Model != "judge-frozen" {
+		t.Fatalf("config = %+v", caller.cfg)
 	}
 	properties, ok := caller.schema["properties"].(map[string]any)
 	if !ok {
@@ -439,6 +445,33 @@ func TestLLMJudge_UsesAnswerVerifierAndStrictSchema(t *testing.T) {
 	}
 	if !strings.Contains(caller.userPrompt, c.Query) || !strings.Contains(caller.userPrompt, c.ExpectedClaims[0]) || !strings.Contains(caller.userPrompt, "Mei Lin owns release") {
 		t.Fatalf("judge prompt omitted case contract: %q", caller.userPrompt)
+	}
+}
+
+func TestSnapshotLiveSceneConfigsFromUsesOneExplicitSnapshot(t *testing.T) {
+	writerPrice := 2.0
+	judgePrice := 5.0
+	snapshot := &config.Config{}
+	snapshot.LLM.Provider = "snapshot-provider"
+	snapshot.LLM.Scenes = map[string]config.LLMEndpointConfig{
+		config.LLMSceneTaskFinalizer: {
+			Model:                   "snapshot-writer",
+			InputCostPerMillionUSD:  &writerPrice,
+			OutputCostPerMillionUSD: &writerPrice,
+		},
+		config.LLMSceneAnswerVerifier: {
+			Model:                   "snapshot-judge",
+			InputCostPerMillionUSD:  &judgePrice,
+			OutputCostPerMillionUSD: &judgePrice,
+		},
+	}
+
+	writer, judge := snapshotLiveSceneConfigsFrom(snapshot)
+	if writer.Provider != "snapshot-provider" || writer.Model != "snapshot-writer" || writer.InputCostPerMillionUSD != 2 {
+		t.Fatalf("writer snapshot = %+v", writer)
+	}
+	if judge.Provider != "snapshot-provider" || judge.Model != "snapshot-judge" || judge.InputCostPerMillionUSD != 5 {
+		t.Fatalf("judge snapshot = %+v", judge)
 	}
 }
 

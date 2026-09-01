@@ -74,7 +74,11 @@ func (f *LLMTaskFinalizer) Finalize(ctx context.Context, task *types.Task) (stri
 	if f.frozenConfig != nil {
 		cfg = *f.frozenConfig
 	}
-	usage, err := llmcore.CallJSON(ctx, cfg, "Synthesize a self-contained final answer using only the supplied evidence. State uncertainty when evidence is incomplete. Return exactly one JSON object with non-empty final_answer, evidence_summary, and confidence fields. Never return an empty final_answer.", prompt, schema, &output)
+	callJSON := llmcore.CallJSON
+	if f.frozenConfig != nil {
+		callJSON = llmcore.CallJSONExact
+	}
+	usage, err := callJSON(ctx, cfg, "Synthesize a self-contained final answer using only the supplied evidence. State uncertainty when evidence is incomplete. Return exactly one JSON object with non-empty final_answer, evidence_summary, and confidence fields. Never return an empty final_answer.", prompt, schema, &output)
 	if err != nil {
 		if f.frozenConfig != nil {
 			return "", usage, err

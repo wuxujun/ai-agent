@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -24,8 +25,14 @@ func TestBuildFinalizerEvidenceIncludesFetchedEvidenceContent(t *testing.T) {
 }
 
 func TestNewLLMTaskFinalizer_FailedCallKeepsLegacyZeroUsage(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"legacy-finalizer": {Routes: []config.LLMRouteRule{{TargetScene: "legacy-routed", Intents: []string{"coding"}}}},
+			"legacy-routed":    {Model: "legacy-routed-model"},
+		}
+	}))
 	caller := &failedFinalizerCaller{usage: types.TokenUsage{PromptTokens: 4, CompletionTokens: 3, TotalTokens: 7}}
-	ctx := llmcore.WithRuntime(context.Background(), llmcore.NewRuntime(caller, nil))
+	ctx := llmcore.WithRuntime(llmcore.WithRoutingHints(context.Background(), config.LLMRoutingHints{Intent: "coding"}), llmcore.NewRuntime(caller, nil))
 
 	_, usage, err := NewLLMTaskFinalizer("legacy-finalizer").Finalize(ctx, &types.Task{Goal: "answer"})
 	if err == nil {
@@ -34,9 +41,18 @@ func TestNewLLMTaskFinalizer_FailedCallKeepsLegacyZeroUsage(t *testing.T) {
 	if usage != (types.TokenUsage{}) {
 		t.Fatalf("legacy usage = %#v, want zero", usage)
 	}
+	if caller.cfg.Scene != "legacy-routed" || caller.cfg.Model != "legacy-routed-model" {
+		t.Fatalf("legacy finalizer stopped routing: %+v", caller.cfg)
+	}
 }
 
 func TestNewFrozenLLMTaskFinalizer_FailedCallPreservesUsageAndConfig(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"task_finalizer": {Routes: []config.LLMRouteRule{{TargetScene: "routed-writer", Intents: []string{"coding"}}}},
+			"routed-writer":  {Model: "wrong-routed-model"},
+		}
+	}))
 	wantConfig := llmcore.Config{
 		Scene:                   "task_finalizer",
 		Provider:                "openai",
@@ -47,7 +63,7 @@ func TestNewFrozenLLMTaskFinalizer_FailedCallPreservesUsageAndConfig(t *testing.
 	}
 	wantUsage := types.TokenUsage{PromptTokens: 4, CompletionTokens: 3, TotalTokens: 7}
 	caller := &failedFinalizerCaller{usage: wantUsage}
-	ctx := llmcore.WithRuntime(context.Background(), llmcore.NewRuntime(caller, nil))
+	ctx := llmcore.WithRuntime(llmcore.WithRoutingHints(context.Background(), config.LLMRoutingHints{Intent: "coding"}), llmcore.NewRuntime(caller, nil))
 
 	_, usage, err := NewFrozenLLMTaskFinalizer(wantConfig).Finalize(ctx, &types.Task{Goal: "answer"})
 	if err == nil {

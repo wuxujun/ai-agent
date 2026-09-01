@@ -203,7 +203,15 @@ func (r *Runtime) registerObserver(value Observer) func() {
 }
 
 func ConfigForScene(scene string) Config {
-	current := config.Get()
+	return ConfigForSceneFrom(config.Get(), scene)
+}
+
+// ConfigForSceneFrom resolves one scene from the supplied immutable
+// configuration snapshot without reading the process-wide configuration.
+func ConfigForSceneFrom(current *config.Config, scene string) Config {
+	if current == nil {
+		return Config{Scene: scene}
+	}
 	resolved := current.ResolveLLMScene(scene)
 	return Config{
 		Scene:                          scene,
@@ -225,6 +233,12 @@ func ConfigForScene(scene string) Config {
 
 func CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
 	return RuntimeFromContext(ctx).CallJSON(ctx, cfg, systemPrompt, userPrompt, schema, dest)
+}
+
+// CallJSONExact invokes the supplied configuration without applying context
+// routing. It is intended for callers that already resolved and froze a scene.
+func CallJSONExact(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
+	return RuntimeFromContext(ctx).CallJSONExact(ctx, cfg, systemPrompt, userPrompt, schema, dest)
 }
 
 func CallJSONStream(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any, onChunk func(string)) (types.TokenUsage, error) {
@@ -287,6 +301,15 @@ func (r *Runtime) CallJSON(ctx context.Context, cfg Config, systemPrompt, userPr
 			attribute.String("llm.scene", cfg.Scene),
 		))
 	}
+	return r.callStructured(ctx, cfg, map[string]bool{}, func(callCtx context.Context, caller StructuredCaller, active Config) (types.TokenUsage, error) {
+		return caller.CallJSON(callCtx, active, systemPrompt, userPrompt, schema, dest)
+	})
+}
+
+// CallJSONExact invokes the supplied configuration without applying context
+// routing. Retry, budget, fallback, telemetry, and observation behavior remain
+// identical to CallJSON.
+func (r *Runtime) CallJSONExact(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
 	return r.callStructured(ctx, cfg, map[string]bool{}, func(callCtx context.Context, caller StructuredCaller, active Config) (types.TokenUsage, error) {
 		return caller.CallJSON(callCtx, active, systemPrompt, userPrompt, schema, dest)
 	})

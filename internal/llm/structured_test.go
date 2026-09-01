@@ -115,6 +115,50 @@ func TestCallJSONRoutesByTaskBudgetAndStep(t *testing.T) {
 	}
 }
 
+func TestCallJSONExactIgnoresRoutingHints(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"writer": {
+				Routes: []config.LLMRouteRule{{TargetScene: "routed", Intents: []string{"coding"}}},
+			},
+			"routed": {Model: "routed-model"},
+		}
+	}))
+	fake := &routingCaller{}
+	runtime := NewRuntime(fake, nil)
+	ctx := WithRuntime(WithRoutingHints(context.Background(), config.LLMRoutingHints{Intent: "coding"}), runtime)
+	want := Config{Scene: "writer", Provider: "openai", Model: "writer-frozen", MaxRetries: 1}
+
+	if _, err := CallJSONExact(ctx, want, "", "", nil, &struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.config != want {
+		t.Fatalf("exact call config = %+v, want %+v", fake.config, want)
+	}
+}
+
+func TestConfigForSceneFromUsesExplicitSnapshot(t *testing.T) {
+	price := 3.0
+	retries := 1
+	snapshot := &config.Config{}
+	snapshot.LLM.Provider = "snapshot-provider"
+	snapshot.LLM.Model = "snapshot-default"
+	snapshot.LLM.CircuitBreakerFailureThreshold = 7
+	snapshot.LLM.Scenes = map[string]config.LLMEndpointConfig{
+		"writer": {
+			Model:                   "snapshot-writer",
+			MaxRetries:              &retries,
+			InputCostPerMillionUSD:  &price,
+			OutputCostPerMillionUSD: &price,
+		},
+	}
+
+	got := ConfigForSceneFrom(snapshot, "writer")
+	if got.Scene != "writer" || got.Provider != "snapshot-provider" || got.Model != "snapshot-writer" || got.MaxRetries != 1 || got.CircuitBreakerFailureThreshold != 7 || got.InputCostPerMillionUSD != 3 || got.OutputCostPerMillionUSD != 3 {
+		t.Fatalf("resolved config = %+v", got)
+	}
+}
+
 func TestRemainingTokenRouteRequiresTaskBudget(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
