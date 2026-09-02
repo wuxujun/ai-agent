@@ -236,6 +236,16 @@ func TestScoreCase_NoAnswerAcceptsNaturalCompleteRefusal(t *testing.T) {
 			query:  "Atlas 项目办公室地址是什么？",
 			answer: "根据现有证据，无法确定办公室地址。",
 		},
+		{
+			name:   "english query copula",
+			query:  "Who is the owner?",
+			answer: "I cannot determine who is the owner.",
+		},
+		{
+			name:   "chinese query copula",
+			query:  "这是谁？",
+			answer: "无法确定这是谁。",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -29,7 +29,8 @@ const (
 
 var (
 	urlQueryPattern        = regexp.MustCompile(`\b([a-z][a-z0-9+.-]*://[^\s?]+)\?[^\s]+`)
-	doubleSlashPathPattern = regexp.MustCompile(`(^|[\s("'=\[\]{},;])(//[^\s:'"]+)`)
+	knownURIPattern        = regexp.MustCompile(`(?i)\b(?:https?|ftp|wss?|ssh|git|wiki|memory|task|session)://[^\s]+`)
+	doubleSlashPathPattern = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])(//[^\s:'"]+)`)
 	absolutePathPattern    = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])(/[^/\s:'"][^\s:'"]*)`)
 	windowsPathPattern     = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])([A-Za-z]:[\\/][^\s:'"]+)`)
 	providerBodyPattern    = regexp.MustCompile(`(?is)\b(?:provider\s+)?response body\b\s*[:=]\s*.*`)
@@ -714,6 +715,12 @@ func sanitizeError(raw string, knownPaths ...string) string {
 	sanitized = cookiePattern.ReplaceAllString(sanitized, "Cookie=[REDACTED]")
 	sanitized = xAPIKeyPattern.ReplaceAllString(sanitized, "X-API-Key=[REDACTED]")
 	sanitized = apiKeyPattern.ReplaceAllString(sanitized, "api_key=[REDACTED]")
+	protectedURIs := make([]string, 0)
+	sanitized = knownURIPattern.ReplaceAllStringFunc(sanitized, func(uri string) string {
+		marker := fmt.Sprintf("BRAINEVALPROTECTEDURI%d", len(protectedURIs))
+		protectedURIs = append(protectedURIs, uri)
+		return marker
+	})
 	for _, prefix := range resolvedPathPrefixes(knownPaths) {
 		pattern := regexp.MustCompile(regexp.QuoteMeta(prefix) + `(?:[\\/][^\s:]*)?`)
 		sanitized = pattern.ReplaceAllString(sanitized, "[REDACTED_PATH]")
@@ -721,6 +728,10 @@ func sanitizeError(raw string, knownPaths ...string) string {
 	sanitized = doubleSlashPathPattern.ReplaceAllString(sanitized, `${1}[REDACTED_PATH]`)
 	sanitized = absolutePathPattern.ReplaceAllString(sanitized, `${1}[REDACTED_PATH]`)
 	sanitized = windowsPathPattern.ReplaceAllString(sanitized, `${1}[REDACTED_PATH]`)
+	for index, uri := range protectedURIs {
+		marker := fmt.Sprintf("BRAINEVALPROTECTEDURI%d", index)
+		sanitized = strings.ReplaceAll(sanitized, marker, uri)
+	}
 	sanitized = whitespaceRunPattern.ReplaceAllString(sanitized, " ")
 	return strings.TrimSpace(sanitized)
 }

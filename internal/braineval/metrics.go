@@ -509,12 +509,6 @@ func isStrictNoAnswer(answer, query string) bool {
 	if remainder == "" {
 		return true
 	}
-	for _, assertion := range []string{" is ", " are ", " was ", " were ", " has ", " have ", "是", "为", "位于", "地址在"} {
-		if strings.Contains(" "+remainder+" ", assertion) {
-			return false
-		}
-	}
-
 	queryNormalized := normalizeNoAnswer(query)
 	queryWords := make(map[string]struct{})
 	for _, word := range strings.Fields(queryNormalized) {

@@ -69,12 +69,33 @@ func TestLiveRunner_NoAnswerFalsePositiveAggregatesAcrossRepetitions(t *testing.
 		Query: "Atlas 项目办公室地址是什么？", ExpectNoAnswer: true,
 	}
 
-	got, err := runner.RunVariant(context.Background(), caseDef, VariantOutput{Variant: VariantBrain})
+	got, err := runner.RunVariant(context.Background(), caseDef, VariantOutput{
+		Variant:  VariantBrain,
+		Evidence: []types.Evidence{{Path: "memory://unsupported", Lines: []string{"unsupported address guess"}}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.NoAnswerAnswerFalsePositive {
+	if !got.NoAnswerAnswerFalsePositive || !got.NoAnswerRetrievalFalsePositive {
 		t.Fatalf("one hallucinating repetition was hidden by the median: %#v", got)
+	}
+	summary := Summarize([]CaseResult{got.CaseResult}, VariantBrain)
+	if summary.NoAnswerAnswerFalsePositiveRate != 1 || summary.NoAnswerRetrievalFalsePositiveRate != 1 {
+		t.Fatalf("no-answer safety flags did not reach summary: %#v", summary)
+	}
+	comparison := Compare(
+		Summary{Variant: VariantBaseline, Cases: 1, ComparableCases: 1},
+		summary,
+		Thresholds{},
+		GateLive,
+	)
+	for _, failure := range []string{
+		"no-answer retrieval false-positive rate 1.000 > 0.000",
+		"no-answer answer false-positive rate 1.000 > 0.000",
+	} {
+		if !slices.Contains(comparison.Failures, failure) {
+			t.Fatalf("Live gate omitted %q: %#v", failure, comparison)
+		}
 	}
 }
 
