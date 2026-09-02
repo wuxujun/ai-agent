@@ -74,7 +74,7 @@ Implementation may split focused test or support files, but these package bounda
 
 ## 4. Dataset Model
 
-The dataset is YAML with required `version: 1`. Large histories and Wiki pages live in fixture files so the manifest stays reviewable. Unknown top-level and case fields are rejected so a misspelled safety expectation cannot be silently ignored.
+The dataset is YAML with required `version: 2`. Version 2 records the final-review metric correction: semantic claim recall is the matched-arm quality measure, exact evidence-URI recall remains separately auditable, and no-answer retrieval false positives are distinct from answer hallucinations. The four numeric improvement/ratio thresholds are unchanged. Large histories and Wiki pages live in fixture files so the manifest stays reviewable. Unknown top-level and case fields are rejected so a misspelled safety expectation cannot be silently ignored.
 
 Each project fixture declares its `tenant_id`, `project_id`, sessions, memories, retractions, and Brain directory. Each case declares:
 
@@ -138,7 +138,7 @@ Memory only          Memory + Gold Brain
    Summaries, deltas, regressions, gates
 ```
 
-The offline runner uses the Store memory query contract and the existing Wiki `DirectoryClient`. Each available branch returns at most eight candidates. Candidate ranks are merged with reciprocal rank fusion using `k=60`; identical canonical evidence URIs are deduplicated before ranking. Baseline has only the Memory branch. Both variants are then reduced to at most three evidence items and 8,000 UTF-8 bytes before scoring. Merging must not invoke an LLM or silently expand the evidence budget.
+The offline runner uses the Store memory query contract and the existing Wiki `DirectoryClient`. Each available branch returns at most eight candidates. Candidate ranks are merged with reciprocal rank fusion using `k=60`; identical canonical evidence URIs are deduplicated before ranking. Baseline has only the Memory branch. Candidate has the complete Memory + Brain RRF result. Both variants run that complete ranked result through the same reduction to at most three evidence items and 8,000 UTF-8 bytes before scoring; a Brain hit must never discard Memory candidates. Retrieval and reduction must not inspect case Gold, invoke an LLM, or silently expand the evidence budget.
 
 The Live runner uses the same Planner, Writer, model configuration, prompt budget, and timeout for both arms. Baseline receives no Brain index or Brain tools. Candidate receives the bounded compact index and read-only Brain access. Each case runs three times by default; summaries use medians and report unstable cases.
 
@@ -149,7 +149,7 @@ Offline CI measures:
 - expected evidence recall;
 - expected and forbidden claim selection;
 - fresh-versus-stale fact selection;
-- no-answer false-positive rate;
+- no-answer retrieval false-positive rate;
 - citation coverage;
 - tenant/project leakage;
 - retracted-fact recurrence;
@@ -164,6 +164,7 @@ Live evaluation additionally measures:
 - estimated cost;
 - end-to-end latency;
 - result stability across repetitions.
+- no-answer answer-hallucination false-positive rate; an explicit, correct insufficiency refusal is not a false positive.
 
 Results have three levels: per-case results, per-variant summaries, and paired comparisons. Paired comparisons list every regression and improvement rather than reporting aggregate deltas alone.
 
@@ -176,7 +177,8 @@ Candidate must satisfy all of the following:
 - Supersession, retraction, tenant isolation, and project isolation cases pass at 100%.
 - Wiki citation coverage is 100%.
 - Similar-entity contamination and cross-boundary leakage are zero.
-- No-answer false-positive rate does not exceed Baseline.
+- Candidate no-answer retrieval false-positive rate is exactly zero in Offline and Live evaluation.
+- Candidate no-answer answer-hallucination false-positive rate is exactly zero in Live evaluation.
 - Offline P95 latency does not exceed 1.5 times Baseline.
 - Live total tokens do not exceed Baseline by more than 10%.
 - Any critical safety or isolation regression blocks progression to P1.
@@ -187,7 +189,9 @@ Cost and Live latency are observed in P0 but are not improvement gates. Threshol
 
 Dataset loading fails closed for invalid schema, unresolved evidence, malformed URI, impossible chronology, invalid supersession, or cross-scope references. Gold Brain fixtures must pass claim-to-evidence and retraction consistency checks before any case runs.
 
-If one experimental arm has an infrastructure error, the pair is marked incomparable and contributes to error rate; it is never counted as a quality win or loss. A Live Judge failure preserves the raw answer and resource measurements but fails the Live gate. Deterministic errors are not retried. A transient Live network call may be retried once and must record the retry.
+If one experimental arm has an infrastructure error, the pair is retained, marked incomparable, propagated as a typed infrastructure error, and contributes to error rate; it is never counted as a quality win or loss. Reports and gates reject any error, missing pair, or `ComparableCases < Cases`, and the CLI writes the partial report before infrastructure exit 2. A Live Judge failure preserves the raw answer and resource measurements but fails the Live gate. Deterministic errors are not retried. A transient Live network call may be retried once and must record the retry.
+
+Before every Live Writer or Judge call, the tracker atomically reserves a conservative upper bound for input plus provider-constrained output across all configured attempts (at most two). The call cannot start unless both token and USD reservations fit. Afterward, component-only or inconsistent Usage is normalized, every returned actual Usage is settled even when it exceeds the reservation or the call fails, and unused reservation is released. JSON and Text reports expose independent actual tracker totals rather than substituting per-case medians.
 
 A critical leak, retracted claim, or persistent prompt-injection hit immediately creates a threshold failure. Evaluation output must sanitize credentials and must not log Authorization values, real prompts, private paths, or raw provider responses.
 
@@ -204,7 +208,7 @@ go run ./cmd/brain-eval \
   -max-total-cost-usd 2
 ```
 
-The default output is readable text. `-format json` emits case results, variant summaries, and the paired comparison. Invalid input, critical regression, threshold failure, or budget overrun returns a non-zero exit code. Live mode requires explicit model configuration and credentials and must never silently downgrade to offline mode.
+The default output is readable text. `-format json` emits case results, variant summaries, independent Live budget totals, and the paired comparison with case+metric improvements/regressions. Per-case and summary `execution_ok` means only complete execution; only paired `passed` means the quality gates passed. Invalid input, infrastructure failure, critical regression, threshold failure, or budget overrun returns a non-zero exit code. Live mode requires explicit model configuration and credentials and must never silently downgrade to offline mode.
 
 ## 11. Testing Strategy
 

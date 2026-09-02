@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,7 +123,7 @@ func TestRun_TextOutputOnlyUsesAllowedFieldsAndSanitizesErrors(t *testing.T) {
 
 	output := stdout.String()
 	for _, want := range []string{
-		"case name=decision_release_owner variant=baseline pass=false",
+		"case name=decision_release_owner variant=baseline execution_ok=false",
 		"summary variant=baseline",
 		"comparison gate_set=live passed=true",
 		"latency_ms=12",
@@ -136,6 +138,51 @@ func TestRun_TextOutputOnlyUsesAllowedFieldsAndSanitizesErrors(t *testing.T) {
 		if strings.Contains(output, forbidden) {
 			t.Fatalf("stdout leaked %q: %s", forbidden, output)
 		}
+	}
+}
+
+func TestWriteReport_EncodesInfiniteRatiosSafelyAndShowsThemInText(t *testing.T) {
+	report := safePassingReport(braineval.GateLive)
+	report.Comparison.Deltas["p95_latency_ratio"] = math.Inf(1)
+	report.Comparison.Deltas["total_tokens_ratio"] = math.Inf(1)
+
+	var jsonOutput bytes.Buffer
+	if err := writeReport(&jsonOutput, formatJSON, report); err != nil {
+		t.Fatalf("JSONL rejected valid infinite ratios: %v", err)
+	}
+	if !strings.Contains(jsonOutput.String(), `"p95_latency_ratio":"inf"`) || !strings.Contains(jsonOutput.String(), `"total_tokens_ratio":"inf"`) {
+		t.Fatalf("JSONL ratios are not explicit and safe: %s", jsonOutput.String())
+	}
+
+	var textOutput bytes.Buffer
+	if err := writeReport(&textOutput, formatText, report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(textOutput.String(), "p95_latency_ratio=+Inf") || !strings.Contains(textOutput.String(), "total_tokens_ratio=+Inf") {
+		t.Fatalf("Text output does not explain infinite ratios: %s", textOutput.String())
+	}
+}
+
+func TestWriteReport_EmitsIndependentLiveBudgetTrackerTotals(t *testing.T) {
+	report := safePassingReport(braineval.GateLive)
+	report.BudgetTotals = &braineval.BudgetTotals{PromptTokens: 101, CompletionTokens: 23, TotalTokens: 124, CostUSD: 0.045, Calls: 8}
+
+	var jsonOutput bytes.Buffer
+	if err := writeReport(&jsonOutput, formatJSON, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"type":"budget_totals"`, `"total_tokens":124`, `"calls":8`} {
+		if !strings.Contains(jsonOutput.String(), want) {
+			t.Fatalf("JSONL omitted tracker total %q: %s", want, jsonOutput.String())
+		}
+	}
+
+	var textOutput bytes.Buffer
+	if err := writeReport(&textOutput, formatText, report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(textOutput.String(), "budget_totals prompt_tokens=101 completion_tokens=23 total_tokens=124 cost_usd=0.045000 calls=8") {
+		t.Fatalf("Text omitted independent tracker totals: %s", textOutput.String())
 	}
 }
 
@@ -264,6 +311,82 @@ func TestRun_InputAndGateAndBudgetFailures(t *testing.T) {
 			t.Fatalf("stderr=%q want budget error", stderr.String())
 		}
 	})
+
+	t.Run("typed infrastructure failure keeps partial report and exits two", func(t *testing.T) {
+		t.Parallel()
+
+		var stdout bytes.Buffer
+		report := safePassingReport(braineval.GateOffline)
+		code := run([]string{"-input", "ignored-by-fake.yaml", "-format", "json"}, &stdout, io.Discard, dependencies{
+			execute: func(context.Context, runOptions) (EvalReport, error) {
+				return report, &braineval.InfrastructureError{CaseName: "critical-fetch", Cause: errors.New("fetch unavailable")}
+			},
+		})
+		if code != 2 {
+			t.Fatalf("exit=%d, want infrastructure exit 2", code)
+		}
+		if !strings.Contains(stdout.String(), `"case_name":"decision_release_owner"`) || !strings.Contains(stdout.String(), `"type":"paired_comparison"`) {
+			t.Fatalf("partial report was not retained: %s", stdout.String())
+		}
+	})
+}
+
+func TestExecuteOffline_AppendsFailedPairBeforeReturningInfrastructureError(t *testing.T) {
+	caseDef := braineval.Case{Name: "critical-fetch", Critical: true}
+	pair := braineval.PairResult{
+		Case:       caseDef,
+		Baseline:   braineval.VariantOutput{Variant: braineval.VariantBaseline, Err: "fetch failed"},
+		Candidate:  braineval.VariantOutput{Variant: braineval.VariantBrain},
+		Comparable: false,
+	}
+	runner := fakeOfflinePairRunner{pair: pair, err: &braineval.InfrastructureError{CaseName: caseDef.Name, Cause: errors.New("fetch failed")}}
+	report, err := executeOffline(context.Background(), braineval.Dataset{Cases: []braineval.Case{caseDef}}, runner)
+	if !errors.Is(err, braineval.ErrInfrastructure) {
+		t.Fatalf("error=%v, want typed infrastructure error", err)
+	}
+	if len(report.Cases) != 2 || report.Cases[0].CaseName != caseDef.Name || report.Cases[1].CaseName != caseDef.Name {
+		t.Fatalf("partial pair missing from report: %#v", report.Cases)
+	}
+	if report.Comparison.Passed() {
+		t.Fatalf("incomplete report passed: %#v", report.Comparison)
+	}
+}
+
+func TestExecuteLive_RetainsOfflineAndLiveInfrastructurePairs(t *testing.T) {
+	caseDef := braineval.Case{Name: "critical-live-fetch", Critical: true}
+	t.Run("offline fetch failure", func(t *testing.T) {
+		pair := braineval.PairResult{
+			Case: caseDef, Baseline: braineval.VariantOutput{Variant: braineval.VariantBaseline, Err: "fetch failed"},
+			Candidate: braineval.VariantOutput{Variant: braineval.VariantBrain}, Comparable: false,
+		}
+		offline := fakeOfflinePairRunner{pair: pair, err: &braineval.InfrastructureError{CaseName: caseDef.Name, Cause: errors.New("fetch failed")}}
+		live := &fakeLivePairRunner{budget: braineval.NewBudgetTracker(100, 1)}
+		report, err := executeLive(context.Background(), braineval.Dataset{Cases: []braineval.Case{caseDef}}, offline, live)
+		if !errors.Is(err, braineval.ErrInfrastructure) || len(report.Cases) != 2 || live.calls != 0 {
+			t.Fatalf("error=%v cases=%#v live_calls=%d", err, report.Cases, live.calls)
+		}
+	})
+
+	t.Run("live writer failure", func(t *testing.T) {
+		pair := braineval.PairResult{
+			Case: caseDef, Baseline: braineval.VariantOutput{Variant: braineval.VariantBaseline},
+			Candidate: braineval.VariantOutput{Variant: braineval.VariantBrain}, Comparable: true,
+		}
+		offline := fakeOfflinePairRunner{pair: pair}
+		liveErr := &braineval.InfrastructureError{CaseName: caseDef.Name, Cause: errors.New("writer failed")}
+		live := &fakeLivePairRunner{
+			budget: braineval.NewBudgetTracker(100, 1), err: liveErr,
+			pair: braineval.LivePairResult{
+				Case:      caseDef,
+				Baseline:  braineval.LiveVariantResult{CaseResult: braineval.CaseResult{CaseName: caseDef.Name, Variant: braineval.VariantBaseline}},
+				Candidate: braineval.LiveVariantResult{CaseResult: braineval.CaseResult{CaseName: caseDef.Name, Variant: braineval.VariantBrain}},
+			},
+		}
+		report, err := executeLive(context.Background(), braineval.Dataset{Cases: []braineval.Case{caseDef}}, offline, live)
+		if !errors.Is(err, braineval.ErrInfrastructure) || len(report.Cases) != 2 || report.Cases[1].CaseName != caseDef.Name {
+			t.Fatalf("error=%v partial cases=%#v", err, report.Cases)
+		}
+	})
 }
 
 func TestSanitizeError_RedactsSensitiveFragments(t *testing.T) {
@@ -297,6 +420,39 @@ func TestSanitizeError_RedactsMultilineProviderResponseBody(t *testing.T) {
 	for _, forbidden := range []string{`{"secret":"value"}`, "raw-tail-secret"} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("sanitizeError leaked %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestSanitizeError_RedactsGeneralUnixAndWindowsPaths(t *testing.T) {
+	t.Parallel()
+
+	raw := "open /private/tmp/brain-eval/fixture-root: permission denied\n" +
+		"read /Users/private/project/.env: denied\n" +
+		"windows C:\\Users\\private\\brain-eval\\dataset: denied\n" +
+		`quoted windows "D:/work/private/brain-eval/dataset": denied`
+	got := sanitizeError(raw)
+	for _, forbidden := range []string{"/private/tmp/brain-eval/fixture-root", "/Users/private/project/.env", `C:\Users\private\brain-eval\dataset`, `D:/work/private/brain-eval/dataset`} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitizeError leaked %q: %s", forbidden, got)
+		}
+	}
+	if countStrings(strings.Fields(got), "[REDACTED_PATH]") == 0 && !strings.Contains(got, "[REDACTED_PATH]") {
+		t.Fatalf("sanitizeError omitted redaction marker: %s", got)
+	}
+}
+
+func TestSanitizeError_RedactsSymlinkAndResolvedPrefixes(t *testing.T) {
+	realRoot := t.TempDir()
+	linkRoot := filepath.Join(t.TempDir(), "fixture-link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	raw := fmt.Sprintf("input %s/dataset and resolved %s/private/subdir failed", linkRoot, realRoot)
+	got := sanitizeError(raw, linkRoot)
+	for _, forbidden := range []string{linkRoot, realRoot} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitizeError leaked prefix %q: %s", forbidden, got)
 		}
 	}
 }
@@ -388,3 +544,26 @@ func countStrings(values []string, want string) int {
 	}
 	return count
 }
+
+type fakeOfflinePairRunner struct {
+	pair braineval.PairResult
+	err  error
+}
+
+func (r fakeOfflinePairRunner) RunPair(context.Context, braineval.Case) (braineval.PairResult, error) {
+	return r.pair, r.err
+}
+
+type fakeLivePairRunner struct {
+	pair   braineval.LivePairResult
+	err    error
+	budget *braineval.BudgetTracker
+	calls  int
+}
+
+func (r *fakeLivePairRunner) RunPair(context.Context, braineval.PairResult) (braineval.LivePairResult, error) {
+	r.calls++
+	return r.pair, r.err
+}
+
+func (r *fakeLivePairRunner) Budget() *braineval.BudgetTracker { return r.budget }

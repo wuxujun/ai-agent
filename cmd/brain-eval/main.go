@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/braineval"
@@ -28,7 +29,8 @@ const (
 
 var (
 	urlQueryPattern      = regexp.MustCompile(`\b([a-z][a-z0-9+.-]*://[^\s?]+)\?[^\s]+`)
-	absolutePathPattern  = regexp.MustCompile(`(^|[\s(])(/[^ \t\r\n:]+(?:/[^ \t\r\n:]+)*\.(?:ya?ml|jsonl|md))`)
+	absolutePathPattern  = regexp.MustCompile(`(^|[\s("'=])(/[^\s:'"]+)`)
+	windowsPathPattern   = regexp.MustCompile(`(^|[\s("'=])([A-Za-z]:[\\/][^\s:'"]+)`)
 	providerBodyPattern  = regexp.MustCompile(`(?is)\b(?:provider\s+)?response body\b\s*[:=]\s*.*`)
 	whitespaceRunPattern = regexp.MustCompile(`\s+`)
 	authorizationPattern = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^\s,;]+`)
@@ -47,14 +49,24 @@ type runOptions struct {
 }
 
 type EvalReport struct {
-	Cases      []braineval.CaseResult
-	Summaries  []braineval.Summary
-	Comparison braineval.Comparison
+	Cases        []braineval.CaseResult
+	Summaries    []braineval.Summary
+	Comparison   braineval.Comparison
+	BudgetTotals *braineval.BudgetTotals
 }
 
 type dependencies struct {
 	execute         func(context.Context, runOptions) (EvalReport, error)
 	liveConfigReady func() error
+}
+
+type offlinePairRunner interface {
+	RunPair(context.Context, braineval.Case) (braineval.PairResult, error)
+}
+
+type livePairRunner interface {
+	RunPair(context.Context, braineval.PairResult) (braineval.LivePairResult, error)
+	Budget() *braineval.BudgetTracker
 }
 
 func main() {
@@ -70,18 +82,18 @@ func run(args []string, stdout, stderr io.Writer, deps dependencies) int {
 	}
 	if options.Mode == modeLive {
 		if err := deps.liveConfigReady(); err != nil {
-			fmt.Fprintln(stderr, sanitizeError(err.Error()))
+			fmt.Fprintln(stderr, sanitizeError(err.Error(), options.Input))
 			return 2
 		}
 	}
 
 	report, err := deps.execute(context.Background(), options)
 	if writeErr := writeReport(stdout, options.Format, report); writeErr != nil {
-		fmt.Fprintf(stderr, "write output: %s\n", sanitizeError(writeErr.Error()))
+		fmt.Fprintf(stderr, "write output: %s\n", sanitizeError(writeErr.Error(), options.Input))
 		return 2
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, sanitizeError(err.Error()))
+		fmt.Fprintln(stderr, sanitizeError(err.Error(), options.Input))
 		if errors.Is(err, braineval.ErrLiveBudgetExceeded) {
 			return 1
 		}
@@ -199,36 +211,49 @@ func datasetBaseDir(input string) (string, error) {
 	return filepath.Dir(absInput), nil
 }
 
-func executeOffline(ctx context.Context, dataset braineval.Dataset, runner *braineval.OfflineRunner) (EvalReport, error) {
+func executeOffline(ctx context.Context, dataset braineval.Dataset, runner offlinePairRunner) (EvalReport, error) {
 	results := make([]braineval.CaseResult, 0, len(dataset.Cases)*2)
 	for _, caseDef := range dataset.Cases {
 		pair, err := runner.RunPair(ctx, caseDef)
-		if err != nil {
-			return finalizeReport(results, dataset.Thresholds, braineval.GateOffline), fmt.Errorf("run offline pair %q: %w", caseDef.Name, err)
-		}
 		results = append(results,
 			braineval.ScoreCase(pair, braineval.VariantBaseline),
 			braineval.ScoreCase(pair, braineval.VariantBrain),
 		)
+		if err != nil {
+			return finalizeReport(results, dataset.Thresholds, braineval.GateOffline), fmt.Errorf("run offline pair %q: %w", caseDef.Name, err)
+		}
 	}
 	return finalizeReport(results, dataset.Thresholds, braineval.GateOffline), nil
 }
 
-func executeLive(ctx context.Context, dataset braineval.Dataset, offlineRunner *braineval.OfflineRunner, liveRunner *braineval.LiveRunner) (EvalReport, error) {
+func executeLive(ctx context.Context, dataset braineval.Dataset, offlineRunner offlinePairRunner, liveRunner livePairRunner) (EvalReport, error) {
 	results := make([]braineval.CaseResult, 0, len(dataset.Cases)*2)
+	finalize := func() EvalReport {
+		report := finalizeReport(results, dataset.Thresholds, braineval.GateLive)
+		var totals braineval.BudgetTotals
+		if liveRunner.Budget() != nil {
+			totals = liveRunner.Budget().Totals()
+		}
+		report.BudgetTotals = &totals
+		return report
+	}
 	for _, caseDef := range dataset.Cases {
 		pair, err := offlineRunner.RunPair(ctx, caseDef)
 		if err != nil {
-			return finalizeReport(results, dataset.Thresholds, braineval.GateLive), fmt.Errorf("run offline pair %q: %w", caseDef.Name, err)
+			results = append(results,
+				braineval.ScoreCase(pair, braineval.VariantBaseline),
+				braineval.ScoreCase(pair, braineval.VariantBrain),
+			)
+			return finalize(), fmt.Errorf("run offline pair %q: %w", caseDef.Name, err)
 		}
 		livePair, err := liveRunner.RunPair(ctx, pair)
 		results = append(results, livePair.Baseline.CaseResult, livePair.Candidate.CaseResult)
 		if err == nil || errors.Is(err, braineval.ErrLiveJudgeFailed) {
 			continue
 		}
-		return finalizeReport(results, dataset.Thresholds, braineval.GateLive), fmt.Errorf("run live pair %q: %w", caseDef.Name, err)
+		return finalize(), fmt.Errorf("run live pair %q: %w", caseDef.Name, err)
 	}
-	return finalizeReport(results, dataset.Thresholds, braineval.GateLive), nil
+	return finalize(), nil
 }
 
 func finalizeReport(results []braineval.CaseResult, thresholds braineval.Thresholds, gates braineval.GateSet) EvalReport {
@@ -242,6 +267,7 @@ func finalizeReport(results []braineval.CaseResult, thresholds braineval.Thresho
 			candidate,
 			thresholds,
 			gates,
+			results...,
 		),
 	}
 }
@@ -265,6 +291,11 @@ func writeJSONL(stdout io.Writer, report EvalReport) error {
 			return err
 		}
 	}
+	if report.BudgetTotals != nil {
+		if err := encoder.Encode(newJSONBudgetTotalsRecord(*report.BudgetTotals)); err != nil {
+			return err
+		}
+	}
 	if shouldWriteComparison(report) {
 		if err := encoder.Encode(newJSONComparisonRecord(report.Comparison)); err != nil {
 			return err
@@ -276,17 +307,20 @@ func writeJSONL(stdout io.Writer, report EvalReport) error {
 func writeText(stdout io.Writer, report EvalReport) error {
 	for _, result := range report.Cases {
 		usage := safeUsage(result.Usage)
-		_, err := fmt.Fprintf(stdout, "case name=%s variant=%s pass=%t comparable=%t critical=%t evidence_recall=%.3f citation_coverage=%.3f wiki_citation_coverage=%.3f fresh_claim_recall=%.3f answer_accuracy=%.3f latency_ms=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d cost_usd=%.6f error=%s\n",
+		_, err := fmt.Fprintf(stdout, "case name=%s variant=%s execution_ok=%t comparable=%t critical=%t evidence_recall=%.3f evidence_uri_recall=%.3f citation_coverage=%.3f wiki_citation_coverage=%.3f fresh_claim_recall=%.3f answer_accuracy=%.3f no_answer_retrieval_fp=%t no_answer_answer_fp=%t latency_ms=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d cost_usd=%.6f error=%s\n",
 			result.CaseName,
 			result.Variant,
 			casePassed(result),
 			result.Comparable,
 			result.Critical,
 			result.EvidenceRecall,
+			result.EvidenceURIRecall,
 			result.CitationCoverage,
 			result.WikiCitationCoverage,
 			result.FreshClaimRecall,
 			result.AnswerAccuracy,
+			result.NoAnswerRetrievalFalsePositive,
+			result.NoAnswerAnswerFalsePositive,
 			result.Latency.Milliseconds(),
 			usage.PromptTokens,
 			usage.CompletionTokens,
@@ -299,7 +333,7 @@ func writeText(stdout io.Writer, report EvalReport) error {
 		}
 	}
 	for _, summary := range report.Summaries {
-		_, err := fmt.Fprintf(stdout, "summary variant=%s pass=%t cases=%d comparable_cases=%d errors=%d judge_failures=%d evidence_recall=%.3f citation_coverage=%.3f wiki_citation_coverage=%.3f fresh_claim_recall=%.3f answer_accuracy=%.3f latency_ms=%d total_tokens=%d cost_usd=%.6f\n",
+		_, err := fmt.Fprintf(stdout, "summary variant=%s execution_ok=%t cases=%d comparable_cases=%d errors=%d judge_failures=%d evidence_recall=%.3f evidence_uri_recall=%.3f citation_coverage=%.3f wiki_citation_coverage=%.3f fresh_claim_recall=%.3f answer_accuracy=%.3f no_answer_retrieval_fp_rate=%.3f no_answer_answer_fp_rate=%.3f latency_ms=%d total_tokens=%d cost_usd=%.6f\n",
 			summary.Variant,
 			summaryPassed(summary),
 			summary.Cases,
@@ -307,10 +341,13 @@ func writeText(stdout io.Writer, report EvalReport) error {
 			summary.Errors,
 			summary.JudgeFailures,
 			summary.EvidenceRecall,
+			summary.EvidenceURIRecall,
 			summary.CitationCoverage,
 			summary.WikiCitationCoverage,
 			summary.FreshClaimRecall,
 			summary.AnswerAccuracy,
+			summary.NoAnswerRetrievalFalsePositiveRate,
+			summary.NoAnswerAnswerFalsePositiveRate,
 			summary.P95Latency.Milliseconds(),
 			summary.TotalTokens,
 			summary.TotalCostUSD,
@@ -319,13 +356,22 @@ func writeText(stdout io.Writer, report EvalReport) error {
 			return err
 		}
 	}
+	if totals := report.BudgetTotals; totals != nil {
+		if _, err := fmt.Fprintf(stdout, "budget_totals prompt_tokens=%d completion_tokens=%d total_tokens=%d cost_usd=%.6f calls=%d\n", totals.PromptTokens, totals.CompletionTokens, totals.TotalTokens, totals.CostUSD, totals.Calls); err != nil {
+			return err
+		}
+	}
 	if shouldWriteComparison(report) {
-		_, err := fmt.Fprintf(stdout, "comparison gate_set=%s passed=%t failures=%s improvements=%s regressions=%s\n",
+		_, err := fmt.Fprintf(stdout, "comparison gate_set=%s passed=%t p95_latency_ratio=%s total_tokens_ratio=%s failures=%s improvements=%s regressions=%s case_improvements=%s case_regressions=%s\n",
 			report.Comparison.GateSet,
 			report.Comparison.Passed(),
+			formatRatio(report.Comparison.Deltas["p95_latency_ratio"]),
+			formatRatio(report.Comparison.Deltas["total_tokens_ratio"]),
 			joinSanitized(report.Comparison.Failures),
 			strings.Join(report.Comparison.Improvements, ","),
 			strings.Join(report.Comparison.Regressions, ","),
+			formatCaseChanges(report.Comparison.CaseImprovements),
+			formatCaseChanges(report.Comparison.CaseRegressions),
 		)
 		if err != nil {
 			return err
@@ -339,215 +385,273 @@ func shouldWriteComparison(report EvalReport) bool {
 }
 
 type jsonCaseRecord struct {
-	Type                      string            `json:"type"`
-	CaseName                  string            `json:"case_name"`
-	Category                  string            `json:"category"`
-	Variant                   braineval.Variant `json:"variant"`
-	Pass                      bool              `json:"pass"`
-	Comparable                bool              `json:"comparable"`
-	Critical                  bool              `json:"critical"`
-	ExpectNoAnswer            bool              `json:"expect_no_answer,omitempty"`
-	Unstable                  bool              `json:"unstable,omitempty"`
-	EvidenceRecall            float64           `json:"evidence_recall"`
-	CitationCoverage          float64           `json:"citation_coverage"`
-	WikiCitationCoverage      float64           `json:"wiki_citation_coverage"`
-	FreshClaimRecall          float64           `json:"fresh_claim_recall"`
-	AnswerAccuracy            float64           `json:"answer_accuracy"`
-	StaleClaimSelections      int               `json:"stale_claim_selections"`
-	NoAnswerFalsePositive     bool              `json:"no_answer_false_positive"`
-	ScopeLeak                 bool              `json:"scope_leak"`
-	EntityContamination       bool              `json:"entity_contamination"`
-	RetractionRecurrence      bool              `json:"retraction_recurrence"`
-	PromptInjectionRecurrence bool              `json:"prompt_injection_recurrence"`
-	LatencyMS                 int64             `json:"latency_ms"`
-	PromptTokens              int               `json:"prompt_tokens"`
-	CompletionTokens          int               `json:"completion_tokens"`
-	TotalTokens               int               `json:"total_tokens"`
-	CostUSD                   float64           `json:"cost_usd"`
-	JudgeScore                float64           `json:"judge_score,omitempty"`
-	JudgeError                string            `json:"judge_error,omitempty"`
-	Error                     string            `json:"error,omitempty"`
+	Type                           string            `json:"type"`
+	CaseName                       string            `json:"case_name"`
+	Category                       string            `json:"category"`
+	Variant                        braineval.Variant `json:"variant"`
+	ExecutionOK                    bool              `json:"execution_ok"`
+	Comparable                     bool              `json:"comparable"`
+	Critical                       bool              `json:"critical"`
+	ExpectNoAnswer                 bool              `json:"expect_no_answer,omitempty"`
+	Unstable                       bool              `json:"unstable,omitempty"`
+	EvidenceRecall                 float64           `json:"evidence_recall"`
+	EvidenceURIRecall              float64           `json:"evidence_uri_recall"`
+	CitationCoverage               float64           `json:"citation_coverage"`
+	WikiCitationCoverage           float64           `json:"wiki_citation_coverage"`
+	FreshClaimRecall               float64           `json:"fresh_claim_recall"`
+	AnswerAccuracy                 float64           `json:"answer_accuracy"`
+	StaleClaimSelections           int               `json:"stale_claim_selections"`
+	NoAnswerRetrievalFalsePositive bool              `json:"no_answer_retrieval_false_positive"`
+	NoAnswerAnswerFalsePositive    bool              `json:"no_answer_answer_false_positive"`
+	ScopeLeak                      bool              `json:"scope_leak"`
+	EntityContamination            bool              `json:"entity_contamination"`
+	RetractionRecurrence           bool              `json:"retraction_recurrence"`
+	PromptInjectionRecurrence      bool              `json:"prompt_injection_recurrence"`
+	LatencyMS                      int64             `json:"latency_ms"`
+	PromptTokens                   int               `json:"prompt_tokens"`
+	CompletionTokens               int               `json:"completion_tokens"`
+	TotalTokens                    int               `json:"total_tokens"`
+	CostUSD                        float64           `json:"cost_usd"`
+	JudgeScore                     float64           `json:"judge_score,omitempty"`
+	JudgeError                     string            `json:"judge_error,omitempty"`
+	Error                          string            `json:"error,omitempty"`
 }
 
 type jsonSummaryRecord struct {
-	Type                       string            `json:"type"`
-	Variant                    braineval.Variant `json:"variant"`
-	Pass                       bool              `json:"pass"`
-	Cases                      int               `json:"cases"`
-	ComparableCases            int               `json:"comparable_cases"`
-	Errors                     int               `json:"errors"`
-	JudgeFailures              int               `json:"judge_failures"`
-	ErrorRate                  float64           `json:"error_rate"`
-	EvidenceRecall             float64           `json:"evidence_recall"`
-	CitationCoverage           float64           `json:"citation_coverage"`
-	WikiCitationCoverage       float64           `json:"wiki_citation_coverage"`
-	FreshClaimRecall           float64           `json:"fresh_claim_recall"`
-	AnswerAccuracy             float64           `json:"answer_accuracy"`
-	StaleClaimSelections       int               `json:"stale_claim_selections"`
-	NoAnswerFalsePositiveRate  float64           `json:"no_answer_false_positive_rate"`
-	ScopeLeaks                 int               `json:"scope_leaks"`
-	EntityContaminations       int               `json:"entity_contaminations"`
-	RetractionRecurrences      int               `json:"retraction_recurrences"`
-	PromptInjectionRecurrences int               `json:"prompt_injection_recurrences"`
-	P95LatencyMS               int64             `json:"p95_latency_ms"`
-	TotalTokens                int               `json:"total_tokens"`
-	TotalCostUSD               float64           `json:"total_cost_usd"`
-	CriticalFailures           []string          `json:"critical_failures,omitempty"`
-	UnstableCases              []string          `json:"unstable_cases,omitempty"`
+	Type                               string            `json:"type"`
+	Variant                            braineval.Variant `json:"variant"`
+	ExecutionOK                        bool              `json:"execution_ok"`
+	Cases                              int               `json:"cases"`
+	ComparableCases                    int               `json:"comparable_cases"`
+	Errors                             int               `json:"errors"`
+	JudgeFailures                      int               `json:"judge_failures"`
+	ErrorRate                          float64           `json:"error_rate"`
+	EvidenceRecall                     float64           `json:"evidence_recall"`
+	EvidenceURIRecall                  float64           `json:"evidence_uri_recall"`
+	CitationCoverage                   float64           `json:"citation_coverage"`
+	WikiCitationCoverage               float64           `json:"wiki_citation_coverage"`
+	FreshClaimRecall                   float64           `json:"fresh_claim_recall"`
+	AnswerAccuracy                     float64           `json:"answer_accuracy"`
+	StaleClaimSelections               int               `json:"stale_claim_selections"`
+	NoAnswerRetrievalFalsePositiveRate float64           `json:"no_answer_retrieval_false_positive_rate"`
+	NoAnswerAnswerFalsePositiveRate    float64           `json:"no_answer_answer_false_positive_rate"`
+	ScopeLeaks                         int               `json:"scope_leaks"`
+	EntityContaminations               int               `json:"entity_contaminations"`
+	RetractionRecurrences              int               `json:"retraction_recurrences"`
+	PromptInjectionRecurrences         int               `json:"prompt_injection_recurrences"`
+	P95LatencyMS                       int64             `json:"p95_latency_ms"`
+	TotalTokens                        int               `json:"total_tokens"`
+	TotalCostUSD                       float64           `json:"total_cost_usd"`
+	CriticalFailures                   []string          `json:"critical_failures,omitempty"`
+	UnstableCases                      []string          `json:"unstable_cases,omitempty"`
 }
 
 type comparisonSummaryRecord struct {
-	Variant                    braineval.Variant `json:"variant"`
-	Pass                       bool              `json:"pass"`
-	Cases                      int               `json:"cases"`
-	ComparableCases            int               `json:"comparable_cases"`
-	Errors                     int               `json:"errors"`
-	JudgeFailures              int               `json:"judge_failures"`
-	ErrorRate                  float64           `json:"error_rate"`
-	EvidenceRecall             float64           `json:"evidence_recall"`
-	CitationCoverage           float64           `json:"citation_coverage"`
-	WikiCitationCoverage       float64           `json:"wiki_citation_coverage"`
-	FreshClaimRecall           float64           `json:"fresh_claim_recall"`
-	AnswerAccuracy             float64           `json:"answer_accuracy"`
-	StaleClaimSelections       int               `json:"stale_claim_selections"`
-	NoAnswerFalsePositiveRate  float64           `json:"no_answer_false_positive_rate"`
-	ScopeLeaks                 int               `json:"scope_leaks"`
-	EntityContaminations       int               `json:"entity_contaminations"`
-	RetractionRecurrences      int               `json:"retraction_recurrences"`
-	PromptInjectionRecurrences int               `json:"prompt_injection_recurrences"`
-	P95LatencyMS               int64             `json:"p95_latency_ms"`
-	TotalTokens                int               `json:"total_tokens"`
-	TotalCostUSD               float64           `json:"total_cost_usd"`
-	CriticalFailures           []string          `json:"critical_failures,omitempty"`
-	UnstableCases              []string          `json:"unstable_cases,omitempty"`
+	Variant                            braineval.Variant `json:"variant"`
+	ExecutionOK                        bool              `json:"execution_ok"`
+	Cases                              int               `json:"cases"`
+	ComparableCases                    int               `json:"comparable_cases"`
+	Errors                             int               `json:"errors"`
+	JudgeFailures                      int               `json:"judge_failures"`
+	ErrorRate                          float64           `json:"error_rate"`
+	EvidenceRecall                     float64           `json:"evidence_recall"`
+	EvidenceURIRecall                  float64           `json:"evidence_uri_recall"`
+	CitationCoverage                   float64           `json:"citation_coverage"`
+	WikiCitationCoverage               float64           `json:"wiki_citation_coverage"`
+	FreshClaimRecall                   float64           `json:"fresh_claim_recall"`
+	AnswerAccuracy                     float64           `json:"answer_accuracy"`
+	StaleClaimSelections               int               `json:"stale_claim_selections"`
+	NoAnswerRetrievalFalsePositiveRate float64           `json:"no_answer_retrieval_false_positive_rate"`
+	NoAnswerAnswerFalsePositiveRate    float64           `json:"no_answer_answer_false_positive_rate"`
+	ScopeLeaks                         int               `json:"scope_leaks"`
+	EntityContaminations               int               `json:"entity_contaminations"`
+	RetractionRecurrences              int               `json:"retraction_recurrences"`
+	PromptInjectionRecurrences         int               `json:"prompt_injection_recurrences"`
+	P95LatencyMS                       int64             `json:"p95_latency_ms"`
+	TotalTokens                        int               `json:"total_tokens"`
+	TotalCostUSD                       float64           `json:"total_cost_usd"`
+	CriticalFailures                   []string          `json:"critical_failures,omitempty"`
+	UnstableCases                      []string          `json:"unstable_cases,omitempty"`
 }
 
 type jsonComparisonRecord struct {
-	Type         string                  `json:"type"`
-	GateSet      braineval.GateSet       `json:"gate_set"`
-	Passed       bool                    `json:"passed"`
-	Baseline     comparisonSummaryRecord `json:"baseline"`
-	Candidate    comparisonSummaryRecord `json:"candidate"`
-	Deltas       map[string]float64      `json:"deltas,omitempty"`
-	Improvements []string                `json:"improvements,omitempty"`
-	Regressions  []string                `json:"regressions,omitempty"`
-	Failures     []string                `json:"failures,omitempty"`
+	Type             string                       `json:"type"`
+	GateSet          braineval.GateSet            `json:"gate_set"`
+	Passed           bool                         `json:"passed"`
+	Baseline         comparisonSummaryRecord      `json:"baseline"`
+	Candidate        comparisonSummaryRecord      `json:"candidate"`
+	Deltas           map[string]any               `json:"deltas,omitempty"`
+	Improvements     []string                     `json:"improvements,omitempty"`
+	Regressions      []string                     `json:"regressions,omitempty"`
+	CaseImprovements []braineval.CaseMetricChange `json:"case_improvements,omitempty"`
+	CaseRegressions  []braineval.CaseMetricChange `json:"case_regressions,omitempty"`
+	Failures         []string                     `json:"failures,omitempty"`
+}
+
+type jsonBudgetTotalsRecord struct {
+	Type string `json:"type"`
+	braineval.BudgetTotals
+}
+
+func newJSONBudgetTotalsRecord(totals braineval.BudgetTotals) jsonBudgetTotalsRecord {
+	return jsonBudgetTotalsRecord{Type: "budget_totals", BudgetTotals: totals}
 }
 
 func newJSONCaseRecord(result braineval.CaseResult) jsonCaseRecord {
 	usage := safeUsage(result.Usage)
 	return jsonCaseRecord{
-		Type:                      "case_result",
-		CaseName:                  result.CaseName,
-		Category:                  result.Category,
-		Variant:                   result.Variant,
-		Pass:                      casePassed(result),
-		Comparable:                result.Comparable,
-		Critical:                  result.Critical,
-		ExpectNoAnswer:            result.ExpectNoAnswer,
-		Unstable:                  result.Unstable,
-		EvidenceRecall:            result.EvidenceRecall,
-		CitationCoverage:          result.CitationCoverage,
-		WikiCitationCoverage:      result.WikiCitationCoverage,
-		FreshClaimRecall:          result.FreshClaimRecall,
-		AnswerAccuracy:            result.AnswerAccuracy,
-		StaleClaimSelections:      result.StaleClaimSelections,
-		NoAnswerFalsePositive:     result.NoAnswerFalsePositive,
-		ScopeLeak:                 result.ScopeLeak,
-		EntityContamination:       result.EntityContamination,
-		RetractionRecurrence:      result.RetractionRecurrence,
-		PromptInjectionRecurrence: result.PromptInjectionRecurrence,
-		LatencyMS:                 result.Latency.Milliseconds(),
-		PromptTokens:              usage.PromptTokens,
-		CompletionTokens:          usage.CompletionTokens,
-		TotalTokens:               usage.TotalTokens,
-		CostUSD:                   result.CostUSD,
-		JudgeScore:                result.JudgeScore,
-		JudgeError:                sanitizeError(result.JudgeError),
-		Error:                     sanitizeError(result.Error),
+		Type:                           "case_result",
+		CaseName:                       result.CaseName,
+		Category:                       result.Category,
+		Variant:                        result.Variant,
+		ExecutionOK:                    casePassed(result),
+		Comparable:                     result.Comparable,
+		Critical:                       result.Critical,
+		ExpectNoAnswer:                 result.ExpectNoAnswer,
+		Unstable:                       result.Unstable,
+		EvidenceRecall:                 result.EvidenceRecall,
+		EvidenceURIRecall:              result.EvidenceURIRecall,
+		CitationCoverage:               result.CitationCoverage,
+		WikiCitationCoverage:           result.WikiCitationCoverage,
+		FreshClaimRecall:               result.FreshClaimRecall,
+		AnswerAccuracy:                 result.AnswerAccuracy,
+		StaleClaimSelections:           result.StaleClaimSelections,
+		NoAnswerRetrievalFalsePositive: result.NoAnswerRetrievalFalsePositive,
+		NoAnswerAnswerFalsePositive:    result.NoAnswerAnswerFalsePositive,
+		ScopeLeak:                      result.ScopeLeak,
+		EntityContamination:            result.EntityContamination,
+		RetractionRecurrence:           result.RetractionRecurrence,
+		PromptInjectionRecurrence:      result.PromptInjectionRecurrence,
+		LatencyMS:                      result.Latency.Milliseconds(),
+		PromptTokens:                   usage.PromptTokens,
+		CompletionTokens:               usage.CompletionTokens,
+		TotalTokens:                    usage.TotalTokens,
+		CostUSD:                        result.CostUSD,
+		JudgeScore:                     result.JudgeScore,
+		JudgeError:                     sanitizeError(result.JudgeError),
+		Error:                          sanitizeError(result.Error),
 	}
 }
 
 func newJSONSummaryRecord(summary braineval.Summary) jsonSummaryRecord {
 	return jsonSummaryRecord{
-		Type:                       "variant_summary",
-		Variant:                    summary.Variant,
-		Pass:                       summaryPassed(summary),
-		Cases:                      summary.Cases,
-		ComparableCases:            summary.ComparableCases,
-		Errors:                     summary.Errors,
-		JudgeFailures:              summary.JudgeFailures,
-		ErrorRate:                  summary.ErrorRate,
-		EvidenceRecall:             summary.EvidenceRecall,
-		CitationCoverage:           summary.CitationCoverage,
-		WikiCitationCoverage:       summary.WikiCitationCoverage,
-		FreshClaimRecall:           summary.FreshClaimRecall,
-		AnswerAccuracy:             summary.AnswerAccuracy,
-		StaleClaimSelections:       summary.StaleClaimSelections,
-		NoAnswerFalsePositiveRate:  summary.NoAnswerFalsePositiveRate,
-		ScopeLeaks:                 summary.ScopeLeaks,
-		EntityContaminations:       summary.EntityContaminations,
-		RetractionRecurrences:      summary.RetractionRecurrences,
-		PromptInjectionRecurrences: summary.PromptInjectionRecurrences,
-		P95LatencyMS:               summary.P95Latency.Milliseconds(),
-		TotalTokens:                summary.TotalTokens,
-		TotalCostUSD:               summary.TotalCostUSD,
-		CriticalFailures:           append([]string(nil), summary.CriticalFailures...),
-		UnstableCases:              append([]string(nil), summary.UnstableCases...),
+		Type:                               "variant_summary",
+		Variant:                            summary.Variant,
+		ExecutionOK:                        summaryPassed(summary),
+		Cases:                              summary.Cases,
+		ComparableCases:                    summary.ComparableCases,
+		Errors:                             summary.Errors,
+		JudgeFailures:                      summary.JudgeFailures,
+		ErrorRate:                          summary.ErrorRate,
+		EvidenceRecall:                     summary.EvidenceRecall,
+		EvidenceURIRecall:                  summary.EvidenceURIRecall,
+		CitationCoverage:                   summary.CitationCoverage,
+		WikiCitationCoverage:               summary.WikiCitationCoverage,
+		FreshClaimRecall:                   summary.FreshClaimRecall,
+		AnswerAccuracy:                     summary.AnswerAccuracy,
+		StaleClaimSelections:               summary.StaleClaimSelections,
+		NoAnswerRetrievalFalsePositiveRate: summary.NoAnswerRetrievalFalsePositiveRate,
+		NoAnswerAnswerFalsePositiveRate:    summary.NoAnswerAnswerFalsePositiveRate,
+		ScopeLeaks:                         summary.ScopeLeaks,
+		EntityContaminations:               summary.EntityContaminations,
+		RetractionRecurrences:              summary.RetractionRecurrences,
+		PromptInjectionRecurrences:         summary.PromptInjectionRecurrences,
+		P95LatencyMS:                       summary.P95Latency.Milliseconds(),
+		TotalTokens:                        summary.TotalTokens,
+		TotalCostUSD:                       summary.TotalCostUSD,
+		CriticalFailures:                   append([]string(nil), summary.CriticalFailures...),
+		UnstableCases:                      append([]string(nil), summary.UnstableCases...),
 	}
 }
 
 func newJSONComparisonRecord(comparison braineval.Comparison) jsonComparisonRecord {
 	return jsonComparisonRecord{
-		Type:         "paired_comparison",
-		GateSet:      comparison.GateSet,
-		Passed:       comparison.Passed(),
-		Baseline:     newComparisonSummaryRecord(comparison.Baseline),
-		Candidate:    newComparisonSummaryRecord(comparison.Candidate),
-		Deltas:       copyDeltas(comparison.Deltas),
-		Improvements: append([]string(nil), comparison.Improvements...),
-		Regressions:  append([]string(nil), comparison.Regressions...),
-		Failures:     sanitizeStrings(comparison.Failures),
+		Type:             "paired_comparison",
+		GateSet:          comparison.GateSet,
+		Passed:           comparison.Passed(),
+		Baseline:         newComparisonSummaryRecord(comparison.Baseline),
+		Candidate:        newComparisonSummaryRecord(comparison.Candidate),
+		Deltas:           copyDeltas(comparison.Deltas),
+		Improvements:     append([]string(nil), comparison.Improvements...),
+		Regressions:      append([]string(nil), comparison.Regressions...),
+		CaseImprovements: append([]braineval.CaseMetricChange(nil), comparison.CaseImprovements...),
+		CaseRegressions:  append([]braineval.CaseMetricChange(nil), comparison.CaseRegressions...),
+		Failures:         sanitizeStrings(comparison.Failures),
 	}
 }
 
 func newComparisonSummaryRecord(summary braineval.Summary) comparisonSummaryRecord {
 	return comparisonSummaryRecord{
-		Variant:                    summary.Variant,
-		Pass:                       summaryPassed(summary),
-		Cases:                      summary.Cases,
-		ComparableCases:            summary.ComparableCases,
-		Errors:                     summary.Errors,
-		JudgeFailures:              summary.JudgeFailures,
-		ErrorRate:                  summary.ErrorRate,
-		EvidenceRecall:             summary.EvidenceRecall,
-		CitationCoverage:           summary.CitationCoverage,
-		WikiCitationCoverage:       summary.WikiCitationCoverage,
-		FreshClaimRecall:           summary.FreshClaimRecall,
-		AnswerAccuracy:             summary.AnswerAccuracy,
-		StaleClaimSelections:       summary.StaleClaimSelections,
-		NoAnswerFalsePositiveRate:  summary.NoAnswerFalsePositiveRate,
-		ScopeLeaks:                 summary.ScopeLeaks,
-		EntityContaminations:       summary.EntityContaminations,
-		RetractionRecurrences:      summary.RetractionRecurrences,
-		PromptInjectionRecurrences: summary.PromptInjectionRecurrences,
-		P95LatencyMS:               summary.P95Latency.Milliseconds(),
-		TotalTokens:                summary.TotalTokens,
-		TotalCostUSD:               summary.TotalCostUSD,
-		CriticalFailures:           append([]string(nil), summary.CriticalFailures...),
-		UnstableCases:              append([]string(nil), summary.UnstableCases...),
+		Variant:                            summary.Variant,
+		ExecutionOK:                        summaryPassed(summary),
+		Cases:                              summary.Cases,
+		ComparableCases:                    summary.ComparableCases,
+		Errors:                             summary.Errors,
+		JudgeFailures:                      summary.JudgeFailures,
+		ErrorRate:                          summary.ErrorRate,
+		EvidenceRecall:                     summary.EvidenceRecall,
+		EvidenceURIRecall:                  summary.EvidenceURIRecall,
+		CitationCoverage:                   summary.CitationCoverage,
+		WikiCitationCoverage:               summary.WikiCitationCoverage,
+		FreshClaimRecall:                   summary.FreshClaimRecall,
+		AnswerAccuracy:                     summary.AnswerAccuracy,
+		StaleClaimSelections:               summary.StaleClaimSelections,
+		NoAnswerRetrievalFalsePositiveRate: summary.NoAnswerRetrievalFalsePositiveRate,
+		NoAnswerAnswerFalsePositiveRate:    summary.NoAnswerAnswerFalsePositiveRate,
+		ScopeLeaks:                         summary.ScopeLeaks,
+		EntityContaminations:               summary.EntityContaminations,
+		RetractionRecurrences:              summary.RetractionRecurrences,
+		PromptInjectionRecurrences:         summary.PromptInjectionRecurrences,
+		P95LatencyMS:                       summary.P95Latency.Milliseconds(),
+		TotalTokens:                        summary.TotalTokens,
+		TotalCostUSD:                       summary.TotalCostUSD,
+		CriticalFailures:                   append([]string(nil), summary.CriticalFailures...),
+		UnstableCases:                      append([]string(nil), summary.UnstableCases...),
 	}
 }
 
-func copyDeltas(deltas map[string]float64) map[string]float64 {
+func copyDeltas(deltas map[string]float64) map[string]any {
 	if len(deltas) == 0 {
 		return nil
 	}
-	copied := make(map[string]float64, len(deltas))
+	copied := make(map[string]any, len(deltas))
 	for key, value := range deltas {
-		copied[key] = value
+		switch {
+		case math.IsInf(value, 1):
+			copied[key] = "inf"
+		case math.IsInf(value, -1):
+			copied[key] = "-inf"
+		case math.IsNaN(value):
+			copied[key] = "nan"
+		default:
+			copied[key] = value
+		}
 	}
 	return copied
+}
+
+func formatRatio(value float64) string {
+	if math.IsInf(value, 1) {
+		return "+Inf"
+	}
+	if math.IsInf(value, -1) {
+		return "-Inf"
+	}
+	if math.IsNaN(value) {
+		return "NaN"
+	}
+	return fmt.Sprintf("%.3f", value)
+}
+
+func formatCaseChanges(changes []braineval.CaseMetricChange) string {
+	if len(changes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(changes))
+	for _, change := range changes {
+		parts = append(parts, fmt.Sprintf("%s:%s:%.3f->%.3f", change.CaseName, change.Metric, change.Baseline, change.Candidate))
+	}
+	return strings.Join(parts, ",")
 }
 
 func sanitizeStrings(values []string) []string {
@@ -592,7 +696,7 @@ func joinSanitized(values []string) string {
 	return strings.Join(sanitizeStrings(values), ",")
 }
 
-func sanitizeError(raw string) string {
+func sanitizeError(raw string, knownPaths ...string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return ""
@@ -609,7 +713,38 @@ func sanitizeError(raw string) string {
 	sanitized = cookiePattern.ReplaceAllString(sanitized, "Cookie=[REDACTED]")
 	sanitized = xAPIKeyPattern.ReplaceAllString(sanitized, "X-API-Key=[REDACTED]")
 	sanitized = apiKeyPattern.ReplaceAllString(sanitized, "api_key=[REDACTED]")
+	for _, prefix := range resolvedPathPrefixes(knownPaths) {
+		pattern := regexp.MustCompile(regexp.QuoteMeta(prefix) + `(?:[\\/][^\s:]*)?`)
+		sanitized = pattern.ReplaceAllString(sanitized, "[REDACTED_PATH]")
+	}
 	sanitized = absolutePathPattern.ReplaceAllString(sanitized, `${1}[REDACTED_PATH]`)
+	sanitized = windowsPathPattern.ReplaceAllString(sanitized, `${1}[REDACTED_PATH]`)
 	sanitized = whitespaceRunPattern.ReplaceAllString(sanitized, " ")
 	return strings.TrimSpace(sanitized)
+}
+
+func resolvedPathPrefixes(paths []string) []string {
+	seen := make(map[string]struct{})
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		seen[path] = struct{}{}
+		if absolute, err := filepath.Abs(path); err == nil {
+			seen[absolute] = struct{}{}
+			if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+				seen[resolved] = struct{}{}
+			}
+		}
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			seen[resolved] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for path := range seen {
+		result = append(result, path)
+	}
+	sort.Slice(result, func(left, right int) bool { return len(result[left]) > len(result[right]) })
+	return result
 }

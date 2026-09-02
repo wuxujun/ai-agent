@@ -2,6 +2,7 @@ package braineval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +15,34 @@ const (
 	VariantBaseline Variant = "baseline"
 	VariantBrain    Variant = "brain"
 )
+
+var ErrInfrastructure = errors.New("brain evaluation infrastructure error")
+
+// InfrastructureError identifies a failed evaluator dependency while keeping
+// the partial pair available to callers for reporting and audit.
+type InfrastructureError struct {
+	CaseName string
+	Cause    error
+}
+
+func (e *InfrastructureError) Error() string {
+	if e == nil {
+		return ErrInfrastructure.Error()
+	}
+	if e.CaseName == "" {
+		return fmt.Sprintf("%s: %v", ErrInfrastructure, e.Cause)
+	}
+	return fmt.Sprintf("%s for case %q: %v", ErrInfrastructure, e.CaseName, e.Cause)
+}
+
+func (e *InfrastructureError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *InfrastructureError) Is(target error) bool { return target == ErrInfrastructure }
 
 type Limits struct {
 	BranchCandidates int
@@ -78,7 +107,17 @@ func NewOfflineRunner(dataset Dataset, corpus *Corpus) (*OfflineRunner, error) {
 		}
 		retracted := make(map[string]struct{}, len(project.Retractions))
 		for _, retraction := range project.Retractions {
-			retracted[canonicalURI(retraction.URI)] = struct{}{}
+			uri := canonicalURI(retraction.URI)
+			retracted[uri] = struct{}{}
+			ref, err := ParseEvidenceURI(uri)
+			if err != nil || ref.Scheme != "task" {
+				continue
+			}
+			for _, memory := range project.Memories {
+				if memory.TaskID == ref.ID {
+					retracted[(EvidenceRef{Scheme: "memory", ID: memory.ID}).URI()] = struct{}{}
+				}
+			}
 		}
 		runner.scopes[fixture.Scope.Key()] = &scopeRuntime{
 			memory: memory, brain: brain, retracted: retracted,
@@ -106,15 +145,19 @@ func (r *OfflineRunner) RunPair(ctx context.Context, caseDef Case) (PairResult, 
 		return pair, fmt.Errorf("unknown retrieval scope %q", caseDef.Scope.Key())
 	}
 
-	pair.Baseline = r.planEvidence(ctx, caseDef, VariantBaseline, runtime)
+	var baselineErr, candidateErr error
+	pair.Baseline, baselineErr = r.planEvidence(ctx, caseDef, VariantBaseline, runtime)
 	if err := ctx.Err(); err != nil {
 		return pair, err
 	}
-	pair.Candidate = r.planEvidence(ctx, caseDef, VariantBrain, runtime)
+	pair.Candidate, candidateErr = r.planEvidence(ctx, caseDef, VariantBrain, runtime)
 	if err := ctx.Err(); err != nil {
 		return pair, err
 	}
 	pair.Comparable = pair.Baseline.Err == "" && pair.Candidate.Err == ""
+	if baselineErr != nil || candidateErr != nil {
+		return pair, &InfrastructureError{CaseName: caseDef.Name, Cause: errors.Join(baselineErr, candidateErr)}
+	}
 	return pair, nil
 }
 
@@ -123,7 +166,7 @@ type retrievalBranch struct {
 	retriever Retriever
 }
 
-func (r *OfflineRunner) planEvidence(ctx context.Context, caseDef Case, variant Variant, runtime *scopeRuntime) VariantOutput {
+func (r *OfflineRunner) planEvidence(ctx context.Context, caseDef Case, variant Variant, runtime *scopeRuntime) (VariantOutput, error) {
 	started := time.Now()
 	output := newVariantOutput(variant)
 	defer func() { output.Latency = time.Since(started) }()
@@ -134,20 +177,20 @@ func (r *OfflineRunner) planEvidence(ctx context.Context, caseDef Case, variant 
 	}
 	rankedBranches := make([][]Candidate, 0, len(branches))
 	fetchers := make(map[string]Retriever, len(branches))
-	brainCandidates := 0
 	for _, branch := range branches {
 		if err := ctx.Err(); err != nil {
 			output.Err = err.Error()
-			return output
+			return output, err
 		}
 		if branch.retriever == nil {
-			output.Err = fmt.Sprintf("%s retriever is unavailable", branch.name)
-			return output
+			err := fmt.Errorf("%s retriever is unavailable", branch.name)
+			output.Err = err.Error()
+			return output, err
 		}
 		candidates, err := branch.retriever.Search(ctx, caseDef.Scope, caseDef.Query, BranchCandidateLimit)
 		if err != nil {
 			output.Err = fmt.Sprintf("%s search: %v", branch.name, err)
-			return output
+			return output, fmt.Errorf("%s search: %w", branch.name, err)
 		}
 		filtered := make([]Candidate, 0, len(candidates))
 		for _, candidate := range candidates {
@@ -161,30 +204,18 @@ func (r *OfflineRunner) planEvidence(ctx context.Context, caseDef Case, variant 
 		for i := range filtered {
 			filtered[i].Rank = i + 1
 		}
-		if branch.name == "brain" {
-			brainCandidates = len(filtered)
-		}
 		rankedBranches = append(rankedBranches, filtered)
 		fetchers[branch.name] = branch.retriever
 	}
 
 	output.Candidates = MergeRRF(rankedBranches, RRFK)
-	evidenceCandidates := output.Candidates
-	if variant == VariantBrain && brainCandidates > 0 {
-		evidenceCandidates = make([]Candidate, 0, brainCandidates)
-		for _, candidate := range output.Candidates {
-			if candidate.Branch == "brain" {
-				evidenceCandidates = append(evidenceCandidates, candidate)
-			}
-		}
-	}
-	evidence, err := SelectEvidence(ctx, branchEvidenceRetriever{fetchers: fetchers}, caseDef.Scope, evidenceCandidates, output.Limits.EvidenceItems, output.Limits.EvidenceBytes)
+	evidence, err := SelectEvidence(ctx, branchEvidenceRetriever{fetchers: fetchers}, caseDef.Scope, output.Candidates, output.Limits.EvidenceItems, output.Limits.EvidenceBytes)
 	if err != nil {
 		output.Err = fmt.Sprintf("select evidence: %v", err)
-		return output
+		return output, fmt.Errorf("select evidence: %w", err)
 	}
 	output.Evidence = evidence
-	return output
+	return output, nil
 }
 
 func newVariantOutput(variant Variant) VariantOutput {

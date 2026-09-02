@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadDataset_RejectsUnknownCaseField(t *testing.T) {
-	input := `version: 1
+	input := `version: 2
 thresholds:
   live_answer_accuracy_delta: 0.10
   offline_evidence_recall_delta: 0.10
@@ -32,7 +32,7 @@ cases:
 }
 
 func validDatasetYAML() string {
-	return `version: 1
+	return `version: 2
 thresholds:
   live_answer_accuracy_delta: 0.10
   offline_evidence_recall_delta: 0.10
@@ -62,7 +62,7 @@ func TestLoadDataset_ValidationMatrix(t *testing.T) {
 		input   string
 		wantErr string
 	}{
-		{name: "version", mutate: func(d *Dataset) { d.Version = 2 }, wantErr: "unsupported dataset version"},
+		{name: "version", mutate: func(d *Dataset) { d.Version = 1 }, wantErr: "unsupported dataset version"},
 		{name: "duplicate scope", mutate: func(d *Dataset) { d.Projects = append(d.Projects, d.Projects[0]) }, wantErr: "duplicate project scope"},
 		{name: "duplicate case", mutate: func(d *Dataset) { d.Cases = append(d.Cases, d.Cases[0]) }, wantErr: "duplicate case name"},
 		{name: "unknown scope", mutate: func(d *Dataset) { d.Cases[0].Scope.ProjectID = "missing" }, wantErr: "unknown project scope"},
@@ -117,7 +117,7 @@ func TestLoadDataset_RejectsUnsafeRootAndExtraDocument(t *testing.T) {
 	if want := filepath.Join(baseDir, "fixtures", "atlas"); loaded.Projects[0].Root != want {
 		t.Fatalf("expected root %q, got %q", want, loaded.Projects[0].Root)
 	}
-	_, err = LoadDataset(strings.NewReader(validDatasetYAML()+"\n---\nversion: 1\n"), t.TempDir())
+	_, err = LoadDataset(strings.NewReader(validDatasetYAML()+"\n---\nversion: 2\n"), t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "more than one YAML document") {
 		t.Fatalf("expected extra-document error, got %v", err)
 	}

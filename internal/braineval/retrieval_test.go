@@ -182,6 +182,25 @@ func TestMemoryRetriever_CapsBranchAtEightAndOrdersTiesByURI(t *testing.T) {
 	}
 }
 
+func TestMemoryRetriever_RejectsWeakProjectNameOnlyMatch(t *testing.T) {
+	project := projectCorpus("tenant-north", "project-atlas", "atlas", "task-atlas", "2026-09-02T10:00:00Z")
+	project.Memories = []MemoryFixture{{
+		ID: "atlas-release", SessionID: "session-project-atlas", TaskID: "task-atlas", RecordedAt: "2026-09-02T11:00:00Z",
+		Goal: "Atlas release notes", FinalAnswer: "Release owner is Mei", KeyFindings: []string{"No office data"},
+	}}
+	retriever, err := NewMemoryRetriever(context.Background(), corpusWithProjects(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := retriever.Search(context.Background(), scopeAtlas, "Atlas 项目办公室地址是什么", BranchCandidateLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("weak project-name-only match qualified: %#v", got)
+	}
+}
+
 func TestWikiRetriever_IsolatesScopeAndRevalidatesURI(t *testing.T) {
 	atlasRoot := writeBrainRoot(t, "# Atlas\n\nOwner Mei runs Atlas.\n")
 	orbitRoot := writeBrainRoot(t, "# Orbit\n\nLaunch code seven is secret.\n")

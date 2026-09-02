@@ -126,6 +126,41 @@ func TestStructuredRequestUsesRegisteredProtocol(t *testing.T) {
 	}
 }
 
+func TestStructuredOutputLimitReachesEveryNativeProtocol(t *testing.T) {
+	const limit = 37
+	tests := []struct {
+		provider string
+		field    string
+		want     any
+	}{
+		{provider: llmprovider.OpenAIResponses, field: "max_output_tokens", want: limit},
+		{provider: llmprovider.OpenAI, field: "max_tokens", want: limit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			body, _, err := structuredRequest(Config{Provider: tt.provider, Model: "bounded", MaxOutputTokens: limit}, "system", "user", map[string]any{"type": "object"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body[tt.field] != tt.want {
+				t.Fatalf("%s=%v, want %v in %+v", tt.field, body[tt.field], tt.want, body)
+			}
+		})
+	}
+	body, _, err := structuredRequest(Config{Provider: llmprovider.Ollama, Model: "bounded", MaxOutputTokens: limit}, "system", "user", map[string]any{"type": "object"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, _ := body["options"].(map[string]any)
+	if options["num_predict"] != limit {
+		t.Fatalf("Ollama output bound missing: %+v", body)
+	}
+	gemini := geminiStructuredConfig(Config{MaxOutputTokens: limit}, "system", nil)
+	if gemini.MaxOutputTokens != int32(limit) {
+		t.Fatalf("Gemini output bound=%d, want %d", gemini.MaxOutputTokens, limit)
+	}
+}
+
 func TestVisionStructuredChatRequestMentionsJSON(t *testing.T) {
 	body, kind, err := visionStructuredRequest(
 		Config{Provider: llmprovider.LiteLLM, Model: "agent-vision"},

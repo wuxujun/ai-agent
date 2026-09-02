@@ -1,4 +1,4 @@
-version: 1
+version: 2
 thresholds:
   live_answer_accuracy_delta: 0.10
   offline_evidence_recall_delta: 0.10

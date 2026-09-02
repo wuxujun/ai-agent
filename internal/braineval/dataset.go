@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 type Scope struct {
 	TenantID  string `yaml:"tenant_id" json:"tenant_id"`

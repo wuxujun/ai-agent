@@ -33,9 +33,9 @@ func TestOfflineRunner_ChangesOnlyBrainVisibility(t *testing.T) {
 	}
 }
 
-func TestOfflineRunner_BrainEvidenceOverridesStaleMemory(t *testing.T) {
-	memory := &stubRetriever{candidates: []Candidate{{URI: "memory://owner-old", Snippet: "Ari Chen", Rank: 1}}}
-	brain := &stubRetriever{candidates: []Candidate{{URI: "wiki://atlas-north/projects/decisions", Snippet: "Mei Lin", Rank: 1}}}
+func TestOfflineRunner_CandidateReducesCompleteRRFWithoutSuppressingMemory(t *testing.T) {
+	memory := &stubRetriever{candidates: []Candidate{{URI: "memory://owner-current", Snippet: "Mei Lin", Rank: 1}}}
+	brain := &stubRetriever{candidates: []Candidate{{URI: "wiki://atlas-north/projects/irrelevant", Snippet: "unrelated weak hit", Rank: 1}}}
 	r := testOfflineRunner(memory, brain, nil)
 
 	pair, err := r.RunPair(context.Background(), Case{Name: "current-owner", Scope: scopeAtlas, Query: "owner"})
@@ -43,12 +43,14 @@ func TestOfflineRunner_BrainEvidenceOverridesStaleMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(pair.Candidate.Candidates) != 2 ||
-		!slices.ContainsFunc(pair.Candidate.Candidates, func(c Candidate) bool { return c.URI == "memory://owner-old" }) ||
-		!slices.ContainsFunc(pair.Candidate.Candidates, func(c Candidate) bool { return c.URI == "wiki://atlas-north/projects/decisions" }) {
+		!slices.ContainsFunc(pair.Candidate.Candidates, func(c Candidate) bool { return c.URI == "memory://owner-current" }) ||
+		!slices.ContainsFunc(pair.Candidate.Candidates, func(c Candidate) bool { return c.URI == "wiki://atlas-north/projects/irrelevant" }) {
 		t.Fatalf("candidate set lost a retrieval branch: %#v", pair.Candidate.Candidates)
 	}
-	if len(pair.Candidate.Evidence) != 1 || pair.Candidate.Evidence[0].Path != "wiki://atlas-north/projects/decisions" {
-		t.Fatalf("candidate evidence=%#v, want only current Brain evidence", pair.Candidate.Evidence)
+	if len(pair.Candidate.Evidence) != 2 || !slices.ContainsFunc(pair.Candidate.Evidence, func(e types.Evidence) bool {
+		return e.Path == "memory://owner-current"
+	}) {
+		t.Fatalf("candidate evidence=%#v, want complete RRF reduction including Memory", pair.Candidate.Evidence)
 	}
 }
 
@@ -70,7 +72,7 @@ func TestOfflineRunner_FallsBackToMemoryWhenBrainIsEmpty(t *testing.T) {
 	}
 }
 
-func TestOfflineRunner_SelectsMultipleBrainFactsAheadOfMemory(t *testing.T) {
+func TestOfflineRunner_AppliesTheSameThreeItemReductionToAllBranches(t *testing.T) {
 	memory := &stubRetriever{candidates: []Candidate{
 		{URI: "memory://owner-old", Snippet: "Ari Chen", Rank: 1},
 		{URI: "memory://region-old", Snippet: "Virginia", Rank: 2},
@@ -85,9 +87,9 @@ func TestOfflineRunner_SelectsMultipleBrainFactsAheadOfMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"wiki://atlas-north/projects/owner", "wiki://atlas-north/projects/region"}
+	want := []string{"memory://owner-old", "wiki://atlas-north/projects/owner", "memory://region-old"}
 	if len(pair.Candidate.Evidence) != len(want) {
-		t.Fatalf("candidate evidence=%#v, want two Brain facts", pair.Candidate.Evidence)
+		t.Fatalf("candidate evidence=%#v, want complete three-item RRF reduction", pair.Candidate.Evidence)
 	}
 	for index, uri := range want {
 		if pair.Candidate.Evidence[index].Path != uri {
@@ -101,8 +103,8 @@ func TestOfflineRunner_DoesNotRetryFailedBranch(t *testing.T) {
 	r := testOfflineRunner(memory, &stubRetriever{}, nil)
 
 	pair, err := r.RunPair(context.Background(), Case{Name: "no-retry", Scope: scopeAtlas, Query: "owner"})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("search infrastructure failure returned nil error")
 	}
 	if memory.searchCalls != 2 {
 		t.Fatalf("search calls = %d, want one per variant without retry", memory.searchCalls)
@@ -173,11 +175,28 @@ func TestOfflineRunner_MakesPairIncomparableWhenAnyVariantFails(t *testing.T) {
 	r := testOfflineRunner(memory, brain, nil)
 
 	pair, err := r.RunPair(context.Background(), Case{Name: "brain-error", Scope: scopeAtlas, Query: "owner"})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("one-sided search failure returned nil infrastructure error")
 	}
 	if pair.Baseline.Err != "" || pair.Candidate.Err == "" || pair.Comparable {
 		t.Fatalf("one-sided branch failure must be incomparable: %#v", pair)
+	}
+}
+
+func TestOfflineRunner_FetchFailureReturnsPartialIncomparablePairAndError(t *testing.T) {
+	fetchErr := errors.New("memory fetch unavailable")
+	memory := &stubRetriever{
+		candidates: []Candidate{{URI: "memory://owner", Snippet: "Mei Lin", Rank: 1}},
+		fetchErr:   fetchErr,
+	}
+	r := testOfflineRunner(memory, &stubRetriever{}, nil)
+
+	pair, err := r.RunPair(context.Background(), Case{Name: "critical-fetch", Scope: scopeAtlas, Query: "owner", Critical: true})
+	if err == nil || !errors.Is(err, fetchErr) {
+		t.Fatalf("error = %v, want wrapped fetch error", err)
+	}
+	if pair.Comparable || pair.Baseline.Err == "" || pair.Candidate.Err == "" {
+		t.Fatalf("fetch-failed partial pair = %#v", pair)
 	}
 }
 

@@ -29,17 +29,19 @@ type CaseResult struct {
 	FoundEvidenceURIs    []string `json:"found_evidence_uris,omitempty"`
 
 	EvidenceRecall       float64 `json:"evidence_recall"`
+	EvidenceURIRecall    float64 `json:"evidence_uri_recall"`
 	CitationCoverage     float64 `json:"citation_coverage"`
 	WikiCitationCoverage float64 `json:"wiki_citation_coverage"`
 	FreshClaimRecall     float64 `json:"fresh_claim_recall"`
 	AnswerAccuracy       float64 `json:"answer_accuracy"`
 
-	StaleClaimSelections      int  `json:"stale_claim_selections"`
-	NoAnswerFalsePositive     bool `json:"no_answer_false_positive"`
-	ScopeLeak                 bool `json:"scope_leak"`
-	EntityContamination       bool `json:"entity_contamination"`
-	RetractionRecurrence      bool `json:"retraction_recurrence"`
-	PromptInjectionRecurrence bool `json:"prompt_injection_recurrence"`
+	StaleClaimSelections           int  `json:"stale_claim_selections"`
+	NoAnswerRetrievalFalsePositive bool `json:"no_answer_retrieval_false_positive"`
+	NoAnswerAnswerFalsePositive    bool `json:"no_answer_answer_false_positive"`
+	ScopeLeak                      bool `json:"scope_leak"`
+	EntityContamination            bool `json:"entity_contamination"`
+	RetractionRecurrence           bool `json:"retraction_recurrence"`
+	PromptInjectionRecurrence      bool `json:"prompt_injection_recurrence"`
 
 	Answer          string           `json:"answer,omitempty"`
 	AnswerAttempted bool             `json:"answer_attempted,omitempty"`
@@ -60,14 +62,16 @@ type Summary struct {
 	Errors          int `json:"errors"`
 	JudgeFailures   int `json:"judge_failures"`
 
-	ErrorRate                 float64 `json:"error_rate"`
-	EvidenceRecall            float64 `json:"evidence_recall"`
-	CitationCoverage          float64 `json:"citation_coverage"`
-	WikiCitationCoverage      float64 `json:"wiki_citation_coverage"`
-	FreshClaimRecall          float64 `json:"fresh_claim_recall"`
-	AnswerAccuracy            float64 `json:"answer_accuracy"`
-	StaleClaimSelections      int     `json:"stale_claim_selections"`
-	NoAnswerFalsePositiveRate float64 `json:"no_answer_false_positive_rate"`
+	ErrorRate                          float64 `json:"error_rate"`
+	EvidenceRecall                     float64 `json:"evidence_recall"`
+	EvidenceURIRecall                  float64 `json:"evidence_uri_recall"`
+	CitationCoverage                   float64 `json:"citation_coverage"`
+	WikiCitationCoverage               float64 `json:"wiki_citation_coverage"`
+	FreshClaimRecall                   float64 `json:"fresh_claim_recall"`
+	AnswerAccuracy                     float64 `json:"answer_accuracy"`
+	StaleClaimSelections               int     `json:"stale_claim_selections"`
+	NoAnswerRetrievalFalsePositiveRate float64 `json:"no_answer_retrieval_false_positive_rate"`
+	NoAnswerAnswerFalsePositiveRate    float64 `json:"no_answer_answer_false_positive_rate"`
 
 	ScopeLeaks                 int `json:"scope_leaks"`
 	EntityContaminations       int `json:"entity_contaminations"`
@@ -114,10 +118,12 @@ func ScoreCase(pair PairResult, variant Variant, answers ...string) CaseResult {
 	}
 
 	result.FoundEvidenceURIs = foundEvidenceURIs(output.Evidence)
-	result.EvidenceRecall = exactURIRecall(result.ExpectedEvidenceURIs, result.FoundEvidenceURIs)
+	result.EvidenceURIRecall = exactURIRecall(result.ExpectedEvidenceURIs, result.FoundEvidenceURIs)
 	result.FoundClaims, result.CitationCoverage, result.WikiCitationCoverage = scoreExpectedClaims(result.ExpectedClaims, result.ExpectedEvidenceURIs, output.Evidence)
+	result.EvidenceRecall = safeRatio(len(result.FoundClaims), len(result.ExpectedClaims))
 	if result.ExpectNoAnswer {
 		result.FoundClaims = nonEmptyEvidenceClaims(output.Evidence)
+		result.NoAnswerRetrievalFalsePositive = len(result.FoundClaims) > 0
 	}
 	result.StaleClaimSelections = countForbiddenSelections(result.ForbiddenClaims, result.ExpectedClaims, output.Evidence)
 	if isCategory(result.Category, "temporal_supersession") && len(result.ExpectedClaims) > 0 {
@@ -132,7 +138,7 @@ func ScoreCase(pair PairResult, variant Variant, answers ...string) CaseResult {
 
 	if result.ExpectNoAnswer {
 		result.AnswerAccuracy = scoreNoAnswer(result.Answer, result.ForbiddenClaims)
-		result.NoAnswerFalsePositive = len(result.FoundClaims) > 0 || strings.TrimSpace(result.Answer) != ""
+		result.NoAnswerAnswerFalsePositive = result.AnswerAttempted && strings.TrimSpace(result.Answer) != "" && result.AnswerAccuracy != 1
 	} else if len(result.ExpectedClaims) > 0 && strings.TrimSpace(result.Answer) != "" {
 		result.AnswerAccuracy = claimRecall(result.Answer, result.ExpectedClaims)
 	}
@@ -152,7 +158,7 @@ func Summarize(results []CaseResult, variants ...Variant) Summary {
 	latencies := make([]time.Duration, 0, len(results))
 	criticalSeen := make(map[string]struct{})
 	unstableSeen := make(map[string]struct{})
-	var evidenceDenominator, citationDenominator, wikiDenominator, freshDenominator, answerDenominator, noAnswerCases int
+	var evidenceDenominator, evidenceURIDenominator, citationDenominator, wikiDenominator, freshDenominator, answerDenominator, noAnswerCases, noAnswerAttempts int
 
 	for _, result := range results {
 		if result.Variant != variant {
@@ -194,9 +200,11 @@ func Summarize(results []CaseResult, variants ...Variant) Summary {
 			appendUnique(&summary.CriticalFailures, criticalSeen, result.CaseName)
 		}
 		if len(result.ExpectedClaims) > 0 {
+			summary.EvidenceRecall += result.EvidenceRecall * float64(len(result.ExpectedClaims))
+			evidenceDenominator += len(result.ExpectedClaims)
 			expectedURIs := uniqueCount(result.ExpectedEvidenceURIs)
-			summary.EvidenceRecall += result.EvidenceRecall * float64(expectedURIs)
-			evidenceDenominator += expectedURIs
+			summary.EvidenceURIRecall += result.EvidenceURIRecall * float64(expectedURIs)
+			evidenceURIDenominator += expectedURIs
 			foundClaims := countFoundExpectedClaims(result)
 			summary.CitationCoverage += result.CitationCoverage * float64(foundClaims)
 			citationDenominator += foundClaims
@@ -211,8 +219,14 @@ func Summarize(results []CaseResult, variants ...Variant) Summary {
 		}
 		if result.ExpectNoAnswer || isCategory(result.Category, "no_answer") {
 			noAnswerCases++
-			if result.NoAnswerFalsePositive {
-				summary.NoAnswerFalsePositiveRate++
+			if result.NoAnswerRetrievalFalsePositive {
+				summary.NoAnswerRetrievalFalsePositiveRate++
+			}
+			if result.AnswerAttempted {
+				noAnswerAttempts++
+				if result.NoAnswerAnswerFalsePositive {
+					summary.NoAnswerAnswerFalsePositiveRate++
+				}
 			}
 		}
 		if hasAnswerMeasurement(result) {
@@ -227,11 +241,13 @@ func Summarize(results []CaseResult, variants ...Variant) Summary {
 
 	summary.ErrorRate = safeRatio(summary.Errors, summary.Cases)
 	summary.EvidenceRecall = safeAverage(summary.EvidenceRecall, evidenceDenominator)
+	summary.EvidenceURIRecall = safeAverage(summary.EvidenceURIRecall, evidenceURIDenominator)
 	summary.CitationCoverage = safeAverage(summary.CitationCoverage, citationDenominator)
 	summary.WikiCitationCoverage = safeAverage(summary.WikiCitationCoverage, wikiDenominator)
 	summary.FreshClaimRecall = safeAverage(summary.FreshClaimRecall, freshDenominator)
 	summary.AnswerAccuracy = safeAverage(summary.AnswerAccuracy, answerDenominator)
-	summary.NoAnswerFalsePositiveRate = safeAverage(summary.NoAnswerFalsePositiveRate, noAnswerCases)
+	summary.NoAnswerRetrievalFalsePositiveRate = safeAverage(summary.NoAnswerRetrievalFalsePositiveRate, noAnswerCases)
+	summary.NoAnswerAnswerFalsePositiveRate = safeAverage(summary.NoAnswerAnswerFalsePositiveRate, noAnswerAttempts)
 	summary.P95Latency = percentile95(latencies)
 	return summary
 }
@@ -476,7 +492,10 @@ func criticalCaseFailed(result CaseResult) bool {
 	if len(result.ExpectedClaims) > 0 && len(result.FoundClaims) < len(result.ExpectedClaims) {
 		return true
 	}
-	return len(result.ExpectedEvidenceURIs) > 0 && result.EvidenceRecall+metricEpsilon < 1
+	if len(result.ExpectedEvidenceURIs) > 0 && result.Variant == VariantBrain && result.EvidenceURIRecall+metricEpsilon < 1 {
+		return true
+	}
+	return len(result.ExpectedClaims) > 0 && result.EvidenceRecall+metricEpsilon < 1
 }
 
 func hasAnswerMeasurement(result CaseResult) bool {

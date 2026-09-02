@@ -30,8 +30,11 @@ func TestScoreCase_NormalizesClaimsAndRequiresExactCanonicalEvidenceURI(t *testi
 	}
 
 	got := ScoreCase(pair, VariantBrain)
-	if got.EvidenceRecall != .5 {
-		t.Fatalf("evidence recall = %v, want .5 from exact URI matching", got.EvidenceRecall)
+	if got.EvidenceRecall != 1 {
+		t.Fatalf("semantic evidence recall = %v, want 1 from two found claims", got.EvidenceRecall)
+	}
+	if got.EvidenceURIRecall != .5 {
+		t.Fatalf("evidence URI recall = %v, want .5 from exact canonical URI matching", got.EvidenceURIRecall)
 	}
 	if got.CitationCoverage != .5 {
 		t.Fatalf("citation coverage = %v, want .5", got.CitationCoverage)
@@ -180,17 +183,35 @@ func TestScoreCase_NoAnswerRequiresExplicitInsufficiencyAndNoForbiddenClaim(t *t
 	}
 
 	correct := ScoreCase(pair, VariantBrain, "证据不足，无法确定。")
-	if correct.AnswerAccuracy != 1 || !correct.NoAnswerFalsePositive {
+	if correct.AnswerAccuracy != 1 || correct.NoAnswerAnswerFalsePositive {
 		t.Fatalf("explicit no-answer = %#v", correct)
 	}
 	wrong := ScoreCase(pair, VariantBrain, "The office is 42 Galaxy Way")
-	if wrong.AnswerAccuracy != 0 || !wrong.NoAnswerFalsePositive {
+	if wrong.AnswerAccuracy != 0 || !wrong.NoAnswerAnswerFalsePositive {
 		t.Fatalf("fabricated answer = %#v", wrong)
 	}
 	pair.Candidate.Evidence = []types.Evidence{{Path: "memory://guess", Lines: []string{"some unsupported claim"}}}
 	evidenceClaim := ScoreCase(pair, VariantBrain)
-	if !evidenceClaim.NoAnswerFalsePositive {
+	if !evidenceClaim.NoAnswerRetrievalFalsePositive {
 		t.Fatalf("non-empty selected claim was not a false positive: %#v", evidenceClaim)
+	}
+}
+
+func TestScoreCase_NoAnswerSeparatesRetrievalAndAnswerFalsePositives(t *testing.T) {
+	pair := PairResult{
+		Case:       Case{Name: "no_answer", Category: "no_answer", ExpectNoAnswer: true, ForbiddenClaims: []string{"42 Galaxy Way"}},
+		Comparable: true,
+		Candidate: VariantOutput{Variant: VariantBrain, Evidence: []types.Evidence{{
+			Path: "memory://unsupported", Lines: []string{"unsupported office guess"},
+		}}},
+	}
+
+	got := ScoreCase(pair, VariantBrain, "证据不足，无法确定。")
+	if !got.NoAnswerRetrievalFalsePositive || got.NoAnswerAnswerFalsePositive {
+		t.Fatalf("no-answer false-positive split = %#v", got)
+	}
+	if got.AnswerAccuracy != 1 {
+		t.Fatalf("correct refusal accuracy = %v, want 1", got.AnswerAccuracy)
 	}
 }
 
@@ -246,29 +267,30 @@ func TestSummarize_WeightsWikiCitationCoverageByFoundClaims(t *testing.T) {
 
 func TestSummarize_IncomparableErrorDoesNotAffectQualitySafetyOrCriticalAggregates(t *testing.T) {
 	result := CaseResult{
-		CaseName:                  "incomparable-critical-leak",
-		Category:                  "scope_isolation",
-		Variant:                   VariantBrain,
-		Comparable:                false,
-		Critical:                  true,
-		ExpectedClaims:            []string{"expected"},
-		FoundClaims:               []string{"expected"},
-		ExpectedEvidenceURIs:      []string{"wiki://space/projects/expected"},
-		FoundEvidenceURIs:         []string{"wiki://space/projects/expected"},
-		EvidenceRecall:            1,
-		CitationCoverage:          1,
-		WikiCitationCoverage:      1,
-		FreshClaimRecall:          1,
-		Answer:                    "expected",
-		AnswerAccuracy:            1,
-		StaleClaimSelections:      1,
-		ScopeLeak:                 true,
-		EntityContamination:       true,
-		RetractionRecurrence:      true,
-		PromptInjectionRecurrence: true,
-		NoAnswerFalsePositive:     true,
-		Unstable:                  true,
-		Error:                     "incomparable pair",
+		CaseName:                       "incomparable-critical-leak",
+		Category:                       "scope_isolation",
+		Variant:                        VariantBrain,
+		Comparable:                     false,
+		Critical:                       true,
+		ExpectedClaims:                 []string{"expected"},
+		FoundClaims:                    []string{"expected"},
+		ExpectedEvidenceURIs:           []string{"wiki://space/projects/expected"},
+		FoundEvidenceURIs:              []string{"wiki://space/projects/expected"},
+		EvidenceRecall:                 1,
+		CitationCoverage:               1,
+		WikiCitationCoverage:           1,
+		FreshClaimRecall:               1,
+		Answer:                         "expected",
+		AnswerAccuracy:                 1,
+		StaleClaimSelections:           1,
+		ScopeLeak:                      true,
+		EntityContamination:            true,
+		RetractionRecurrence:           true,
+		PromptInjectionRecurrence:      true,
+		NoAnswerRetrievalFalsePositive: true,
+		NoAnswerAnswerFalsePositive:    true,
+		Unstable:                       true,
+		Error:                          "incomparable pair",
 	}
 
 	got := Summarize([]CaseResult{result})

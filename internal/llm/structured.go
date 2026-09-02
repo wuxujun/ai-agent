@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -30,6 +31,7 @@ type Config struct {
 	RetryBudgetPerMinute           int
 	InputCostPerMillionUSD         float64
 	OutputCostPerMillionUSD        float64
+	MaxOutputTokens                int
 }
 
 type StructuredCaller interface {
@@ -96,6 +98,7 @@ type ReliabilityObserver interface {
 }
 
 type runtimeContextKey struct{}
+type maxOutputTokensContextKey struct{}
 
 // Runtime owns the caller and observer used for a set of LLM calls. Create an
 // instance when dependency isolation matters; package-level functions below
@@ -144,6 +147,24 @@ func RuntimeFromContext(ctx context.Context) *Runtime {
 		}
 	}
 	return defaultRuntime
+}
+
+// WithMaxOutputTokens applies a per-call hard output bound without mutating a
+// frozen scene configuration. Native transports receive the stricter of this
+// bound and any bound already present in Config.
+func WithMaxOutputTokens(ctx context.Context, limit int) context.Context {
+	if limit <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, maxOutputTokensContextKey{}, limit)
+}
+
+func MaxOutputTokensFromContext(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	limit, _ := ctx.Value(maxOutputTokensContextKey{}).(int)
+	return limit
 }
 
 // RegisterStructuredCaller replaces the process-wide caller and returns an
@@ -292,6 +313,20 @@ func EstimateCostUSD(cfg Config, usage types.TokenUsage) float64 {
 	return float64(usage.PromptTokens)*cfg.InputCostPerMillionUSD/1_000_000 + float64(usage.CompletionTokens)*cfg.OutputCostPerMillionUSD/1_000_000
 }
 
+// ConservativeInputTokenUpperBound bounds structured-request input without
+// relying on a provider tokenizer. A tokenizer cannot emit more tokens than
+// the UTF-8 byte count; schema and framing overhead are included explicitly.
+func ConservativeInputTokenUpperBound(systemPrompt, userPrompt string, schema map[string]any) (int, error) {
+	rawSchema, err := json.Marshal(schema)
+	if err != nil {
+		return 0, fmt.Errorf("marshal structured schema for token bound: %w", err)
+	}
+	const framingBytes = 1024
+	// Some compatible transports include the schema in both the prompt and
+	// response_format, so count it twice for a protocol-neutral upper bound.
+	return len([]byte(systemPrompt)) + len([]byte(userPrompt)) + 2*len(rawSchema) + framingBytes, nil
+}
+
 func (r *Runtime) CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
 	logicalScene := cfg.Scene
 	cfg = ResolveRoutedConfig(ctx, cfg)
@@ -365,6 +400,9 @@ func (r *Runtime) CallVisionJSON(ctx context.Context, cfg Config, systemPrompt, 
 type structuredInvocation func(context.Context, StructuredCaller, Config) (types.TokenUsage, error)
 
 func (r *Runtime) callStructured(ctx context.Context, cfg Config, visited map[string]bool, invoke structuredInvocation) (types.TokenUsage, error) {
+	if limit := MaxOutputTokensFromContext(ctx); limit > 0 && (cfg.MaxOutputTokens <= 0 || limit < cfg.MaxOutputTokens) {
+		cfg.MaxOutputTokens = limit
+	}
 	started := time.Now()
 	ctx, span := otel.Tracer("ai-agent/llm").Start(ctx, "llm.structured_call")
 	defer span.End()

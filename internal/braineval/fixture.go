@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -80,8 +81,10 @@ type Corpus struct {
 }
 
 var (
-	evidenceLinkPattern = regexp.MustCompile(`\[evidence\]\(([^\s()]+)\)`)
-	supersedesPattern   = regexp.MustCompile(`(?:^|\s)supersedes:\s*([^\s]+)`)
+	evidenceLinkPattern      = regexp.MustCompile(`\[evidence\]\(([^\s()]+)\)`)
+	supersedesPattern        = regexp.MustCompile(`(?:^|\s)supersedes:\s*([^\s]+)`)
+	ErrUnknownEvidenceURI    = errors.New("unknown evidence URI")
+	ErrCrossScopeEvidenceURI = errors.New("cross-scope evidence URI")
 )
 
 // ParseEvidenceURI accepts only canonical synthetic evidence references and
@@ -290,6 +293,9 @@ func parseGoldClaims(content []byte, scope Scope, pageURI string) ([]GoldClaim, 
 		}
 		text := supersedesPattern.ReplaceAllString(withoutEvidence, "")
 		claim.Text = strings.TrimSpace(text)
+		if claim.Text == "" {
+			return nil, fmt.Errorf("line %d claim text must not be empty", lineNumber+1)
+		}
 		claims = append(claims, claim)
 	}
 	return claims, nil
@@ -330,7 +336,7 @@ func (c *Corpus) Validate() error {
 			}
 			source, err := resolveSource(sources, ref.URI(), project.Fixture.Scope)
 			if err != nil {
-				if strings.Contains(err.Error(), "unknown") {
+				if errors.Is(err, ErrUnknownEvidenceURI) {
 					return fmt.Errorf("unknown retraction URI %q", retraction.URI)
 				}
 				return err
@@ -347,6 +353,9 @@ func (c *Corpus) Validate() error {
 	}
 	for _, project := range c.Projects {
 		for _, claim := range project.Claims {
+			if strings.TrimSpace(claim.Text) == "" {
+				return fmt.Errorf("claim text must not be empty")
+			}
 			if claim.Scope != project.Fixture.Scope {
 				return fmt.Errorf("claim has cross-scope scope")
 			}
@@ -522,9 +531,9 @@ func resolveSource(sources map[string][]corpusSource, uri string, scope Scope) (
 		}
 	}
 	if len(candidates) > 0 {
-		return corpusSource{}, fmt.Errorf("cross-scope reference to %q", uri)
+		return corpusSource{}, fmt.Errorf("%w: reference to %q", ErrCrossScopeEvidenceURI, uri)
 	}
-	return corpusSource{}, fmt.Errorf("unknown evidence URI %q", uri)
+	return corpusSource{}, fmt.Errorf("%w %q", ErrUnknownEvidenceURI, uri)
 }
 
 func validateCaseEvidence(cases []Case, corpus *Corpus) error {

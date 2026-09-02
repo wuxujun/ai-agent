@@ -208,10 +208,15 @@ func (c *DirectoryClient) searchBM25(query string, _ []string, phrase, compactPh
 		}
 	}
 	minimumMatches := directoryBM25MinimumMatches(query, len(queryTokens))
+	requireDiscriminativeMatch := len(pages) >= 3 && directoryBM25HanRecallCapActive(query, len(queryTokens))
+	fullMinimumMatches := int(math.Ceil(float64(len(queryTokens)) * 0.6))
 	qualifiedDocuments := activeDocuments[:0]
 	for _, documentID := range activeDocuments {
 		detail := &scores[documentID]
 		if detail.matchCount < minimumMatches {
+			continue
+		}
+		if requireDiscriminativeMatch && detail.matchCount < fullMinimumMatches && !directoryBM25HasDiscriminativeMatch(index, queryTokens, documentID, len(pages)) {
 			continue
 		}
 		detail.qualified = true
@@ -313,12 +318,48 @@ func directoryBM25MinimumMatches(query string, tokens int) int {
 		return tokens
 	}
 	minimum := int(math.Ceil(float64(tokens) * 0.6))
-	for _, current := range query {
-		if unicode.Is(unicode.Han, current) {
-			return min(minimum, 2)
+	hanTokens := 0
+	for _, token := range uniqueDirectoryBM25Tokens(query) {
+		allHan := token != ""
+		for _, current := range token {
+			if !unicode.Is(unicode.Han, current) {
+				allHan = false
+				break
+			}
+		}
+		if allHan {
+			hanTokens++
 		}
 	}
+	if hanTokens >= 2 && hanTokens*2 >= tokens {
+		return min(minimum, 2)
+	}
 	return minimum
+}
+
+func directoryBM25HanRecallCapActive(query string, tokens int) bool {
+	if tokens <= 2 {
+		return false
+	}
+	return directoryBM25MinimumMatches(query, tokens) < int(math.Ceil(float64(tokens)*0.6))
+}
+
+func directoryBM25HasDiscriminativeMatch(index *directoryBM25Index, queryTokens []string, documentID, documents int) bool {
+	titleOrSlugMatches := 0
+	for _, token := range queryTokens {
+		if token == "项目" {
+			continue
+		}
+		postings := index.postings[token]
+		posting, matched := postings[documentID]
+		if matched && len(postings)*2 <= documents {
+			return true
+		}
+		if matched && (posting.termFrequency[0] > 0 || posting.termFrequency[1] > 0) {
+			titleOrSlugMatches++
+		}
+	}
+	return titleOrSlugMatches >= 2
 }
 
 func applyDirectoryBM25PhraseBoost(page directoryIndexPage, phrase, compactPhrase string, detail *directoryBM25Score, explain bool) {

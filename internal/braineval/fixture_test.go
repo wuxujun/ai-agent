@@ -3,11 +3,26 @@ package braineval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestResolveSource_ReturnsTypedUnknownAndCrossScopeErrors(t *testing.T) {
+	scopeA := Scope{TenantID: "tenant-a", ProjectID: "atlas"}
+	scopeB := Scope{TenantID: "tenant-b", ProjectID: "atlas"}
+	sources := map[string][]corpusSource{
+		"task://known": {{scope: scopeA, uri: "task://known"}},
+	}
+	if _, err := resolveSource(sources, "task://missing", scopeA); !errors.Is(err, ErrUnknownEvidenceURI) {
+		t.Fatalf("unknown error = %v, want ErrUnknownEvidenceURI", err)
+	}
+	if _, err := resolveSource(sources, "task://known", scopeB); !errors.Is(err, ErrCrossScopeEvidenceURI) {
+		t.Fatalf("cross-scope error = %v, want ErrCrossScopeEvidenceURI", err)
+	}
+}
 
 func TestParseEvidenceURI_RequiresAbsoluteWikiURI(t *testing.T) {
 	for _, raw := range []string{"wiki://local/projects/atlas", "session://s-001", "task://t-001", "memory://m-001"} {
@@ -49,6 +64,13 @@ func TestParseGoldClaims_RejectsMalformedEvidenceCitation(t *testing.T) {
 	}
 }
 
+func TestParseGoldClaims_RejectsEvidenceOnlyClaim(t *testing.T) {
+	content := []byte("- [evidence](task://owner)\n")
+	if _, err := parseGoldClaims(content, Scope{TenantID: "tenant-a", ProjectID: "atlas"}, "wiki://atlas/projects/current"); err == nil || !strings.Contains(err.Error(), "claim text must not be empty") {
+		t.Fatalf("expected empty Gold claim text error, got %v", err)
+	}
+}
+
 func TestCorpusValidate_RejectsInvalidProvenance(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -73,6 +95,9 @@ func TestCorpusValidate_RejectsInvalidProvenance(t *testing.T) {
 		{name: "claim requires evidence", corpus: corpusWithProjects(
 			projectCorpus("tenant-a", "atlas", "atlas", "new", "2026-09-02T10:00:00Z", GoldClaim{Text: "Unsupported claim"}),
 		), wantErr: "at least one evidence"},
+		{name: "claim text must not be empty", corpus: corpusWithProjects(
+			projectCorpus("tenant-a", "atlas", "atlas", "new", "2026-09-02T10:00:00Z", GoldClaim{EvidenceURIs: []string{"task://new"}}),
+		), wantErr: "claim text must not be empty"},
 		{name: "claim evidence URI is malformed", corpus: corpusWithMalformedClaimEvidence(), wantErr: "claim evidence URI"},
 		{name: "supersedes URI is malformed", corpus: corpusWithMalformedSupersedes(), wantErr: "supersedes URI"},
 		{name: "memory references missing session", corpus: corpusWithMissingMemorySession(), wantErr: "unknown session"},

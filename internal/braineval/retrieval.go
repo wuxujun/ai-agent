@@ -182,7 +182,7 @@ func (r *MemoryRetriever) Search(ctx context.Context, scope Scope, query string,
 			continue
 		}
 		score := lexicalOverlap(queryTokens, normalizedTokens(memory.Goal+" "+memory.KeyFindings+" "+memory.FinalAnswer))
-		if score == 0 {
+		if score < 0.6 {
 			continue
 		}
 		candidates = append(candidates, Candidate{
