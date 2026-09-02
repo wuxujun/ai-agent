@@ -446,11 +446,13 @@ func TestSanitizeError_RedactsPathsAfterCommonDelimiters(t *testing.T) {
 	t.Parallel()
 
 	raw := "paths=[/private/tmp/secret-file] stat:/Users/private/project/.env " +
+		"tree=[//private/tmp/secret-tree] " +
 		"windows={C:\\Users\\private\\dataset} alternate:D:/work/private/dataset"
 	got := sanitizeError(raw)
 	for _, forbidden := range []string{
 		"/private/tmp/secret-file",
 		"/Users/private/project/.env",
+		"//private/tmp/secret-tree",
 		`C:\Users\private\dataset`,
 		"D:/work/private/dataset",
 	} {

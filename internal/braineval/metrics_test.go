@@ -220,6 +220,38 @@ func TestScoreCase_NoAnswerRejectsRefusalPrefixedHallucination(t *testing.T) {
 	}
 }
 
+func TestScoreCase_NoAnswerAcceptsNaturalCompleteRefusal(t *testing.T) {
+	tests := []struct {
+		name   string
+		query  string
+		answer string
+	}{
+		{
+			name:   "english",
+			query:  "What is the Atlas project office address?",
+			answer: "Based on the available evidence, I cannot determine the office address.",
+		},
+		{
+			name:   "chinese",
+			query:  "Atlas 项目办公室地址是什么？",
+			answer: "根据现有证据，无法确定办公室地址。",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pair := PairResult{
+				Case:       Case{Name: "no_answer", Category: "no_answer", Query: tt.query, ExpectNoAnswer: true},
+				Comparable: true,
+				Candidate:  VariantOutput{Variant: VariantBrain},
+			}
+			got := ScoreCase(pair, VariantBrain, tt.answer)
+			if got.AnswerAccuracy != 1 || got.NoAnswerAnswerFalsePositive {
+				t.Fatalf("natural complete refusal %q was rejected: %#v", tt.answer, got)
+			}
+		})
+	}
+}
+
 func TestScoreCase_NoAnswerSeparatesRetrievalAndAnswerFalsePositives(t *testing.T) {
 	pair := PairResult{
 		Case:       Case{Name: "no_answer", Category: "no_answer", ExpectNoAnswer: true, ForbiddenClaims: []string{"42 Galaxy Way"}},

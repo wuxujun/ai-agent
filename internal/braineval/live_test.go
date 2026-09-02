@@ -55,6 +55,29 @@ func TestLiveRunner_UsesThreeMatchedRepetitionsAndMedian(t *testing.T) {
 	}
 }
 
+func TestLiveRunner_NoAnswerFalsePositiveAggregatesAcrossRepetitions(t *testing.T) {
+	answerer := &fakeLiveAnswerer{answers: []AnswerResult{
+		{Answer: "证据不足，但地址是月球路 1 号。"},
+		{Answer: "证据不足。"},
+		{Answer: "证据不足。"},
+	}}
+	runner := NewLiveRunner(answerer, &fakeLiveJudge{}, LiveOptions{
+		Repetitions: 3, MaxTotalTokens: 1000, MaxTotalCostUSD: 1,
+	})
+	caseDef := Case{
+		Name: "no_answer_office_address", Category: "no_answer",
+		Query: "Atlas 项目办公室地址是什么？", ExpectNoAnswer: true,
+	}
+
+	got, err := runner.RunVariant(context.Background(), caseDef, VariantOutput{Variant: VariantBrain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.NoAnswerAnswerFalsePositive {
+		t.Fatalf("one hallucinating repetition was hidden by the median: %#v", got)
+	}
+}
+
 func TestLiveRunner_RunPairUsesOneWriterContractForBothArms(t *testing.T) {
 	answerer := &fakeLiveAnswerer{answers: []AnswerResult{
 		{Answer: "baseline"}, {Answer: "Mei Lin"}, {Answer: "Mei Lin"},

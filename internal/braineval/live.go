@@ -800,6 +800,8 @@ func aggregateLiveVariant(c Case, out VariantOutput, runs []CaseResult, runErr e
 	aggregate.Comparable = out.Err == ""
 	for _, result := range runs {
 		aggregate.AnswerAttempted = aggregate.AnswerAttempted || result.AnswerAttempted
+		aggregate.NoAnswerRetrievalFalsePositive = aggregate.NoAnswerRetrievalFalsePositive || result.NoAnswerRetrievalFalsePositive
+		aggregate.NoAnswerAnswerFalsePositive = aggregate.NoAnswerAnswerFalsePositive || result.NoAnswerAnswerFalsePositive
 		if !result.Comparable {
 			aggregate.Comparable = false
 		}

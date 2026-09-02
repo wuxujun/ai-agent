@@ -28,15 +28,16 @@ const (
 )
 
 var (
-	urlQueryPattern      = regexp.MustCompile(`\b([a-z][a-z0-9+.-]*://[^\s?]+)\?[^\s]+`)
-	absolutePathPattern  = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])(/[^/\s:'"][^\s:'"]*)`)
-	windowsPathPattern   = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])([A-Za-z]:[\\/][^\s:'"]+)`)
-	providerBodyPattern  = regexp.MustCompile(`(?is)\b(?:provider\s+)?response body\b\s*[:=]\s*.*`)
-	whitespaceRunPattern = regexp.MustCompile(`\s+`)
-	authorizationPattern = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^\s,;]+`)
-	cookiePattern        = regexp.MustCompile(`(?i)\bcookie\b\s*[:=]\s*[^\s,;]+`)
-	xAPIKeyPattern       = regexp.MustCompile(`(?i)\bx-api-key\b\s*[:=]\s*[^\s,;]+`)
-	apiKeyPattern        = regexp.MustCompile(`(?i)\bapi[_ -]?key\b\s*[:=]\s*[^\s,;]+`)
+	urlQueryPattern        = regexp.MustCompile(`\b([a-z][a-z0-9+.-]*://[^\s?]+)\?[^\s]+`)
+	doubleSlashPathPattern = regexp.MustCompile(`(^|[\s("'=\[\]{},;])(//[^\s:'"]+)`)
+	absolutePathPattern    = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])(/[^/\s:'"][^\s:'"]*)`)
+	windowsPathPattern     = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])([A-Za-z]:[\\/][^\s:'"]+)`)
+	providerBodyPattern    = regexp.MustCompile(`(?is)\b(?:provider\s+)?response body\b\s*[:=]\s*.*`)
+	whitespaceRunPattern   = regexp.MustCompile(`\s+`)
+	authorizationPattern   = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^\s,;]+`)
+	cookiePattern          = regexp.MustCompile(`(?i)\bcookie\b\s*[:=]\s*[^\s,;]+`)
+	xAPIKeyPattern         = regexp.MustCompile(`(?i)\bx-api-key\b\s*[:=]\s*[^\s,;]+`)
+	apiKeyPattern          = regexp.MustCompile(`(?i)\bapi[_ -]?key\b\s*[:=]\s*[^\s,;]+`)
 )
 
 type runOptions struct {
@@ -717,6 +718,7 @@ func sanitizeError(raw string, knownPaths ...string) string {
 		pattern := regexp.MustCompile(regexp.QuoteMeta(prefix) + `(?:[\\/][^\s:]*)?`)
 		sanitized = pattern.ReplaceAllString(sanitized, "[REDACTED_PATH]")
 	}
+	sanitized = doubleSlashPathPattern.ReplaceAllString(sanitized, `${1}[REDACTED_PATH]`)
 	sanitized = absolutePathPattern.ReplaceAllString(sanitized, `${1}[REDACTED_PATH]`)
 	sanitized = windowsPathPattern.ReplaceAllString(sanitized, `${1}[REDACTED_PATH]`)
 	sanitized = whitespaceRunPattern.ReplaceAllString(sanitized, " ")
