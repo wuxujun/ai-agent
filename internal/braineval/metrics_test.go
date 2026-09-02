@@ -197,6 +197,29 @@ func TestScoreCase_NoAnswerRequiresExplicitInsufficiencyAndNoForbiddenClaim(t *t
 	}
 }
 
+func TestScoreCase_NoAnswerRejectsRefusalPrefixedHallucination(t *testing.T) {
+	pair := PairResult{
+		Case: Case{
+			Name:            "no_answer",
+			Category:        "no_answer",
+			ExpectNoAnswer:  true,
+			ForbiddenClaims: []string{"任意办公地址"},
+		},
+		Comparable: true,
+		Candidate:  VariantOutput{Variant: VariantBrain},
+	}
+
+	for _, answer := range []string{
+		"证据不足，但地址是月球路 1 号。",
+		"Cannot determine from the evidence. The office is Moon Road 1.",
+	} {
+		got := ScoreCase(pair, VariantBrain, answer)
+		if got.AnswerAccuracy != 0 || !got.NoAnswerAnswerFalsePositive {
+			t.Fatalf("refusal-prefixed hallucination %q passed no-answer gate: %#v", answer, got)
+		}
+	}
+}
+
 func TestScoreCase_NoAnswerSeparatesRetrievalAndAnswerFalsePositives(t *testing.T) {
 	pair := PairResult{
 		Case:       Case{Name: "no_answer", Category: "no_answer", ExpectNoAnswer: true, ForbiddenClaims: []string{"42 Galaxy Way"}},

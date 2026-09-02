@@ -443,7 +443,7 @@ func claimRecall(text string, expected []string) float64 {
 }
 
 func scoreNoAnswer(answer string, forbidden []string) float64 {
-	if !isExplicitNoAnswer(answer) {
+	if !isStrictNoAnswer(answer) {
 		return 0
 	}
 	for _, claim := range forbidden {
@@ -454,16 +454,43 @@ func scoreNoAnswer(answer string, forbidden []string) float64 {
 	return 1
 }
 
-func isExplicitNoAnswer(answer string) bool {
-	for _, marker := range []string{
-		"insufficient evidence", "not enough evidence", "cannot determine", "can't determine",
-		"unable to determine", "no answer", "unknown", "证据不足", "没有足够证据", "无法确定", "不知道", "无答案", "无法回答",
+func isStrictNoAnswer(answer string) bool {
+	normalized := normalizeNoAnswer(answer)
+	for _, refusal := range []string{
+		"insufficient evidence",
+		"not enough evidence",
+		"cannot determine",
+		"can't determine",
+		"unable to determine",
+		"no answer",
+		"unknown",
+		"there is insufficient evidence",
+		"there is not enough evidence",
+		"i cannot determine",
+		"i can't determine",
+		"i am unable to determine",
+		"cannot determine from the available evidence",
+		"unknown from the available evidence",
+		"证据不足",
+		"没有足够证据",
+		"无法确定",
+		"不知道",
+		"无答案",
+		"无法回答",
+		"证据不足 无法确定",
+		"没有足够证据 无法确定",
 	} {
-		if containsNormalized(answer, marker) {
+		if normalized == refusal {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeNoAnswer(value string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(strings.TrimSpace(value)), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && r != '\''
+	}), " ")
 }
 
 func nonEmptyEvidenceClaims(evidence []types.Evidence) []string {

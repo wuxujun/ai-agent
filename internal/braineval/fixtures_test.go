@@ -79,6 +79,7 @@ type repositoryGoldenCase struct {
 	Name             string   `json:"name"`
 	Category         string   `json:"category"`
 	Scope            string   `json:"scope"`
+	Query            string   `json:"query"`
 	Critical         bool     `json:"critical"`
 	ExpectNoAnswer   bool     `json:"expect_no_answer"`
 	ExpectedClaims   []string `json:"expected_claims"`
@@ -91,6 +92,7 @@ func repositoryGoldenMatrix(cases []Case) []repositoryGoldenCase {
 	for _, caseDef := range cases {
 		result = append(result, repositoryGoldenCase{
 			Name: caseDef.Name, Category: caseDef.Category, Scope: caseDef.Scope.Key(),
+			Query:    caseDef.Query,
 			Critical: caseDef.Critical, ExpectNoAnswer: caseDef.ExpectNoAnswer,
 			ExpectedClaims:   append([]string(nil), caseDef.ExpectedClaims...),
 			ExpectedEvidence: append([]string(nil), caseDef.ExpectedEvidenceURIs...),
@@ -101,8 +103,8 @@ func repositoryGoldenMatrix(cases []Case) []repositoryGoldenCase {
 }
 
 // SHA-256 of the canonical, ordered JSON above. It fixes every Case name,
-// category, scope, Critical/no-answer flag, and Gold/forbidden field.
-const repositoryCaseGoldenSHA256 = "fd881c507d89a736a69af5b44f99018ae602e9f091254a19c808e09601317dfc"
+// category, scope, Query, Critical/no-answer flag, and Gold/forbidden field.
+const repositoryCaseGoldenSHA256 = "25dcb0d8cb157ff2793a73931c89676b141f2cc75f1174a71fe24ac7f2f8f6c9"
 
 func TestRepositoryDataset_RetractionCascadeFiltersRetrievableMemoryDerivatives(t *testing.T) {
 	baseDir := filepath.Join("..", "..", "evals", "brain")

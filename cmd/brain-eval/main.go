@@ -29,8 +29,8 @@ const (
 
 var (
 	urlQueryPattern      = regexp.MustCompile(`\b([a-z][a-z0-9+.-]*://[^\s?]+)\?[^\s]+`)
-	absolutePathPattern  = regexp.MustCompile(`(^|[\s("'=])(/[^\s:'"]+)`)
-	windowsPathPattern   = regexp.MustCompile(`(^|[\s("'=])([A-Za-z]:[\\/][^\s:'"]+)`)
+	absolutePathPattern  = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])(/[^/\s:'"][^\s:'"]*)`)
+	windowsPathPattern   = regexp.MustCompile(`(^|[\s("'=\[\]{},:;])([A-Za-z]:[\\/][^\s:'"]+)`)
 	providerBodyPattern  = regexp.MustCompile(`(?is)\b(?:provider\s+)?response body\b\s*[:=]\s*.*`)
 	whitespaceRunPattern = regexp.MustCompile(`\s+`)
 	authorizationPattern = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^\s,;]+`)

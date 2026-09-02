@@ -442,6 +442,24 @@ func TestSanitizeError_RedactsGeneralUnixAndWindowsPaths(t *testing.T) {
 	}
 }
 
+func TestSanitizeError_RedactsPathsAfterCommonDelimiters(t *testing.T) {
+	t.Parallel()
+
+	raw := "paths=[/private/tmp/secret-file] stat:/Users/private/project/.env " +
+		"windows={C:\\Users\\private\\dataset} alternate:D:/work/private/dataset"
+	got := sanitizeError(raw)
+	for _, forbidden := range []string{
+		"/private/tmp/secret-file",
+		"/Users/private/project/.env",
+		`C:\Users\private\dataset`,
+		"D:/work/private/dataset",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitizeError leaked delimiter-adjacent path %q: %s", forbidden, got)
+		}
+	}
+}
+
 func TestSanitizeError_RedactsSymlinkAndResolvedPrefixes(t *testing.T) {
 	realRoot := t.TempDir()
 	linkRoot := filepath.Join(t.TempDir(), "fixture-link")
