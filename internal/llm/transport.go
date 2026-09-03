@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 
@@ -56,7 +57,7 @@ func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPr
 		if err != nil {
 			return types.TokenUsage{}, fmt.Errorf("invalid Gemini response schema: %w", err)
 		}
-		resp, err := client.Models.GenerateContent(ctx, cfg.Model, []*genai.Content{{Role: "user", Parts: []*genai.Part{{Text: userPrompt}}}}, &genai.GenerateContentConfig{SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: systemPrompt}}}, ResponseMIMEType: "application/json", ResponseSchema: responseSchema})
+		resp, err := client.Models.GenerateContent(ctx, cfg.Model, []*genai.Content{{Role: "user", Parts: []*genai.Part{{Text: userPrompt}}}}, geminiStructuredConfig(cfg, systemPrompt, responseSchema))
 		if err != nil {
 			return types.TokenUsage{}, err
 		}
@@ -94,7 +95,7 @@ func (nativeStructuredCaller) CallVisionJSON(ctx context.Context, cfg Config, sy
 			return types.TokenUsage{}, fmt.Errorf("invalid Gemini response schema: %w", err)
 		}
 		parts := []*genai.Part{genai.NewPartFromBytes(image.Data, image.MIMEType), genai.NewPartFromText(userPrompt)}
-		resp, err := client.Models.GenerateContent(ctx, cfg.Model, []*genai.Content{{Role: "user", Parts: parts}}, &genai.GenerateContentConfig{SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: systemPrompt}}}, ResponseMIMEType: "application/json", ResponseSchema: responseSchema})
+		resp, err := client.Models.GenerateContent(ctx, cfg.Model, []*genai.Content{{Role: "user", Parts: parts}}, geminiStructuredConfig(cfg, systemPrompt, responseSchema))
 		if err != nil {
 			return types.TokenUsage{}, err
 		}
@@ -232,16 +233,22 @@ func visionStructuredRequest(cfg Config, systemPrompt, userPrompt string, image 
 	dataURL := "data:" + image.MIMEType + ";base64," + encoded
 	switch spec.Protocol {
 	case llmprovider.ProtocolOpenAIResponses:
-		return map[string]any{"model": cfg.Model, "input": []map[string]any{{"role": "system", "content": []map[string]any{{"type": "input_text", "text": systemPrompt}}}, {"role": "user", "content": []map[string]any{{"type": "input_text", "text": userPrompt}, {"type": "input_image", "image_url": dataURL}}}}, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "response", "strict": true, "schema": schema}}}, "responses", nil
+		body := map[string]any{"model": cfg.Model, "input": []map[string]any{{"role": "system", "content": []map[string]any{{"type": "input_text", "text": systemPrompt}}}, {"role": "user", "content": []map[string]any{{"type": "input_text", "text": userPrompt}, {"type": "input_image", "image_url": dataURL}}}}, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "response", "strict": true, "schema": schema}}}
+		applyStructuredOutputLimit(body, cfg, "responses")
+		return body, "responses", nil
 	case llmprovider.ProtocolOpenAIChat:
 		systemPrompt, err := WithJSONSchemaInstruction(systemPrompt, schema)
 		if err != nil {
 			return nil, "", err
 		}
 		content := []map[string]any{{"type": "text", "text": userPrompt}, {"type": "image_url", "image_url": map[string]any{"url": dataURL}}}
-		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": content}}, "response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "response", "strict": true, "schema": schema}}}, "chat", nil
+		body := map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": content}}, "response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "response", "strict": true, "schema": schema}}}
+		applyStructuredOutputLimit(body, cfg, "chat")
+		return body, "chat", nil
 	case llmprovider.ProtocolOllama:
-		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt, "images": []string{encoded}}}, "stream": false, "format": schema}, "ollama", nil
+		body := map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt, "images": []string{encoded}}}, "stream": false, "format": schema}
+		applyStructuredOutputLimit(body, cfg, "ollama")
+		return body, "ollama", nil
 	default:
 		return nil, "", fmt.Errorf("provider %s protocol %s is not supported by HTTP vision transport", cfg.Provider, spec.Protocol)
 	}
@@ -254,18 +261,54 @@ func structuredRequest(cfg Config, systemPrompt, userPrompt string, schema map[s
 	}
 	switch spec.Protocol {
 	case llmprovider.ProtocolOpenAIResponses:
-		return map[string]any{"model": cfg.Model, "input": []map[string]any{{"role": "system", "content": []map[string]any{{"type": "input_text", "text": systemPrompt}}}, {"role": "user", "content": []map[string]any{{"type": "input_text", "text": userPrompt}}}}, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "response", "strict": true, "schema": schema}}}, "responses", nil
+		body := map[string]any{"model": cfg.Model, "input": []map[string]any{{"role": "system", "content": []map[string]any{{"type": "input_text", "text": systemPrompt}}}, {"role": "user", "content": []map[string]any{{"type": "input_text", "text": userPrompt}}}}, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "response", "strict": true, "schema": schema}}}
+		applyStructuredOutputLimit(body, cfg, "responses")
+		return body, "responses", nil
 	case llmprovider.ProtocolOpenAIChat:
 		systemPrompt, err := WithJSONSchemaInstruction(systemPrompt, schema)
 		if err != nil {
 			return nil, "", err
 		}
-		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "response", "strict": true, "schema": schema}}}, "chat", nil
+		body := map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "response", "strict": true, "schema": schema}}}
+		applyStructuredOutputLimit(body, cfg, "chat")
+		return body, "chat", nil
 	case llmprovider.ProtocolOllama:
-		return map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "stream": false, "format": schema}, "ollama", nil
+		body := map[string]any{"model": cfg.Model, "messages": []map[string]any{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "stream": false, "format": schema}
+		applyStructuredOutputLimit(body, cfg, "ollama")
+		return body, "ollama", nil
 	default:
 		return nil, "", fmt.Errorf("provider %s protocol %s is not supported by HTTP structured transport", cfg.Provider, spec.Protocol)
 	}
+}
+
+func applyStructuredOutputLimit(body map[string]any, cfg Config, protocol string) {
+	if cfg.MaxOutputTokens <= 0 {
+		return
+	}
+	switch protocol {
+	case "responses":
+		body["max_output_tokens"] = cfg.MaxOutputTokens
+	case "chat":
+		body["max_tokens"] = cfg.MaxOutputTokens
+	case "ollama":
+		body["options"] = map[string]any{"num_predict": cfg.MaxOutputTokens}
+	}
+}
+
+func geminiStructuredConfig(cfg Config, systemPrompt string, responseSchema *genai.Schema) *genai.GenerateContentConfig {
+	result := &genai.GenerateContentConfig{
+		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: systemPrompt}}},
+		ResponseMIMEType:  "application/json",
+		ResponseSchema:    responseSchema,
+	}
+	if cfg.MaxOutputTokens > 0 {
+		limit := cfg.MaxOutputTokens
+		if limit > math.MaxInt32 {
+			limit = math.MaxInt32
+		}
+		result.MaxOutputTokens = int32(limit)
+	}
+	return result
 }
 
 // WithJSONSchemaInstruction preserves the schema contract when an

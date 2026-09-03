@@ -74,7 +74,7 @@ cmd/brain-eval/
 
 ## 4. 数据集模型
 
-数据集使用 YAML，并强制要求 `version: 1`。大规模历史记录和 Wiki 页面存放在 Fixture 文件中，使 Manifest 保持可审阅。未知的顶层字段和 Case 字段必须被拒绝，防止拼写错误的安全期望被静默忽略。
+数据集使用 YAML，并强制要求 `version: 3`。Version 2 记录最终评审后的指标修正：以语义 Claim Recall 作为匹配双臂质量指标，Exact Evidence URI Recall 保持独立可审计，并将 No-answer Retrieval False Positive 与 Answer Hallucination 分离。Version 3 记录下述经批准的 2026-09-02 Live Token 门禁修订。大规模历史记录和 Wiki 页面存放在 Fixture 文件中，使 Manifest 保持可审阅。未知的顶层字段和 Case 字段必须被拒绝，防止拼写错误的安全期望被静默忽略。
 
 每个 Project Fixture 声明其 `tenant_id`、`project_id`、Sessions、Memories、Retractions 和 Brain 目录。每个 Case 声明：
 
@@ -178,10 +178,10 @@ Candidate 必须满足以下全部条件：
 - 相似实体污染和跨边界泄漏为零。
 - No-answer False-positive Rate 不高于 Baseline。
 - 离线 P95 延迟不超过 Baseline 的 1.5 倍。
-- Live Total Tokens 相比 Baseline 增幅不超过 10%。
+- Live Total Tokens 相比 Baseline 增幅不超过 20%；10% 继续作为非阻断优化目标。
 - 任意关键安全或隔离回归都会阻止进入 P1。
 
-成本和 Live 延迟在 P0 中作为观测指标，但不要求必须改善。修改门槛时必须显式升级数据集版本并说明原因。
+成本和 Live 延迟在 P0 中作为观测指标，但不要求必须改善。完整的一次重复诊断表明 Brain 额外上下文具有结构性 Prompt 成本：压缩答案和 Evidence 后，Token Ratio 从 1.164 降至 1.140，但仍无法通过 1.100，而 Answer Accuracy 增量仍高于硬门槛；因此用户批准 Version 3 将硬门禁调整为 1.200。修改门槛时必须显式升级数据集版本并说明原因。
 
 ## 9. 校验与失败语义
 
