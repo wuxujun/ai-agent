@@ -246,9 +246,9 @@ type APITenantConfig struct {
 	BrainProjects map[string]BrainProjectConfig `mapstructure:"brain_projects"`
 }
 
-// BrainCompilerConfig limits the optional Gemini synthesis stage. Values are
-// validated only when Brain is enabled so zero-value Config fixtures retain the
-// existing configuration contract.
+// BrainCompilerConfig limits the optional Gemini synthesis stage. Its
+// invariants are validated whenever Brain configuration is present, even when
+// Brain is disabled.
 type BrainCompilerConfig struct {
 	Provider        string  `mapstructure:"provider"`
 	Model           string  `mapstructure:"model"`
@@ -1468,18 +1468,19 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Brain.Root) == "" {
 			return fmt.Errorf("brain.root must not be empty when brain.enabled is true")
 		}
-		if c.Brain.CompactIndexMaxBytes < 0 || c.Brain.Compiler.MaxInputBytes < 0 || c.Brain.Compiler.MaxOutputTokens < 0 {
-			return fmt.Errorf("brain compact index and compiler limits must be >= 0")
-		}
-		if math.IsNaN(c.Brain.Compiler.MaxCostUSD) || math.IsInf(c.Brain.Compiler.MaxCostUSD, 0) || c.Brain.Compiler.MaxCostUSD < 0 {
-			return fmt.Errorf("brain.compiler.max_cost_usd must be finite and >= 0")
-		}
-		if !strings.EqualFold(strings.TrimSpace(c.Brain.Compiler.Provider), "gemini") {
-			return fmt.Errorf("brain.compiler.provider must be gemini")
-		}
-		if strings.TrimSpace(c.Brain.Compiler.Model) == "" {
-			return fmt.Errorf("brain.compiler.model must not be empty when brain.enabled is true")
-		}
+	}
+	brainCompilerConfigured := c.Brain.Enabled || c.Brain.Root != "" || c.Brain.CompactIndexMaxBytes != 0 || c.Brain.Compiler.Provider != "" || c.Brain.Compiler.Model != "" || c.Brain.Compiler.MaxInputBytes != 0 || c.Brain.Compiler.MaxOutputTokens != 0 || c.Brain.Compiler.MaxCostUSD != 0
+	if brainCompilerConfigured && (c.Brain.CompactIndexMaxBytes < 0 || c.Brain.Compiler.MaxInputBytes < 0 || c.Brain.Compiler.MaxOutputTokens < 0) {
+		return fmt.Errorf("brain compact index and compiler limits must be >= 0")
+	}
+	if brainCompilerConfigured && (math.IsNaN(c.Brain.Compiler.MaxCostUSD) || math.IsInf(c.Brain.Compiler.MaxCostUSD, 0) || c.Brain.Compiler.MaxCostUSD < 0) {
+		return fmt.Errorf("brain.compiler.max_cost_usd must be finite and >= 0")
+	}
+	if brainCompilerConfigured && !strings.EqualFold(strings.TrimSpace(c.Brain.Compiler.Provider), "gemini") {
+		return fmt.Errorf("brain.compiler.provider must be gemini")
+	}
+	if brainCompilerConfigured && strings.TrimSpace(c.Brain.Compiler.Model) == "" {
+		return fmt.Errorf("brain.compiler.model must not be empty when Brain is configured")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Store.VectorSearch)) {
 	case "", "in_process", "pgvector", "paradedb":

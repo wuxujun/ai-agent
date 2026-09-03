@@ -156,6 +156,37 @@ func TestValidateBrainSettings(t *testing.T) {
 	}
 }
 
+func TestValidateBrainCompilerSettingsWhenDisabled(t *testing.T) {
+	valid := func() *Config {
+		cfg := &Config{}
+		cfg.LLM.Provider = "openai-responses"
+		cfg.LLM.TimeoutSeconds = 30
+		cfg.Brain.Enabled = false
+		cfg.Brain.Root = "./data/brain"
+		cfg.Brain.CompactIndexMaxBytes = 4000
+		cfg.Brain.Compiler.Provider = "gemini"
+		cfg.Brain.Compiler.Model = "gemini-3.5-flash-lite"
+		cfg.Brain.Compiler.MaxInputBytes = 200000
+		cfg.Brain.Compiler.MaxOutputTokens = 12000
+		cfg.Brain.Compiler.MaxCostUSD = 0.25
+		return cfg
+	}
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.Brain.CompactIndexMaxBytes = -1 },
+		func(cfg *Config) { cfg.Brain.Compiler.Provider = "openai" },
+		func(cfg *Config) { cfg.Brain.Compiler.Model = "" },
+		func(cfg *Config) { cfg.Brain.Compiler.MaxInputBytes = -1 },
+		func(cfg *Config) { cfg.Brain.Compiler.MaxOutputTokens = -1 },
+		func(cfg *Config) { cfg.Brain.Compiler.MaxCostUSD = math.NaN() },
+	} {
+		cfg := valid()
+		mutate(cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid disabled Brain compiler settings accepted: %+v", cfg.Brain)
+		}
+	}
+}
+
 func TestReloadRejectsInvalidBrainCandidateAndPreservesPrevious(t *testing.T) {
 	configPath, before := loadBrainReloadFixture(t)
 
