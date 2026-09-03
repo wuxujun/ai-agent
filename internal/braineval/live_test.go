@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
@@ -130,6 +132,43 @@ func TestLiveRunner_RunPairUsesOneWriterContractForBothArms(t *testing.T) {
 		wantPath := map[Variant]string{VariantBaseline: "memory://owner", VariantBrain: "wiki://atlas/projects/owner"}[wantVariant]
 		if call.output.Variant != wantVariant || call.output.Evidence[0].Path != wantPath {
 			t.Fatalf("call %d = %#v, want variant=%s evidence=%s", i, call, wantVariant, wantPath)
+		}
+	}
+}
+
+func TestLiveRunner_PassesCappedAnswersToJudgeForBothArms(t *testing.T) {
+	longAnswer := "Mei Lin owns the release. " + strings.Repeat("补充说明🙂", 40)
+	finalizer := &recordingFinalizer{answer: longAnswer}
+	judge := &fakeLiveJudge{}
+	runner := NewLiveRunner(
+		FinalizerAnswerer{Finalizer: finalizer, Config: llmcore.Config{Scene: "task_finalizer"}},
+		judge,
+		LiveOptions{Repetitions: 1, MaxTotalTokens: 2_000, MaxTotalCostUSD: 1},
+	)
+	c := Case{Name: "matched-capped", Query: "Who owns the release?", ExpectedClaims: []string{"Mei Lin"}}
+	pair := PairResult{
+		Case: c,
+		Baseline: VariantOutput{
+			Variant: VariantBaseline, Candidates: []Candidate{{URI: "memory://owner"}},
+			Evidence: []types.Evidence{{Path: "memory://owner", Lines: []string{"Mei Lin owns the release."}}},
+		},
+		Candidate: VariantOutput{
+			Variant: VariantBrain, Candidates: []Candidate{{URI: "wiki://atlas/projects/owner"}},
+			Evidence: []types.Evidence{{Path: "wiki://atlas/projects/owner", Lines: []string{"Mei Lin owns the release."}}},
+		},
+		Comparable: true,
+	}
+
+	if _, err := runner.RunPair(context.Background(), pair); err != nil {
+		t.Fatal(err)
+	}
+	answers := judge.RecordedAnswers()
+	if len(answers) != 2 {
+		t.Fatalf("judge calls = %d, want one capped answer from each arm", len(answers))
+	}
+	for index, answer := range answers {
+		if len(answer) > 96 || !utf8.ValidString(answer) || answer == longAnswer {
+			t.Fatalf("judge answer %d was not safely capped: %q", index, answer)
 		}
 	}
 }
@@ -637,6 +676,72 @@ func TestFinalizerAnswerer_NormalizesEmptyEvidenceToCanonicalRefusal(t *testing.
 	}
 }
 
+func TestFinalizerAnswerer_CapsAnswerPassedToJudgeAtUTF8Boundary(t *testing.T) {
+	const maxAnswerBytes = 96
+	longAnswer := "Mei Lin owns the release. " + strings.Repeat("补充说明🙂", 40)
+	usage := types.TokenUsage{PromptTokens: 20, CompletionTokens: 80, TotalTokens: 100}
+	finalizer := &recordingFinalizer{answer: longAnswer, usage: usage}
+	answerer := FinalizerAnswerer{
+		Finalizer: finalizer,
+		Config:    llmcore.Config{Scene: "task_finalizer", InputCostPerMillionUSD: 1, OutputCostPerMillionUSD: 2},
+	}
+	c := Case{Name: "owner-long", Query: "Who owns the release?"}
+	out := VariantOutput{
+		Candidates: []Candidate{{URI: "memory://release-owner"}},
+		Evidence:   []types.Evidence{{Path: "memory://release-owner", Lines: []string{"Mei Lin owns the release."}}},
+	}
+
+	got, err := answerer.Answer(context.Background(), c, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Answer) > maxAnswerBytes {
+		t.Fatalf("answer bytes = %d, want <= %d", len(got.Answer), maxAnswerBytes)
+	}
+	if !utf8.ValidString(got.Answer) {
+		t.Fatalf("answer is not valid UTF-8: %q", got.Answer)
+	}
+	if !strings.HasPrefix(got.Answer, "Mei Lin owns the release.") {
+		t.Fatalf("answer lost its supported opening fact: %q", got.Answer)
+	}
+	if got.Answer == longAnswer {
+		t.Fatal("long answer was not capped")
+	}
+	if got.Usage != usage || math.Abs(got.CostUSD-180.0/1_000_000) > 1e-12 {
+		t.Fatalf("usage or cost changed after answer normalization: %#v", got)
+	}
+}
+
+func TestFinalizerAnswerer_TrimsOnlyTrailingWhitespaceBeforeCapping(t *testing.T) {
+	answererFor := func(answer string) FinalizerAnswerer {
+		return FinalizerAnswerer{Finalizer: &recordingFinalizer{answer: answer}}
+	}
+	c := Case{Name: "whitespace", Query: "Who owns the release?"}
+	out := VariantOutput{
+		Candidates: []Candidate{{URI: "memory://release-owner"}},
+		Evidence:   []types.Evidence{{Path: "memory://release-owner", Lines: []string{"Mei Lin owns the release."}}},
+	}
+
+	short, err := answererFor("Mei Lin owns the release. \t\n").Answer(context.Background(), c, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if short.Answer != "Mei Lin owns the release." {
+		t.Fatalf("short answer = %q, want trailing whitespace removed", short.Answer)
+	}
+
+	long, err := answererFor("  Mei Lin owns the release. "+strings.Repeat("补充说明🙂", 40)).Answer(context.Background(), c, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(long.Answer, "  Mei Lin") {
+		t.Fatalf("long answer lost leading whitespace: %q", long.Answer)
+	}
+	if strings.TrimRightFunc(long.Answer, unicode.IsSpace) != long.Answer {
+		t.Fatalf("long answer retained trailing whitespace: %q", long.Answer)
+	}
+}
+
 func TestFinalizerTaskProjectionIsBranchNeutral(t *testing.T) {
 	c := Case{Name: "neutral", Query: "Who owns the release?"}
 	evidence := []types.Evidence{{Path: "wiki://atlas/projects/owner", Lines: []string{"- Mei Lin owns the release. [evidence](task://owner)"}}}
@@ -913,6 +1018,7 @@ type fakeLiveJudge struct {
 	results []JudgeResult
 	errs    []error
 	calls   int
+	answers []string
 }
 
 type concurrentBudgetAnswerer struct {
@@ -958,6 +1064,7 @@ func (f *fakeLiveJudge) Judge(_ context.Context, c Case, answer string) (JudgeRe
 	defer f.mu.Unlock()
 	index := f.calls
 	f.calls++
+	f.answers = append(f.answers, answer)
 	if len(f.results) == 0 {
 		score := 0.0
 		if len(c.ExpectedClaims) == 0 || strings.Contains(answer, c.ExpectedClaims[0]) {
@@ -1006,6 +1113,12 @@ func (f *fakeLiveJudge) Calls() int {
 	return f.calls
 }
 
+func (f *fakeLiveJudge) RecordedAnswers() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.answers...)
+}
+
 type recordingFinalizer struct {
 	answer string
 	usage  types.TokenUsage
@@ -1016,6 +1129,10 @@ type recordingFinalizer struct {
 func (f *recordingFinalizer) Finalize(_ context.Context, task *types.Task) (string, types.TokenUsage, error) {
 	f.task = task
 	return f.answer, f.usage, f.err
+}
+
+func (f *recordingFinalizer) ConservativeInputTokens(*types.Task) (int, error) {
+	return 1, nil
 }
 
 type recordingStructuredCaller struct {

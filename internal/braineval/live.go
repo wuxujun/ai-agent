@@ -26,6 +26,7 @@ const (
 	LiveWriterMaxOutputTokens  = 512
 	LiveJudgeMaxOutputTokens   = 256
 	liveWriterEvidenceBytes    = 32
+	liveAnswerMaxBytes         = 96
 	canonicalNoEvidenceAnswer  = "Insufficient evidence."
 )
 
@@ -89,6 +90,8 @@ func (a FinalizerAnswerer) Answer(ctx context.Context, c Case, out VariantOutput
 	answer, usage, err := a.Finalizer.Finalize(ctx, task)
 	if err == nil && len(task.Trace) == 1 && len(task.Trace[0].Evidence) == 0 {
 		answer = canonicalNoEvidenceAnswer
+	} else if err == nil {
+		answer = capLiveAnswer(answer)
 	}
 	return AnswerResult{
 		Answer:  answer,
@@ -96,6 +99,18 @@ func (a FinalizerAnswerer) Answer(ctx context.Context, c Case, out VariantOutput
 		CostUSD: llmcore.EstimateCostUSD(a.Config, usage),
 		Latency: time.Since(started),
 	}, err
+}
+
+func capLiveAnswer(answer string) string {
+	answer = strings.TrimRightFunc(answer, unicode.IsSpace)
+	if len(answer) <= liveAnswerMaxBytes {
+		return answer
+	}
+	end := liveAnswerMaxBytes
+	for end > 0 && !utf8.ValidString(answer[:end]) {
+		end--
+	}
+	return strings.TrimRightFunc(answer[:end], unicode.IsSpace)
 }
 
 func finalizerTask(c Case, out VariantOutput) *types.Task {
