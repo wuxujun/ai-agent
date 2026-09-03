@@ -105,6 +105,9 @@ type Task struct {
 	TeamSelectionSource string     `json:"team_selection_source,omitempty"`
 	Team                string     `json:"team,omitempty"`
 	TeamConfigDigest    string     `json:"team_config_digest,omitempty"`
+	BrainProjectID      string     `json:"brain_project_id,omitempty"`
+	BrainSnapshotID     string     `json:"brain_snapshot_id,omitempty"`
+	BrainConfigDigest   string     `json:"brain_config_digest,omitempty"`
 	MaxSteps            int        `json:"max_steps"`
 	StepCount           int        `json:"step_count"`
 	Workspace           string     `json:"workspace"`

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/wuxujun/ai-agent/internal/brain"
 	"github.com/wuxujun/ai-agent/internal/config"
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
@@ -87,14 +88,15 @@ type activeRun struct {
 }
 
 type CreateTaskRequest struct {
-	ID         string `json:"id"`
-	SessionID  string `json:"session_id"`
-	Goal       string `json:"goal"`
-	Workspace  string `json:"workspace"`
-	Mode       string `json:"mode"`
-	Team       string `json:"team"`
-	MaxSteps   int    `json:"max_steps"`
-	ToolBudget int    `json:"tool_budget"`
+	ID             string `json:"id"`
+	SessionID      string `json:"session_id"`
+	Goal           string `json:"goal"`
+	Workspace      string `json:"workspace"`
+	Mode           string `json:"mode"`
+	Team           string `json:"team"`
+	BrainProjectID string `json:"brain_project_id"`
+	MaxSteps       int    `json:"max_steps"`
+	ToolBudget     int    `json:"tool_budget"`
 	// TokenBudget caps cumulative planner+executor token usage across the task.
 	// 0 (default) disables the limit; positive values stop the task once the
 	// summed TokenUsage across trace entries reaches the budget.
@@ -337,6 +339,7 @@ func (h *Handler) createTask(c *gin.Context) {
 	}
 	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
 	req.Team = strings.TrimSpace(req.Team)
+	req.BrainProjectID = strings.TrimSpace(req.BrainProjectID)
 	if req.Mode != "" && !orchestrator.IsSupportedMode(orchestrator.Mode(req.Mode)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "mode must be one of eino, legacy, adk, step, or multiagent"})
 		return
@@ -348,6 +351,15 @@ func (h *Handler) createTask(c *gin.Context) {
 	principal := principalFromGin(c)
 	runtimeConfig := config.Get()
 	tenant, tenantConfigured := runtimeConfig.API.Tenants[principal.TenantID]
+	brainConfigDigest := ""
+	if req.BrainProjectID != "" {
+		ref, err := brain.ResolveProject(runtimeConfig, principal.TenantID, req.BrainProjectID)
+		if err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "brain project is not authorized"})
+			return
+		}
+		brainConfigDigest = brain.ProjectConfigDigest(ref)
+	}
 	selectedTeam, teamDigest := "", ""
 	teamSelectionSource := ""
 	if req.Mode == string(orchestrator.ModeMultiAgent) || req.Team != "" {
@@ -467,6 +479,8 @@ func (h *Handler) createTask(c *gin.Context) {
 		TeamSelectionSource: teamSelectionSource,
 		Team:                selectedTeam,
 		TeamConfigDigest:    teamDigest,
+		BrainProjectID:      req.BrainProjectID,
+		BrainConfigDigest:   brainConfigDigest,
 		MaxSteps:            req.MaxSteps,
 		ToolBudget:          req.ToolBudget,
 		TokenBudget:         req.TokenBudget,

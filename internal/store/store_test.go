@@ -85,6 +85,9 @@ func TestStores(t *testing.T) {
 				TeamSelectionSource: "explicit",
 				Team:                "wiki_graph",
 				TeamConfigDigest:    "team-digest",
+				BrainProjectID:      "atlas",
+				BrainSnapshotID:     "snap-1",
+				BrainConfigDigest:   "sha256:test",
 				MaxSteps:            10,
 				StepCount:           1,
 				Workspace:           "/tmp/workspace",
@@ -163,6 +166,9 @@ func TestStores(t *testing.T) {
 			}
 			if retrieved.RequestedTeam != task.RequestedTeam || retrieved.TeamSelectionSource != task.TeamSelectionSource || retrieved.Team != task.Team || retrieved.TeamConfigDigest != task.TeamConfigDigest {
 				t.Errorf("expected requested/source/team/digest %q/%q/%q/%q, got %q/%q/%q/%q", task.RequestedTeam, task.TeamSelectionSource, task.Team, task.TeamConfigDigest, retrieved.RequestedTeam, retrieved.TeamSelectionSource, retrieved.Team, retrieved.TeamConfigDigest)
+			}
+			if retrieved.BrainProjectID != task.BrainProjectID || retrieved.BrainSnapshotID != task.BrainSnapshotID || retrieved.BrainConfigDigest != task.BrainConfigDigest {
+				t.Errorf("expected Brain identity %q/%q/%q, got %q/%q/%q", task.BrainProjectID, task.BrainSnapshotID, task.BrainConfigDigest, retrieved.BrainProjectID, retrieved.BrainSnapshotID, retrieved.BrainConfigDigest)
 			}
 			if retrieved.MaxSteps != task.MaxSteps {
 				t.Errorf("expected MaxSteps %d, got %d", task.MaxSteps, retrieved.MaxSteps)
@@ -519,6 +525,43 @@ func TestStores(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTaskBrainFieldsRoundTrip protects the durable Brain scope used to pin a
+// task to one tenant-authorized project and snapshot.
+func TestTaskBrainFieldsRoundTrip(t *testing.T) {
+	task := &types.Task{
+		ID:                "brain-task",
+		TenantID:          "tenant-a",
+		Status:            types.StatusCreated,
+		MaxSteps:          1,
+		Workspace:         "./testdata",
+		BrainProjectID:    "atlas",
+		BrainSnapshotID:   "snap-1",
+		BrainConfigDigest: "sha256:test",
+	}
+	assertTaskRoundTrip(t, task, func(got *types.Task) {
+		if got.BrainProjectID != "atlas" || got.BrainSnapshotID != "snap-1" || got.BrainConfigDigest != "sha256:test" {
+			t.Fatalf("got %+v", got)
+		}
+	})
+}
+
+func assertTaskRoundTrip(t *testing.T, task *types.Task, assert func(*types.Task)) {
+	t.Helper()
+	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "brain-roundtrip.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.SaveFullTask(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask(t.Context(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert(got)
 }
 
 func testDurableApprovalContract(t *testing.T, ctx context.Context, approvals store.DurableApprovalStore, taskID string) {

@@ -66,6 +66,40 @@ func TestExternalStoresSessionLeaseAndIsolation(t *testing.T) {
 	})
 }
 
+// TestRedisTaskBrainFieldsJSONRoundTrip verifies Redis retains all durable
+// Brain identity fields through its JSON task payload.
+func TestRedisTaskBrainFieldsJSONRoundTrip(t *testing.T) {
+	requireExternalIntegration(t)
+	redisURL := os.Getenv("TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Skip("TEST_REDIS_URL is not set")
+	}
+	st, err := NewRedisStoreFromURL(redisURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	taskID := "integration-brain-json-" + uuid.NewString()
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := st.DeleteTask(cleanupCtx, taskID); err != nil {
+			t.Errorf("clean up Redis task %q: %v", taskID, err)
+		}
+	})
+	task := &types.Task{ID: taskID, TenantID: "tenant-a", Status: types.StatusCreated, MaxSteps: 1, BrainProjectID: "atlas", BrainSnapshotID: "snap-1", BrainConfigDigest: "sha256:test"}
+	if err := st.SaveFullTask(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetTask(t.Context(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BrainProjectID != "atlas" || got.BrainSnapshotID != "snap-1" || got.BrainConfigDigest != "sha256:test" {
+		t.Fatalf("Brain fields = %q/%q/%q", got.BrainProjectID, got.BrainSnapshotID, got.BrainConfigDigest)
+	}
+}
+
 func TestExternalPostgresPGVectorRanking(t *testing.T) {
 	requireExternalIntegration(t)
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
@@ -280,7 +314,7 @@ VALUES ('legacy-task', 'legacy goal', 'created', 1, 0, '', '', '[]', 1, '');`
 		t.Fatalf("NewPostgresStore() legacy migration: %v", err)
 	}
 	defer st.Close()
-	assertPostgresColumns(t, st.db, "tasks", "tenant_id", "session_id", "sequence_no", "created_at", "updated_at", "execution_mode", "requested_team", "team_selection_source", "team_name", "team_config_digest", "token_budget", "llm_call_budget", "memories_json", "answer_audit_json")
+	assertPostgresColumns(t, st.db, "tasks", "tenant_id", "session_id", "sequence_no", "created_at", "updated_at", "execution_mode", "requested_team", "team_selection_source", "team_name", "team_config_digest", "brain_project_id", "brain_snapshot_id", "brain_config_digest", "token_budget", "llm_call_budget", "memories_json", "answer_audit_json")
 	assertPostgresColumns(t, st.db, "traces", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens")
 	assertPostgresColumns(t, st.db, "memories", "tenant_id", "session_id")
 	var createdAt, updatedAt sql.NullTime
@@ -289,6 +323,13 @@ VALUES ('legacy-task', 'legacy goal', 'created', 1, 0, '', '', '[]', 1, '');`
 	}
 	if !createdAt.Valid || !updatedAt.Valid {
 		t.Fatalf("legacy timestamps were not backfilled: created=%v updated=%v", createdAt, updatedAt)
+	}
+	var projectID, snapshotID, configDigest string
+	if err := st.db.QueryRowContext(t.Context(), `SELECT brain_project_id, brain_snapshot_id, brain_config_digest FROM tasks WHERE id = 'legacy-task'`).Scan(&projectID, &snapshotID, &configDigest); err != nil {
+		t.Fatal(err)
+	}
+	if projectID != "" || snapshotID != "" || configDigest != "" {
+		t.Fatalf("legacy Brain fields = %q/%q/%q, want empty values", projectID, snapshotID, configDigest)
 	}
 }
 

@@ -904,6 +904,39 @@ func TestCreateTaskPersistsTokenBudget(t *testing.T) {
 	}
 }
 
+// TestCreateTaskRejectsUnauthorizedBrainProject ensures Brain project scope is
+// admitted only from the authenticated tenant's explicit allowlist.
+func TestCreateTaskRejectsUnauthorizedBrainProject(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.Brain.Enabled = true
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "tenant-a-key", BrainProjects: map[string]config.BrainProjectConfig{
+				"atlas": {WikiSpace: "brain-atlas"},
+			}},
+		}
+	}))
+
+	w := createTask(t, "tenant-a-key", `{"goal":"x","workspace":"./testdata","brain_project_id":"orbit"}`)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d", w.Code)
+	}
+}
+
+func createTask(t *testing.T, apiKey, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := setupTestRouter(t, store.NewMemoryStore(), nil)
+	w := httptest.NewRecorder()
+	req, err := http.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	r.ServeHTTP(w, req)
+	return w
+}
+
 func TestCreateTaskPersistsLLMBudgets(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.LLM.Scenes = nil

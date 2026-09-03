@@ -1,0 +1,15 @@
+@baseUrl = http://127.0.0.1:8088
+@apiKey = replace-with-tenant-api-key
+
+### Create a read-only Brain-scoped task
+# Enable Brain and configure the authenticated tenant's brain_projects allowlist
+# before sending this request. brain_project_id is never inferred from workspace.
+POST {{baseUrl}}/api/tasks
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+  "goal": "Summarize the authorized Brain project evidence.",
+  "workspace": "./workspace/brain",
+  "brain_project_id": "atlas"
+}
