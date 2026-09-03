@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -24,6 +25,8 @@ const (
 	DefaultLiveMaxTotalCostUSD = 2.0
 	LiveWriterMaxOutputTokens  = 512
 	LiveJudgeMaxOutputTokens   = 256
+	liveWriterEvidenceBytes    = 96
+	canonicalNoEvidenceAnswer  = "Insufficient evidence."
 )
 
 var (
@@ -84,6 +87,9 @@ func (a FinalizerAnswerer) Answer(ctx context.Context, c Case, out VariantOutput
 	}
 	task := finalizerTask(c, out)
 	answer, usage, err := a.Finalizer.Finalize(ctx, task)
+	if err == nil && len(task.Trace) == 1 && len(task.Trace[0].Evidence) == 0 {
+		answer = canonicalNoEvidenceAnswer
+	}
 	return AnswerResult{
 		Answer:  answer,
 		Usage:   usage,
@@ -93,6 +99,7 @@ func (a FinalizerAnswerer) Answer(ctx context.Context, c Case, out VariantOutput
 }
 
 func finalizerTask(c Case, out VariantOutput) *types.Task {
+	writerEvidence := compactLiveWriterEvidence(c, out)
 	return &types.Task{
 		ID:       "brain-eval-" + c.Name,
 		TenantID: c.Scope.TenantID,
@@ -101,10 +108,116 @@ func finalizerTask(c Case, out VariantOutput) *types.Task {
 			Step:     1,
 			Goal:     c.Query,
 			Action:   "brain_eval_evidence",
-			Query:    c.Query,
-			Evidence: append([]types.Evidence(nil), out.Evidence...),
+			Evidence: writerEvidence,
 		}},
 	}
+}
+
+func compactLiveWriterEvidence(c Case, out VariantOutput) []types.Evidence {
+	if len(out.Candidates) == 0 || len(out.Evidence) == 0 || liveWriterEvidenceBytes <= 0 {
+		return nil
+	}
+	candidateURIs := make(map[string]struct{}, len(out.Candidates))
+	for _, candidate := range out.Candidates {
+		candidateURIs[canonicalURI(candidate.URI)] = struct{}{}
+	}
+	type projection struct {
+		path  string
+		line  string
+		score int
+	}
+	projected := make([]projection, 0)
+	for _, evidence := range out.Evidence {
+		if _, ok := candidateURIs[canonicalURI(evidence.Path)]; !ok {
+			continue
+		}
+		for _, fact := range compactEvidenceFacts(evidence.Lines) {
+			projected = append(projected, projection{
+				path:  evidence.Path,
+				line:  fact,
+				score: liveWriterLineScore(c.Query, fact),
+			})
+		}
+	}
+	sort.SliceStable(projected, func(left, right int) bool { return projected[left].score > projected[right].score })
+	selected := make([]types.Evidence, 0, len(out.Evidence))
+	selectedByPath := make(map[string]int, len(out.Evidence))
+	remaining := liveWriterEvidenceBytes
+	for _, item := range projected {
+		index, exists := selectedByPath[item.path]
+		separatorBytes := 0
+		if exists && len(selected[index].Lines) > 0 {
+			separatorBytes = 1
+		}
+		lines, size := capEvidenceLines([]string{item.line}, remaining-separatorBytes)
+		if size == 0 {
+			continue
+		}
+		if !exists {
+			index = len(selected)
+			selectedByPath[item.path] = index
+			selected = append(selected, types.Evidence{Path: item.path})
+		}
+		selected[index].Lines = append(selected[index].Lines, lines...)
+		remaining -= separatorBytes + size
+		if remaining == 0 {
+			break
+		}
+	}
+	return selected
+}
+
+func compactEvidenceFacts(lines []string) []string {
+	claims := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if fact := compactWikiClaim(line); fact != "" {
+			claims = append(claims, fact)
+		}
+	}
+	if len(claims) > 0 {
+		return claims
+	}
+	facts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if fact := strings.TrimSpace(line); fact != "" {
+			facts = append(facts, fact)
+		}
+	}
+	return facts
+}
+
+func compactWikiClaim(line string) string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "- ") {
+		return ""
+	}
+	fact := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+	if marker := strings.Index(fact, " [evidence]("); marker >= 0 {
+		fact = strings.TrimSpace(fact[:marker])
+	}
+	return fact
+}
+
+func liveWriterLineScore(query, line string) int {
+	score := 0
+	lineTokens := normalizedTokens(line)
+	for token := range normalizedTokens(query) {
+		if _, ok := lineTokens[token]; ok {
+			score += 10
+		}
+	}
+	for _, current := range query {
+		if unicode.Is(unicode.Han, current) && strings.ContainsRune(line, current) {
+			score++
+		}
+	}
+	queryRunes := []rune(query)
+	for index := 0; index+1 < len(queryRunes); index++ {
+		if unicode.Is(unicode.Han, queryRunes[index]) && unicode.Is(unicode.Han, queryRunes[index+1]) && strings.Contains(line, string(queryRunes[index:index+2])) {
+			score += 10 * (index + 1)
+		}
+	}
+	return score
 }
 
 func (a FinalizerAnswerer) AnswerCallSpec(c Case, out VariantOutput) (LiveCallSpec, error) {

@@ -8,7 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
+	"github.com/wuxujun/ai-agent/internal/planner"
 )
 
 func TestRepositoryDataset_HasValidated24CaseMatrix(t *testing.T) {
@@ -280,4 +284,103 @@ func TestRepositoryDataset_OfflineGatePassesWithBrainMetadata(t *testing.T) {
 	if len(brain.CriticalFailures) != 0 {
 		t.Fatalf("brain critical failures = %v, want empty", brain.CriticalFailures)
 	}
+}
+
+func TestRepositoryDataset_LiveWriterPromptRatioHasHeadroom(t *testing.T) {
+	dataset, corpus := loadRepositoryDatasetAndCorpus(t)
+	runner, err := NewOfflineRunner(dataset, corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := llmcore.Config{Scene: "task_finalizer"}
+	answerer := FinalizerAnswerer{Finalizer: planner.NewFrozenLLMTaskFinalizer(cfg), Config: cfg}
+	baselineTokens := 0
+	brainTokens := 0
+	for _, caseDef := range dataset.Cases {
+		pair, err := runner.RunPair(context.Background(), caseDef)
+		if err != nil {
+			t.Fatalf("case %q: %v", caseDef.Name, err)
+		}
+		baselineSpec, err := answerer.AnswerCallSpec(caseDef, pair.Baseline)
+		if err != nil {
+			t.Fatalf("case %q baseline: %v", caseDef.Name, err)
+		}
+		brainSpec, err := answerer.AnswerCallSpec(caseDef, pair.Candidate)
+		if err != nil {
+			t.Fatalf("case %q brain: %v", caseDef.Name, err)
+		}
+		baselineTokens += baselineSpec.InputTokens
+		brainTokens += brainSpec.InputTokens
+	}
+	if baselineTokens == 0 {
+		t.Fatal("baseline conservative input tokens are zero")
+	}
+	ratio := float64(brainTokens) / float64(baselineTokens)
+	t.Logf("conservative Brain/Baseline writer prompt ratio = %.3f (%d/%d)", ratio, brainTokens, baselineTokens)
+	if ratio > 1.09 {
+		t.Fatalf("conservative Brain/Baseline writer prompt ratio = %.3f (%d/%d), want <= 1.090 headroom for the 1.100 Live gate", ratio, brainTokens, baselineTokens)
+	}
+}
+
+func TestRepositoryDataset_LiveWriterProjectionRetainsFetchedEvidenceForAnswerableCases(t *testing.T) {
+	dataset, corpus := loadRepositoryDatasetAndCorpus(t)
+	runner, err := NewOfflineRunner(dataset, corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caseDef := range dataset.Cases {
+		if len(caseDef.ExpectedClaims) == 0 {
+			continue
+		}
+		pair, err := runner.RunPair(context.Background(), caseDef)
+		if err != nil {
+			t.Fatalf("case %q: %v", caseDef.Name, err)
+		}
+		task := finalizerTask(caseDef, pair.Candidate)
+		var projectedLines []string
+		for _, evidence := range task.Trace[0].Evidence {
+			projectedLines = append(projectedLines, evidence.Lines...)
+		}
+		if len(pair.Candidate.Evidence) > 0 && len(projectedLines) == 0 {
+			t.Fatalf("case %q compact Writer evidence dropped every fetched evidence item", caseDef.Name)
+		}
+	}
+}
+
+func TestRepositoryDataset_LiveWriterProjectionExcludesForbiddenClaims(t *testing.T) {
+	dataset, corpus := loadRepositoryDatasetAndCorpus(t)
+	runner, err := NewOfflineRunner(dataset, corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caseDef := range dataset.Cases {
+		pair, err := runner.RunPair(context.Background(), caseDef)
+		if err != nil {
+			t.Fatalf("case %q: %v", caseDef.Name, err)
+		}
+		task := finalizerTask(caseDef, pair.Candidate)
+		var lines []string
+		for _, evidence := range task.Trace[0].Evidence {
+			lines = append(lines, evidence.Lines...)
+		}
+		for _, claim := range caseDef.ForbiddenClaims {
+			if projectionLinesContainExactClaim(lines, claim) && !projectionForbiddenCoveredByExpected(lines, claim, caseDef.ExpectedClaims) {
+				t.Fatalf("case %q compact Writer evidence leaked forbidden claim %q; evidence=%q", caseDef.Name, claim, lines)
+			}
+		}
+	}
+}
+
+func projectionForbiddenCoveredByExpected(lines []string, forbidden string, expected []string) bool {
+	forbidden = strings.ToLower(strings.TrimSpace(forbidden))
+	for _, claim := range expected {
+		if strings.Contains(strings.ToLower(claim), forbidden) && projectionLinesContainExactClaim(lines, claim) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectionLinesContainExactClaim(lines []string, claim string) bool {
+	return slices.ContainsFunc(lines, func(line string) bool { return containsNormalized(line, claim) })
 }
