@@ -25,7 +25,7 @@ const (
 	DefaultLiveMaxTotalCostUSD = 2.0
 	LiveWriterMaxOutputTokens  = 512
 	LiveJudgeMaxOutputTokens   = 256
-	liveWriterEvidenceBytes    = 96
+	liveWriterEvidenceBytes    = 32
 	canonicalNoEvidenceAnswer  = "Insufficient evidence."
 )
 

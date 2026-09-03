@@ -317,8 +317,8 @@ func TestRepositoryDataset_LiveWriterPromptRatioHasHeadroom(t *testing.T) {
 	}
 	ratio := float64(brainTokens) / float64(baselineTokens)
 	t.Logf("conservative Brain/Baseline writer prompt ratio = %.3f (%d/%d)", ratio, brainTokens, baselineTokens)
-	if ratio > 1.09 {
-		t.Fatalf("conservative Brain/Baseline writer prompt ratio = %.3f (%d/%d), want <= 1.090 headroom for the 1.100 Live gate", ratio, brainTokens, baselineTokens)
+	if ratio > 1.055 {
+		t.Fatalf("conservative Brain/Baseline writer prompt ratio = %.3f (%d/%d), want <= 1.055 headroom for the 1.100 total Live gate", ratio, brainTokens, baselineTokens)
 	}
 }
 
