@@ -84,6 +84,24 @@ api:
   #     # Required for tenant-isolated Wiki access unless wiki.default_space
   #     # intentionally shares one space across tenants.
       wiki_space: "project-a"
+      # Explicit Brain project allowlist. Project identity is never inferred
+      # from workspace; project IDs must be lowercase hyphenated slugs.
+      # brain_projects:
+      #   atlas:
+      #     wiki_space: "brain-atlas"
+
+# Optional project-scoped, read-only Brain Wiki. Brain is disabled by default.
+# The root selects immutable snapshot storage; changing it requires a restart.
+brain:
+  enabled: false
+  root: "./data/brain"
+  compact_index_max_bytes: 4000
+  compiler:
+    provider: "gemini"
+    model: "gemini-3.5-flash-lite"
+    max_input_bytes: 200000
+    max_output_tokens: 12000
+    max_cost_usd: 0.25
 
 # Storage configuration
 store:

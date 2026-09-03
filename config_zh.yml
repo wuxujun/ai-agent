@@ -82,6 +82,24 @@ api:
         # - safety_guard_output
       # 除非 wiki.default_space 明确用于跨租户共享，否则应配置租户专属 Wiki 空间。
       wiki_space: "project-a"
+      # 显式配置 Brain 项目白名单。绝不从 workspace 推断项目身份；
+      # 项目 ID 必须为小写连字符 slug。
+      # brain_projects:
+      #   atlas:
+      #     wiki_space: "brain-atlas"
+
+# 可选的、按项目隔离的只读 Brain Wiki。默认关闭。
+# root 指向不可变快照存储目录；修改后需要重启。
+brain:
+  enabled: false
+  root: "./data/brain"
+  compact_index_max_bytes: 4000
+  compiler:
+    provider: "gemini"
+    model: "gemini-3.5-flash-lite"
+    max_input_bytes: 200000
+    max_output_tokens: 12000
+    max_cost_usd: 0.25
 
 # 存储配置
 store:

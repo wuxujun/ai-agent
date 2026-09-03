@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -91,6 +92,133 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Langfuse.BootstrapMissingPrompts || cfg.Langfuse.BootstrapFailurePolicy != "fail" || cfg.Langfuse.BootstrapTimeoutSeconds != 15 {
 		t.Errorf("unexpected Langfuse bootstrap defaults: %+v", cfg.Langfuse)
 	}
+}
+
+func TestBrainDefaultsDisabled(t *testing.T) {
+	t.Setenv("TEST_NO_CONFIG", "true")
+	resetConfig()
+	defer resetConfig()
+
+	cfg := LoadConfig()
+	if cfg.Brain.Enabled || cfg.Brain.Root != "./data/brain" || cfg.Brain.CompactIndexMaxBytes != 4000 {
+		t.Fatalf("brain defaults = %+v", cfg.Brain)
+	}
+	if cfg.Brain.Compiler.Provider != "gemini" || cfg.Brain.Compiler.Model != "gemini-3.5-flash-lite" || cfg.Brain.Compiler.MaxInputBytes != 200000 || cfg.Brain.Compiler.MaxOutputTokens != 12000 || cfg.Brain.Compiler.MaxCostUSD != 0.25 {
+		t.Fatalf("brain compiler defaults = %+v", cfg.Brain.Compiler)
+	}
+}
+
+func TestValidateBrainSettings(t *testing.T) {
+	valid := func() *Config {
+		cfg := &Config{}
+		cfg.LLM.Provider = "openai-responses"
+		cfg.LLM.TimeoutSeconds = 30
+		cfg.Brain.Enabled = true
+		cfg.Brain.Root = "./data/brain"
+		cfg.Brain.CompactIndexMaxBytes = 4000
+		cfg.Brain.Compiler.Provider = "gemini"
+		cfg.Brain.Compiler.Model = "gemini-3.5-flash-lite"
+		cfg.Brain.Compiler.MaxInputBytes = 200000
+		cfg.Brain.Compiler.MaxOutputTokens = 12000
+		cfg.Brain.Compiler.MaxCostUSD = 0.25
+		return cfg
+	}
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.Brain.Root = "" },
+		func(cfg *Config) { cfg.Brain.CompactIndexMaxBytes = -1 },
+		func(cfg *Config) { cfg.Brain.Compiler.Provider = "openai" },
+		func(cfg *Config) { cfg.Brain.Compiler.MaxInputBytes = -1 },
+		func(cfg *Config) { cfg.Brain.Compiler.MaxOutputTokens = -1 },
+		func(cfg *Config) { cfg.Brain.Compiler.MaxCostUSD = -0.01 },
+	} {
+		cfg := valid()
+		mutate(cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid Brain settings accepted: %+v", cfg.Brain)
+		}
+	}
+
+	cfg := valid()
+	cfg.Brain.Compiler.MaxCostUSD = math.NaN()
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("invalid Brain cost accepted: %+v", cfg.Brain)
+	}
+
+	cfg = valid()
+	cfg.API.Tenants = map[string]APITenantConfig{
+		"tenant-a": {BrainProjects: map[string]BrainProjectConfig{
+			"atlas": {WikiSpace: "brain-atlas"},
+			"orbit": {WikiSpace: "brain-atlas"},
+		}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("duplicate Brain Wiki space accepted: %+v", cfg.API.Tenants)
+	}
+}
+
+func TestReloadRejectsInvalidBrainCandidateAndPreservesPrevious(t *testing.T) {
+	configPath, before := loadBrainReloadFixture(t)
+
+	if err := os.WriteFile(configPath, []byte("brain:\n  enabled: true\n  root: ''\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Reload(); err == nil {
+		t.Fatal("expected invalid Brain reload to fail")
+	}
+	if Get() != before {
+		t.Fatal("invalid reload replaced active config")
+	}
+}
+
+func TestReloadAppliesValidBrainCandidateAndMarksRestartRequired(t *testing.T) {
+	configPath, before := loadBrainReloadFixture(t)
+	if err := os.WriteFile(configPath, []byte("brain:\n  enabled: true\n  root: ./data/brain-next\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	after, changes, err := Reload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after == before || after.Brain.Root != "./data/brain-next" {
+		t.Fatalf("valid reload did not install Brain candidate: before=%p after=%+v", before, after)
+	}
+	foundRestartRequired := false
+	for _, change := range changes {
+		if change == "brain: changed (restart required)" {
+			foundRestartRequired = true
+			break
+		}
+	}
+	if !foundRestartRequired {
+		t.Fatalf("Brain reload changes = %v", changes)
+	}
+}
+
+func loadBrainReloadFixture(t *testing.T) (string, *Config) {
+	t.Helper()
+	resetConfig()
+	t.Cleanup(resetConfig)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("brain:\n  enabled: true\n  root: ./data/brain\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	setupViper()
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := unmarshalConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := before.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	globalConfig = before
+	mu.Unlock()
+	return configPath, before
 }
 
 func TestValidateWikiSettings(t *testing.T) {

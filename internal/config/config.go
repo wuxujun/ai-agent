@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"reflect"
@@ -179,6 +180,11 @@ type Config struct {
 		Required                       bool   `mapstructure:"required"`
 	} `mapstructure:"wiki"`
 
+	// Brain configures the optional, project-scoped read-only Brain Wiki.
+	// Its root selects on-disk snapshot storage and therefore requires a
+	// process restart when changed.
+	Brain BrainConfig `mapstructure:"brain"`
+
 	Search struct {
 		URL    string `mapstructure:"url"`
 		APIKey string `mapstructure:"api_key"`
@@ -234,6 +240,34 @@ type APITenantConfig struct {
 	// WikiSpace selects the LLM Wiki space visible to this tenant. An empty
 	// value falls back to wiki.default_space when that operator-wide sharing is
 	// intentional.
+	WikiSpace string `mapstructure:"wiki_space"`
+	// BrainProjects is the explicit project allowlist for this tenant. Brain
+	// project identity is never inferred from the workspace.
+	BrainProjects map[string]BrainProjectConfig `mapstructure:"brain_projects"`
+}
+
+// BrainCompilerConfig limits the optional Gemini synthesis stage. Values are
+// validated only when Brain is enabled so zero-value Config fixtures retain the
+// existing configuration contract.
+type BrainCompilerConfig struct {
+	Provider        string  `mapstructure:"provider"`
+	Model           string  `mapstructure:"model"`
+	MaxInputBytes   int     `mapstructure:"max_input_bytes"`
+	MaxOutputTokens int     `mapstructure:"max_output_tokens"`
+	MaxCostUSD      float64 `mapstructure:"max_cost_usd"`
+}
+
+// BrainConfig controls the read-only Brain Wiki. Root is restart-required.
+type BrainConfig struct {
+	Enabled              bool                `mapstructure:"enabled"`
+	Root                 string              `mapstructure:"root"`
+	CompactIndexMaxBytes int                 `mapstructure:"compact_index_max_bytes"`
+	Compiler             BrainCompilerConfig `mapstructure:"compiler"`
+}
+
+// BrainProjectConfig is a tenant-authorized Brain project and its public Wiki
+// space. A project is reachable only through an explicit tenant allowlist.
+type BrainProjectConfig struct {
 	WikiSpace string `mapstructure:"wiki_space"`
 }
 
@@ -588,6 +622,14 @@ func setupViper() {
 	viper.SetDefault("wiki.circuit_breaker_cooldown_seconds", 30)
 	viper.SetDefault("wiki.allow_private_network", false)
 	viper.SetDefault("wiki.required", false)
+	viper.SetDefault("brain.enabled", false)
+	viper.SetDefault("brain.root", "./data/brain")
+	viper.SetDefault("brain.compact_index_max_bytes", 4000)
+	viper.SetDefault("brain.compiler.provider", "gemini")
+	viper.SetDefault("brain.compiler.model", "gemini-3.5-flash-lite")
+	viper.SetDefault("brain.compiler.max_input_bytes", 200000)
+	viper.SetDefault("brain.compiler.max_output_tokens", 12000)
+	viper.SetDefault("brain.compiler.max_cost_usd", 0.25)
 	viper.SetDefault("search.url", "https://api.firecrawl.dev/v1/search")
 	viper.SetDefault("search.api_key", "")
 	viper.SetDefault("langfuse.enabled", false)
@@ -782,6 +824,12 @@ func cloneConfig(source *Config) *Config {
 	for tenantID, tenant := range source.API.Tenants {
 		tenant.AnswerPipelineRequiredStages = append([]string(nil), tenant.AnswerPipelineRequiredStages...)
 		tenant.AllowedMultiAgentTeams = append([]string(nil), tenant.AllowedMultiAgentTeams...)
+		if tenant.BrainProjects != nil {
+			tenant.BrainProjects = make(map[string]BrainProjectConfig, len(tenant.BrainProjects))
+			for projectID, project := range source.API.Tenants[tenantID].BrainProjects {
+				tenant.BrainProjects[projectID] = project
+			}
+		}
 		cloned.API.Tenants[tenantID] = tenant
 	}
 	cloned.LLM.Gateway = cloneLLMEndpoint(source.LLM.Gateway)
@@ -1056,6 +1104,9 @@ func diffConfigs(old, new *Config) []string {
 	}
 	if !reflect.DeepEqual(old.Wiki, new.Wiki) {
 		changes = append(changes, "wiki: changed (restart required)")
+	}
+	if !reflect.DeepEqual(old.Brain, new.Brain) {
+		changes = append(changes, "brain: changed (restart required)")
 	}
 
 	// Search
@@ -1375,6 +1426,27 @@ func (c *Config) validateIntrospectionAuth() error {
 	return nil
 }
 
+func isBrainProjectSlug(value string) bool {
+	if value == "" || strings.TrimSpace(value) != value || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	previousHyphen := false
+	for _, r := range value {
+		if r == '-' {
+			if previousHyphen {
+				return false
+			}
+			previousHyphen = true
+			continue
+		}
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+		previousHyphen = false
+	}
+	return true
+}
+
 // Validate rejects configuration that would otherwise fail only on the first
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
@@ -1391,6 +1463,23 @@ func (c *Config) Validate() error {
 	}
 	if c.MultiAgent.DAGCanaryPercent < 0 || c.MultiAgent.DAGCanaryPercent > 100 {
 		return fmt.Errorf("multiagent.dag_canary_percent must be between 0 and 100")
+	}
+	if c.Brain.Enabled {
+		if strings.TrimSpace(c.Brain.Root) == "" {
+			return fmt.Errorf("brain.root must not be empty when brain.enabled is true")
+		}
+		if c.Brain.CompactIndexMaxBytes < 0 || c.Brain.Compiler.MaxInputBytes < 0 || c.Brain.Compiler.MaxOutputTokens < 0 {
+			return fmt.Errorf("brain compact index and compiler limits must be >= 0")
+		}
+		if math.IsNaN(c.Brain.Compiler.MaxCostUSD) || math.IsInf(c.Brain.Compiler.MaxCostUSD, 0) || c.Brain.Compiler.MaxCostUSD < 0 {
+			return fmt.Errorf("brain.compiler.max_cost_usd must be finite and >= 0")
+		}
+		if !strings.EqualFold(strings.TrimSpace(c.Brain.Compiler.Provider), "gemini") {
+			return fmt.Errorf("brain.compiler.provider must be gemini")
+		}
+		if strings.TrimSpace(c.Brain.Compiler.Model) == "" {
+			return fmt.Errorf("brain.compiler.model must not be empty when brain.enabled is true")
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Store.VectorSearch)) {
 	case "", "in_process", "pgvector", "paradedb":
@@ -1615,6 +1704,20 @@ func (c *Config) Validate() error {
 			if err := c.ValidateLLMCostBudgetCoverage(); err != nil {
 				return err
 			}
+		}
+		seenBrainWikiSpaces := make(map[string]string, len(tenant.BrainProjects))
+		for projectID, project := range tenant.BrainProjects {
+			if !isBrainProjectSlug(projectID) {
+				return fmt.Errorf("api tenant %q Brain project id %q must be a strict slug", tenantID, projectID)
+			}
+			wikiSpace := strings.TrimSpace(project.WikiSpace)
+			if wikiSpace == "" || wikiSpace != project.WikiSpace {
+				return fmt.Errorf("api tenant %q Brain project %q wiki_space must be non-empty and trimmed", tenantID, projectID)
+			}
+			if previous, exists := seenBrainWikiSpaces[wikiSpace]; exists {
+				return fmt.Errorf("api tenant %q Brain projects %q and %q use the same wiki_space %q", tenantID, previous, projectID, wikiSpace)
+			}
+			seenBrainWikiSpaces[wikiSpace] = projectID
 		}
 		seenTeams := make(map[string]bool, len(tenant.AllowedMultiAgentTeams))
 		for _, team := range tenant.AllowedMultiAgentTeams {
