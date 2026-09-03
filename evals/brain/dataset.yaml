@@ -1,9 +1,9 @@
-version: 2
+version: 3
 thresholds:
   live_answer_accuracy_delta: 0.10
   offline_evidence_recall_delta: 0.10
   offline_p95_ratio: 1.50
-  live_total_tokens_ratio: 1.10
+  live_total_tokens_ratio: 1.20
 projects:
   - scope: {tenant_id: tenant-north, project_id: project-atlas}
     space: atlas-north

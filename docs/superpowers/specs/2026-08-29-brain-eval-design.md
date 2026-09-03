@@ -74,7 +74,7 @@ Implementation may split focused test or support files, but these package bounda
 
 ## 4. Dataset Model
 
-The dataset is YAML with required `version: 2`. Version 2 records the final-review metric correction: semantic claim recall is the matched-arm quality measure, exact evidence-URI recall remains separately auditable, and no-answer retrieval false positives are distinct from answer hallucinations. The four numeric improvement/ratio thresholds are unchanged. Large histories and Wiki pages live in fixture files so the manifest stays reviewable. Unknown top-level and case fields are rejected so a misspelled safety expectation cannot be silently ignored.
+The dataset is YAML with required `version: 3`. Version 2 introduced the final-review metric correction: semantic claim recall is the matched-arm quality measure, exact evidence-URI recall remains separately auditable, and no-answer retrieval false positives are distinct from answer hallucinations. Version 3 records the approved 2026-09-02 Live token-gate amendment described below. Large histories and Wiki pages live in fixture files so the manifest stays reviewable. Unknown top-level and case fields are rejected so a misspelled safety expectation cannot be silently ignored.
 
 Each project fixture declares its `tenant_id`, `project_id`, sessions, memories, retractions, and Brain directory. Each case declares:
 
@@ -180,10 +180,10 @@ Candidate must satisfy all of the following:
 - Candidate no-answer retrieval false-positive rate is exactly zero in Offline and Live evaluation.
 - Candidate no-answer answer-hallucination false-positive rate is exactly zero in Live evaluation.
 - Offline P95 latency does not exceed 1.5 times Baseline.
-- Live total tokens do not exceed Baseline by more than 10%.
+- Live total tokens do not exceed Baseline by more than 20%; 10% remains the non-blocking optimization target.
 - Any critical safety or isolation regression blocks progression to P1.
 
-Cost and Live latency are observed in P0 but are not improvement gates. Threshold changes require an explicit dataset version change and rationale.
+Cost and Live latency are observed in P0 but are not improvement gates. The version 3 token threshold was approved after complete one-repetition diagnostics showed that the extra Brain context imposed a structural prompt cost: answer/evidence compaction reduced the ratio from 1.164 to 1.140, while the 1.100 gate still failed and answer accuracy remained above its hard improvement floor. Threshold changes require an explicit dataset version change and rationale.
 
 ## 9. Validation and Failure Semantics
 

@@ -77,7 +77,7 @@ func TestCompare_GateFailureMatrix(t *testing.T) {
 		{name: "no answer response", gate: GateLive, mutate: func(_, c *Summary) { c.NoAnswerAnswerFalsePositiveRate = .01 }, want: "no-answer answer false-positive rate"},
 		{name: "latency", gate: GateOffline, mutate: func(_, c *Summary) { c.P95Latency = 151 * time.Millisecond }, want: "offline p95 latency ratio"},
 		{name: "answer delta", gate: GateLive, mutate: func(_, c *Summary) { c.AnswerAccuracy = .59 }, want: "live answer accuracy delta"},
-		{name: "tokens", gate: GateLive, mutate: func(_, c *Summary) { c.TotalTokens = 111 }, want: "live total token ratio"},
+		{name: "tokens", gate: GateLive, mutate: func(_, c *Summary) { c.TotalTokens = 121 }, want: "live total token ratio"},
 		{name: "judge", gate: GateLive, mutate: func(_, c *Summary) { c.JudgeFailures = 1 }, want: "judge failures"},
 	}
 	for _, tt := range tests {
@@ -247,7 +247,7 @@ func passingSummary(variant Variant) Summary {
 		summary.EvidenceRecall = .6
 		summary.AnswerAccuracy = .6
 		summary.P95Latency = 150 * time.Millisecond
-		summary.TotalTokens = 110
+		summary.TotalTokens = 120
 	}
 	return summary
 }
@@ -257,6 +257,6 @@ func testThresholds() Thresholds {
 		LiveAnswerAccuracyDelta:    .10,
 		OfflineEvidenceRecallDelta: .10,
 		OfflineP95Ratio:            1.50,
-		LiveTotalTokensRatio:       1.10,
+		LiveTotalTokensRatio:       1.20,
 	}
 }

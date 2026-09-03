@@ -12,6 +12,8 @@
 
 **2026-09-01 final-review amendment:** 数据集契约升级到 `version: 2`。两臂必须对完整 RRF 排名执行相同 reduction；Evidence Recall 使用可比较的语义 Claim Recall，Exact URI Recall 单独审计；No-answer Retrieval FP 与 Answer Hallucination FP 分离并使用 Candidate 绝对零门禁。Live 调用改为最多两次 attempt 的调用前保守 Token/USD 预留、Provider 输出硬约束、实际 Usage 结算及独立 Tracker totals。以下早期步骤中的旧字段由本修订取代，四个数值阈值及 50,000 Token / 2 USD 上限不变。
 
+**2026-09-02 approved token-gate amendment:** 数据集契约升级到 `version: 3`。完整的一次重复诊断显示，双臂一致的 Evidence/Answer 压缩把 Live Total Token Ratio 从 `1.164` 降至 `1.140`，但 Brain 新增上下文本身仍产生结构性 Prompt 成本。用户批准将 P1 Live Token 硬门禁设为 `<= 1.20`，同时保留 `<= 1.10` 作为非阻断优化目标；Answer Accuracy、安全、隔离、三次重复、50,000 Token 单次上限和 2 USD 成本上限均不变。
+
 ## Global Constraints
 
 - Brain 是正交上下文能力；不得新增 `orchestrator.mode: brain`，不得修改生产 API 或运行时配置。
@@ -19,7 +21,7 @@
 - Baseline 只能读取 Memory；Candidate 读取相同 Memory 并额外读取 Gold Brain。
 - 每个检索分支最多 8 个候选；RRF 使用 `k=60`；最终 Evidence 最多 3 条且最多 8,000 UTF-8 字节。
 - `_index.md` 最大 4,000 UTF-8 字节；所有 Fixture 均为虚构且不得包含凭证、真实 Prompt、私有路径或 Provider 原始响应。
-- 数据集固定为 `version: 2`，未知字段、坏 URI、坏时间线、跨 Scope 引用、无效替代或撤回必须 Fail-closed。
+- 数据集固定为 `version: 3`，未知字段、坏 URI、坏时间线、跨 Scope 引用、无效替代或撤回必须 Fail-closed。
 - 确定性错误不重试；Live 瞬态错误最多重试一次；Live 不得静默回退到离线模式。
 - 不引入新依赖；测试不得要求 Live 凭证或产生 Provider 成本。
 - 不修改或格式化与本功能无关的文件，尤其保留现有 `build.sh` 用户改动。
@@ -64,12 +66,12 @@
 
 ```go
 func TestLoadDataset_RejectsUnknownCaseField(t *testing.T) {
-	input := `version: 2
+	input := `version: 3
 thresholds:
   live_answer_accuracy_delta: 0.10
   offline_evidence_recall_delta: 0.10
   offline_p95_ratio: 1.50
-  live_total_tokens_ratio: 1.10
+  live_total_tokens_ratio: 1.20
 projects: []
 cases:
   - name: bad
@@ -98,7 +100,7 @@ Expected: FAIL，原因是 `LoadDataset` 尚未定义。
 - [ ] **Step 3: 实现精确数据类型和 KnownFields Loader**
 
 ```go
-const SchemaVersion = 1
+const SchemaVersion = 3
 
 type Scope struct {
 	TenantID  string `yaml:"tenant_id" json:"tenant_id"`
@@ -144,7 +146,7 @@ type Dataset struct {
 
 - [ ] **Step 4: 添加校验矩阵并运行包测试**
 
-使用 table test 覆盖 `version != 2`、重复 Scope、重复 Case、未知 Scope、绝对 Root、逃逸 Root、空 Query、No-answer 同时含 Expected Claim、错误阈值和额外 YAML Document。
+使用 table test 覆盖 `version != 3`、重复 Scope、重复 Case、未知 Scope、绝对 Root、逃逸 Root、空 Query、No-answer 同时含 Expected Claim、错误阈值和额外 YAML Document；显式拒绝旧 `version: 2` 与 `live_total_tokens_ratio: 1.10` 契约。
 
 Run: `go test ./internal/braineval -run 'TestLoadDataset|TestDatasetValidate'`
 
@@ -417,7 +419,7 @@ git commit -m "feat: add matched offline brain eval runner"
 func TestCompare_CriticalLeakBlocksP1(t *testing.T) {
 	baseline := Summary{Variant: VariantBaseline, EvidenceRecall: .50, AnswerAccuracy: .50, CitationCoverage: 1, P95Latency: time.Millisecond, TotalTokens: 100}
 	candidate := Summary{Variant: VariantBrain, EvidenceRecall: .80, AnswerAccuracy: .80, CitationCoverage: 1, P95Latency: time.Millisecond, TotalTokens: 105, ScopeLeaks: 1, CriticalFailures: []string{"scope_cross_tenant"}}
-	got := Compare(baseline, candidate, Thresholds{LiveAnswerAccuracyDelta: .10, OfflineEvidenceRecallDelta: .10, OfflineP95Ratio: 1.50, LiveTotalTokensRatio: 1.10}, GateLive)
+	got := Compare(baseline, candidate, Thresholds{LiveAnswerAccuracyDelta: .10, OfflineEvidenceRecallDelta: .10, OfflineP95Ratio: 1.50, LiveTotalTokensRatio: 1.20}, GateLive)
 	if got.Passed() || !slices.Contains(got.Failures, "critical regression: scope_cross_tenant") { t.Fatalf("got %#v", got) }
 }
 ```
@@ -471,7 +473,7 @@ Claim 匹配使用 Unicode lowercase、TrimSpace、连续空白折叠后的包�
 
 - [ ] **Step 4: 实现全部 Gate 并运行矩阵测试**
 
-`Compare` 在两个 GateSet 中都检查：两臂无 Errors、`ComparableCases == Cases` 且数量一致；Offline Evidence Recall Delta `>= 0.10`；supersession/retraction/tenant/project isolation Case `100%`；Wiki Citation Coverage `1.0`；Entity Contamination、Scope Leakage、Stale Claim Selection 为 `0`；Candidate No-answer Retrieval FP 为 `0`；Offline P95 Ratio `<= 1.50`；任一 Critical Failure 立即失败。`GateLive` 额外检查 Live Answer Accuracy Delta `>= 0.10`、Live Total Token Ratio `<= 1.10`、Candidate No-answer Answer Hallucination FP 为 `0`，以及 JudgeFailures 为 `0`；`GateOffline` 不得因为 Answer/Token 尚未产生而失败。Baseline 为零的 Ratio 仅在 Candidate 也为零时记为 `1`，否则记为正无穷；JSON 使用 `"inf"`，Text 使用 `+Inf`。
+`Compare` 在两个 GateSet 中都检查：两臂无 Errors、`ComparableCases == Cases` 且数量一致；Offline Evidence Recall Delta `>= 0.10`；supersession/retraction/tenant/project isolation Case `100%`；Wiki Citation Coverage `1.0`；Entity Contamination、Scope Leakage、Stale Claim Selection 为 `0`；Candidate No-answer Retrieval FP 为 `0`；Offline P95 Ratio `<= 1.50`；任一 Critical Failure 立即失败。`GateLive` 额外检查 Live Answer Accuracy Delta `>= 0.10`、Live Total Token Ratio `<= 1.20`、Candidate No-answer Answer Hallucination FP 为 `0`，以及 JudgeFailures 为 `0`；`<= 1.10` 继续作为非阻断优化目标。`GateOffline` 不得因为 Answer/Token 尚未产生而失败。Baseline 为零的 Ratio 仅在 Candidate 也为零时记为 `1`，否则记为正无穷；JSON 使用 `"inf"`，Text 使用 `+Inf`。
 
 Run: `go test ./internal/braineval -run 'TestScoreCase|TestSummarize|TestCompare'`
 
@@ -536,12 +538,12 @@ Expected: FAIL，原因是 `evals/brain/dataset.yaml` 尚不存在。
 - [ ] **Step 3: 创建 4 个隔离 Scope 与固定阈值**
 
 ```yaml
-version: 2
+version: 3
 thresholds:
   live_answer_accuracy_delta: 0.10
   offline_evidence_recall_delta: 0.10
   offline_p95_ratio: 1.50
-  live_total_tokens_ratio: 1.10
+  live_total_tokens_ratio: 1.20
 projects:
   - scope: {tenant_id: tenant-north, project_id: project-atlas}
     space: atlas-north
@@ -836,7 +838,7 @@ Expected: 两条命令均 Exit `0`；两种格式都报告 24 个 Case、两个 
 go run ./cmd/brain-eval -input evals/brain/dataset.yaml -mode live -format json -repetitions 3 -max-total-tokens 50000 -max-total-cost-usd 2 > /private/tmp/brain-eval-live.jsonl
 ```
 
-Expected: Exit `0`；总 Token `<= 50000`、总成本 `<= 2 USD`、Candidate Answer Accuracy Delta `>= 0.10`、Total Token Ratio `<= 1.10`，且全部 Critical Gates 通过。若 Provider/模型波动导致 Gate 失败，保留 JSONL、记录失败 Case 与稳定性，不调低阈值、不增加预算，修复确定性缺陷后重新从 Step 2 验证。
+Expected: Exit `0`；总 Token `<= 50000`、总成本 `<= 2 USD`、Candidate Answer Accuracy Delta `>= 0.10`、Total Token Ratio `<= 1.20`，且全部 Critical Gates 通过；另行记录是否达到 `<= 1.10` 优化目标。若 Provider/模型波动导致 Gate 失败，保留 JSONL、记录失败 Case 与稳定性，不调低阈值、不增加预算，修复确定性缺陷后重新从 Step 2 验证。
 
 - [ ] **Step 5: 写脱敏验证记录**
 
@@ -861,7 +863,7 @@ git commit -m "docs: record brain eval p0 evidence"
 
 ## Completion Checklist
 
-- [ ] `version: 2` 的 24 个 Case、4 个 Scope、固定分类计数及完整 Gold matrix digest 全部通过严格加载与 Provenance 校验。
+- [ ] `version: 3` 的 24 个 Case、4 个 Scope、固定分类计数及完整 Gold matrix digest 全部通过严格加载与 Provenance 校验。
 - [ ] Baseline 与 Candidate 共享 Query、Planner、Writer、Scene、Repetitions、Timeout 和最终 Evidence 预算，唯一差异是 Brain 可见性。
 - [ ] Offline 指标、Live 指标和 Paired Comparison 分开输出，并列出每项 Regression/Improvement。
 - [ ] 所有质量、隔离、撤回、Prompt Injection、No-answer、Latency 和 Token 门禁均被独立测试。

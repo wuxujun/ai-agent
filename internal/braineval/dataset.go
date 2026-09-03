@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 type Scope struct {
 	TenantID  string `yaml:"tenant_id" json:"tenant_id"`
@@ -93,7 +93,7 @@ func (d Dataset) Validate() error {
 	if d.Version != SchemaVersion {
 		return fmt.Errorf("unsupported dataset version %d", d.Version)
 	}
-	if d.Thresholds != (Thresholds{0.10, 0.10, 1.50, 1.10}) {
+	if d.Thresholds != (Thresholds{0.10, 0.10, 1.50, 1.20}) {
 		return fmt.Errorf("thresholds must equal the schema defaults")
 	}
 	projects := make(map[string]struct{}, len(d.Projects))

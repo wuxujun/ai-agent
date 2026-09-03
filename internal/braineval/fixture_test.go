@@ -185,7 +185,7 @@ func TestLoadCorpus_RejectsOversizedIndexAndMalformedJSONL(t *testing.T) {
 func fixtureDataset(root string) Dataset {
 	return Dataset{
 		Version:    SchemaVersion,
-		Thresholds: Thresholds{0.10, 0.10, 1.50, 1.10},
+		Thresholds: Thresholds{0.10, 0.10, 1.50, 1.20},
 		Projects:   []ProjectFixture{{Scope: Scope{TenantID: "tenant-a", ProjectID: "atlas"}, Space: "atlas", Root: root}},
 		Cases:      []Case{{Name: "atlas-owner", Category: "decision", Scope: Scope{TenantID: "tenant-a", ProjectID: "atlas"}, Query: "owner", ExpectedClaims: []string{"Project Atlas owner is Mei Lin."}, ExpectedEvidenceURIs: []string{"memory://owner"}}},
 	}

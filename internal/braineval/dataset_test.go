@@ -7,12 +7,12 @@ import (
 )
 
 func TestLoadDataset_RejectsUnknownCaseField(t *testing.T) {
-	input := `version: 2
+	input := `version: 3
 thresholds:
   live_answer_accuracy_delta: 0.10
   offline_evidence_recall_delta: 0.10
   offline_p95_ratio: 1.50
-  live_total_tokens_ratio: 1.10
+  live_total_tokens_ratio: 1.20
 projects: []
 cases:
   - name: bad
@@ -32,12 +32,12 @@ cases:
 }
 
 func validDatasetYAML() string {
-	return `version: 2
+	return `version: 3
 thresholds:
   live_answer_accuracy_delta: 0.10
   offline_evidence_recall_delta: 0.10
   offline_p95_ratio: 1.50
-  live_total_tokens_ratio: 1.10
+  live_total_tokens_ratio: 1.20
 projects:
   - scope: {tenant_id: tenant-north, project_id: project-atlas}
     space: atlas
@@ -53,6 +53,32 @@ cases:
     expect_no_answer: true
     critical: false
 `
+}
+
+func TestLoadDataset_AcceptsApprovedLiveTokenRatio(t *testing.T) {
+	if _, err := LoadDataset(strings.NewReader(validDatasetYAML()), t.TempDir()); err != nil {
+		t.Fatalf("approved live token ratio was rejected: %v", err)
+	}
+}
+
+func TestLoadDataset_RejectsSupersededVersionAndTokenRatio(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{name: "version 2 with new ratio", input: strings.Replace(validDatasetYAML(), "version: 3", "version: 2", 1), wantErr: "unsupported dataset version"},
+		{name: "version 3 with old ratio", input: strings.Replace(validDatasetYAML(), "live_total_tokens_ratio: 1.20", "live_total_tokens_ratio: 1.10", 1), wantErr: "thresholds must equal"},
+		{name: "complete version 2 contract", input: strings.NewReplacer("version: 3", "version: 2", "live_total_tokens_ratio: 1.20", "live_total_tokens_ratio: 1.10").Replace(validDatasetYAML()), wantErr: "unsupported dataset version"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadDataset(strings.NewReader(tt.input), t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestLoadDataset_ValidationMatrix(t *testing.T) {
@@ -117,7 +143,7 @@ func TestLoadDataset_RejectsUnsafeRootAndExtraDocument(t *testing.T) {
 	if want := filepath.Join(baseDir, "fixtures", "atlas"); loaded.Projects[0].Root != want {
 		t.Fatalf("expected root %q, got %q", want, loaded.Projects[0].Root)
 	}
-	_, err = LoadDataset(strings.NewReader(validDatasetYAML()+"\n---\nversion: 2\n"), t.TempDir())
+	_, err = LoadDataset(strings.NewReader(validDatasetYAML()+"\n---\nversion: 3\n"), t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "more than one YAML document") {
 		t.Fatalf("expected extra-document error, got %v", err)
 	}
