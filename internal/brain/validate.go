@@ -77,6 +77,9 @@ func (v *snapshotValidator) validateRetractionLedger() {
 }
 
 func (v *snapshotValidator) validateOutputBounds() {
+	if manifestFieldsTooLarge(v.draft.Manifest) {
+		v.add("oversize_output", "manifest")
+	}
 	if len(v.draft.Files) == 0 || len(v.draft.Files)+1 > maxSnapshotFiles || len(v.draft.Evidence) > maxSnapshotEvidenceRecords {
 		v.add("oversize_output", "wiki")
 	}
@@ -177,7 +180,8 @@ func (v *snapshotValidator) validateFiles() []claimFrontmatter {
 		if !validNormalizedMarkdown(content) {
 			v.add("malformed_markdown", name)
 		}
-		if !bodyClaimsMatchFrontmatter(content, frontmatter.Claims) {
+		expected, err := renderCanonicalPage(frontmatter)
+		if err != nil || string(content) != expected {
 			v.add("body_claim_drift", name)
 		}
 		for _, link := range frontmatter.Links {
@@ -355,36 +359,4 @@ func validRelativeMarkdownLink(link string) bool {
 	}
 	_, _, ok := parseRenderedPageName(strings.TrimPrefix(link, "../"))
 	return ok
-}
-
-func bodyClaimsMatchFrontmatter(content []byte, claims []claimFrontmatter) bool {
-	lines := strings.Split(string(content), "\n")
-	actual := make([]string, 0, len(claims))
-	inClaims, seenClaimsSection := false, false
-	for _, line := range lines {
-		if line == "## Claims" {
-			if seenClaimsSection {
-				return false
-			}
-			seenClaimsSection = true
-			inClaims = true
-			continue
-		}
-		if inClaims && strings.HasPrefix(line, "## ") {
-			inClaims = false
-			continue
-		}
-		if inClaims && strings.HasPrefix(line, "### ") {
-			actual = append(actual, strings.TrimSpace(strings.TrimPrefix(line, "### ")))
-		}
-	}
-	if len(actual) != len(claims) {
-		return false
-	}
-	for index, claim := range claims {
-		if actual[index] != claim.ID {
-			return false
-		}
-	}
-	return true
 }

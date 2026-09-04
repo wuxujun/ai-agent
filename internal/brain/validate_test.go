@@ -91,6 +91,49 @@ func TestValidateRejectsBodyClaimsThatDriftFromFrontmatter(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsClaimMetadataDriftEvenWithUpdatedFileHash(t *testing.T) {
+	draft := validationDraft(t)
+	content := []byte(strings.Replace(string(draft.Files["concepts/alpha.md"]), "- Confidence: high", "- Confidence: low", 1))
+	draft.Files["concepts/alpha.md"] = content
+	draft.Manifest.FileHashes["wiki/concepts/alpha.md"] = digestBytes(content)
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{})
+	if report.Publishable || !validationHasCodes(report, "body_claim_drift") {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestValidateAcceptsRenderedLiteralClaimsHeadingInClaimText(t *testing.T) {
+	when := time.Date(2026, time.September, 2, 3, 4, 5, 0, time.UTC)
+	uri := "brain-evidence://tenant-a/atlas/tasks/task-literal#trace/1"
+	evidence := EvidenceRecord{ID: sha256ID(uri), URI: uri, TaskID: "task-literal", TraceStep: "1", Content: "bounded evidence", ContentHash: sha256ID("bounded evidence"), ObservedAt: when}
+	draft, err := Render(Synthesis{Pages: []Page{{
+		Kind: "concepts", Slug: "literal-heading", Title: "Literal Heading", Summary: "Safe summary.",
+		Claims: []Claim{{ID: "literal-claim", Text: "First line.\n## Claims\nLiteral data, not a section.", Confidence: "high", State: "active", EvidenceIDs: []string{evidence.ID}, ObservedAt: when}},
+	}}}, 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft.Evidence = []EvidenceRecord{evidence}
+	draft.Manifest.TenantID = "tenant-a"
+	draft.Manifest.ProjectID = "atlas"
+	draft.Manifest.SourceIDs = []string{evidence.ID}
+	draft.Manifest.SourceHashes = []string{evidence.ContentHash}
+	draft.Manifest.RetractionWatermark = "sha256:test"
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{})
+	if !report.Publishable {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestValidateRejectsRepositoryManifestFieldLimit(t *testing.T) {
+	draft := validationDraft(t)
+	draft.Manifest.Model = strings.Repeat("x", maxSnapshotEvidenceFieldLen+1)
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{})
+	if report.Publishable || !validationHasCodes(report, "oversize_output") {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
 func TestValidateRejectsOversizeManifestAndNeverLeaksSensitiveIDs(t *testing.T) {
 	draft := validationDraft(t)
 	draft.Manifest.Model = strings.Repeat("x", maxSnapshotManifestBytes)

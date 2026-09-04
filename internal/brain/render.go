@@ -20,15 +20,17 @@ var renderableWikiKinds = map[string]bool{
 }
 
 type pageFrontmatter struct {
-	Title  string             `yaml:"title"`
-	Kind   string             `yaml:"kind"`
-	Slug   string             `yaml:"slug"`
-	Claims []claimFrontmatter `yaml:"claims,omitempty"`
-	Links  []string           `yaml:"links,omitempty"`
+	Title   string             `yaml:"title"`
+	Summary string             `yaml:"summary,omitempty"`
+	Kind    string             `yaml:"kind"`
+	Slug    string             `yaml:"slug"`
+	Claims  []claimFrontmatter `yaml:"claims,omitempty"`
+	Links   []string           `yaml:"links,omitempty"`
 }
 
 type claimFrontmatter struct {
 	ID          string   `yaml:"id"`
+	Text        string   `yaml:"text"`
 	EvidenceIDs []string `yaml:"evidence_ids"`
 	Confidence  string   `yaml:"confidence,omitempty"`
 	State       string   `yaml:"state,omitempty"`
@@ -89,7 +91,7 @@ func renderPage(page Page) (string, error) {
 	}
 	claims := append([]Claim(nil), page.Claims...)
 	sort.Slice(claims, func(i, j int) bool { return claims[i].ID < claims[j].ID })
-	frontmatter := pageFrontmatter{Title: normalizeMarkdownText(page.Title), Kind: page.Kind, Slug: page.Slug}
+	frontmatter := pageFrontmatter{Title: normalizeMarkdownText(page.Title), Summary: normalizeMarkdownText(page.Summary), Kind: page.Kind, Slug: page.Slug}
 	for _, claim := range claims {
 		if !safeMarkdownText(claim.ID) || strings.TrimSpace(claim.ID) == "" || !safeMarkdownText(claim.Text) {
 			return "", fmt.Errorf("brain claim is invalid")
@@ -97,7 +99,7 @@ func renderPage(page Page) (string, error) {
 		evidenceIDs := append([]string(nil), claim.EvidenceIDs...)
 		sort.Strings(evidenceIDs)
 		frontmatter.Claims = append(frontmatter.Claims, claimFrontmatter{
-			ID: claim.ID, EvidenceIDs: evidenceIDs, Confidence: normalizeMarkdownText(claim.Confidence), State: normalizeMarkdownText(claim.State), ObservedAt: formatObservedAt(claim.ObservedAt),
+			ID: claim.ID, Text: normalizeMarkdownText(claim.Text), EvidenceIDs: evidenceIDs, Confidence: normalizeMarkdownText(claim.Confidence), State: normalizeMarkdownText(claim.State), ObservedAt: formatObservedAt(claim.ObservedAt),
 		})
 	}
 	links := append([]string(nil), page.Links...)
@@ -108,6 +110,10 @@ func renderPage(page Page) (string, error) {
 		}
 		frontmatter.Links = append(frontmatter.Links, link)
 	}
+	return renderCanonicalPage(frontmatter)
+}
+
+func renderCanonicalPage(frontmatter pageFrontmatter) (string, error) {
 	encoded, err := yaml.Marshal(frontmatter)
 	if err != nil {
 		return "", fmt.Errorf("encode brain page frontmatter: %w", err)
@@ -116,15 +122,15 @@ func renderPage(page Page) (string, error) {
 	output.WriteString("---\n")
 	output.Write(encoded)
 	output.WriteString("---\n\n# ")
-	output.WriteString(normalizeMarkdownText(page.Title))
+	output.WriteString(normalizeMarkdownText(frontmatter.Title))
 	output.WriteString("\n\n")
-	if summary := normalizeMarkdownText(page.Summary); summary != "" {
+	if summary := normalizeMarkdownText(frontmatter.Summary); summary != "" {
 		output.WriteString(summary)
 		output.WriteString("\n\n")
 	}
-	if len(claims) > 0 {
+	if len(frontmatter.Claims) > 0 {
 		output.WriteString("## Claims\n\n")
-		for _, claim := range claims {
+		for _, claim := range frontmatter.Claims {
 			output.WriteString("### ")
 			output.WriteString(normalizeMarkdownText(claim.ID))
 			output.WriteString("\n\n")
@@ -136,22 +142,20 @@ func renderPage(page Page) (string, error) {
 			if claim.State != "" {
 				fmt.Fprintf(&output, "- State: %s\n", normalizeMarkdownText(claim.State))
 			}
-			if !claim.ObservedAt.IsZero() {
-				fmt.Fprintf(&output, "- Observed at: %s\n", formatObservedAt(claim.ObservedAt))
+			if claim.ObservedAt != "" {
+				fmt.Fprintf(&output, "- Observed at: %s\n", normalizeMarkdownText(claim.ObservedAt))
 			}
-			evidenceIDs := append([]string(nil), claim.EvidenceIDs...)
-			sort.Strings(evidenceIDs)
-			if len(evidenceIDs) > 0 {
+			if len(claim.EvidenceIDs) > 0 {
 				output.WriteString("- Evidence IDs: ")
-				output.WriteString(strings.Join(evidenceIDs, ", "))
+				output.WriteString(strings.Join(claim.EvidenceIDs, ", "))
 				output.WriteString("\n")
 			}
 			output.WriteString("\n")
 		}
 	}
-	if len(links) > 0 {
+	if len(frontmatter.Links) > 0 {
 		output.WriteString("## Links\n\n")
-		for _, link := range links {
+		for _, link := range frontmatter.Links {
 			_, kind, slug, _ := parseBrainWikiURI(link, "")
 			fmt.Fprintf(&output, "- [%s](%s) ([Markdown](../%s/%s.md))\n", link, link, kind, slug)
 		}
