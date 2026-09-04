@@ -4,49 +4,91 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 
-	"github.com/wuxujun/ai-agent/internal/policy"
+	"golang.org/x/sys/unix"
 )
 
 const (
-	maxCurrentBytes      = 4096
-	maxSnapshotFileBytes = 16 * 1024 * 1024
-	maxSnapshotTreeBytes = 64 * 1024 * 1024
-	maxEvidenceLineBytes = 2 * 1024 * 1024
+	maxCurrentBytes             = 4096
+	maxSnapshotFileBytes        = 1024 * 1024
+	maxSnapshotTreeBytes        = 8 * 1024 * 1024
+	maxSnapshotEvidenceBytes    = 2 * 1024 * 1024
+	maxSnapshotManifestBytes    = 1024 * 1024
+	maxEvidenceLineBytes        = 64 * 1024
+	maxSnapshotFiles            = 1024
+	maxSnapshotEvidenceRecords  = 1000
+	maxSnapshotEvidenceFieldLen = 32 * 1024
+	maxSnapshotPathBytes        = 4096
 )
 
 var (
-	ErrUnsafePath         = errors.New("unsafe brain repository path")
-	ErrCurrentConflict    = errors.New("brain current snapshot conflict")
-	ErrSnapshotExists     = errors.New("brain snapshot already exists")
-	ErrSnapshotNotFound   = errors.New("brain snapshot not found")
-	ErrSnapshotRevoked    = errors.New("brain snapshot revoked")
-	ErrRetractionChanged  = errors.New("brain retraction watermark changed")
-	ErrSnapshotUnverified = errors.New("brain snapshot is not verified")
-	ErrSnapshotCorrupt    = errors.New("brain snapshot is corrupt")
-	ErrCrossFilesystem    = errors.New("brain snapshot cross-filesystem rename rejected")
+	ErrUnsafePath               = errors.New("unsafe brain repository path")
+	ErrCurrentConflict          = errors.New("brain current snapshot conflict")
+	ErrSnapshotExists           = errors.New("brain snapshot already exists")
+	ErrSnapshotNotFound         = errors.New("brain snapshot not found")
+	ErrSnapshotRevoked          = errors.New("brain snapshot revoked")
+	ErrRetractionChanged        = errors.New("brain retraction watermark changed")
+	ErrSnapshotUnverified       = errors.New("brain snapshot is not verified")
+	ErrSnapshotCorrupt          = errors.New("brain snapshot is corrupt")
+	ErrCrossFilesystem          = errors.New("brain snapshot cross-filesystem rename rejected")
+	ErrSnapshotTooLarge         = errors.New("brain snapshot exceeds repository limits")
+	ErrCurrentDurabilityUnknown = errors.New("brain current snapshot committed with unknown durability")
+	errSecurePathMissing        = errors.New("brain secure path is missing")
 )
 
 // Repository persists complete Brain snapshots under one configured root.
-// Publication is serialized with a filesystem-visible advisory lock and uses
-// an expected-current compare-and-swap before replacing CURRENT atomically.
+// All tree operations are anchored to opened directory descriptors. Publish
+// and rollback serialize by flocking the private, regular project lock file,
+// which is also the lock protocol that retraction writers must honor.
 type Repository struct {
 	root   string
 	ledger RetractionView
-	rename func(string, string) error
+
+	// The following hooks are narrow crash/race injection seams. A nil rename
+	// means use the platform atomic operation; a non-nil rename runs immediately
+	// before it and may abort it.
+	rename                  func(string, string) error
+	beforeFileCreate        func()
+	beforeReleaseRename     func()
+	beforeCurrentCommit     func()
+	syncCurrentBeforeRename func() error
+	syncCurrentParent       func() error
+}
+
+type secureDir struct {
+	fd   int
+	path string
+}
+
+type projectLock struct {
+	directory *secureDir
+	fd        int
+}
+
+type projectHandle struct {
+	dir         *secureDir
+	tenant      *secureDir
+	projectName string
+}
+
+type preparedSnapshot struct {
+	manifest      Manifest
+	manifestBytes []byte
+	evidenceBytes []byte
+	fileNames     []string
 }
 
 func NewRepository(root string, ledger RetractionView) (*Repository, error) {
@@ -58,169 +100,122 @@ func NewRepository(root string, ledger RetractionView) (*Repository, error) {
 		return nil, fmt.Errorf("resolve brain repository root: %w", ErrUnsafePath)
 	}
 	absRoot = filepath.Clean(absRoot)
-	if err := ensurePrivateDirectory(absRoot); err != nil {
+	directory, err := openAbsoluteDirectory(absRoot, true)
+	if err != nil {
 		return nil, err
 	}
-	return &Repository{root: absRoot, ledger: ledger, rename: os.Rename}, nil
+	directory.close()
+	return &Repository{root: absRoot, ledger: ledger}, nil
 }
 
 func (r *Repository) Current(ctx context.Context, ref ProjectRef) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	projectRoot, err := r.projectRoot(ref)
-	if err != nil {
-		return "", err
-	}
-	currentPath, err := safeJoin(projectRoot, "CURRENT")
-	if err != nil {
-		return "", err
-	}
-	exists, err := inspectPathComponents(currentPath)
-	if err != nil {
-		return "", err
-	}
-	if !exists {
+	project, err := openProjectHandle(r.root, ref, false)
+	if errors.Is(err, errSecurePathMissing) {
 		return "", nil
 	}
-	content, err := readBoundedRegularFile(currentPath, maxCurrentBytes)
 	if err != nil {
-		return "", fmt.Errorf("read brain current snapshot: %w", ErrSnapshotCorrupt)
+		return "", err
 	}
-	value := string(content)
-	if strings.HasSuffix(value, "\n") {
-		value = strings.TrimSuffix(value, "\n")
+	defer project.close()
+	current, err := currentAt(ctx, project.dir)
+	if err != nil {
+		return "", err
 	}
-	if !safeSingleComponent(value) {
-		return "", fmt.Errorf("brain current snapshot is invalid: %w", ErrSnapshotCorrupt)
+	if err := project.verify(); err != nil {
+		return "", err
 	}
-	return value, nil
+	return current, nil
 }
 
 func (r *Repository) CreateStage(ctx context.Context, ref ProjectRef, draft SnapshotDraft) (Manifest, error) {
 	if err := ctx.Err(); err != nil {
 		return Manifest{}, err
 	}
-	if err := validateDraftScope(ref, draft); err != nil {
-		return Manifest{}, err
-	}
-	fileNames := make([]string, 0, len(draft.Files))
-	for name := range draft.Files {
-		if !safeRelativePath(name) {
-			return Manifest{}, fmt.Errorf("brain snapshot file name is unsafe: %w", ErrUnsafePath)
-		}
-		fileNames = append(fileNames, name)
-	}
-	sort.Strings(fileNames)
-	evidenceBytes, err := encodeEvidence(draft.Evidence)
+	prepared, err := prepareSnapshot(ref, draft)
 	if err != nil {
 		return Manifest{}, err
 	}
-	manifest := draft.Manifest
-	manifest.FileHashes = make(map[string]string, len(draft.Files)+1)
-	for _, name := range fileNames {
-		manifest.FileHashes[filepath.ToSlash(filepath.Join("wiki", name))] = digestBytes(draft.Files[name])
-	}
-	manifest.FileHashes["evidence.jsonl"] = digestBytes(evidenceBytes)
-	manifestBytes, err := encodeManifest(manifest)
+	project, err := openProjectHandle(r.root, ref, true)
 	if err != nil {
 		return Manifest{}, err
 	}
+	defer project.close()
+	lock, err := acquireProjectLock(ctx, project.dir)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer lock.release()
 
-	projectRoot, err := r.projectRoot(ref)
+	staging, err := project.dir.openChildDirectory("staging", true, false)
 	if err != nil {
 		return Manifest{}, err
 	}
-	if err := ensurePrivateDirectory(projectRoot); err != nil {
-		return Manifest{}, err
-	}
-	stagingRoot, err := safeJoin(projectRoot, "staging")
+	defer staging.close()
+	releases, err := project.dir.openChildDirectory("releases", true, false)
 	if err != nil {
 		return Manifest{}, err
 	}
-	releasesRoot, err := safeJoin(projectRoot, "releases")
-	if err != nil {
+	defer releases.close()
+	if exists, err := staging.childExists(prepared.manifest.SnapshotID); err != nil {
 		return Manifest{}, err
-	}
-	if err := ensurePrivateDirectory(stagingRoot); err != nil {
-		return Manifest{}, err
-	}
-	if err := ensurePrivateDirectory(releasesRoot); err != nil {
-		return Manifest{}, err
-	}
-
-	lock, err := r.acquireProjectLock(ctx, projectRoot)
-	if err != nil {
-		return Manifest{}, err
-	}
-	defer releaseProjectLock(lock)
-	stageRoot, err := safeJoin(stagingRoot, manifest.SnapshotID)
-	if err != nil {
-		return Manifest{}, err
-	}
-	releaseRoot, err := safeJoin(releasesRoot, manifest.SnapshotID)
-	if err != nil {
-		return Manifest{}, err
-	}
-	if exists, pathErr := inspectPathComponents(stageRoot); pathErr != nil {
-		return Manifest{}, pathErr
 	} else if exists {
 		return Manifest{}, ErrSnapshotExists
 	}
-	if exists, pathErr := inspectPathComponents(releaseRoot); pathErr != nil {
-		return Manifest{}, pathErr
+	if exists, err := releases.childExists(prepared.manifest.SnapshotID); err != nil {
+		return Manifest{}, err
 	} else if exists {
 		return Manifest{}, ErrSnapshotExists
 	}
-	if err := os.Mkdir(stageRoot, 0o700); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return Manifest{}, ErrSnapshotExists
-		}
-		return Manifest{}, fmt.Errorf("create brain staging snapshot: %w", ErrSnapshotCorrupt)
-	}
-	if err := syncDirectory(stagingRoot); err != nil {
-		return Manifest{}, err
-	}
-	wikiRoot, err := safeJoin(stageRoot, "wiki")
+	stage, err := staging.openChildDirectory(prepared.manifest.SnapshotID, true, true)
 	if err != nil {
 		return Manifest{}, err
 	}
-	if err := ensurePrivateDirectory(wikiRoot); err != nil {
+	defer stage.close()
+	wiki, err := stage.openChildDirectory("wiki", true, true)
+	if err != nil {
 		return Manifest{}, err
 	}
-	for _, name := range fileNames {
+	defer wiki.close()
+
+	for _, name := range prepared.fileNames {
 		if err := ctx.Err(); err != nil {
 			return Manifest{}, err
 		}
-		path, joinErr := safeJoin(wikiRoot, name)
-		if joinErr != nil {
-			return Manifest{}, joinErr
+		if r.beforeFileCreate != nil {
+			r.beforeFileCreate()
 		}
-		if err := ensurePrivateDirectory(filepath.Dir(path)); err != nil {
-			return Manifest{}, err
-		}
-		if err := writeNewSyncedFile(path, draft.Files[name]); err != nil {
+		if err := writeRelativeNewFile(wiki, name, draft.Files[name]); err != nil {
 			return Manifest{}, err
 		}
 	}
-	evidencePath, err := safeJoin(stageRoot, "evidence.jsonl")
-	if err != nil {
+	if err := writeNewFileAt(stage, "evidence.jsonl", prepared.evidenceBytes); err != nil {
 		return Manifest{}, err
 	}
-	if err := writeNewSyncedFile(evidencePath, evidenceBytes); err != nil {
+	if err := writeNewFileAt(stage, "manifest.json", prepared.manifestBytes); err != nil {
 		return Manifest{}, err
 	}
-	manifestPath, err := safeJoin(stageRoot, "manifest.json")
-	if err != nil {
+	if err := syncSecureDirectory(stage); err != nil {
 		return Manifest{}, err
 	}
-	if err := writeNewSyncedFile(manifestPath, manifestBytes); err != nil {
+	if err := verifySnapshotFilesAt(ctx, stage, prepared.manifest.FileHashes, len(prepared.manifestBytes)); err != nil {
 		return Manifest{}, err
 	}
-	if err := syncDirectory(stageRoot); err != nil {
+	if err := stage.verifyChildIdentity("wiki", wiki); err != nil {
 		return Manifest{}, err
 	}
-	return manifest, nil
+	if err := staging.verifyChildIdentity(prepared.manifest.SnapshotID, stage); err != nil {
+		return Manifest{}, err
+	}
+	if err := project.verify(); err != nil {
+		return Manifest{}, err
+	}
+	if err := lock.verify(); err != nil {
+		return Manifest{}, err
+	}
+	return prepared.manifest, nil
 }
 
 func (r *Repository) OpenRelease(ctx context.Context, ref ProjectRef, snapshotID string) (Release, error) {
@@ -230,108 +225,181 @@ func (r *Repository) OpenRelease(ctx context.Context, ref ProjectRef, snapshotID
 	if !safeSingleComponent(snapshotID) {
 		return Release{}, fmt.Errorf("brain snapshot identifier is unsafe: %w", ErrUnsafePath)
 	}
-	projectRoot, err := r.projectRoot(ref)
+	project, err := openProjectHandle(r.root, ref, false)
+	if errors.Is(err, errSecurePathMissing) {
+		return Release{}, ErrSnapshotNotFound
+	}
 	if err != nil {
 		return Release{}, err
 	}
-	releasesRoot, err := safeJoin(projectRoot, "releases")
+	defer project.close()
+	releases, err := project.dir.openChildDirectory("releases", false, false)
+	if errors.Is(err, errSecurePathMissing) {
+		return Release{}, ErrSnapshotNotFound
+	}
 	if err != nil {
 		return Release{}, err
 	}
-	return r.openSnapshot(ctx, ref, releasesRoot, snapshotID)
+	defer releases.close()
+	release, err := r.openSnapshotChild(ctx, ref, releases, snapshotID, filepath.Join(project.dir.path, "releases", snapshotID))
+	if err != nil {
+		return Release{}, err
+	}
+	if err := project.verify(); err != nil {
+		return Release{}, err
+	}
+	return release, nil
 }
 
 func (r *Repository) Publish(ctx context.Context, ref ProjectRef, snapshotID, expectedCurrent string) (Manifest, error) {
-	if err := ctx.Err(); err != nil {
+	if err := validateLifecycleIdentifiers(ctx, snapshotID, expectedCurrent); err != nil {
 		return Manifest{}, err
 	}
-	if !safeSingleComponent(snapshotID) || expectedCurrent != "" && !safeSingleComponent(expectedCurrent) {
-		return Manifest{}, fmt.Errorf("brain publication identifier is unsafe: %w", ErrUnsafePath)
-	}
-	projectRoot, err := r.projectRoot(ref)
-	if err != nil {
-		return Manifest{}, err
-	}
-	if _, _, err := r.publishCandidate(ctx, ref, projectRoot, snapshotID, expectedCurrent); err != nil {
+	// This first read preserves revocation precedence over a stale CAS value.
+	if _, _, err := r.openPublishCandidate(ctx, ref, snapshotID, expectedCurrent); err != nil {
 		return Manifest{}, err
 	}
 
-	lock, err := r.acquireProjectLock(ctx, projectRoot)
+	project, err := openProjectHandle(r.root, ref, false)
 	if err != nil {
 		return Manifest{}, err
 	}
-	defer releaseProjectLock(lock)
-	release, staged, err := r.publishCandidate(ctx, ref, projectRoot, snapshotID, expectedCurrent)
+	defer project.close()
+	lock, err := acquireProjectLock(ctx, project.dir)
 	if err != nil {
 		return Manifest{}, err
 	}
-	current, err := r.Current(ctx, ref)
+	defer lock.release()
+	staging, err := project.dir.openChildDirectory("staging", false, false)
 	if err != nil {
 		return Manifest{}, err
 	}
-	if current != expectedCurrent || release.Manifest.ExpectedCurrent != expectedCurrent {
-		return Manifest{}, ErrCurrentConflict
-	}
-	if staged {
-		stagingRoot, _ := safeJoin(projectRoot, "staging")
-		releasesRoot, _ := safeJoin(projectRoot, "releases")
-		target, _ := safeJoin(releasesRoot, snapshotID)
-		if exists, pathErr := inspectPathComponents(target); pathErr != nil {
-			return Manifest{}, pathErr
-		} else if exists {
-			return Manifest{}, ErrSnapshotExists
-		}
-		if err := r.renameSameFilesystem(release.Root, target); err != nil {
-			return Manifest{}, err
-		}
-		if err := syncDirectory(stagingRoot); err != nil {
-			return Manifest{}, err
-		}
-		if err := syncDirectory(releasesRoot); err != nil {
-			return Manifest{}, err
-		}
-		release.Root = target
-	}
-	if err := r.replaceCurrent(projectRoot, snapshotID); err != nil {
+	defer staging.close()
+	releases, err := project.dir.openChildDirectory("releases", false, false)
+	if err != nil {
 		return Manifest{}, err
 	}
-	return release.Manifest, nil
-}
+	defer releases.close()
 
-func (r *Repository) Rollback(ctx context.Context, ref ProjectRef, snapshotID, expectedCurrent string) (Manifest, error) {
-	if err := ctx.Err(); err != nil {
-		return Manifest{}, err
-	}
-	if !safeSingleComponent(snapshotID) || expectedCurrent != "" && !safeSingleComponent(expectedCurrent) {
-		return Manifest{}, fmt.Errorf("brain rollback identifier is unsafe: %w", ErrUnsafePath)
-	}
-	// Check revocation before CAS so a revoked target can never be made current,
-	// even when the caller also supplied a stale expected-current value.
-	if _, err := r.OpenRelease(ctx, ref, snapshotID); err != nil {
-		return Manifest{}, err
-	}
-	projectRoot, err := r.projectRoot(ref)
+	release, staged, err := r.publishCandidateAt(ctx, ref, project, staging, releases, snapshotID, expectedCurrent)
 	if err != nil {
 		return Manifest{}, err
 	}
-	lock, err := r.acquireProjectLock(ctx, projectRoot)
-	if err != nil {
-		return Manifest{}, err
-	}
-	defer releaseProjectLock(lock)
-	release, err := r.OpenRelease(ctx, ref, snapshotID)
-	if err != nil {
-		return Manifest{}, err
-	}
-	current, err := r.Current(ctx, ref)
+	current, err := currentAt(ctx, project.dir)
 	if err != nil {
 		return Manifest{}, err
 	}
 	if current != expectedCurrent {
 		return Manifest{}, ErrCurrentConflict
 	}
-	if err := r.replaceCurrent(projectRoot, snapshotID); err != nil {
+	if staged {
+		if r.beforeReleaseRename != nil {
+			r.beforeReleaseRename()
+		}
+		if err := r.renameInjected(snapshotID, snapshotID); err != nil {
+			return Manifest{}, err
+		}
+		if err := renameNoReplaceAt(staging.fd, snapshotID, releases.fd, snapshotID); err != nil {
+			return Manifest{}, classifyRenameError(err)
+		}
+		if err := syncSecureDirectory(staging); err != nil {
+			return Manifest{}, err
+		}
+		if err := syncSecureDirectory(releases); err != nil {
+			return Manifest{}, err
+		}
+		release.Root = filepath.Join(project.dir.path, "releases", snapshotID)
+	}
+	if r.beforeCurrentCommit != nil {
+		r.beforeCurrentCommit()
+	}
+	// Retractions are checked at the final commit boundary while holding the
+	// shared project lock used by the operator ledger writer.
+	finalRelease, err := r.openSnapshotChild(ctx, ref, releases, snapshotID, release.Root)
+	if err != nil {
 		return Manifest{}, err
+	}
+	watermark, err := r.ledger.Watermark(ctx, ref)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if watermark != finalRelease.Manifest.RetractionWatermark {
+		return Manifest{}, ErrRetractionChanged
+	}
+	if err := project.verify(); err != nil {
+		return Manifest{}, err
+	}
+	if err := lock.verify(); err != nil {
+		return Manifest{}, err
+	}
+	if err := r.replaceCurrentAt(project.dir, snapshotID); err != nil {
+		return Manifest{}, err
+	}
+	if err := project.verify(); err != nil {
+		return Manifest{}, ErrCurrentDurabilityUnknown
+	}
+	return finalRelease.Manifest, nil
+}
+
+func (r *Repository) Rollback(ctx context.Context, ref ProjectRef, snapshotID, expectedCurrent string) (Manifest, error) {
+	if err := validateLifecycleIdentifiers(ctx, snapshotID, expectedCurrent); err != nil {
+		return Manifest{}, err
+	}
+	// This first read preserves revocation precedence over a stale CAS value.
+	if _, err := r.OpenRelease(ctx, ref, snapshotID); err != nil {
+		return Manifest{}, err
+	}
+	project, err := openProjectHandle(r.root, ref, false)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer project.close()
+	lock, err := acquireProjectLock(ctx, project.dir)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer lock.release()
+	releases, err := project.dir.openChildDirectory("releases", false, false)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer releases.close()
+	release, err := r.openSnapshotChild(ctx, ref, releases, snapshotID, filepath.Join(project.dir.path, "releases", snapshotID))
+	if err != nil {
+		return Manifest{}, err
+	}
+	current, err := currentAt(ctx, project.dir)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if current != expectedCurrent {
+		return Manifest{}, ErrCurrentConflict
+	}
+	if r.beforeCurrentCommit != nil {
+		r.beforeCurrentCommit()
+	}
+	release, err = r.openSnapshotChild(ctx, ref, releases, snapshotID, release.Root)
+	if err != nil {
+		return Manifest{}, err
+	}
+	watermark, err := r.ledger.Watermark(ctx, ref)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if watermark != release.Manifest.RetractionWatermark {
+		return Manifest{}, ErrRetractionChanged
+	}
+	if err := project.verify(); err != nil {
+		return Manifest{}, err
+	}
+	if err := lock.verify(); err != nil {
+		return Manifest{}, err
+	}
+	if err := r.replaceCurrentAt(project.dir, snapshotID); err != nil {
+		return Manifest{}, err
+	}
+	if err := project.verify(); err != nil {
+		return Manifest{}, ErrCurrentDurabilityUnknown
 	}
 	return release.Manifest, nil
 }
@@ -343,28 +411,37 @@ func (r *Repository) projectRoot(ref ProjectRef) (string, error) {
 	return resolveProjectRoot(r.root, ref)
 }
 
-func (r *Repository) publishCandidate(ctx context.Context, ref ProjectRef, projectRoot, snapshotID, expectedCurrent string) (Release, bool, error) {
-	stagingRoot, err := safeJoin(projectRoot, "staging")
+func (r *Repository) openPublishCandidate(ctx context.Context, ref ProjectRef, snapshotID, expectedCurrent string) (Release, bool, error) {
+	project, err := openProjectHandle(r.root, ref, false)
 	if err != nil {
 		return Release{}, false, err
 	}
-	releasesRoot, err := safeJoin(projectRoot, "releases")
+	defer project.close()
+	staging, err := project.dir.openChildDirectory("staging", false, false)
 	if err != nil {
 		return Release{}, false, err
 	}
-	stagePath, err := safeJoin(stagingRoot, snapshotID)
+	defer staging.close()
+	releases, err := project.dir.openChildDirectory("releases", false, false)
 	if err != nil {
 		return Release{}, false, err
 	}
-	staged, err := inspectPathComponents(stagePath)
+	defer releases.close()
+	return r.publishCandidateAt(ctx, ref, project, staging, releases, snapshotID, expectedCurrent)
+}
+
+func (r *Repository) publishCandidateAt(ctx context.Context, ref ProjectRef, project *projectHandle, staging, releases *secureDir, snapshotID, expectedCurrent string) (Release, bool, error) {
+	staged, err := staging.childExists(snapshotID)
 	if err != nil {
 		return Release{}, false, err
 	}
-	base := stagingRoot
-	if !staged {
-		base = releasesRoot
+	base := releases
+	root := filepath.Join(project.dir.path, "releases", snapshotID)
+	if staged {
+		base = staging
+		root = filepath.Join(project.dir.path, "staging", snapshotID)
 	}
-	release, err := r.openSnapshot(ctx, ref, base, snapshotID)
+	release, err := r.openSnapshotChild(ctx, ref, base, snapshotID, root)
 	if err != nil {
 		return Release{}, false, err
 	}
@@ -378,31 +455,26 @@ func (r *Repository) publishCandidate(ctx context.Context, ref ProjectRef, proje
 	if watermark != release.Manifest.RetractionWatermark {
 		return Release{}, false, ErrRetractionChanged
 	}
+	if err := project.verify(); err != nil {
+		return Release{}, false, err
+	}
 	return release, staged, nil
 }
 
-func (r *Repository) openSnapshot(ctx context.Context, ref ProjectRef, base, snapshotID string) (Release, error) {
-	if err := ctx.Err(); err != nil {
-		return Release{}, err
-	}
-	root, err := safeJoin(base, snapshotID)
-	if err != nil {
-		return Release{}, err
-	}
-	exists, err := inspectPathComponents(root)
-	if err != nil {
-		return Release{}, err
-	}
-	if !exists {
+func (r *Repository) openSnapshotChild(ctx context.Context, ref ProjectRef, parent *secureDir, snapshotID, root string) (Release, error) {
+	snapshot, err := parent.openChildDirectory(snapshotID, false, false)
+	if errors.Is(err, errSecurePathMissing) {
 		return Release{}, ErrSnapshotNotFound
 	}
-	info, err := os.Lstat(root)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return Release{}, fmt.Errorf("brain snapshot root is invalid: %w", ErrUnsafePath)
-	}
-	manifestPath, _ := safeJoin(root, "manifest.json")
-	manifestBytes, err := readBoundedRegularFile(manifestPath, maxSnapshotFileBytes)
 	if err != nil {
+		return Release{}, err
+	}
+	defer snapshot.close()
+	manifestBytes, err := readRegularFileAt(snapshot, "manifest.json", maxSnapshotManifestBytes)
+	if err != nil {
+		if errors.Is(err, ErrUnsafePath) {
+			return Release{}, err
+		}
 		return Release{}, fmt.Errorf("read brain snapshot manifest: %w", ErrSnapshotCorrupt)
 	}
 	var manifest Manifest
@@ -414,12 +486,18 @@ func (r *Repository) openSnapshot(ctx context.Context, ref ProjectRef, base, sna
 	if err := validateStoredManifest(ref, snapshotID, manifest); err != nil {
 		return Release{}, err
 	}
-	evidencePath, _ := safeJoin(root, "evidence.jsonl")
-	evidence, err := readEvidence(ctx, evidencePath)
+	evidenceBytes, err := readRegularFileAt(snapshot, "evidence.jsonl", maxSnapshotEvidenceBytes)
+	if err != nil {
+		if errors.Is(err, ErrUnsafePath) {
+			return Release{}, err
+		}
+		return Release{}, fmt.Errorf("read brain snapshot evidence: %w", ErrSnapshotCorrupt)
+	}
+	evidence, err := decodeEvidence(ctx, evidenceBytes)
 	if err != nil {
 		return Release{}, err
 	}
-	if err := verifySnapshotFiles(ctx, root, manifest.FileHashes); err != nil {
+	if err := verifySnapshotFilesAt(ctx, snapshot, manifest.FileHashes, len(manifestBytes)); err != nil {
 		return Release{}, err
 	}
 	for _, record := range evidence {
@@ -434,124 +512,150 @@ func (r *Repository) openSnapshot(ctx context.Context, ref ProjectRef, base, sna
 			return Release{}, ErrSnapshotRevoked
 		}
 	}
+	if err := parent.verifyChildIdentity(snapshotID, snapshot); err != nil {
+		return Release{}, err
+	}
 	return Release{Root: root, Manifest: manifest}, nil
 }
 
-func (r *Repository) acquireProjectLock(ctx context.Context, projectRoot string) (*os.File, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := ensurePrivateDirectory(projectRoot); err != nil {
-		return nil, err
-	}
-	lockPath, err := safeJoin(projectRoot, ".publish.lock")
-	if err != nil {
-		return nil, err
-	}
-	existed, err := inspectPathComponents(lockPath)
-	if err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|policy.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open brain publication lock: %w", ErrUnsafePath)
-	}
-	if !existed {
-		if err := file.Sync(); err != nil {
-			file.Close()
-			return nil, fmt.Errorf("sync brain publication lock: %w", ErrSnapshotCorrupt)
-		}
-		if err := syncDirectory(projectRoot); err != nil {
-			file.Close()
-			return nil, err
-		}
-	}
-	for {
-		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-			return file, nil
-		} else if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
-			file.Close()
-			return nil, fmt.Errorf("lock brain publication: %w", ErrSnapshotCorrupt)
-		}
-		timer := time.NewTimer(5 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			file.Close()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
-}
-
-func releaseProjectLock(file *os.File) {
-	if file == nil {
-		return
-	}
-	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-	_ = file.Close()
-}
-
-func (r *Repository) replaceCurrent(projectRoot, snapshotID string) error {
-	currentPath, err := safeJoin(projectRoot, "CURRENT")
+func (r *Repository) replaceCurrentAt(project *secureDir, snapshotID string) error {
+	temporaryName, file, err := createTemporaryCurrent(project)
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(projectRoot, ".CURRENT.tmp-")
-	if err != nil {
-		return fmt.Errorf("create brain current snapshot temporary file: %w", ErrSnapshotCorrupt)
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
+	temporaryExists := true
 	defer func() {
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
+		if temporaryExists {
+			_ = unix.Unlinkat(project.fd, temporaryName, 0)
 		}
 	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return fmt.Errorf("secure brain current snapshot temporary file: %w", ErrSnapshotCorrupt)
-	}
-	if _, err := io.WriteString(temporary, snapshotID+"\n"); err != nil {
-		temporary.Close()
+	if _, err := io.WriteString(file, snapshotID+"\n"); err != nil {
+		file.Close()
 		return fmt.Errorf("write brain current snapshot: %w", ErrSnapshotCorrupt)
 	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
+	if err := file.Sync(); err != nil {
+		file.Close()
 		return fmt.Errorf("sync brain current snapshot: %w", ErrSnapshotCorrupt)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := file.Close(); err != nil {
 		return fmt.Errorf("close brain current snapshot: %w", ErrSnapshotCorrupt)
 	}
-	if err := r.renameSameFilesystem(temporaryPath, currentPath); err != nil {
+	if r.syncCurrentBeforeRename != nil {
+		if err := r.syncCurrentBeforeRename(); err != nil {
+			return ErrSnapshotCorrupt
+		}
+	}
+	if err := unix.Fsync(project.fd); err != nil {
+		return ErrSnapshotCorrupt
+	}
+	if err := r.renameInjected(temporaryName, "CURRENT"); err != nil {
 		return err
 	}
-	removeTemporary = false
-	return syncDirectory(projectRoot)
+	if err := unix.Renameat(project.fd, temporaryName, project.fd, "CURRENT"); err != nil {
+		return classifyRenameError(err)
+	}
+	temporaryExists = false
+	if r.syncCurrentParent != nil {
+		if err := r.syncCurrentParent(); err != nil {
+			return ErrCurrentDurabilityUnknown
+		}
+	}
+	if err := unix.Fsync(project.fd); err != nil {
+		return ErrCurrentDurabilityUnknown
+	}
+	return nil
 }
 
-func (r *Repository) renameSameFilesystem(from, to string) error {
-	fromInfo, err := os.Lstat(from)
-	if err != nil || fromInfo.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("brain rename source is invalid: %w", ErrUnsafePath)
-	}
-	toParent := filepath.Dir(to)
-	toInfo, err := os.Lstat(toParent)
-	if err != nil || !toInfo.IsDir() || toInfo.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("brain rename destination is invalid: %w", ErrUnsafePath)
-	}
-	fromStat, fromOK := fromInfo.Sys().(*syscall.Stat_t)
-	toStat, toOK := toInfo.Sys().(*syscall.Stat_t)
-	if !fromOK || !toOK || fromStat.Dev != toStat.Dev {
-		return ErrCrossFilesystem
+func (r *Repository) renameInjected(from, to string) error {
+	if r.rename == nil {
+		return nil
 	}
 	if err := r.rename(from, to); err != nil {
-		if errors.Is(err, syscall.EXDEV) {
-			return ErrCrossFilesystem
+		return classifyRenameError(err)
+	}
+	return nil
+}
+
+func prepareSnapshot(ref ProjectRef, draft SnapshotDraft) (preparedSnapshot, error) {
+	if err := validateDraftScope(ref, draft); err != nil {
+		return preparedSnapshot{}, err
+	}
+	if len(draft.Files)+1 > maxSnapshotFiles || len(draft.Evidence) > maxSnapshotEvidenceRecords {
+		return preparedSnapshot{}, ErrSnapshotTooLarge
+	}
+	if manifestFieldsTooLarge(draft.Manifest) {
+		return preparedSnapshot{}, ErrSnapshotTooLarge
+	}
+	fileNames := make([]string, 0, len(draft.Files))
+	totalBytes := 0
+	for name, content := range draft.Files {
+		if len(name) > maxSnapshotPathBytes || !safeRelativePath(name) {
+			return preparedSnapshot{}, fmt.Errorf("brain snapshot file name is unsafe: %w", ErrUnsafePath)
 		}
-		return fmt.Errorf("atomically rename brain snapshot: %w", ErrSnapshotCorrupt)
+		if len(content) > maxSnapshotFileBytes || totalBytes > maxSnapshotTreeBytes-len(content) {
+			return preparedSnapshot{}, ErrSnapshotTooLarge
+		}
+		totalBytes += len(content)
+		fileNames = append(fileNames, name)
+	}
+	sort.Strings(fileNames)
+	evidenceBytes, err := encodeEvidence(draft.Evidence)
+	if err != nil {
+		return preparedSnapshot{}, err
+	}
+	if totalBytes > maxSnapshotTreeBytes-len(evidenceBytes) {
+		return preparedSnapshot{}, ErrSnapshotTooLarge
+	}
+	totalBytes += len(evidenceBytes)
+	manifest := draft.Manifest
+	manifest.FileHashes = make(map[string]string, len(draft.Files)+1)
+	for _, name := range fileNames {
+		manifest.FileHashes[filepath.ToSlash(filepath.Join("wiki", name))] = digestBytes(draft.Files[name])
+	}
+	manifest.FileHashes["evidence.jsonl"] = digestBytes(evidenceBytes)
+	manifestBytes, err := encodeManifest(manifest)
+	if err != nil {
+		return preparedSnapshot{}, err
+	}
+	if len(manifestBytes) > maxSnapshotManifestBytes || totalBytes > maxSnapshotTreeBytes-len(manifestBytes) {
+		return preparedSnapshot{}, ErrSnapshotTooLarge
+	}
+	return preparedSnapshot{manifest: manifest, manifestBytes: manifestBytes, evidenceBytes: evidenceBytes, fileNames: fileNames}, nil
+}
+
+func manifestFieldsTooLarge(manifest Manifest) bool {
+	stringsToCheck := []string{
+		manifest.SnapshotID, manifest.ParentID, manifest.TenantID, manifest.ProjectID,
+		manifest.ExpectedCurrent, manifest.RetractionWatermark, manifest.Model,
+		manifest.PromptVersion, manifest.ConfigDigest,
+	}
+	for _, value := range stringsToCheck {
+		if len(value) > maxSnapshotEvidenceFieldLen {
+			return true
+		}
+	}
+	if len(manifest.SourceIDs) > maxSnapshotEvidenceRecords || len(manifest.SourceHashes) > maxSnapshotEvidenceRecords || len(manifest.Validation.Findings) > maxSnapshotFiles {
+		return true
+	}
+	for _, value := range append(append([]string(nil), manifest.SourceIDs...), manifest.SourceHashes...) {
+		if len(value) > maxSnapshotEvidenceFieldLen {
+			return true
+		}
+	}
+	for _, finding := range manifest.Validation.Findings {
+		if len(finding.Code) > maxSnapshotEvidenceFieldLen || len(finding.Path) > maxSnapshotEvidenceFieldLen || len(finding.Message) > maxSnapshotEvidenceFieldLen {
+			return true
+		}
+	}
+	return false
+}
+
+func validateLifecycleIdentifiers(ctx context.Context, snapshotID, expectedCurrent string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !safeSingleComponent(snapshotID) || expectedCurrent != "" && !safeSingleComponent(expectedCurrent) {
+		return fmt.Errorf("brain lifecycle identifier is unsafe: %w", ErrUnsafePath)
 	}
 	return nil
 }
@@ -583,10 +687,24 @@ func validateStoredManifest(ref ProjectRef, snapshotID string, manifest Manifest
 	if !manifest.Validation.Publishable {
 		return ErrSnapshotUnverified
 	}
+	if len(manifest.FileHashes) == 0 {
+		return ErrSnapshotCorrupt
+	}
+	for name, digest := range manifest.FileHashes {
+		if !safeRelativePath(filepath.FromSlash(name)) || !validSHA256Digest(digest) {
+			return ErrSnapshotCorrupt
+		}
+	}
+	if _, ok := manifest.FileHashes["evidence.jsonl"]; !ok {
+		return ErrSnapshotCorrupt
+	}
 	return nil
 }
 
 func encodeEvidence(records []EvidenceRecord) ([]byte, error) {
+	if len(records) > maxSnapshotEvidenceRecords {
+		return nil, ErrSnapshotTooLarge
+	}
 	copyOfRecords := append([]EvidenceRecord(nil), records...)
 	sort.Slice(copyOfRecords, func(i, j int) bool {
 		if copyOfRecords[i].URI != copyOfRecords[j].URI {
@@ -596,14 +714,24 @@ func encodeEvidence(records []EvidenceRecord) ([]byte, error) {
 	})
 	var output bytes.Buffer
 	for _, record := range copyOfRecords {
+		if len(record.Content) > maxEvidenceBytes || evidenceRecordFieldsTooLarge(record) {
+			return nil, ErrSnapshotTooLarge
+		}
 		encoded, err := json.Marshal(record)
 		if err != nil {
 			return nil, fmt.Errorf("encode brain snapshot evidence: %w", ErrSnapshotCorrupt)
+		}
+		if len(encoded)+1 > maxEvidenceLineBytes || output.Len() > maxSnapshotEvidenceBytes-len(encoded)-1 {
+			return nil, ErrSnapshotTooLarge
 		}
 		output.Write(encoded)
 		output.WriteByte('\n')
 	}
 	return output.Bytes(), nil
+}
+
+func evidenceRecordFieldsTooLarge(record EvidenceRecord) bool {
+	return len(record.ID) > maxSnapshotEvidenceFieldLen || len(record.URI) > maxSnapshotEvidenceFieldLen || len(record.TaskID) > maxSnapshotEvidenceFieldLen || len(record.TraceStep) > maxSnapshotEvidenceFieldLen || len(record.ContentHash) > maxSnapshotEvidenceFieldLen
 }
 
 func encodeManifest(manifest Manifest) ([]byte, error) {
@@ -614,17 +742,12 @@ func encodeManifest(manifest Manifest) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
-func readEvidence(ctx context.Context, path string) ([]EvidenceRecord, error) {
-	file, info, err := openRegularNoFollow(path)
-	if err != nil {
-		return nil, fmt.Errorf("open brain snapshot evidence: %w", ErrSnapshotCorrupt)
-	}
-	defer file.Close()
-	if info.Size() > maxSnapshotFileBytes {
-		return nil, fmt.Errorf("brain snapshot evidence exceeds limit: %w", ErrSnapshotCorrupt)
+func decodeEvidence(ctx context.Context, content []byte) ([]EvidenceRecord, error) {
+	if len(content) > maxSnapshotEvidenceBytes || len(content) > 0 && content[len(content)-1] != '\n' {
+		return nil, ErrSnapshotCorrupt
 	}
 	var records []EvidenceRecord
-	scanner := bufio.NewScanner(io.LimitReader(file, maxSnapshotFileBytes+1))
+	scanner := bufio.NewScanner(bytes.NewReader(content))
 	scanner.Buffer(make([]byte, 4096), maxEvidenceLineBytes)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -638,76 +761,489 @@ func readEvidence(ctx context.Context, path string) ([]EvidenceRecord, error) {
 		decoder.DisallowUnknownFields()
 		var record EvidenceRecord
 		if err := decoder.Decode(&record); err != nil || requireJSONEOF(decoder) != nil || record.URI == "" {
-			return nil, fmt.Errorf("decode brain snapshot evidence: %w", ErrSnapshotCorrupt)
+			return nil, ErrSnapshotCorrupt
 		}
 		records = append(records, record)
+		if len(records) > maxSnapshotEvidenceRecords {
+			return nil, ErrSnapshotTooLarge
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan brain snapshot evidence: %w", ErrSnapshotCorrupt)
+		return nil, ErrSnapshotCorrupt
 	}
 	return records, nil
 }
 
-func verifySnapshotFiles(ctx context.Context, root string, hashes map[string]string) error {
-	if len(hashes) == 0 {
-		return ErrSnapshotCorrupt
-	}
+func verifySnapshotFilesAt(ctx context.Context, snapshot *secureDir, hashes map[string]string, manifestBytes int) error {
 	actual := make(map[string]string, len(hashes))
-	totalBytes := int64(0)
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return ErrSnapshotCorrupt
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		info, err := os.Lstat(path)
-		if err != nil {
-			return ErrSnapshotCorrupt
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return ErrUnsafePath
-		}
-		if entry.IsDir() {
+	if manifestBytes < 0 || manifestBytes > maxSnapshotManifestBytes || manifestBytes > maxSnapshotTreeBytes {
+		return ErrSnapshotTooLarge
+	}
+	totalBytes := manifestBytes
+	fileCount := 0
+	if err := walkSnapshotFiles(ctx, snapshot, "", func(name string, content []byte) error {
+		if name == "manifest.json" {
 			return nil
 		}
-		if !info.Mode().IsRegular() {
-			return ErrUnsafePath
+		fileCount++
+		if fileCount > maxSnapshotFiles || totalBytes > maxSnapshotTreeBytes-len(content) {
+			return ErrSnapshotTooLarge
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil || !safeRelativePath(relative) {
-			return ErrUnsafePath
-		}
-		relative = filepath.ToSlash(relative)
-		if relative == "manifest.json" {
-			return nil
-		}
-		if info.Size() > maxSnapshotFileBytes {
+		totalBytes += len(content)
+		want, ok := hashes[name]
+		if !ok || !validSHA256Digest(want) || digestBytes(content) != want {
 			return ErrSnapshotCorrupt
 		}
-		totalBytes += info.Size()
-		if totalBytes > maxSnapshotTreeBytes {
-			return ErrSnapshotCorrupt
-		}
-		content, err := readBoundedRegularFile(path, maxSnapshotFileBytes)
-		if err != nil {
-			return ErrSnapshotCorrupt
-		}
-		actual[relative] = digestBytes(content)
+		actual[name] = want
 		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("verify brain snapshot files: %w", err)
+	}); err != nil {
+		return err
 	}
 	if len(actual) != len(hashes) {
 		return ErrSnapshotCorrupt
 	}
-	for name, want := range hashes {
-		if !safeRelativePath(filepath.FromSlash(name)) || actual[name] != want {
+	for name := range hashes {
+		if _, ok := actual[name]; !ok {
 			return ErrSnapshotCorrupt
 		}
 	}
 	return nil
+}
+
+func walkSnapshotFiles(ctx context.Context, directory *secureDir, prefix string, visit func(string, []byte) error) error {
+	names, err := directory.childNames()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var stat unix.Stat_t
+		if err := unix.Fstatat(directory.fd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return ErrSnapshotCorrupt
+		}
+		relative := name
+		if prefix != "" {
+			relative = prefix + "/" + name
+		}
+		switch stat.Mode & unix.S_IFMT {
+		case unix.S_IFDIR:
+			child, err := directory.openChildDirectory(name, false, false)
+			if err != nil {
+				return err
+			}
+			err = walkSnapshotFiles(ctx, child, relative, visit)
+			if err == nil {
+				err = directory.verifyChildIdentity(name, child)
+			}
+			child.close()
+			if err != nil {
+				return err
+			}
+		case unix.S_IFREG:
+			limit := int64(maxSnapshotFileBytes)
+			if relative == "manifest.json" {
+				limit = maxSnapshotManifestBytes
+			} else if relative == "evidence.jsonl" {
+				limit = maxSnapshotEvidenceBytes
+			}
+			content, err := readRegularFileAt(directory, name, limit)
+			if err != nil {
+				return err
+			}
+			if err := visit(relative, content); err != nil {
+				return err
+			}
+		default:
+			return ErrUnsafePath
+		}
+	}
+	return nil
+}
+
+func openAbsoluteDirectory(path string, create bool) (*secureDir, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, ErrUnsafePath
+	}
+	absPath = filepath.Clean(absPath)
+	root, components := absolutePathComponents(absPath)
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, ErrUnsafePath
+	}
+	currentPath := root
+	for _, component := range components {
+		if component == "" || component == "." || component == ".." {
+			unix.Close(fd)
+			return nil, ErrUnsafePath
+		}
+		nextFD, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if errors.Is(openErr, unix.ENOENT) && create {
+			made := unix.Mkdirat(fd, component, 0o700)
+			if made != nil && !errors.Is(made, unix.EEXIST) {
+				unix.Close(fd)
+				return nil, ErrSnapshotCorrupt
+			}
+			if made == nil && unix.Fsync(fd) != nil {
+				unix.Close(fd)
+				return nil, ErrSnapshotCorrupt
+			}
+			nextFD, openErr = unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		}
+		if errors.Is(openErr, unix.ENOENT) {
+			unix.Close(fd)
+			return nil, errSecurePathMissing
+		}
+		if openErr != nil {
+			unix.Close(fd)
+			return nil, ErrUnsafePath
+		}
+		unix.Close(fd)
+		fd = nextFD
+		currentPath = filepath.Join(currentPath, component)
+	}
+	if err := requireDirectoryFD(fd); err != nil {
+		unix.Close(fd)
+		return nil, err
+	}
+	return &secureDir{fd: fd, path: currentPath}, nil
+}
+
+func openProjectHandle(root string, ref ProjectRef, create bool) (*projectHandle, error) {
+	if _, err := resolveProjectRoot(root, ref); err != nil {
+		return nil, err
+	}
+	rootDirectory, err := openAbsoluteDirectory(root, false)
+	if err != nil {
+		return nil, err
+	}
+	defer rootDirectory.close()
+	tenant, err := rootDirectory.openChildDirectory(ref.StorageKey, create, false)
+	if err != nil {
+		return nil, err
+	}
+	project, err := tenant.openChildDirectory(ref.ProjectID, create, false)
+	if err != nil {
+		tenant.close()
+		return nil, err
+	}
+	return &projectHandle{dir: project, tenant: tenant, projectName: ref.ProjectID}, nil
+}
+
+func (p *projectHandle) close() {
+	if p == nil {
+		return
+	}
+	p.dir.close()
+	p.tenant.close()
+}
+
+func (p *projectHandle) verify() error {
+	return p.tenant.verifyChildIdentity(p.projectName, p.dir)
+}
+
+func (d *secureDir) close() {
+	if d != nil && d.fd >= 0 {
+		_ = unix.Close(d.fd)
+		d.fd = -1
+	}
+}
+
+func (d *secureDir) openChildDirectory(name string, create, exclusive bool) (*secureDir, error) {
+	if d == nil || d.fd < 0 || !safeSingleComponent(name) {
+		return nil, ErrUnsafePath
+	}
+	if create {
+		err := unix.Mkdirat(d.fd, name, 0o700)
+		if errors.Is(err, unix.EEXIST) && exclusive {
+			return nil, ErrSnapshotExists
+		}
+		if err != nil && !errors.Is(err, unix.EEXIST) {
+			return nil, ErrSnapshotCorrupt
+		}
+		if err == nil && unix.Fsync(d.fd) != nil {
+			return nil, ErrSnapshotCorrupt
+		}
+	}
+	fd, err := unix.Openat(d.fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return nil, errSecurePathMissing
+	}
+	if err != nil {
+		return nil, ErrUnsafePath
+	}
+	if err := requireDirectoryFD(fd); err != nil {
+		unix.Close(fd)
+		return nil, err
+	}
+	return &secureDir{fd: fd, path: filepath.Join(d.path, name)}, nil
+}
+
+func (d *secureDir) childExists(name string) (bool, error) {
+	if !safeSingleComponent(name) {
+		return false, ErrUnsafePath
+	}
+	var stat unix.Stat_t
+	err := unix.Fstatat(d.fd, name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, unix.ENOENT) {
+		return false, nil
+	}
+	if err != nil {
+		return false, ErrUnsafePath
+	}
+	if stat.Mode&unix.S_IFMT == unix.S_IFLNK {
+		return false, ErrUnsafePath
+	}
+	return true, nil
+}
+
+func (d *secureDir) verifyChildIdentity(name string, child *secureDir) error {
+	var named, opened unix.Stat_t
+	if err := unix.Fstatat(d.fd, name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || named.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return ErrUnsafePath
+	}
+	if err := unix.Fstat(child.fd, &opened); err != nil || opened.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return ErrUnsafePath
+	}
+	if named.Dev != opened.Dev || named.Ino != opened.Ino {
+		return ErrUnsafePath
+	}
+	return nil
+}
+
+func (d *secureDir) childNames() ([]string, error) {
+	fd, err := unix.Dup(d.fd)
+	if err != nil {
+		return nil, ErrSnapshotCorrupt
+	}
+	file := os.NewFile(uintptr(fd), "brain-directory")
+	entries, err := file.ReadDir(-1)
+	closeErr := file.Close()
+	if err != nil || closeErr != nil {
+		return nil, ErrSnapshotCorrupt
+	}
+	names := make([]string, len(entries))
+	for index, entry := range entries {
+		names[index] = entry.Name()
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func requireDirectoryFD(fd int) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return ErrUnsafePath
+	}
+	return nil
+}
+
+func acquireProjectLock(ctx context.Context, directory *secureDir) (*projectLock, error) {
+	if directory == nil || directory.fd < 0 {
+		return nil, ErrUnsafePath
+	}
+	fd, err := unix.Openat(directory.fd, ".publish.lock", unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, ErrUnsafePath
+	}
+	lock := &projectLock{directory: directory, fd: fd}
+	if err := lock.verify(); err != nil {
+		lock.release()
+		return nil, err
+	}
+	if err := unix.Fsync(directory.fd); err != nil {
+		lock.release()
+		return nil, ErrSnapshotCorrupt
+	}
+	for {
+		if err := unix.Flock(lock.fd, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+			if err := lock.verify(); err != nil {
+				lock.release()
+				return nil, err
+			}
+			return lock, nil
+		} else if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			lock.release()
+			return nil, ErrSnapshotCorrupt
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			lock.release()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (lock *projectLock) verify() error {
+	if lock == nil || lock.directory == nil || lock.directory.fd < 0 || lock.fd < 0 {
+		return ErrUnsafePath
+	}
+	var opened, named unix.Stat_t
+	if err := unix.Fstat(lock.fd, &opened); err != nil || opened.Mode&unix.S_IFMT != unix.S_IFREG || opened.Mode&0o077 != 0 {
+		return ErrUnsafePath
+	}
+	if err := unix.Fstatat(lock.directory.fd, ".publish.lock", &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || named.Mode&unix.S_IFMT != unix.S_IFREG || named.Mode&0o077 != 0 {
+		return ErrUnsafePath
+	}
+	if opened.Dev != named.Dev || opened.Ino != named.Ino {
+		return ErrUnsafePath
+	}
+	return nil
+}
+
+func (lock *projectLock) release() {
+	if lock != nil && lock.fd >= 0 {
+		_ = unix.Flock(lock.fd, unix.LOCK_UN)
+		_ = unix.Close(lock.fd)
+		lock.fd = -1
+	}
+}
+
+func syncSecureDirectory(directory *secureDir) error {
+	if directory == nil || unix.Fsync(directory.fd) != nil {
+		return ErrSnapshotCorrupt
+	}
+	return nil
+}
+
+func writeRelativeNewFile(root *secureDir, relative string, content []byte) error {
+	if !safeRelativePath(relative) {
+		return ErrUnsafePath
+	}
+	components := strings.Split(filepath.ToSlash(relative), "/")
+	currentFD, err := unix.Dup(root.fd)
+	if err != nil {
+		return ErrSnapshotCorrupt
+	}
+	current := &secureDir{fd: currentFD, path: root.path}
+	defer current.close()
+	for _, component := range components[:len(components)-1] {
+		next, err := current.openChildDirectory(component, true, false)
+		if err != nil {
+			return err
+		}
+		current.close()
+		current = next
+	}
+	return writeNewFileAt(current, components[len(components)-1], content)
+}
+
+func writeNewFileAt(parent *secureDir, name string, content []byte) error {
+	if !safeSingleComponent(name) {
+		return ErrUnsafePath
+	}
+	fd, err := unix.Openat(parent.fd, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if errors.Is(err, unix.EEXIST) {
+		return ErrSnapshotExists
+	}
+	if err != nil {
+		return ErrSnapshotCorrupt
+	}
+	file := os.NewFile(uintptr(fd), "brain-snapshot-file")
+	if _, err := file.Write(content); err != nil {
+		file.Close()
+		return ErrSnapshotCorrupt
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return ErrSnapshotCorrupt
+	}
+	if err := file.Close(); err != nil {
+		return ErrSnapshotCorrupt
+	}
+	return syncSecureDirectory(parent)
+}
+
+func readRegularFileAt(parent *secureDir, name string, limit int64) ([]byte, error) {
+	if !safeSingleComponent(name) {
+		return nil, ErrUnsafePath
+	}
+	fd, err := unix.Openat(parent.fd, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return nil, errSecurePathMissing
+	}
+	if err != nil {
+		return nil, ErrUnsafePath
+	}
+	file := os.NewFile(uintptr(fd), "brain-snapshot-file")
+	defer file.Close()
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		return nil, ErrSnapshotCorrupt
+	}
+	if before.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, ErrUnsafePath
+	}
+	if before.Size > limit {
+		return nil, ErrSnapshotCorrupt
+	}
+	content, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(content)) > limit || int64(len(content)) != before.Size {
+		return nil, ErrSnapshotCorrupt
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || before.Dev != after.Dev || before.Ino != after.Ino || before.Size != after.Size || before.Mtim != after.Mtim || before.Ctim != after.Ctim {
+		return nil, ErrSnapshotCorrupt
+	}
+	return content, nil
+}
+
+func currentAt(ctx context.Context, project *secureDir) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	content, err := readRegularFileAt(project, "CURRENT", maxCurrentBytes)
+	if errors.Is(err, errSecurePathMissing) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read brain current snapshot: %w", ErrSnapshotCorrupt)
+	}
+	value := string(content)
+	if strings.HasSuffix(value, "\n") {
+		value = strings.TrimSuffix(value, "\n")
+	}
+	if !safeSingleComponent(value) {
+		return "", ErrSnapshotCorrupt
+	}
+	return value, nil
+}
+
+func createTemporaryCurrent(project *secureDir) (string, *os.File, error) {
+	for range 32 {
+		random := make([]byte, 12)
+		if _, err := rand.Read(random); err != nil {
+			return "", nil, ErrSnapshotCorrupt
+		}
+		name := ".CURRENT.tmp-" + hex.EncodeToString(random)
+		fd, err := unix.Openat(project.fd, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return "", nil, ErrSnapshotCorrupt
+		}
+		return name, os.NewFile(uintptr(fd), "brain-current-temporary"), nil
+	}
+	return "", nil, ErrSnapshotCorrupt
+}
+
+func classifyRenameError(err error) error {
+	switch {
+	case errors.Is(err, unix.EXDEV):
+		return ErrCrossFilesystem
+	case errors.Is(err, unix.EEXIST), errors.Is(err, unix.ENOTEMPTY):
+		return ErrSnapshotExists
+	default:
+		return ErrSnapshotCorrupt
+	}
 }
 
 func resolveProjectRoot(root string, ref ProjectRef) (string, error) {
@@ -716,13 +1252,9 @@ func resolveProjectRoot(root string, ref ProjectRef) (string, error) {
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("resolve brain project root: %w", ErrUnsafePath)
+		return "", ErrUnsafePath
 	}
-	absRoot = filepath.Clean(absRoot)
-	if _, err := inspectPathComponents(absRoot); err != nil {
-		return "", err
-	}
-	tenantRoot, err := safeJoin(absRoot, ref.StorageKey)
+	tenantRoot, err := safeJoin(filepath.Clean(absRoot), ref.StorageKey)
 	if err != nil {
 		return "", err
 	}
@@ -733,9 +1265,7 @@ func safeStorageKey(value string) bool {
 	if !strings.HasPrefix(value, "sha256:") || len(value) <= len("sha256:") || strings.TrimSpace(value) != value || strings.ContainsAny(value, "/\\") {
 		return false
 	}
-	return strings.IndexFunc(value, func(r rune) bool {
-		return unicode.IsControl(r) || unicode.IsSpace(r)
-	}) == -1
+	return strings.IndexFunc(value, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) }) == -1
 }
 
 func safeSingleComponent(value string) bool {
@@ -756,79 +1286,14 @@ func safeRelativePath(value string) bool {
 
 func safeJoin(root, relative string) (string, error) {
 	if !safeRelativePath(relative) {
-		return "", fmt.Errorf("brain repository child path is unsafe: %w", ErrUnsafePath)
+		return "", ErrUnsafePath
 	}
 	joined := filepath.Join(root, relative)
 	rel, err := filepath.Rel(root, joined)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("brain repository path escapes root: %w", ErrUnsafePath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", ErrUnsafePath
 	}
 	return joined, nil
-}
-
-func inspectPathComponents(path string) (bool, error) {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return false, fmt.Errorf("resolve brain repository path: %w", ErrUnsafePath)
-	}
-	root, components := absolutePathComponents(filepath.Clean(absPath))
-	current := root
-	for index, component := range components {
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if errors.Is(err, fs.ErrNotExist) {
-			return false, nil
-		}
-		if err != nil {
-			return false, fmt.Errorf("inspect brain repository path: %w", ErrUnsafePath)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return false, fmt.Errorf("brain repository symlink rejected: %w", ErrUnsafePath)
-		}
-		if index < len(components)-1 && !info.IsDir() {
-			return false, fmt.Errorf("brain repository path component is not a directory: %w", ErrUnsafePath)
-		}
-	}
-	return true, nil
-}
-
-func ensurePrivateDirectory(path string) error {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("resolve brain repository directory: %w", ErrUnsafePath)
-	}
-	root, components := absolutePathComponents(filepath.Clean(absPath))
-	current := root
-	for _, component := range components {
-		parent := current
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if errors.Is(err, fs.ErrNotExist) {
-			if err := os.Mkdir(current, 0o700); err != nil {
-				if !errors.Is(err, fs.ErrExist) {
-					return fmt.Errorf("create brain repository directory: %w", ErrSnapshotCorrupt)
-				}
-				info, err = os.Lstat(current)
-				if err != nil {
-					return fmt.Errorf("inspect created brain repository directory: %w", ErrUnsafePath)
-				}
-			} else {
-				if err := syncDirectory(parent); err != nil {
-					return err
-				}
-				info, err = os.Lstat(current)
-				if err != nil {
-					return fmt.Errorf("inspect created brain repository directory: %w", ErrUnsafePath)
-				}
-			}
-		} else if err != nil {
-			return fmt.Errorf("inspect brain repository directory: %w", ErrUnsafePath)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("brain repository directory is unsafe: %w", ErrUnsafePath)
-		}
-	}
-	return nil
 }
 
 func absolutePathComponents(path string) (string, []string) {
@@ -841,84 +1306,16 @@ func absolutePathComponents(path string) (string, []string) {
 	return root, strings.Split(remainder, string(filepath.Separator))
 }
 
-func openRegularNoFollow(path string) (*os.File, os.FileInfo, error) {
-	exists, err := inspectPathComponents(path)
-	if err != nil || !exists {
-		if err == nil {
-			err = fs.ErrNotExist
+func validSHA256Digest(value string) bool {
+	if len(value) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	for _, character := range value[len("sha256:"):] {
+		if character < '0' || character > '9' && character < 'a' || character > 'f' {
+			return false
 		}
-		return nil, nil, err
 	}
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return nil, nil, ErrUnsafePath
-	}
-	file, err := os.OpenFile(path, os.O_RDONLY|policy.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	openedInfo, err := file.Stat()
-	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		file.Close()
-		return nil, nil, ErrUnsafePath
-	}
-	return file, openedInfo, nil
-}
-
-func readBoundedRegularFile(path string, limit int64) ([]byte, error) {
-	file, info, err := openRegularNoFollow(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	if info.Size() > limit {
-		return nil, ErrSnapshotCorrupt
-	}
-	content, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err != nil || int64(len(content)) > limit {
-		return nil, ErrSnapshotCorrupt
-	}
-	return content, nil
-}
-
-func writeNewSyncedFile(path string, content []byte) error {
-	if exists, err := inspectPathComponents(path); err != nil {
-		return err
-	} else if exists {
-		return ErrSnapshotExists
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|policy.O_NOFOLLOW, 0o600)
-	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return ErrSnapshotExists
-		}
-		return fmt.Errorf("create brain snapshot file: %w", ErrSnapshotCorrupt)
-	}
-	if _, err := file.Write(content); err != nil {
-		file.Close()
-		return fmt.Errorf("write brain snapshot file: %w", ErrSnapshotCorrupt)
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return fmt.Errorf("sync brain snapshot file: %w", ErrSnapshotCorrupt)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close brain snapshot file: %w", ErrSnapshotCorrupt)
-	}
-	return syncDirectory(filepath.Dir(path))
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open brain repository directory for sync: %w", ErrSnapshotCorrupt)
-	}
-	err = directory.Sync()
-	closeErr := directory.Close()
-	if err != nil || closeErr != nil {
-		return fmt.Errorf("sync brain repository directory: %w", ErrSnapshotCorrupt)
-	}
-	return nil
+	return true
 }
 
 func digestBytes(content []byte) string {

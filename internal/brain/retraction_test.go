@@ -74,10 +74,11 @@ func TestRetractionMissingLedgerIsEmpty(t *testing.T) {
 
 func TestRetractionRejectsMalformedOrTruncatedJSONL(t *testing.T) {
 	tests := map[string]string{
-		"malformed": `{not-json}` + "\n",
-		"truncated": `{"evidence_uri":"brain-evidence://tenant-a/atlas/tasks/a#trace/1"`,
-		"unknown":   `{"evidence_uri":"brain-evidence://tenant-a/atlas/tasks/a#trace/1","reason":"bad","retracted_at":"2026-09-02T12:00:00Z","extra":true}` + "\n",
-		"empty_uri": `{"evidence_uri":"","reason":"bad","retracted_at":"2026-09-02T12:00:00Z"}` + "\n",
+		"malformed":          `{not-json}` + "\n",
+		"truncated":          `{"evidence_uri":"brain-evidence://tenant-a/atlas/tasks/a#trace/1"`,
+		"valid_unterminated": `{"evidence_uri":"brain-evidence://tenant-a/atlas/tasks/a#trace/1","reason":"bad","retracted_at":"2026-09-02T12:00:00Z"}`,
+		"unknown":            `{"evidence_uri":"brain-evidence://tenant-a/atlas/tasks/a#trace/1","reason":"bad","retracted_at":"2026-09-02T12:00:00Z","extra":true}` + "\n",
+		"empty_uri":          `{"evidence_uri":"","reason":"bad","retracted_at":"2026-09-02T12:00:00Z"}` + "\n",
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -91,6 +92,106 @@ func TestRetractionRejectsMalformedOrTruncatedJSONL(t *testing.T) {
 				t.Fatalf("contains error = %v", err)
 			}
 		})
+	}
+}
+
+func TestRetractionRejectsLedgerGrowthDuringRead(t *testing.T) {
+	root := canonicalTempDir(t)
+	ledger := NewFileRetractionLedger(root)
+	writeRetractionsFixture(t, root, atlasRef(), Retraction{
+		EvidenceURI: firstEvidenceURI,
+		Reason:      "first",
+		RetractedAt: retractionTime,
+	})
+	ledger.afterRead = func() {
+		appendRetractionFixture(t, ledger, secondEvidenceURI)
+	}
+	if _, err := ledger.Watermark(t.Context(), atlasRef()); !errors.Is(err, ErrRetractionLedger) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRetractionRejectsLedgerTruncationDuringRead(t *testing.T) {
+	root := canonicalTempDir(t)
+	ledger := NewFileRetractionLedger(root)
+	writeRetractionsFixture(t, root, atlasRef(), Retraction{
+		EvidenceURI: firstEvidenceURI,
+		Reason:      "first",
+		RetractedAt: retractionTime,
+	})
+	path := filepath.Join(testProjectRoot(root, atlasRef()), "retractions.jsonl")
+	ledger.afterRead = func() {
+		if err := os.Truncate(path, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ledger.Watermark(t.Context(), atlasRef()); !errors.Is(err, ErrRetractionLedger) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRetractionRejectsSameSizeLedgerRewriteDuringRead(t *testing.T) {
+	root := canonicalTempDir(t)
+	ledger := NewFileRetractionLedger(root)
+	writeRetractionsFixture(t, root, atlasRef(), Retraction{
+		EvidenceURI: firstEvidenceURI,
+		Reason:      "first",
+		RetractedAt: retractionTime,
+	})
+	path := filepath.Join(testProjectRoot(root, atlasRef()), "retractions.jsonl")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := canonicalRetraction(Retraction{
+		EvidenceURI: firstEvidenceURI,
+		Reason:      "other",
+		RetractedAt: retractionTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement = append(replacement, '\n')
+	if len(replacement) != len(original) {
+		t.Fatalf("replacement size = %d, original size = %d", len(replacement), len(original))
+	}
+	ledger.afterRead = func() {
+		if err := os.WriteFile(path, replacement, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		changedAt := time.Now().Add(time.Hour)
+		if err := os.Chtimes(path, changedAt, changedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ledger.Watermark(t.Context(), atlasRef()); !errors.Is(err, ErrRetractionLedger) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRetractionRejectsLedgerNameSubstitutionDuringRead(t *testing.T) {
+	root := canonicalTempDir(t)
+	ledger := NewFileRetractionLedger(root)
+	writeRetractionsFixture(t, root, atlasRef(), Retraction{
+		EvidenceURI: firstEvidenceURI,
+		Reason:      "first",
+		RetractedAt: retractionTime,
+	})
+	path := filepath.Join(testProjectRoot(root, atlasRef()), "retractions.jsonl")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger.afterRead = func() {
+		if err := os.Rename(path, path+".detached"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ledger.Watermark(t.Context(), atlasRef()); !errors.Is(err, ErrRetractionLedger) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
