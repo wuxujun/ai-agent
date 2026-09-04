@@ -20,6 +20,7 @@ var writableWikiKinds = map[string]bool{
 	"comparisons": true,
 	"concepts":    true,
 	"entities":    true,
+	"projects":    true,
 	"sources":     true,
 }
 
@@ -106,7 +107,7 @@ func parseWritableWikiURI(raw string) (space, slug, canonical string, err error)
 	}
 	parts := strings.Split(slug, "/")
 	if len(parts) != 2 || !writableWikiKinds[parts[0]] || strings.TrimSpace(parts[1]) == "" || parts[1] == "." {
-		return "", "", "", errors.New("wiki write target must use comparisons, concepts, entities, or sources with one page slug")
+		return "", "", "", errors.New("wiki write target must use comparisons, concepts, entities, projects, or sources with one page slug")
 	}
 	canonical = "wiki://" + space + "/" + slug
 	return space, slug, canonical, nil

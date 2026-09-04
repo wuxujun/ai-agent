@@ -74,3 +74,15 @@ func TestBuildWriteProposalAcceptsFrontmatterTitleAndTruncatesDiff(t *testing.T)
 		t.Fatalf("proposal = %+v", proposal)
 	}
 }
+
+func TestBuildWriteProposalAcceptsProjectPages(t *testing.T) {
+	proposal, err := BuildWriteProposal(WriteProposalRequest{
+		TaskID: "task-project", TargetURI: "wiki://local/projects/brain-mvp", Content: "# Brain MVP\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Slug != "projects/brain-mvp" {
+		t.Fatalf("proposal = %+v", proposal)
+	}
+}
