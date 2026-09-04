@@ -24,6 +24,7 @@ const (
 	maxEvidenceRecords         = 1000
 	maxEvidenceBytes           = 16 * 1024
 	maxSourceEvidenceBytes     = 1024 * 1024
+	maxSourcePages             = 10000
 	maxDiscoveryHints          = 128
 	maxDiscoveryHintBytes      = 1000
 	maxDiscoveryHintTotalBytes = 64 * 1024
@@ -33,6 +34,10 @@ const (
 // required for source collection.
 type TaskSourceStore interface {
 	ListTasks(context.Context, store.ListFilter) ([]*types.Task, error)
+}
+
+type taskSourceGetter interface {
+	GetTask(context.Context, string) (*types.Task, error)
 }
 
 // SourceReader normalizes eligible, project-scoped task traces into provenance
@@ -65,10 +70,12 @@ func (r *SourceReader) Read(ctx context.Context, ref ProjectRef, cutoff time.Tim
 	seen := make(map[string]struct{})
 	usedEvidenceBytes := 0
 	discoveryBytes := 0
-	for offset := 0; ; {
+	exhausted := false
+	for pageNumber := 0; pageNumber < maxSourcePages; pageNumber++ {
 		if err := ctx.Err(); err != nil {
 			return SourceSet{}, err
 		}
+		offset := pageNumber * pageSize
 		page, err := r.Store.ListTasks(ctx, store.ListFilter{
 			TenantID: ref.TenantID,
 			Status:   types.StatusCompleted,
@@ -79,10 +86,18 @@ func (r *SourceReader) Read(ctx context.Context, ref ProjectRef, cutoff time.Tim
 			return SourceSet{}, fmt.Errorf("list completed brain source tasks: %w", err)
 		}
 		if len(page) == 0 {
+			exhausted = true
 			break
 		}
 		for _, task := range page {
 			if err := ctx.Err(); err != nil {
+				return SourceSet{}, err
+			}
+			if !eligibleTask(task, ref, cutoff) {
+				continue
+			}
+			task, err = r.hydrateTask(ctx, task)
+			if err != nil {
 				return SourceSet{}, err
 			}
 			if !eligibleTask(task, ref, cutoff) {
@@ -112,10 +127,9 @@ func (r *SourceReader) Read(ctx context.Context, ref ProjectRef, cutoff time.Tim
 				usedEvidenceBytes += len(record.Content)
 			}
 		}
-		offset += len(page)
-		if len(page) < pageSize {
-			break
-		}
+	}
+	if !exhausted {
+		return SourceSet{}, fmt.Errorf("brain source scan exceeded page limit")
 	}
 
 	sort.Slice(set.Evidence, func(i, j int) bool {
@@ -132,6 +146,21 @@ func (r *SourceReader) Read(ctx context.Context, ref ProjectRef, cutoff time.Tim
 		set.SourceHashes[i] = evidence.ContentHash
 	}
 	return set, nil
+}
+
+func (r *SourceReader) hydrateTask(ctx context.Context, task *types.Task) (*types.Task, error) {
+	getter, ok := r.Store.(taskSourceGetter)
+	if !ok {
+		return task, nil
+	}
+	full, err := getter.GetTask(ctx, task.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get brain source task: %w", err)
+	}
+	if full == nil {
+		return nil, fmt.Errorf("get brain source task %q: empty result", task.ID)
+	}
+	return full, nil
 }
 
 func sourcePageSize(requested int) int {
@@ -206,7 +235,11 @@ func boundedEvidenceContent(evidence []types.Evidence, limit int) string {
 	var builder strings.Builder
 	for _, item := range evidence {
 		for _, line := range item.Lines {
-			line = sanitizeBounded(line, limit-builder.Len())
+			remaining := limit - builder.Len()
+			if builder.Len() > 0 {
+				remaining-- // Reserve the newline separator before truncating a line.
+			}
+			line = sanitizeBounded(line, remaining)
 			if line == "" {
 				continue
 			}

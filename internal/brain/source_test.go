@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,70 @@ func TestSourceReaderBoundsAndSanitizesDiscoveryHintsWithoutMakingEvidence(t *te
 	}
 }
 
+func TestSourceReaderHydratesTraceEvidenceFromSQLiteStore(t *testing.T) {
+	sqlite, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "brain-sources.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlite.Close() })
+	if err := sqlite.SaveFullTask(t.Context(), fixtureTask("sqlite-trace")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewSourceReader(sqlite).Read(t.Context(), atlasRef(), time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := sourceTaskIDs(got); len(ids) != 1 || ids[0] != "sqlite-trace" {
+		t.Fatalf("persisted trace evidence task ids = %v", ids)
+	}
+}
+
+func TestSourceReaderContinuesPastSparseShortPages(t *testing.T) {
+	reader := NewSourceReader(&sparseFixtureStore{pages: map[int][]*types.Task{
+		0: {fixtureTask("first")},
+		2: {fixtureTask("later")},
+	}})
+	reader.PageSize = 2
+
+	got, err := reader.Read(t.Context(), atlasRef(), cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := sourceTaskIDs(got); strings.Join(ids, ",") != "first,later" {
+		t.Fatalf("sparse page task ids = %v", ids)
+	}
+}
+
+func TestSourceReaderNeverExceedsEvidenceByteLimits(t *testing.T) {
+	first := fixtureTask("byte-first")
+	first.Trace[0].Evidence = []types.Evidence{{Lines: []string{strings.Repeat("a", maxEvidenceBytes-1), "b"}}}
+	got, err := NewSourceReader(&fixtureStore{tasks: []*types.Task{first}}).Read(t.Context(), atlasRef(), cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Evidence) != 1 || len(got.Evidence[0].Content) > maxEvidenceBytes {
+		t.Fatalf("per-record evidence bytes = %d", len(got.Evidence[0].Content))
+	}
+
+	tasks := make([]*types.Task, maxSourceEvidenceBytes/maxEvidenceBytes+1)
+	for i := range tasks {
+		tasks[i] = fixtureTask(fmt.Sprintf("byte-%03d", i))
+		tasks[i].Trace[0].Evidence = []types.Evidence{{Lines: []string{strings.Repeat("x", maxEvidenceBytes-1), "y"}}}
+	}
+	got, err = NewSourceReader(&fixtureStore{tasks: tasks}).Read(t.Context(), atlasRef(), cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, evidence := range got.Evidence {
+		total += len(evidence.Content)
+	}
+	if total > maxSourceEvidenceBytes {
+		t.Fatalf("aggregate evidence bytes = %d", total)
+	}
+}
+
 func newFixtureReader(t *testing.T) *SourceReader {
 	t.Helper()
 	return NewSourceReader(&fixtureStore{tasks: []*types.Task{
@@ -207,6 +272,20 @@ func (s *fixtureStore) ListTasks(ctx context.Context, filter store.ListFilter) (
 	result = result[filter.Offset:]
 	if len(result) > filter.Limit {
 		result = result[:filter.Limit]
+	}
+	return result, nil
+}
+
+type sparseFixtureStore struct{ pages map[int][]*types.Task }
+
+func (s *sparseFixtureStore) ListTasks(ctx context.Context, filter store.ListFilter) ([]*types.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	page := s.pages[filter.Offset]
+	result := make([]*types.Task, len(page))
+	for i, task := range page {
+		result[i] = types.CloneTask(task)
 	}
 	return result, nil
 }
