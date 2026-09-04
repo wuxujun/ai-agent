@@ -1468,6 +1468,9 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Brain.Root) == "" {
 			return fmt.Errorf("brain.root must not be empty when brain.enabled is true")
 		}
+		if c.Brain.CompactIndexMaxBytes <= 0 || c.Brain.Compiler.MaxInputBytes <= 0 || c.Brain.Compiler.MaxOutputTokens <= 0 {
+			return fmt.Errorf("enabled brain compact index and compiler input/output limits must be > 0")
+		}
 	}
 	brainCompilerConfigured := c.Brain.Enabled || c.Brain.Root != "" || c.Brain.CompactIndexMaxBytes != 0 || c.Brain.Compiler.Provider != "" || c.Brain.Compiler.Model != "" || c.Brain.Compiler.MaxInputBytes != 0 || c.Brain.Compiler.MaxOutputTokens != 0 || c.Brain.Compiler.MaxCostUSD != 0
 	if brainCompilerConfigured && (c.Brain.CompactIndexMaxBytes < 0 || c.Brain.Compiler.MaxInputBytes < 0 || c.Brain.Compiler.MaxOutputTokens < 0) {
