@@ -77,30 +77,9 @@ func (v *snapshotValidator) validateRetractionLedger() {
 }
 
 func (v *snapshotValidator) validateOutputBounds() {
-	if manifestFieldsTooLarge(v.draft.Manifest) {
-		v.add("oversize_output", "manifest")
-	}
-	if len(v.draft.Files) == 0 || len(v.draft.Files)+1 > maxSnapshotFiles || len(v.draft.Evidence) > maxSnapshotEvidenceRecords {
-		v.add("oversize_output", "wiki")
-	}
-	totalBytes := 0
-	filesWithinBounds := true
-	for _, content := range v.draft.Files {
-		if len(content) > maxSnapshotFileBytes || totalBytes > maxSnapshotTreeBytes-len(content) {
-			v.add("oversize_output", "wiki")
-			filesWithinBounds = false
-			continue
-		}
-		totalBytes += len(content)
-	}
-	evidenceBytes, err := encodeEvidence(v.draft.Evidence)
-	if err != nil || !filesWithinBounds || totalBytes > maxSnapshotTreeBytes-len(evidenceBytes) {
-		v.add("oversize_output", "evidence")
-	} else {
-		totalBytes += len(evidenceBytes)
-	}
-	manifestBytes, err := encodeManifest(v.draft.Manifest)
-	if err != nil || len(manifestBytes) > maxSnapshotManifestBytes || !filesWithinBounds || totalBytes > maxSnapshotTreeBytes-len(manifestBytes) {
+	candidate := v.draft
+	candidate.Manifest.Validation = ValidationReport{Publishable: true}
+	if _, err := prepareSnapshotContent(candidate); err != nil {
 		v.add("oversize_output", "manifest")
 	}
 }

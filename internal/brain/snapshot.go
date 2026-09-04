@@ -580,6 +580,14 @@ func prepareSnapshot(ref ProjectRef, draft SnapshotDraft) (preparedSnapshot, err
 	if err := validateDraftScope(ref, draft); err != nil {
 		return preparedSnapshot{}, err
 	}
+	return prepareSnapshotContent(draft)
+}
+
+// prepareSnapshotContent derives the exact bounded content that CreateStage
+// writes after scope and publication gates have passed. Validation reuses this
+// helper with a publishable candidate so it cannot accept a draft that staging
+// later rejects after adding evidence.jsonl and canonical file hashes.
+func prepareSnapshotContent(draft SnapshotDraft) (preparedSnapshot, error) {
 	if len(draft.Files)+1 > maxSnapshotFiles || len(draft.Evidence) > maxSnapshotEvidenceRecords {
 		return preparedSnapshot{}, ErrSnapshotTooLarge
 	}

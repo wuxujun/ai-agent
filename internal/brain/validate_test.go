@@ -134,6 +134,24 @@ func TestValidateRejectsRepositoryManifestFieldLimit(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsPostStagingManifestOverflow(t *testing.T) {
+	draft := postStagingManifestOverflowDraft(t)
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{})
+	if !report.Publishable {
+		return
+	}
+	draft.Manifest.Validation = report
+	root := canonicalTempDir(t)
+	repo, err := NewRepository(root, NewFileRetractionLedger(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateStage(t.Context(), validationRef(), draft); !errors.Is(err, ErrSnapshotTooLarge) {
+		t.Fatalf("CreateStage error = %v, want %v", err, ErrSnapshotTooLarge)
+	}
+	t.Fatalf("Validate allowed a draft whose post-staging manifest exceeds repository bounds")
+}
+
 func TestValidateRejectsOversizeManifestAndNeverLeaksSensitiveIDs(t *testing.T) {
 	draft := validationDraft(t)
 	draft.Manifest.Model = strings.Repeat("x", maxSnapshotManifestBytes)
@@ -210,6 +228,51 @@ func zeroEvidenceDraft(t *testing.T) SnapshotDraft {
 	draft.Manifest.TenantID = "tenant-a"
 	draft.Manifest.ProjectID = "atlas"
 	draft.Manifest.RetractionWatermark = "sha256:test"
+	return draft
+}
+
+func postStagingManifestOverflowDraft(t *testing.T) SnapshotDraft {
+	t.Helper()
+	const pageSlugBytes = 900
+	uri := "brain-evidence://tenant-a/atlas/tasks/task-boundary#trace/1"
+	evidence := EvidenceRecord{ID: sha256ID(uri), URI: uri, TaskID: "task-boundary", TraceStep: "1", Content: "bounded evidence", ContentHash: sha256ID("bounded evidence")}
+	pages := make([]Page, 0, maxSnapshotFiles-2)
+	for index := 0; index < maxSnapshotFiles-2; index++ {
+		slug := strings.Repeat("a", pageSlugBytes-len(fmt.Sprintf("%04d", index))) + fmt.Sprintf("%04d", index)
+		page := Page{Kind: "concepts", Slug: slug, Title: slug, Summary: "bounded"}
+		if index == 0 {
+			page.Claims = []Claim{{ID: "boundary-claim", Text: "bounded", EvidenceIDs: []string{evidence.ID}}}
+		}
+		pages = append(pages, page)
+	}
+	draft, err := Render(Synthesis{Pages: pages}, maxSnapshotTreeBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft.Files["_index.md"] = []byte("# Brain index\n")
+	draft.Manifest.FileHashes["wiki/_index.md"] = digestBytes(draft.Files["_index.md"])
+	draft.Evidence = []EvidenceRecord{evidence}
+	draft.Manifest.SnapshotID = "boundary-snapshot"
+	draft.Manifest.TenantID = "tenant-a"
+	draft.Manifest.ProjectID = "atlas"
+	draft.Manifest.SourceIDs = []string{evidence.ID}
+	draft.Manifest.SourceHashes = []string{evidence.ContentHash}
+	draft.Manifest.RetractionWatermark = "sha256:test"
+	draft.Manifest.Validation = ValidationReport{Publishable: true}
+	low, high := 0, maxSnapshotEvidenceFieldLen
+	for low <= high {
+		size := low + (high-low)/2
+		draft.Manifest.Model = strings.Repeat("m", size)
+		if _, err := prepareSnapshot(validationRef(), draft); errors.Is(err, ErrSnapshotTooLarge) {
+			high = size - 1
+			continue
+		}
+		low = size + 1
+	}
+	draft.Manifest.Model = strings.Repeat("m", low)
+	if _, err := prepareSnapshot(validationRef(), draft); !errors.Is(err, ErrSnapshotTooLarge) {
+		t.Fatalf("prepareSnapshot error = %v, want %v", err, ErrSnapshotTooLarge)
+	}
 	return draft
 }
 
