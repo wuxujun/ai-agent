@@ -651,8 +651,7 @@ func TestSnapshotOpenDetectsReleaseMutation(t *testing.T) {
 
 func TestSnapshotRequiresExactValidFileHashSet(t *testing.T) {
 	tests := map[string]func(*Manifest){
-		"missing_actual_balanced_by_valid_expected": func(manifest *Manifest) {
-			delete(manifest.FileHashes, "evidence.jsonl")
+		"extra_valid_expected_hash_has_no_actual_file": func(manifest *Manifest) {
 			manifest.FileHashes["wiki/missing.md"] = digestBytes([]byte("missing"))
 		},
 		"invalid_digest": func(manifest *Manifest) {

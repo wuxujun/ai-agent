@@ -95,6 +95,28 @@ func TestRetractionRejectsMalformedOrTruncatedJSONL(t *testing.T) {
 	}
 }
 
+func TestRetractionRejectsValidLineThatExceedsScannerLimit(t *testing.T) {
+	root := canonicalTempDir(t)
+	encoded, err := canonicalRetraction(Retraction{
+		EvidenceURI: firstEvidenceURI,
+		Reason:      strings.Repeat("x", maxRetractionLineBytes),
+		RetractedAt: retractionTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := append(encoded, '\n')
+	if len(content) <= maxRetractionLineBytes || len(content) > maxRetractionFileBytes {
+		t.Fatalf("fixture size = %d, want scanner-only limit violation", len(content))
+	}
+	writeRetractionBytesFixture(t, root, atlasRef(), content)
+
+	ledger := NewFileRetractionLedger(root)
+	if _, err := ledger.Watermark(t.Context(), atlasRef()); !errors.Is(err, ErrRetractionLedger) {
+		t.Fatalf("watermark error = %v", err)
+	}
+}
+
 func TestRetractionRejectsLedgerGrowthDuringRead(t *testing.T) {
 	root := canonicalTempDir(t)
 	ledger := NewFileRetractionLedger(root)
