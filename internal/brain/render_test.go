@@ -31,6 +31,36 @@ func TestRenderIsByteStableAndBuildsCompactIndex(t *testing.T) {
 	}
 }
 
+func TestRenderCanonicalizesPermutedPagesClaimsEvidenceAndLinks(t *testing.T) {
+	canonical, err := Render(renderSynthesis(), 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permuted := renderSynthesis()
+	permuted.Pages[0], permuted.Pages[1] = permuted.Pages[1], permuted.Pages[0]
+	permuted.Pages[0].Claims[0].EvidenceIDs[0], permuted.Pages[0].Claims[0].EvidenceIDs[1] = permuted.Pages[0].Claims[0].EvidenceIDs[1], permuted.Pages[0].Claims[0].EvidenceIDs[0]
+	permuted.Pages[0].Claims[0], permuted.Pages[0].Claims[1] = permuted.Pages[0].Claims[1], permuted.Pages[0].Claims[0]
+	permuted.Pages[0].Links = append(permuted.Pages[0].Links, "wiki://brain-atlas/projects/roadmap")
+	permuted.Pages[0].Links[0], permuted.Pages[0].Links[1] = permuted.Pages[0].Links[1], permuted.Pages[0].Links[0]
+	canonicalWithLinks := renderSynthesis()
+	canonicalWithLinks.Pages[1].Links = []string{"wiki://brain-atlas/entities/widget", "wiki://brain-atlas/projects/roadmap"}
+	want, err := Render(canonicalWithLinks, 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Render(permuted, 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reflect.DeepEqual(canonical, got) || !reflect.DeepEqual(want, got) {
+		t.Fatalf("permuted render was not canonical: got=%q want=%q", got.Files["concepts/alpha.md"], want.Files["concepts/alpha.md"])
+	}
+	page := string(got.Files["concepts/alpha.md"])
+	if strings.Index(page, "### claim-a") > strings.Index(page, "### claim-z") || strings.Index(page, "evidence-a, evidence-z") < 0 || strings.Index(page, "entities/widget") > strings.Index(page, "projects/roadmap") {
+		t.Fatalf("page ordering is not canonical: %q", page)
+	}
+}
+
 func TestRenderRejectsUnsafePagePath(t *testing.T) {
 	input := renderSynthesis()
 	input.Pages[0].Slug = "../escape"

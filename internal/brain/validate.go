@@ -32,11 +32,12 @@ func Validate(ctx context.Context, ref ProjectRef, draft SnapshotDraft, ledger R
 }
 
 type snapshotValidator struct {
-	ctx      context.Context
-	ref      ProjectRef
-	draft    SnapshotDraft
-	ledger   RetractionView
-	findings []ValidationFinding
+	ctx             context.Context
+	ref             ProjectRef
+	draft           SnapshotDraft
+	ledger          RetractionView
+	retractionReady bool
+	findings        []ValidationFinding
 }
 
 func (v *snapshotValidator) validate() {
@@ -51,10 +52,54 @@ func (v *snapshotValidator) validate() {
 	if v.draft.Manifest.TenantID != "" && v.draft.Manifest.TenantID != v.ref.TenantID || v.draft.Manifest.ProjectID != "" && v.draft.Manifest.ProjectID != v.ref.ProjectID {
 		v.add("project_scope_mismatch", "manifest")
 	}
+	v.validateRetractionLedger()
+	v.validateOutputBounds()
 	evidence := v.validateEvidence()
 	claims := v.validateFiles()
 	v.validateClaimCoverage(claims, evidence)
 	v.validateManifestHashes()
+}
+
+func (v *snapshotValidator) validateRetractionLedger() {
+	if v.ledger == nil {
+		v.add("retraction_unavailable", "snapshot")
+		return
+	}
+	watermark, err := v.ledger.Watermark(v.ctx, v.ref)
+	if err != nil {
+		v.add("retraction_unavailable", "snapshot")
+		return
+	}
+	v.retractionReady = true
+	if v.draft.Manifest.RetractionWatermark != watermark {
+		v.add("retraction_changed", "manifest")
+	}
+}
+
+func (v *snapshotValidator) validateOutputBounds() {
+	if len(v.draft.Files) == 0 || len(v.draft.Files)+1 > maxSnapshotFiles || len(v.draft.Evidence) > maxSnapshotEvidenceRecords {
+		v.add("oversize_output", "wiki")
+	}
+	totalBytes := 0
+	filesWithinBounds := true
+	for _, content := range v.draft.Files {
+		if len(content) > maxSnapshotFileBytes || totalBytes > maxSnapshotTreeBytes-len(content) {
+			v.add("oversize_output", "wiki")
+			filesWithinBounds = false
+			continue
+		}
+		totalBytes += len(content)
+	}
+	evidenceBytes, err := encodeEvidence(v.draft.Evidence)
+	if err != nil || !filesWithinBounds || totalBytes > maxSnapshotTreeBytes-len(evidenceBytes) {
+		v.add("oversize_output", "evidence")
+	} else {
+		totalBytes += len(evidenceBytes)
+	}
+	manifestBytes, err := encodeManifest(v.draft.Manifest)
+	if err != nil || len(manifestBytes) > maxSnapshotManifestBytes || !filesWithinBounds || totalBytes > maxSnapshotTreeBytes-len(manifestBytes) {
+		v.add("oversize_output", "manifest")
+	}
 }
 
 func (v *snapshotValidator) validateEvidence() map[string]EvidenceRecord {
@@ -69,28 +114,27 @@ func (v *snapshotValidator) validateEvidence() map[string]EvidenceRecord {
 			continue
 		}
 		if _, exists := evidence[record.ID]; exists {
-			v.add("duplicate_evidence_id", "evidence/"+record.ID)
+			v.add("duplicate_evidence_id", "evidence")
 			continue
 		}
 		evidence[record.ID] = record
 		step, err := strconv.Atoi(record.TraceStep)
 		canonical, canonicalErr := canonicalEvidenceURI(v.ref, record.TaskID, step)
 		if err != nil || canonicalErr != nil || record.URI != canonical {
-			v.add("cross_space_uri", "evidence/"+record.ID)
+			v.add("cross_space_uri", "evidence")
 		}
 		if record.ID != sha256ID(record.URI) || record.ContentHash != sha256ID(record.Content) {
-			v.add("hash_mismatch", "evidence/"+record.ID)
+			v.add("hash_mismatch", "evidence")
 		}
-		v.validateUnsafeContent("evidence/"+record.ID, record.Content)
-		if v.ledger == nil {
-			v.add("retraction_unavailable", "evidence/"+record.ID)
+		v.validateUnsafeContent("evidence", record.Content)
+		if !v.retractionReady {
 			continue
 		}
 		retracted, ledgerErr := v.ledger.Contains(v.ctx, v.ref, record.URI)
 		if ledgerErr != nil {
-			v.add("retraction_unavailable", "evidence/"+record.ID)
+			v.add("retraction_unavailable", "evidence")
 		} else if retracted {
-			v.add("retracted_source", "evidence/"+record.ID)
+			v.add("retracted_source", "evidence")
 		}
 	}
 	return evidence
@@ -98,11 +142,6 @@ func (v *snapshotValidator) validateEvidence() map[string]EvidenceRecord {
 
 func (v *snapshotValidator) validateFiles() []claimFrontmatter {
 	claims := make([]claimFrontmatter, 0)
-	if len(v.draft.Files) == 0 || len(v.draft.Files) > maxSnapshotFiles {
-		v.add("oversize_output", "wiki")
-		return claims
-	}
-	totalBytes := 0
 	files := make([]string, 0, len(v.draft.Files))
 	for name := range v.draft.Files {
 		files = append(files, name)
@@ -111,11 +150,10 @@ func (v *snapshotValidator) validateFiles() []claimFrontmatter {
 	seenClaims := make(map[string]bool)
 	for _, name := range files {
 		content := v.draft.Files[name]
-		if len(content) > maxSnapshotFileBytes || totalBytes > maxSnapshotTreeBytes-len(content) {
-			v.add("oversize_output", name)
+		if len(name) > maxSnapshotPathBytes || len(content) > maxSnapshotFileBytes {
+			v.add("oversize_output", "wiki")
 			continue
 		}
-		totalBytes += len(content)
 		v.validateUnsafeContent(name, string(content))
 		if name == "_index.md" {
 			if !validNormalizedMarkdown(content) {
@@ -138,6 +176,9 @@ func (v *snapshotValidator) validateFiles() []claimFrontmatter {
 		}
 		if !validNormalizedMarkdown(content) {
 			v.add("malformed_markdown", name)
+		}
+		if !bodyClaimsMatchFrontmatter(content, frontmatter.Claims) {
+			v.add("body_claim_drift", name)
 		}
 		for _, link := range frontmatter.Links {
 			if _, _, _, err := parseBrainWikiURI(link, v.ref.WikiSpace); err != nil {
@@ -167,13 +208,13 @@ func (v *snapshotValidator) validateClaimCoverage(claims []claimFrontmatter, evi
 	used := make(map[string]bool, len(evidence))
 	for _, claim := range claims {
 		if len(claim.EvidenceIDs) == 0 {
-			v.add("unreferenced_claim", "claim/"+claim.ID)
+			v.add("unreferenced_claim", "claim")
 			continue
 		}
 		seen := make(map[string]bool, len(claim.EvidenceIDs))
 		for _, id := range claim.EvidenceIDs {
 			if id == "" || seen[id] || evidence[id].ID == "" {
-				v.add("missing_evidence", "claim/"+claim.ID)
+				v.add("missing_evidence", "claim")
 				continue
 			}
 			seen[id] = true
@@ -182,7 +223,7 @@ func (v *snapshotValidator) validateClaimCoverage(claims []claimFrontmatter, evi
 	}
 	for id := range evidence {
 		if !used[id] {
-			v.add("unreferenced_evidence", "evidence/"+id)
+			v.add("unreferenced_evidence", "evidence")
 		}
 	}
 	if len(v.draft.Manifest.SourceIDs) != len(v.draft.Manifest.SourceHashes) || len(v.draft.Manifest.SourceIDs) != len(evidence) {
@@ -201,6 +242,7 @@ func (v *snapshotValidator) validateClaimCoverage(claims []claimFrontmatter, evi
 
 func (v *snapshotValidator) validateManifestHashes() {
 	if len(v.draft.Manifest.FileHashes) == 0 {
+		v.add("hash_mismatch", "manifest")
 		return
 	}
 	if len(v.draft.Manifest.FileHashes) != len(v.draft.Files) {
@@ -208,7 +250,8 @@ func (v *snapshotValidator) validateManifestHashes() {
 		return
 	}
 	for name, content := range v.draft.Files {
-		if v.draft.Manifest.FileHashes["wiki/"+name] != digestBytes(content) {
+		digest, exists := v.draft.Manifest.FileHashes["wiki/"+name]
+		if !exists || !validSHA256Digest(digest) || digest != digestBytes(content) {
 			v.add("hash_mismatch", "manifest")
 		}
 	}
@@ -225,7 +268,24 @@ func (v *snapshotValidator) validateUnsafeContent(location, content string) {
 }
 
 func (v *snapshotValidator) add(code, location string) {
-	v.findings = append(v.findings, ValidationFinding{Code: code, Path: path.Clean(location), Message: "brain snapshot validation failed", Hard: true})
+	v.findings = append(v.findings, ValidationFinding{Code: code, Path: findingPath(location), Message: "brain snapshot validation failed", Hard: true})
+}
+
+func findingPath(location string) string {
+	switch {
+	case strings.HasPrefix(location, "evidence"):
+		return "evidence"
+	case strings.HasPrefix(location, "claim"):
+		return "claim"
+	case strings.HasPrefix(location, "manifest"):
+		return "manifest"
+	case strings.HasPrefix(location, "snapshot"):
+		return "snapshot"
+	case strings.HasPrefix(location, "_index"):
+		return "index"
+	default:
+		return "wiki"
+	}
 }
 
 func parseRenderedPageName(name string) (kind, slug string, ok bool) {
@@ -295,4 +355,36 @@ func validRelativeMarkdownLink(link string) bool {
 	}
 	_, _, ok := parseRenderedPageName(strings.TrimPrefix(link, "../"))
 	return ok
+}
+
+func bodyClaimsMatchFrontmatter(content []byte, claims []claimFrontmatter) bool {
+	lines := strings.Split(string(content), "\n")
+	actual := make([]string, 0, len(claims))
+	inClaims, seenClaimsSection := false, false
+	for _, line := range lines {
+		if line == "## Claims" {
+			if seenClaimsSection {
+				return false
+			}
+			seenClaimsSection = true
+			inClaims = true
+			continue
+		}
+		if inClaims && strings.HasPrefix(line, "## ") {
+			inClaims = false
+			continue
+		}
+		if inClaims && strings.HasPrefix(line, "### ") {
+			actual = append(actual, strings.TrimSpace(strings.TrimPrefix(line, "### ")))
+		}
+	}
+	if len(actual) != len(claims) {
+		return false
+	}
+	for index, claim := range claims {
+		if actual[index] != claim.ID {
+			return false
+		}
+	}
+	return true
 }

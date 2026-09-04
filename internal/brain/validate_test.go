@@ -2,6 +2,7 @@ package brain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -49,6 +50,74 @@ func TestValidateAcceptsRenderedDraftWithSameProjectEvidence(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMissingFileHashes(t *testing.T) {
+	draft := validationDraft(t)
+	draft.Manifest.FileHashes = nil
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{})
+	if report.Publishable || !validationHasCodes(report, "hash_mismatch") {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestValidateRequiresWorkingLedgerForZeroEvidenceDraft(t *testing.T) {
+	draft := zeroEvidenceDraft(t)
+	watermarkCalls := 0
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{watermarkCalls: &watermarkCalls, watermarkErr: errors.New("ledger unavailable")})
+	if report.Publishable || !validationHasCodes(report, "retraction_unavailable") || watermarkCalls != 1 {
+		t.Fatalf("report=%+v watermark_calls=%d", report, watermarkCalls)
+	}
+	report = Validate(t.Context(), validationRef(), draft, nil)
+	if report.Publishable || !validationHasCodes(report, "retraction_unavailable") {
+		t.Fatalf("nil ledger report = %+v", report)
+	}
+}
+
+func TestValidateRejectsEvidenceLedgerContainsError(t *testing.T) {
+	report := Validate(t.Context(), validationRef(), validationDraft(t), validationLedger{containsErr: errors.New("ledger unavailable")})
+	if report.Publishable || !validationHasCodes(report, "retraction_unavailable") {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestValidateRejectsBodyClaimsThatDriftFromFrontmatter(t *testing.T) {
+	draft := validationDraft(t)
+	content := append([]byte(nil), draft.Files["concepts/alpha.md"]...)
+	content = append(content, []byte("\n## Claims\n\n### untracked-claim\n\nUnsupported body claim.\n")...)
+	draft.Files["concepts/alpha.md"] = content
+	draft.Manifest.FileHashes["wiki/concepts/alpha.md"] = digestBytes(content)
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{})
+	if report.Publishable || !validationHasCodes(report, "body_claim_drift") {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestValidateRejectsOversizeManifestAndNeverLeaksSensitiveIDs(t *testing.T) {
+	draft := validationDraft(t)
+	draft.Manifest.Model = strings.Repeat("x", maxSnapshotManifestBytes)
+	draft.Evidence[0].ID = "api_key=sk-abcdefghijklmnopqrstuvwxyz/private/path"
+	draft.Manifest.SourceIDs[0] = draft.Evidence[0].ID
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{})
+	if report.Publishable || !validationHasCodes(report, "oversize_output", "hash_mismatch") {
+		t.Fatalf("report = %+v", report)
+	}
+	for _, finding := range report.Findings {
+		if strings.Contains(finding.Path, "api_key") || strings.Contains(finding.Path, "private") || strings.Contains(finding.Path, "sk-") {
+			t.Fatalf("finding leaks sensitive identifier: %+v", finding)
+		}
+	}
+}
+
+func TestValidateRejectsOversizeEvidence(t *testing.T) {
+	draft := validationDraft(t)
+	draft.Evidence[0].Content = strings.Repeat("x", maxEvidenceBytes+1)
+	draft.Evidence[0].ContentHash = sha256ID(draft.Evidence[0].Content)
+	draft.Manifest.SourceHashes[0] = draft.Evidence[0].ContentHash
+	report := Validate(t.Context(), validationRef(), draft, validationLedger{})
+	if report.Publishable || !validationHasCodes(report, "oversize_output") {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
 func TestValidateRejectsUnknownFrontmatterFields(t *testing.T) {
 	draft := validationDraft(t)
 	draft.Files["concepts/alpha.md"] = []byte(strings.Replace(string(draft.Files["concepts/alpha.md"]), "title: Alpha", "title: Alpha\nunexpected: true", 1))
@@ -81,7 +150,23 @@ func validationDraft(t *testing.T) SnapshotDraft {
 		t.Fatal(err)
 	}
 	draft.Evidence = []EvidenceRecord{evidence}
-	draft.Manifest = Manifest{TenantID: "tenant-a", ProjectID: "atlas", SourceIDs: []string{evidence.ID}, SourceHashes: []string{evidence.ContentHash}}
+	draft.Manifest.TenantID = "tenant-a"
+	draft.Manifest.ProjectID = "atlas"
+	draft.Manifest.SourceIDs = []string{evidence.ID}
+	draft.Manifest.SourceHashes = []string{evidence.ContentHash}
+	draft.Manifest.RetractionWatermark = "sha256:test"
+	return draft
+}
+
+func zeroEvidenceDraft(t *testing.T) SnapshotDraft {
+	t.Helper()
+	draft, err := Render(Synthesis{}, 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft.Manifest.TenantID = "tenant-a"
+	draft.Manifest.ProjectID = "atlas"
+	draft.Manifest.RetractionWatermark = "sha256:test"
 	return draft
 }
 
@@ -89,13 +174,24 @@ func validationRef() ProjectRef {
 	return ProjectRef{TenantID: "tenant-a", ProjectID: "atlas", WikiSpace: "brain-atlas", StorageKey: "sha256:test"}
 }
 
-type validationLedger struct{ retracted map[string]bool }
+type validationLedger struct {
+	retracted      map[string]bool
+	watermarkCalls *int
+	watermarkErr   error
+	containsErr    error
+}
 
 func (l validationLedger) Watermark(context.Context, ProjectRef) (string, error) {
+	if l.watermarkCalls != nil {
+		*l.watermarkCalls++
+	}
+	if l.watermarkErr != nil {
+		return "", l.watermarkErr
+	}
 	return "sha256:test", nil
 }
 func (l validationLedger) Contains(_ context.Context, _ ProjectRef, uri string) (bool, error) {
-	return l.retracted[uri], nil
+	return l.retracted[uri], l.containsErr
 }
 
 func validationHasCodes(report ValidationReport, want ...string) bool {
