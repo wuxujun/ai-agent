@@ -18,6 +18,8 @@ import (
 type repository interface {
 	Current(context.Context, brain.ProjectRef) (string, error)
 	OpenRelease(context.Context, brain.ProjectRef, string) (brain.Release, error)
+	OpenStaging(context.Context, brain.ProjectRef, string) (brain.Release, error)
+	Status(context.Context, brain.ProjectRef) (brain.RepositoryStatus, error)
 	Publish(context.Context, brain.ProjectRef, string, string) (brain.Manifest, error)
 	Rollback(context.Context, brain.ProjectRef, string, string) (brain.Manifest, error)
 }
@@ -144,6 +146,9 @@ func run(args []string, stdout, stderr io.Writer, deps dependencies) int {
 			return fail(stderr, 2)
 		}
 		release, openErr := repo.OpenRelease(ctx, ref, common.snapshot)
+		if errors.Is(openErr, brain.ErrSnapshotNotFound) {
+			release, openErr = repo.OpenStaging(ctx, ref, common.snapshot)
+		}
 		if openErr != nil {
 			return failClass(stderr, openErr)
 		}
@@ -152,24 +157,18 @@ func run(args []string, stdout, stderr io.Writer, deps dependencies) int {
 		}
 		return emitMetadata(stdout, manifestMetadata(release.Manifest))
 	case "status":
-		current, currentErr := repo.Current(ctx, ref)
-		if currentErr != nil {
-			return failClass(stderr, currentErr)
-		}
-		status := map[string]any{"tenant": ref.TenantID, "project": ref.ProjectID, "current_snapshot_id": current, "staging_snapshot_id": "", "release_snapshot_id": current, "revocation_state": "unknown"}
-		if current == "" {
-			status["revocation_state"] = "none"
-		} else if _, openErr := repo.OpenRelease(ctx, ref, current); openErr != nil {
-			status["revocation_state"] = "revoked_or_invalid"
-			if isGateError(openErr) {
-				_ = emitMetadata(stdout, status)
-				return 1
-			}
+		repositoryStatus, statusErr := repo.Status(ctx, ref)
+		if statusErr != nil && !isGateError(statusErr) {
 			return fail(stderr, 2)
-		} else {
-			status["revocation_state"] = "verified"
 		}
-		return emitMetadata(stdout, status)
+		status := map[string]any{"tenant": ref.TenantID, "project": ref.ProjectID, "current_snapshot_id": repositoryStatus.Current, "staging_snapshot_ids": repositoryStatus.Staging, "release_snapshot_ids": repositoryStatus.Releases, "revocation_state": repositoryStatus.RevocationState}
+		if emitMetadata(stdout, status) != 0 {
+			return 2
+		}
+		if statusErr != nil {
+			return 1
+		}
+		return 0
 	default:
 		return fail(stderr, 2)
 	}

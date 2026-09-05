@@ -68,6 +68,14 @@ type Repository struct {
 	syncCurrentParent       func() error
 }
 
+// RepositoryStatus is bounded operator metadata for one Brain project.
+type RepositoryStatus struct {
+	Current         string   `json:"current_snapshot_id"`
+	Staging         []string `json:"staging_snapshot_ids"`
+	Releases        []string `json:"release_snapshot_ids"`
+	RevocationState string   `json:"revocation_state"`
+}
+
 type secureDir struct {
 	fd   int
 	path string
@@ -249,6 +257,89 @@ func (r *Repository) OpenRelease(ctx context.Context, ref ProjectRef, snapshotID
 		return Release{}, err
 	}
 	return release, nil
+}
+
+// OpenStaging verifies and opens a staged snapshot without publishing it.
+func (r *Repository) OpenStaging(ctx context.Context, ref ProjectRef, snapshotID string) (Release, error) {
+	if err := ctx.Err(); err != nil {
+		return Release{}, err
+	}
+	if !safeSingleComponent(snapshotID) {
+		return Release{}, fmt.Errorf("brain snapshot identifier is unsafe: %w", ErrUnsafePath)
+	}
+	project, err := openProjectHandle(r.root, ref, false)
+	if errors.Is(err, errSecurePathMissing) {
+		return Release{}, ErrSnapshotNotFound
+	}
+	if err != nil {
+		return Release{}, err
+	}
+	defer project.close()
+	staging, err := project.dir.openChildDirectory("staging", false, false)
+	if errors.Is(err, errSecurePathMissing) {
+		return Release{}, ErrSnapshotNotFound
+	}
+	if err != nil {
+		return Release{}, err
+	}
+	defer staging.close()
+	release, err := r.openSnapshotChild(ctx, ref, staging, snapshotID, filepath.Join(project.dir.path, "staging", snapshotID))
+	if err != nil {
+		return Release{}, err
+	}
+	if err := project.verify(); err != nil {
+		return Release{}, err
+	}
+	return release, nil
+}
+
+// Status returns bounded lifecycle metadata and verifies the current release
+// against the live retraction ledger when one exists.
+func (r *Repository) Status(ctx context.Context, ref ProjectRef) (RepositoryStatus, error) {
+	status := RepositoryStatus{RevocationState: "none"}
+	current, err := r.Current(ctx, ref)
+	if err != nil {
+		return status, err
+	}
+	status.Current = current
+	project, err := openProjectHandle(r.root, ref, false)
+	if errors.Is(err, errSecurePathMissing) {
+		return status, nil
+	}
+	if err != nil {
+		return status, err
+	}
+	defer project.close()
+	for _, spec := range []struct {
+		name string
+		out  *[]string
+	}{
+		{name: "staging", out: &status.Staging},
+		{name: "releases", out: &status.Releases},
+	} {
+		directory, openErr := project.dir.openChildDirectory(spec.name, false, false)
+		if errors.Is(openErr, errSecurePathMissing) {
+			continue
+		}
+		if openErr != nil {
+			return status, openErr
+		}
+		names, namesErr := directory.childNames()
+		directory.close()
+		if namesErr != nil {
+			return status, namesErr
+		}
+		*spec.out = names
+	}
+	if current == "" {
+		return status, nil
+	}
+	if _, err := r.OpenRelease(ctx, ref, current); err != nil {
+		status.RevocationState = "revoked_or_invalid"
+		return status, err
+	}
+	status.RevocationState = "verified"
+	return status, nil
 }
 
 func (r *Repository) Publish(ctx context.Context, ref ProjectRef, snapshotID, expectedCurrent string) (Manifest, error) {

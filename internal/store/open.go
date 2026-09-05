@@ -3,18 +3,17 @@ package store
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // Open constructs the configured Store backend. The factory deliberately
 // accepts only the backend kind and DSN so callers cannot accidentally pass
 // server-only configuration or expose credentials in errors.
 func Open(kind, dsn string) (Store, error) {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
+	switch kind {
 	case "memory":
 		return NewMemoryStore(), nil
 	case "postgres":
-		if strings.TrimSpace(dsn) == "" {
+		if dsn == "" {
 			return nil, errors.New("store dsn is required")
 		}
 		st, err := NewPostgresStore(dsn)
@@ -23,7 +22,7 @@ func Open(kind, dsn string) (Store, error) {
 		}
 		return st, nil
 	case "redis":
-		if strings.TrimSpace(dsn) == "" {
+		if dsn == "" {
 			return nil, errors.New("store dsn is required")
 		}
 		st, err := NewRedisStoreFromURL(dsn)
@@ -32,7 +31,7 @@ func Open(kind, dsn string) (Store, error) {
 		}
 		return st, nil
 	case "sqlite", "":
-		if strings.TrimSpace(dsn) == "" {
+		if dsn == "" {
 			dsn = "data/agent.db"
 		}
 		st, err := NewSQLiteStore(dsn)
@@ -43,7 +42,7 @@ func Open(kind, dsn string) (Store, error) {
 	default:
 		// Preserve the server's historical behavior: unknown or omitted store
 		// types use SQLite, while keeping the error category bounded.
-		if strings.TrimSpace(dsn) == "" {
+		if dsn == "" {
 			dsn = "data/agent.db"
 		}
 		st, err := NewSQLiteStore(dsn)

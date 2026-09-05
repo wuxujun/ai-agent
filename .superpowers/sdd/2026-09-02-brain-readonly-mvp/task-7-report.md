@@ -30,3 +30,26 @@ The full `internal/store ./cmd/brain-compile ./cmd/server` package run was
 also attempted; the existing sandbox restriction preventing `httptest` from
 binding `[::1]:0` caused the unrelated server integration test
 `TestWikiRuntimeStreamableHTTPEndToEnd` to panic.
+
+## Review fix round
+
+- Added repository-backed staging reads for `inspect` and `verify` without
+  publishing.
+- Added bounded repository status metadata for current, staging, and release
+  IDs plus live revocation state.
+- Restored exact store-kind dispatch semantics from `cmd/server`; whitespace
+  and case variants no longer silently select another backend.
+- Added lifecycle success/error, bounded-output, and Store-open isolation
+  coverage.
+
+Fix-round verification passed:
+
+```text
+GOCACHE=/private/tmp/brain-mvp-go-cache go test ./internal/store ./internal/brain ./cmd/brain-compile -run 'Test(Open|Run|Repository|Snapshot)' -count=1
+GOCACHE=/private/tmp/brain-mvp-go-cache go test ./cmd/server -run 'TestBuildStore' -count=1
+GOCACHE=/private/tmp/brain-mvp-go-cache go vet ./internal/store ./internal/brain ./cmd/brain-compile ./cmd/server
+git diff --check
+```
+
+The sandbox denied the Go module stat-cache write during `go build
+./cmd/brain-compile`; the targeted package tests and vet completed successfully.

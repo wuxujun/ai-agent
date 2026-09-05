@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/brain"
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -33,11 +34,53 @@ func TestRunRequiresExplicitTenantAndProject(t *testing.T) {
 	}
 }
 
+func TestRunLifecycleCommandsStayBoundedAndOnlyBuildOpensStore(t *testing.T) {
+	for _, command := range []string{"inspect", "verify", "rollback", "status"} {
+		deps := testDeps(nil)
+		opened := 0
+		deps.openStore = func(string, string) (store.Store, error) {
+			opened++
+			return store.NewMemoryStore(), nil
+		}
+		args := []string{command, "--tenant", "tenant-a", "--project", "atlas"}
+		if command == "inspect" || command == "verify" {
+			args = append(args, "--snapshot", "snap-1")
+		} else if command == "rollback" {
+			args = append(args, "--snapshot", "snap-1", "--expected-current=")
+		}
+		var output bytes.Buffer
+		if code := run(args, &output, &bytes.Buffer{}, deps); code != 0 {
+			t.Fatalf("run(%v) = %d, output=%s", args, code, output.String())
+		}
+		if opened != 0 {
+			t.Fatalf("run(%v) opened Store", args)
+		}
+		if bytes.Contains(output.Bytes(), []byte("secret")) {
+			t.Fatalf("run(%v) leaked secret: %s", args, output.String())
+		}
+	}
+	deps := testDeps(nil)
+	opened := 0
+	deps.openStore = func(string, string) (store.Store, error) { opened++; return store.NewMemoryStore(), nil }
+	deps.build = func(context.Context, *config.Config, store.Store, brain.ProjectRef, time.Time, string) (brain.Manifest, error) {
+		return brain.Manifest{SnapshotID: "staged"}, nil
+	}
+	if code := run([]string{"build", "--tenant", "tenant-a", "--project", "atlas"}, &bytes.Buffer{}, &bytes.Buffer{}, deps); code != 0 || opened != 1 {
+		t.Fatalf("build code=%d opened=%d, want 0/1", code, opened)
+	}
+}
+
 type fakeRepository struct{ err error }
 
 func (f fakeRepository) Current(context.Context, brain.ProjectRef) (string, error) { return "", nil }
 func (f fakeRepository) OpenRelease(context.Context, brain.ProjectRef, string) (brain.Release, error) {
 	return brain.Release{}, nil
+}
+func (f fakeRepository) OpenStaging(context.Context, brain.ProjectRef, string) (brain.Release, error) {
+	return brain.Release{}, f.err
+}
+func (f fakeRepository) Status(context.Context, brain.ProjectRef) (brain.RepositoryStatus, error) {
+	return brain.RepositoryStatus{Current: "current", Staging: []string{"staging"}, Releases: []string{"release"}, RevocationState: "verified"}, f.err
 }
 func (f fakeRepository) Publish(context.Context, brain.ProjectRef, string, string) (brain.Manifest, error) {
 	return brain.Manifest{}, f.err

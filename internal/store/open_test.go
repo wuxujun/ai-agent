@@ -48,3 +48,14 @@ func TestOpenUnknownDefaultsToSQLite(t *testing.T) {
 		t.Fatalf("Open(unknown) = %T, want *SQLiteStore", st)
 	}
 }
+
+func TestOpenPreservesExactKindSemantics(t *testing.T) {
+	st, err := Open(" MEMORY ", filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, ok := st.(*SQLiteStore); !ok {
+		t.Fatalf("Open(\" MEMORY \") = %T, want *SQLiteStore", st)
+	}
+}
