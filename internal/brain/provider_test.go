@@ -88,6 +88,10 @@ func TestSnapshotPinnerRevalidatesHotReloadedAdmission(t *testing.T) {
 	defer baseline()
 	pinner := NewSnapshotPinner(repo, ledger, cfg)
 	base := &types.Task{ID: "reload-pin", TenantID: "tenant-a", BrainProjectID: "atlas", BrainConfigDigest: ProjectConfigDigest(ref)}
+	firstContext, changed, err := pinner.Pin(t.Context(), base)
+	if err != nil || !changed || firstContext.SnapshotID != "reload-snap" {
+		t.Fatalf("base pin = %+v changed=%v err=%v", firstContext, changed, err)
+	}
 	t.Run("disabled", func(t *testing.T) {
 		restore := config.OverrideForTesting(func(c *config.Config) { c.Brain.Enabled = false })
 		defer restore()
