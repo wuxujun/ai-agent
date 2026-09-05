@@ -49,3 +49,8 @@ Verification passed for focused Brain/Tools race tests, server Wiki builder test
 - Cache replacement now receives the requested corpus explicitly instead of
   inferring it from candidate contents, including empty/all-only-Brain result
   sets.
+
+## Regression coverage
+
+- Added all-corpus search→fetch source coverage, watermark cache isolation,
+  and mixed ordinary/Brain graph-fetch provenance tests.
