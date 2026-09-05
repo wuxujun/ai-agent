@@ -152,7 +152,12 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 // same policy, approval, cancellation, and budget gates.
 func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) {
 	ctx = logger.WithTaskID(ctx, task.ID)
-	ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
+	_, _, projectID, snapshotID, watermark, ok := tools.RetrievalContextScope(ctx)
+	if ok && projectID != "" && snapshotID != "" {
+		ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID, tools.WithBrainScope(projectID, snapshotID), tools.WithBrainWatermark(watermark))
+	} else {
+		ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
+	}
 	ctx = llmcore.WithTaskBudget(ctx, task)
 	ctx = llmcore.WithTaskRoutingHints(ctx, task)
 	ctx, span := tracer.Start(ctx, "multiagent.coordinator.run")

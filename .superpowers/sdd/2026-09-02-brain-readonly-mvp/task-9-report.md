@@ -37,3 +37,10 @@ the pinner/Engine/JIT path above.
   closed after an allowlist/config reload.
 - Added hot-reload regression coverage for disabled Brain, removed project
   authorization, and admission digest drift.
+
+## Runtime/API vertical slice
+
+- Wiki page authorization now admits the authenticated tenant's ordinary Wiki
+  space plus its explicitly allowlisted Brain project spaces.
+- Multi-Agent coordinator preserves the Engine's pinned Brain TaskContext when
+  constructing retrieval execution context, matching Eino/ADK/Executor paths.

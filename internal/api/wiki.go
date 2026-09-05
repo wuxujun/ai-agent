@@ -28,8 +28,8 @@ func (h *Handler) getWikiPage(c *gin.Context) {
 		return
 	}
 	space := strings.TrimSpace(c.Param("space"))
-	allowedSpace, ok := wikiSpaceForPrincipal(principalFromGin(c))
-	if !ok || space == "" || space != allowedSpace {
+	allowedSpaces := wikiSpacesForPrincipal(principalFromGin(c))
+	if len(allowedSpaces) == 0 || space == "" || !allowedSpaces[space] {
 		c.JSON(http.StatusForbidden, gin.H{"error": "wiki space is not available to the current tenant"})
 		return
 	}
@@ -73,6 +73,22 @@ func wikiSpaceForPrincipal(principal Principal) (string, bool) {
 		return "local", true
 	}
 	return "", false
+}
+
+func wikiSpacesForPrincipal(principal Principal) map[string]bool {
+	spaces := make(map[string]bool)
+	if ordinary, ok := wikiSpaceForPrincipal(principal); ok {
+		spaces[ordinary] = true
+	}
+	cfg := config.Get()
+	if tenant, exists := cfg.API.Tenants[strings.TrimSpace(principal.TenantID)]; exists && cfg.Brain.Enabled {
+		for _, project := range tenant.BrainProjects {
+			if space := strings.TrimSpace(project.WikiSpace); space != "" {
+				spaces[space] = true
+			}
+		}
+	}
+	return spaces
 }
 
 func normalizeWikiPageSlug(value string) (string, error) {

@@ -56,6 +56,14 @@ func retrievalExecutionFromContext(ctx context.Context) (retrievalExecutionConte
 	return value, nil
 }
 
+func RetrievalContextScope(ctx context.Context) (taskID, tenantID, projectID, snapshotID, watermark string, ok bool) {
+	exec, exists := ctx.Value(retrievalContextKey{}).(retrievalExecutionContext)
+	if !exists {
+		return "", "", "", "", "", false
+	}
+	return exec.TaskID, exec.TenantID, exec.BrainProjectID, exec.BrainSnapshotID, exec.BrainWatermark, true
+}
+
 type MemoryQueryStore interface {
 	QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error)
 }
