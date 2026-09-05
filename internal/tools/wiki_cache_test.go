@@ -23,16 +23,16 @@ func TestWikiCacheExpiresAndEvictsOldest(t *testing.T) {
 	cache.now = func() time.Time { return now }
 	cache.maxTasks = 2
 	cache.ttl = 10 * time.Second
-	cache.replace("tenant\x00a", nil)
+	cache.replace("tenant\x00a", "wiki", nil)
 	now = now.Add(time.Second)
-	cache.replace("tenant\x00b", nil)
+	cache.replace("tenant\x00b", "wiki", nil)
 	now = now.Add(time.Second)
-	cache.replace("tenant\x00c", nil)
+	cache.replace("tenant\x00c", "wiki", nil)
 	if cache.tasks["tenant\x00a"] != nil || len(cache.tasks) != 2 {
 		t.Fatalf("capacity eviction left keys: %#v", cache.tasks)
 	}
 	now = now.Add(11 * time.Second)
-	cache.replace("tenant\x00d", nil)
+	cache.replace("tenant\x00d", "wiki", nil)
 	if len(cache.tasks) != 1 || cache.tasks["tenant\x00d"] == nil {
 		t.Fatalf("TTL pruning left keys: %#v", cache.tasks)
 	}
@@ -42,8 +42,8 @@ func TestWikiCacheExpiresAndEvictsOldest(t *testing.T) {
 func TestReleaseWikiTaskCacheIsTenantScopedAndIdempotent(t *testing.T) {
 	before := CurrentWikiMetrics()
 	cache := newWikiCache()
-	cache.replace("tenant-a\x00task", nil)
-	cache.replace("tenant-b\x00task", nil)
+	cache.replace("tenant-a\x00task", "wiki", nil)
+	cache.replace("tenant-b\x00task", "wiki", nil)
 	ReleaseWikiTaskCache("task", "tenant-a")
 	ReleaseWikiTaskCache("task", "tenant-a")
 	if cache.tasks["tenant-a\x00task"] != nil || cache.tasks["tenant-b\x00task"] == nil {
@@ -64,7 +64,7 @@ func TestWikiCacheConcurrentLifecycle(t *testing.T) {
 		go func(index int) {
 			defer wg.Done()
 			key := fmt.Sprintf("tenant\x00task-%d", index%4)
-			cache.replace(key, []wikiCandidate{{ID: "candidate"}})
+			cache.replace(key, "wiki", []wikiCandidate{{ID: "candidate"}})
 			_, _ = cache.selectCandidates(key, []string{"candidate"})
 			cache.release(key)
 		}(i)

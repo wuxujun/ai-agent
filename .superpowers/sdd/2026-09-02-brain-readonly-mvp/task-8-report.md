@@ -43,3 +43,9 @@ Verification passed for focused Brain/Tools race tests, server Wiki builder test
 - Wiki candidate caches now retain independent corpus partitions for one task;
   a Brain search cannot overwrite ordinary candidates, and fetch can safely
   select both provenance classes.
+
+## Explicit corpus partition fix
+
+- Cache replacement now receives the requested corpus explicitly instead of
+  inferring it from candidate contents, including empty/all-only-Brain result
+  sets.

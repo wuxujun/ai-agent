@@ -46,8 +46,8 @@ func TestBrainWatermarkSeparatesWikiCacheScope(t *testing.T) {
 
 func TestWikiCacheCorpusPartitionsDoNotOverwrite(t *testing.T) {
 	cache := newWikiCache()
-	cache.replace("tenant\x00task", []wikiCandidate{{ID: "wiki-1", Corpus: "wiki"}})
-	cache.replace("tenant\x00task", []wikiCandidate{{ID: "brain-1", Corpus: "brain"}})
+	cache.replace("tenant\x00task", "wiki", []wikiCandidate{{ID: "wiki-1", Corpus: "wiki"}})
+	cache.replace("tenant\x00task", "brain", []wikiCandidate{{ID: "brain-1", Corpus: "brain"}})
 	selected, err := cache.selectCandidates("tenant\x00task", []string{"wiki-1", "brain-1"})
 	if err != nil || len(selected) != 2 {
 		t.Fatalf("selected = %#v, err=%v", selected, err)

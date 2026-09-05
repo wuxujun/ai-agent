@@ -248,13 +248,13 @@ func (c *wikiCache) task(key string, create bool) *wikiTaskCache {
 	return task
 }
 
-func (c *wikiCache) replace(taskKey string, candidates []wikiCandidate) {
+func (c *wikiCache) replace(taskKey, corpus string, candidates []wikiCandidate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	task := c.task(taskKey, true)
-	corpus := "wiki"
-	if len(candidates) > 0 && candidates[0].Corpus != "" {
-		corpus = candidates[0].Corpus
+	corpus = strings.ToLower(strings.TrimSpace(corpus))
+	if corpus == "" {
+		corpus = "wiki"
 	}
 	partition := make(map[string]wikiCandidate, len(candidates))
 	task.fetched = make(map[string]bool)
@@ -471,7 +471,7 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 			}(),
 		})
 	}
-	t.cache.replace(taskKey, candidates)
+	t.cache.replace(taskKey, corpus, candidates)
 	public := append([]wikiCandidate(nil), candidates...)
 	encoded, err := json.Marshal(map[string]any{"count": len(public), "results": public})
 	if err != nil {
