@@ -35,6 +35,7 @@ type CorpusGraphReader interface {
 type corpusWatermarkReader interface {
 	CurrentWatermark(context.Context, WikiScope) (string, error)
 }
+type corpusSpaceResolver interface{ BrainSpace(WikiScope) string }
 type allCorpusWikiReader interface {
 	SearchAll(context.Context, string, int, string, WikiScope) ([]wiki.Document, error)
 }
@@ -132,6 +133,12 @@ func (r *CorpusRouter) CurrentWatermark(ctx context.Context, scope WikiScope) (s
 		return reader.CurrentWatermark(ctx, scope)
 	}
 	return "", errors.New("brain watermark is unavailable")
+}
+func (r *CorpusRouter) BrainSpace(scope WikiScope) string {
+	if resolver, ok := r.Brain.(corpusSpaceResolver); ok {
+		return resolver.BrainSpace(scope)
+	}
+	return ""
 }
 
 func refreshBrainWatermark(ctx context.Context, exec *retrievalExecutionContext, reader any) error {
@@ -871,13 +878,18 @@ func (t *wikiGraphFetchTool) Execute(ctx context.Context, _ string, params map[s
 			break
 		}
 		uri = strings.TrimSpace(uri)
-		if exec.BrainProjectID == "" && space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
+		brainSpace := ""
+		if resolver, ok := t.corpus.(corpusSpaceResolver); ok {
+			brainSpace = resolver.BrainSpace(WikiScope{TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID})
+		}
+		isBrain := brainSpace != "" && strings.HasPrefix(uri, "wiki://"+strings.Trim(brainSpace, "/")+"/")
+		if !isBrain && space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
 			return nil, errors.New("wiki_graph_fetch URI does not belong to the current tenant space")
 		}
 		var document wiki.Document
 		readErr := t.guard.call(ctx, "graph_read", func() error {
 			var callErr error
-			if exec.BrainProjectID != "" && t.corpus != nil {
+			if isBrain && t.corpus != nil {
 				document, callErr = t.corpus.ReadCorpus(ctx, wiki.Document{URI: uri}, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
 			} else {
 				document, callErr = t.client.Read(ctx, wiki.Document{URI: uri}, space)

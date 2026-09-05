@@ -30,3 +30,10 @@ Verification passed for focused Brain/Tools race tests, server Wiki builder test
 - `wiki_graph_fetch` now preserves Brain provenance and reads Brain neighbors
   through `ReadCorpus`, including live watermark refresh, without ordinary
   tenant-space validation.
+
+## Final mixed-provenance fix
+
+- Graph follow-up fetches now resolve Brain provenance from the authorized
+  Brain Wiki space in the URI. Ordinary neighbors continue through the
+  ordinary reader and tenant-space validation, allowing mixed graph results
+  without task-wide Brain misrouting.

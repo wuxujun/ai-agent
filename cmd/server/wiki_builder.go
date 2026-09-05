@@ -63,6 +63,13 @@ func (a *brainCorpusAdapter) CurrentWatermark(ctx context.Context, scope tools.W
 	}
 	return a.provider.Ledger.Watermark(ctx, ref)
 }
+func (a *brainCorpusAdapter) BrainSpace(scope tools.WikiScope) string {
+	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	if err != nil {
+		return ""
+	}
+	return ref.WikiSpace
+}
 
 func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wikiClient) error {
 	if cfg == nil || !cfg.Brain.Enabled {
