@@ -817,6 +817,7 @@ func (t *wikiSuggestTool) Execute(ctx context.Context, _ string, params map[stri
 
 type wikiGraphFetchTool struct {
 	client WikiReader
+	corpus CorpusWikiReader
 	guard  *wikiBackendGuard
 }
 
@@ -856,6 +857,9 @@ func (t *wikiGraphFetchTool) Execute(ctx context.Context, _ string, params map[s
 	if err != nil {
 		return nil, err
 	}
+	if err := refreshBrainWatermark(ctx, &exec, t.corpus); err != nil {
+		return nil, err
+	}
 	uris := stringSliceParameter(params, "uris")
 	evidence := make([]types.Evidence, 0, len(uris))
 	budget := config.Get().Wiki.FetchMaxBytes
@@ -867,13 +871,17 @@ func (t *wikiGraphFetchTool) Execute(ctx context.Context, _ string, params map[s
 			break
 		}
 		uri = strings.TrimSpace(uri)
-		if space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
+		if exec.BrainProjectID == "" && space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
 			return nil, errors.New("wiki_graph_fetch URI does not belong to the current tenant space")
 		}
 		var document wiki.Document
 		readErr := t.guard.call(ctx, "graph_read", func() error {
 			var callErr error
-			document, callErr = t.client.Read(ctx, wiki.Document{URI: uri}, space)
+			if exec.BrainProjectID != "" && t.corpus != nil {
+				document, callErr = t.corpus.ReadCorpus(ctx, wiki.Document{URI: uri}, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
+			} else {
+				document, callErr = t.client.Read(ctx, wiki.Document{URI: uri}, space)
+			}
 			return callErr
 		})
 		if readErr != nil {
@@ -911,7 +919,11 @@ func RegisterWikiToolsWithCorpus(registry *Registry, client WikiReader, corpus C
 			corpusGraph = candidate
 		}
 		registry.Register(&wikiGraphTool{client: graphClient, corpus: corpusGraph, cache: cache, guard: guard})
-		registry.Register(&wikiGraphFetchTool{client: client, guard: guard})
+		var corpusReader CorpusWikiReader
+		if candidate, ok := corpus.(CorpusWikiReader); ok {
+			corpusReader = candidate
+		}
+		registry.Register(&wikiGraphFetchTool{client: client, corpus: corpusReader, guard: guard})
 	}
 	if suggestClient, ok := client.(WikiSuggestReader); ok && suggestClient.SupportsSuggest() {
 		registry.Register(&wikiSuggestTool{client: suggestClient, cache: cache, guard: guard})

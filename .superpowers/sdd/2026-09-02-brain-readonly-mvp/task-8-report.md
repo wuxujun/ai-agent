@@ -24,3 +24,9 @@ Verification passed for focused Brain/Tools race tests, server Wiki builder test
 - The server-backed corpus adapter refreshes the live retraction watermark on
   search, fetch, and graph operations, and the watermark participates in task
   cache keys.
+
+## Final graph-fetch fix
+
+- `wiki_graph_fetch` now preserves Brain provenance and reads Brain neighbors
+  through `ReadCorpus`, including live watermark refresh, without ordinary
+  tenant-space validation.
