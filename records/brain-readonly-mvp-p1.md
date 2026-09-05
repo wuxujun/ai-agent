@@ -7,7 +7,7 @@ identifiers, and raw error payloads.
 ## Task 11 offline verification
 
 - Final pre-review commit: `40b76f1`; verification review commit: `60fdbbb`.
-- Final verification commit: `38e6754`.
+- Final verification commit: `f480ad2`.
 - Coverage: temporary-directory compile/publish/provider search-read/rollback;
   retraction after search; repository status and rollback rejection.
 - Focused deterministic command: `GOCACHE=/private/tmp/brain-mvp-go-cache go test ./internal/brain -run 'TestReadOnlyMVP' -count=1` (exit 0).
