@@ -149,6 +149,7 @@ func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wiki
 	if err != nil {
 		return nil, err
 	}
+	tools.SetBrainCacheHitObserver(brain.ObserveCacheHit)
 	return adapter, tools.RegisterWikiToolsWithCorpus(registry, client, &tools.CorpusRouter{Ordinary: client, Brain: adapter, MaxMerge: 10})
 }
 

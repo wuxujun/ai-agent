@@ -22,3 +22,10 @@ Brain status enumerates configured tenant projects through repository status,
 reporting empty and revoked projects without exposing identifiers; readiness
 uses the same healthy result. README now includes review/publish/rollback
 examples and alert guidance.
+
+## Final observability fix
+
+Compiler cancellation/errors, provider-open/retraction blocks, repository
+publish conflicts, snapshot age, and successful Brain wiki cache selections now
+update the bounded counters. Cache telemetry is wired through an observer to
+avoid an import cycle between tools and Brain.

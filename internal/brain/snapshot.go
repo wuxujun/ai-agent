@@ -344,6 +344,11 @@ func (r *Repository) Status(ctx context.Context, ref ProjectRef) (RepositoryStat
 		status.RevocationState = "revoked_or_invalid"
 		return status, err
 	}
+	if release, releaseErr := r.OpenRelease(ctx, ref, current); releaseErr == nil {
+		if info, statErr := os.Stat(release.Root); statErr == nil {
+			ObserveSnapshotAge(time.Since(info.ModTime()))
+		}
+	}
 	status.RevocationState = "verified"
 	return status, nil
 }

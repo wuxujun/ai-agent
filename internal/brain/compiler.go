@@ -72,12 +72,19 @@ type Compiler struct {
 
 // Build performs all input, budget, provenance, and validation gates before
 // staging. It intentionally never calls Repository.Publish.
-func (c *Compiler) Build(ctx context.Context, req BuildRequest) (Manifest, error) {
+func (c *Compiler) Build(ctx context.Context, req BuildRequest) (manifest Manifest, err error) {
 	started := time.Now()
-	outcome := "success"
-	defer func() { ObserveCompile(ctx, outcome, time.Since(started)) }()
+	defer func() {
+		outcome := "success"
+		if err != nil {
+			outcome = "error"
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				outcome = "canceled"
+			}
+		}
+		ObserveCompile(ctx, outcome, time.Since(started))
+	}()
 	if ctx == nil {
-		outcome = "error"
 		return Manifest{}, ErrCompileConfiguration
 	}
 	if err := ctx.Err(); err != nil {
@@ -197,7 +204,7 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (Manifest, error
 	if currentWatermark != watermark {
 		return Manifest{}, ErrRetractionChanged
 	}
-	manifest, err := c.Repository.CreateStage(callCtx, req.Ref, draft)
+	manifest, err = c.Repository.CreateStage(callCtx, req.Ref, draft)
 	if err != nil {
 		return Manifest{}, compileInfrastructure(ErrCompileRepository, err)
 	}

@@ -196,6 +196,15 @@ type wikiCache struct {
 	ttl      time.Duration
 }
 
+var brainCacheHitObserver func(context.Context, string)
+
+// SetBrainCacheHitObserver wires optional Brain cache telemetry without
+// coupling the tools package to the Brain package (which would create a
+// package cycle).
+func SetBrainCacheHitObserver(observer func(context.Context, string)) {
+	brainCacheHitObserver = observer
+}
+
 func newWikiCache() *wikiCache {
 	maxTasks := config.Get().Wiki.CandidateCacheMaxTasks
 	if maxTasks <= 0 {
@@ -268,6 +277,9 @@ func (c *wikiCache) replace(taskKey, corpus string, candidates []wikiCandidate) 
 			task.candidates[id] = candidate
 		}
 	}
+	if len(candidates) > 0 && brainCacheHitObserver != nil {
+		brainCacheHitObserver(context.Background(), corpus)
+	}
 }
 
 func (c *wikiCache) selectCandidates(taskKey string, ids []string) ([]wikiCandidate, error) {
@@ -285,6 +297,9 @@ func (c *wikiCache) selectCandidates(taskKey string, ids []string) ([]wikiCandid
 		}
 		if !task.fetched[id] {
 			selected = append(selected, candidate)
+		}
+		if len(selected) > 0 && brainCacheHitObserver != nil {
+			brainCacheHitObserver(context.Background(), "wiki")
 		}
 	}
 	return selected, nil

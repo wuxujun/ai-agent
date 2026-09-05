@@ -183,6 +183,7 @@ func (p *Provider) open(ctx context.Context, scope ProjectRef, snapshotID string
 	}
 	watermark, err := p.Ledger.Watermark(ctx, scope)
 	if err != nil || watermark != release.Manifest.RetractionWatermark {
+		ObserveRetractionBlocked(ctx, "brain")
 		return nil, Release{}, "", ErrProviderWatermark
 	}
 	client, err := wiki.NewDirectory(filepath.Join(release.Root, "wiki"))
