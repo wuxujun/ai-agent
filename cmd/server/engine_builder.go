@@ -8,6 +8,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/answerpipeline"
 	"github.com/wuxujun/ai-agent/internal/approvalcrypto"
+	"github.com/wuxujun/ai-agent/internal/brain"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
 	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
@@ -103,6 +104,12 @@ func buildEngine(ctx context.Context, cfg *config.Config, st store.Store, probe 
 		Metrics:  mc,
 		Mode:     mode,
 		Store:    st,
+	}
+	if cfg.Brain.Enabled {
+		ledger := brain.NewFileRetractionLedger(cfg.Brain.Root)
+		if repo, repoErr := brain.NewRepository(cfg.Brain.Root, ledger); repoErr == nil {
+			eng.BrainPinner = brain.NewSnapshotPinner(repo, ledger, cfg)
+		}
 	}
 	if encodedKey := os.Getenv("AI_AGENT_APPROVAL_ENCRYPTION_KEY"); encodedKey != "" {
 		var previousKeys []string

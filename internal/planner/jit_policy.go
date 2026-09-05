@@ -101,9 +101,13 @@ func NextJITRetrievalDecision(task *types.Task) (*PlanDecision, bool) {
 	if !ok {
 		return nil, false
 	}
+	parameters := map[string]any{"query": task.Goal, "top_k": 5}
+	if action == "wiki_search" && strings.TrimSpace(task.BrainProjectID) != "" && strings.TrimSpace(task.BrainSnapshotID) != "" {
+		parameters["corpus"] = "brain"
+	}
 	return &PlanDecision{
 		ThoughtSummary: "Retrieve evidence before answering the factual lookup request",
-		Actions:        []ActionCall{{Action: action, Parameters: map[string]any{"query": task.Goal, "top_k": 5}}},
+		Actions:        []ActionCall{{Action: action, Parameters: parameters}},
 	}, true
 }
 

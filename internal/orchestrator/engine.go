@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/answerpipeline"
+	"github.com/wuxujun/ai-agent/internal/brain"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/diagnostics"
 	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
@@ -44,6 +45,7 @@ import (
 )
 
 type Engine struct {
+	BrainPinner                 brain.SnapshotPinner
 	AnswerPipeline              answerpipeline.Pipeline
 	Planner                     planner.Planner
 	Finalizer                   planner.TaskFinalizer
@@ -649,6 +651,19 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 		return nil
 	}
 	ctx = store.WithTenantScope(ctx, task.TenantID)
+	if e.BrainPinner != nil {
+		brainContext, changed, pinErr := e.BrainPinner.Pin(ctx, task)
+		if pinErr != nil {
+			return pinErr
+		}
+		if changed && e.Store != nil {
+			if saveErr := e.Store.SaveFullTask(ctx, task); saveErr != nil {
+				return saveErr
+			}
+		}
+		ctx = brain.WithTaskContext(ctx, brainContext)
+		ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID, tools.WithBrainScope(brainContext.Ref.ProjectID, brainContext.SnapshotID))
+	}
 	if task.SessionID != "" {
 		ctx = store.WithSessionScope(ctx, task.SessionID)
 	}

@@ -7,14 +7,79 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"github.com/wuxujun/ai-agent/internal/wiki"
 )
+
+type TaskContext struct {
+	Ref                                    ProjectRef
+	SnapshotID, ConfigDigest, CompactIndex string
+}
+type SnapshotPinner interface {
+	Pin(context.Context, *types.Task) (TaskContext, bool, error)
+}
+type taskContextKey struct{}
+
+func WithTaskContext(ctx context.Context, task TaskContext) context.Context {
+	return context.WithValue(ctx, taskContextKey{}, task)
+}
+func TaskContextFrom(ctx context.Context) (TaskContext, bool) {
+	value, ok := ctx.Value(taskContextKey{}).(TaskContext)
+	return value, ok
+}
 
 var (
 	ErrProviderScope       = errors.New("brain provider scope is invalid")
 	ErrProviderWatermark   = errors.New("brain provider retraction watermark changed")
 	ErrProviderUnavailable = errors.New("brain provider snapshot unavailable")
+	ErrPinConfiguration    = errors.New("brain task pin configuration is invalid")
+	ErrPinMissing          = errors.New("brain task snapshot is unavailable")
+	ErrPinConfigDrift      = errors.New("brain task snapshot configuration drift")
 )
+
+type SnapshotPinnerImpl struct {
+	Repository *Repository
+	Ledger     RetractionView
+	Config     *config.Config
+}
+
+func NewSnapshotPinner(repository *Repository, ledger RetractionView, cfg *config.Config) *SnapshotPinnerImpl {
+	return &SnapshotPinnerImpl{Repository: repository, Ledger: ledger, Config: cfg}
+}
+func (p *SnapshotPinnerImpl) Pin(ctx context.Context, task *types.Task) (TaskContext, bool, error) {
+	if p == nil || p.Repository == nil || p.Ledger == nil || p.Config == nil || task == nil || strings.TrimSpace(task.BrainProjectID) == "" {
+		return TaskContext{}, false, nil
+	}
+	ref, err := ResolveProject(p.Config, task.TenantID, task.BrainProjectID)
+	if err != nil {
+		return TaskContext{}, false, ErrPinConfiguration
+	}
+	snapshotID, changed := task.BrainSnapshotID, false
+	if snapshotID == "" {
+		snapshotID, err = p.Repository.Current(ctx, ref)
+		if err != nil || snapshotID == "" {
+			return TaskContext{}, false, ErrPinMissing
+		}
+		changed = true
+	}
+	release, err := p.Repository.OpenRelease(ctx, ref, snapshotID)
+	if err != nil {
+		return TaskContext{}, false, ErrPinMissing
+	}
+	if task.BrainConfigDigest != "" && task.BrainConfigDigest != release.Manifest.ConfigDigest {
+		return TaskContext{}, false, ErrPinConfigDrift
+	}
+	watermark, err := p.Ledger.Watermark(ctx, ref)
+	if err != nil || watermark != release.Manifest.RetractionWatermark {
+		return TaskContext{}, false, ErrProviderWatermark
+	}
+	if changed {
+		task.BrainSnapshotID = snapshotID
+		task.BrainConfigDigest = release.Manifest.ConfigDigest
+	}
+	return TaskContext{Ref: ref, SnapshotID: snapshotID, ConfigDigest: release.Manifest.ConfigDigest}, changed, nil
+}
 
 // Provider serves only a verified, immutable release selected by the caller's
 // pinned task scope. It never falls back to CURRENT or staging.
