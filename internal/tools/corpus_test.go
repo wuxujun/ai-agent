@@ -64,8 +64,9 @@ func TestCorpusRouterAllSearchFetchPreservesBothSources(t *testing.T) {
 		cfg.Wiki.FetchMaxItems = 3
 		cfg.Wiki.FetchMaxBytes = 4096
 	}))
-	ordinary := &fakeWikiReader{}
-	router := &CorpusRouter{Ordinary: ordinary, Brain: corpusFixture{}, MaxMerge: 4}
+	ordinary := &trackingWikiReader{}
+	brainReader := &trackingCorpusReader{}
+	router := &CorpusRouter{Ordinary: ordinary, Brain: brainReader, MaxMerge: 4}
 	search := &wikiSearchTool{client: ordinary, corpus: router, cache: newWikiCache(), guard: &wikiBackendGuard{}}
 	ctx := WithRetrievalExecutionContext(t.Context(), "all-task", "tenant-a", WithBrainScope("atlas", "snap-1"))
 	result, err := search.Execute(ctx, "", map[string]any{"query": "q", "top_k": 4, "corpus": "all"})
@@ -86,16 +87,49 @@ func TestCorpusRouterAllSearchFetchPreservesBothSources(t *testing.T) {
 	if _, err := fetch.Execute(ctx, "", map[string]any{"ids": ids}); err != nil {
 		t.Fatal(err)
 	}
+	if ordinary.readCalls != 1 || brainReader.readCalls != 1 {
+		t.Fatalf("ordinary reads=%d brain reads=%d", ordinary.readCalls, brainReader.readCalls)
+	}
 }
 
-type mixedGraphCorpus struct{ corpusFixture }
+type trackingWikiReader struct {
+	trackingWikiReaderBase
+	readCalls int
+}
+type trackingWikiReaderBase struct{}
+
+func (trackingWikiReaderBase) Search(context.Context, string, int, string) ([]wiki.Document, error) {
+	return []wiki.Document{{URI: "wiki://tenant-a/ordinary", Status: "wiki"}}, nil
+}
+func (t *trackingWikiReader) Read(_ context.Context, document wiki.Document, _ string) (wiki.Document, error) {
+	t.readCalls++
+	document.Content = "ordinary"
+	return document, nil
+}
+
+type trackingCorpusReader struct{ readCalls int }
+
+func (trackingCorpusReader) CurrentWatermark(context.Context, WikiScope) (string, error) {
+	return "wm-1", nil
+}
+func (trackingCorpusReader) SearchCorpus(context.Context, string, int, string, WikiScope) ([]wiki.Document, error) {
+	return []wiki.Document{{URI: "wiki://brain-atlas/brain", Status: "brain"}}, nil
+}
+func (t *trackingCorpusReader) ReadCorpus(_ context.Context, document wiki.Document, _ string, _ WikiScope) (wiki.Document, error) {
+	t.readCalls++
+	document.Content = "brain"
+	return document, nil
+}
+
+type mixedGraphCorpus struct{ *trackingCorpusReader }
 
 func (mixedGraphCorpus) BrainSpace(WikiScope) string { return "brain-atlas" }
 
 func TestGraphFetchRoutesMixedOrdinaryAndBrainProvenance(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) { cfg.Wiki.DefaultSpace = "tenant-a" }))
-	ordinary := &fakeWikiReader{}
-	fetch := &wikiGraphFetchTool{client: ordinary, corpus: mixedGraphCorpus{}, guard: &wikiBackendGuard{}}
+	ordinary := &trackingWikiReader{}
+	brainReader := mixedGraphCorpus{trackingCorpusReader: &trackingCorpusReader{}}
+	fetch := &wikiGraphFetchTool{client: ordinary, corpus: brainReader, guard: &wikiBackendGuard{}}
 	ctx := WithRetrievalExecutionContext(t.Context(), "graph-task", "tenant-a", WithBrainScope("atlas", "snap-1"))
 	result, err := fetch.Execute(ctx, "", map[string]any{"uris": []any{"wiki://tenant-a/concepts/moe", "wiki://brain-atlas/concepts/one"}})
 	if err != nil {
@@ -103,5 +137,8 @@ func TestGraphFetchRoutesMixedOrdinaryAndBrainProvenance(t *testing.T) {
 	}
 	if len(result.Evidence) != 2 {
 		t.Fatalf("evidence = %#v", result.Evidence)
+	}
+	if ordinary.readCalls != 1 || brainReader.readCalls != 1 {
+		t.Fatalf("ordinary reads=%d brain reads=%d", ordinary.readCalls, brainReader.readCalls)
 	}
 }

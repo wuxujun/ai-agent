@@ -54,3 +54,6 @@ Verification passed for focused Brain/Tools race tests, server Wiki builder test
 
 - Added all-corpus search→fetch source coverage, watermark cache isolation,
   and mixed ordinary/Brain graph-fetch provenance tests.
+
+The regression assertions now verify ordinary and Brain readers are each
+called exactly once for mixed all-corpus and graph-fetch operations.
