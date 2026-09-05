@@ -14,3 +14,13 @@ Verification passed for focused Brain/Tools race tests, server Wiki builder test
 - Brain reads and graph operations now use the authorized project's Wiki space,
   and graph corpus routing is exposed conditionally.
 - Added Brain/all corpus graph routing and stable scoped candidate/cache keys.
+
+## Final review fix
+
+- Server now registers a composite ordinary/Brain corpus router, enabling real
+  `corpus=all` search and provenance-aware fetches.
+- Brain graph requests bypass ordinary tenant-space validation and resolve the
+  authorized project Wiki space; `corpus=all` graph is explicitly rejected.
+- The server-backed corpus adapter refreshes the live retraction watermark on
+  search, fetch, and graph operations, and the watermark participates in task
+  cache keys.

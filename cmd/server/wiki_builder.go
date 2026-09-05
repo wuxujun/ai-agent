@@ -56,6 +56,13 @@ func (a *brainCorpusAdapter) GraphCorpus(ctx context.Context, document wiki.Docu
 	}
 	return a.provider.GraphCorpus(ctx, document, space, depth, direction, ref, scope.BrainSnapshotID)
 }
+func (a *brainCorpusAdapter) CurrentWatermark(ctx context.Context, scope tools.WikiScope) (string, error) {
+	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	if err != nil {
+		return "", err
+	}
+	return a.provider.Ledger.Watermark(ctx, ref)
+}
 
 func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wikiClient) error {
 	if cfg == nil || !cfg.Brain.Enabled {
@@ -66,7 +73,8 @@ func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wiki
 	if err != nil {
 		return err
 	}
-	return tools.RegisterWikiToolsWithCorpus(registry, client, &brainCorpusAdapter{provider: brain.NewProvider(repo, ledger), cfg: cfg})
+	adapter := &brainCorpusAdapter{provider: brain.NewProvider(repo, ledger), cfg: cfg}
+	return tools.RegisterWikiToolsWithCorpus(registry, client, &tools.CorpusRouter{Ordinary: client, Brain: adapter, MaxMerge: 10})
 }
 
 func (r *wikiRuntime) Check(ctx context.Context) error {

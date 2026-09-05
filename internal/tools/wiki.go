@@ -32,6 +32,9 @@ type CorpusWikiReader interface {
 type CorpusGraphReader interface {
 	GraphCorpus(context.Context, wiki.Document, string, int, string, WikiScope) (wiki.GraphResult, error)
 }
+type corpusWatermarkReader interface {
+	CurrentWatermark(context.Context, WikiScope) (string, error)
+}
 type allCorpusWikiReader interface {
 	SearchAll(context.Context, string, int, string, WikiScope) ([]wiki.Document, error)
 }
@@ -117,6 +120,34 @@ func (r *CorpusRouter) ReadCorpus(ctx context.Context, document wiki.Document, s
 		return r.Brain.ReadCorpus(ctx, document, space, scope)
 	}
 	return r.Read(ctx, document, space)
+}
+func (r *CorpusRouter) GraphCorpus(ctx context.Context, document wiki.Document, space string, depth int, direction string, scope WikiScope) (wiki.GraphResult, error) {
+	if graph, ok := r.Brain.(CorpusGraphReader); ok {
+		return graph.GraphCorpus(ctx, document, space, depth, direction, scope)
+	}
+	return wiki.GraphResult{}, errors.New("brain graph is unavailable")
+}
+func (r *CorpusRouter) CurrentWatermark(ctx context.Context, scope WikiScope) (string, error) {
+	if reader, ok := r.Brain.(corpusWatermarkReader); ok {
+		return reader.CurrentWatermark(ctx, scope)
+	}
+	return "", errors.New("brain watermark is unavailable")
+}
+
+func refreshBrainWatermark(ctx context.Context, exec *retrievalExecutionContext, reader any) error {
+	if exec.BrainProjectID == "" || exec.BrainSnapshotID == "" {
+		return nil
+	}
+	watermarkReader, ok := reader.(corpusWatermarkReader)
+	if !ok {
+		return nil
+	}
+	watermark, err := watermarkReader.CurrentWatermark(ctx, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID})
+	if err != nil {
+		return err
+	}
+	exec.BrainWatermark = watermark
+	return nil
 }
 
 type WikiGraphReader interface {
@@ -350,6 +381,9 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 	if err != nil {
 		return nil, err
 	}
+	if err := refreshBrainWatermark(ctx, &exec, t.corpus); err != nil {
+		return nil, err
+	}
 	space, err := wikiSpaceForTenant(exec.TenantID)
 	if err != nil {
 		return nil, err
@@ -478,6 +512,9 @@ func (t *wikiFetchTool) Execute(ctx context.Context, _ string, params map[string
 	if err != nil {
 		return nil, err
 	}
+	if err := refreshBrainWatermark(ctx, &exec, t.corpus); err != nil {
+		return nil, err
+	}
 	space, err := wikiSpaceForTenant(exec.TenantID)
 	if err != nil {
 		return nil, err
@@ -588,10 +625,16 @@ func (t *wikiGraphTool) Execute(ctx context.Context, _ string, params map[string
 	if corpus != "wiki" && corpus != "brain" && corpus != "all" {
 		return nil, errors.New("wiki_graph corpus is invalid")
 	}
+	if corpus == "all" {
+		return nil, errors.New("wiki_graph corpus=all is not supported")
+	}
 	if corpus != "wiki" && (t.corpus == nil || exec.BrainProjectID == "" || exec.BrainSnapshotID == "") {
 		return nil, errors.New("brain corpus requires pinned project and snapshot")
 	}
-	if space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
+	if err := refreshBrainWatermark(ctx, &exec, t.corpus); err != nil {
+		return nil, err
+	}
+	if corpus == "wiki" && space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
 		return nil, errors.New("wiki_graph URI does not belong to the current tenant space")
 	}
 	taskKey := wikiTaskKey(exec)
