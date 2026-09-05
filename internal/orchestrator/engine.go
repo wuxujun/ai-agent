@@ -652,12 +652,14 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	}
 	ctx = store.WithTenantScope(ctx, task.TenantID)
 	if e.BrainPinner != nil {
+		oldProject, oldSnapshot, oldDigest := task.BrainProjectID, task.BrainSnapshotID, task.BrainConfigDigest
 		brainContext, changed, pinErr := e.BrainPinner.Pin(ctx, task)
 		if pinErr != nil {
 			return pinErr
 		}
 		if changed && e.Store != nil {
 			if saveErr := e.Store.SaveFullTask(ctx, task); saveErr != nil {
+				task.BrainProjectID, task.BrainSnapshotID, task.BrainConfigDigest = oldProject, oldSnapshot, oldDigest
 				return saveErr
 			}
 		}

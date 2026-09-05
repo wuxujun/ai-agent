@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -67,18 +68,27 @@ func (p *SnapshotPinnerImpl) Pin(ctx context.Context, task *types.Task) (TaskCon
 	if err != nil {
 		return TaskContext{}, false, ErrPinMissing
 	}
-	if task.BrainConfigDigest != "" && task.BrainConfigDigest != release.Manifest.ConfigDigest {
+	admissionDigest := ProjectConfigDigest(ref)
+	if task.BrainConfigDigest != "" && task.BrainConfigDigest != admissionDigest {
 		return TaskContext{}, false, ErrPinConfigDrift
 	}
 	watermark, err := p.Ledger.Watermark(ctx, ref)
 	if err != nil || watermark != release.Manifest.RetractionWatermark {
 		return TaskContext{}, false, ErrProviderWatermark
 	}
+	compactIndex := ""
+	if limit := p.Config.Brain.CompactIndexMaxBytes; limit > 0 {
+		index, readErr := os.ReadFile(filepath.Join(release.Root, "wiki", "_index.md"))
+		if readErr != nil || len(index) > limit {
+			return TaskContext{}, false, ErrPinMissing
+		}
+		compactIndex = string(index)
+	}
 	if changed {
 		task.BrainSnapshotID = snapshotID
-		task.BrainConfigDigest = release.Manifest.ConfigDigest
+		task.BrainConfigDigest = admissionDigest
 	}
-	return TaskContext{Ref: ref, SnapshotID: snapshotID, ConfigDigest: release.Manifest.ConfigDigest}, changed, nil
+	return TaskContext{Ref: ref, SnapshotID: snapshotID, ConfigDigest: admissionDigest, CompactIndex: compactIndex}, changed, nil
 }
 
 // Provider serves only a verified, immutable release selected by the caller's

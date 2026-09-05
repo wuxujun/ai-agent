@@ -20,3 +20,12 @@ git diff --check
 The remaining Task 9 mode-specific context propagation and page-API allowlist
 coverage require follow-up integration work; the committed vertical slice is
 the pinner/Engine/JIT path above.
+
+## Review fix round
+
+- Pin admission now uses `ProjectConfigDigest(ref)`; the compiler manifest
+  digest remains distinct runtime metadata.
+- Engine pin fields roll back if immediate persistence fails.
+- Pinned Brain memory-intent JIT requests route to `wiki_search` with Brain
+  corpus, Brain repository initialization is fail-closed, and the bounded
+  release compact index is loaded into `TaskContext`.

@@ -107,9 +107,11 @@ func buildEngine(ctx context.Context, cfg *config.Config, st store.Store, probe 
 	}
 	if cfg.Brain.Enabled {
 		ledger := brain.NewFileRetractionLedger(cfg.Brain.Root)
-		if repo, repoErr := brain.NewRepository(cfg.Brain.Root, ledger); repoErr == nil {
-			eng.BrainPinner = brain.NewSnapshotPinner(repo, ledger, cfg)
+		repo, repoErr := brain.NewRepository(cfg.Brain.Root, ledger)
+		if repoErr != nil {
+			return engineBuild{}, fmt.Errorf("initialize Brain repository: %w", repoErr)
 		}
+		eng.BrainPinner = brain.NewSnapshotPinner(repo, ledger, cfg)
 	}
 	if encodedKey := os.Getenv("AI_AGENT_APPROVAL_ENCRYPTION_KEY"); encodedKey != "" {
 		var previousKeys []string

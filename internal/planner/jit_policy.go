@@ -143,6 +143,9 @@ func PreferredJITSearchAction(task *types.Task) (string, bool) {
 		return "", false
 	}
 	if goalExplicitlyTargetsMemory(task.Goal) {
+		if task.BrainProjectID != "" && task.BrainSnapshotID != "" {
+			return "wiki_search", true
+		}
 		return "memory_search", true
 	}
 	team := strings.ToLower(strings.TrimSpace(task.Team))
