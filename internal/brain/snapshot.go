@@ -361,6 +361,9 @@ func (r *Repository) Publish(ctx context.Context, ref ProjectRef, snapshotID, ex
 			if errors.Is(err, ErrCurrentConflict) {
 				outcome = "conflict"
 			}
+			if errors.Is(err, ErrRetractionChanged) || errors.Is(err, ErrSnapshotRevoked) {
+				ObserveRetractionBlocked(ctx, "brain")
+			}
 		}
 		ObservePublish(ctx, outcome, "brain")
 	}()

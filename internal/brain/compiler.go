@@ -118,9 +118,11 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (manifest Manife
 	for _, evidence := range sources.Evidence {
 		retracted, containsErr := c.Ledger.Contains(ctx, req.Ref, evidence.URI)
 		if containsErr != nil {
+			ObserveRetractionBlocked(ctx, "brain")
 			return Manifest{}, compileInfrastructure(ErrCompileRetractionInfrastructure, containsErr)
 		}
 		if retracted {
+			ObserveRetractionBlocked(ctx, "brain")
 			return Manifest{}, ErrCompileRetraction
 		}
 	}
@@ -202,6 +204,7 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (manifest Manife
 		return Manifest{}, compileInfrastructure(ErrCompileRetractionInfrastructure, err)
 	}
 	if currentWatermark != watermark {
+		ObserveRetractionBlocked(ctx, "brain")
 		return Manifest{}, ErrRetractionChanged
 	}
 	manifest, err = c.Repository.CreateStage(callCtx, req.Ref, draft)

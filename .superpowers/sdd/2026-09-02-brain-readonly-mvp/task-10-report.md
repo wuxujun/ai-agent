@@ -29,3 +29,7 @@ Compiler cancellation/errors, provider-open/retraction blocks, repository
 publish conflicts, snapshot age, and successful Brain wiki cache selections now
 update the bounded counters. Cache telemetry is wired through an observer to
 avoid an import cycle between tools and Brain.
+
+OTel instruments are registered under `agent.brain.*` with only bounded
+outcome/corpus/provider attributes. Compiler retraction gates increment the
+blocked counter, and cache hits are recorded only after candidate selection.

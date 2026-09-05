@@ -277,9 +277,6 @@ func (c *wikiCache) replace(taskKey, corpus string, candidates []wikiCandidate) 
 			task.candidates[id] = candidate
 		}
 	}
-	if len(candidates) > 0 && brainCacheHitObserver != nil {
-		brainCacheHitObserver(context.Background(), corpus)
-	}
 }
 
 func (c *wikiCache) selectCandidates(taskKey string, ids []string) ([]wikiCandidate, error) {
@@ -298,8 +295,12 @@ func (c *wikiCache) selectCandidates(taskKey string, ids []string) ([]wikiCandid
 		if !task.fetched[id] {
 			selected = append(selected, candidate)
 		}
-		if len(selected) > 0 && brainCacheHitObserver != nil {
-			brainCacheHitObserver(context.Background(), "wiki")
+	}
+	if brainCacheHitObserver != nil {
+		for _, candidate := range selected {
+			if candidate.Corpus == "brain" {
+				brainCacheHitObserver(context.Background(), "brain")
+			}
 		}
 	}
 	return selected, nil
