@@ -17,25 +17,30 @@ import (
 )
 
 const (
-	brainCompilerScene  = "brain_compiler"
-	maxCompilerPages    = 128
-	maxCompilerClaims   = 64
-	maxCompilerLinks    = 64
-	maxClaimEvidenceIDs = 16
-	maxPageTitleBytes   = 240
-	maxPageSummaryBytes = 4 * 1024
-	maxClaimIDBytes     = 240
-	maxClaimTextBytes   = 8 * 1024
-	maxLinkBytes        = 512
+	brainCompilerScene                 = "brain_compiler"
+	brainCompilerPromptTemplateVersion = "brain-compiler-prompt-v1"
+	maxCompilerPages                   = 128
+	maxCompilerClaims                  = 64
+	maxCompilerLinks                   = 64
+	maxClaimEvidenceIDs                = 16
+	maxPageTitleBytes                  = 240
+	maxPageSummaryBytes                = 4 * 1024
+	maxClaimIDBytes                    = 240
+	maxClaimTextBytes                  = 8 * 1024
+	maxLinkBytes                       = 512
 )
 
 var (
-	ErrCompileBudget        = errors.New("brain compiler budget exceeded")
-	ErrCompileConfiguration = errors.New("brain compiler configuration is invalid")
-	ErrCompileSynthesis     = errors.New("brain compiler synthesis is invalid")
-	ErrCompileValidation    = errors.New("brain compiler validation failed")
-	ErrCompileRetraction    = errors.New("brain compiler retraction check failed")
-	ErrCompileStage         = errors.New("brain compiler staging failed")
+	ErrCompileBudget         = errors.New("brain compiler budget exceeded")
+	ErrCompileConfiguration  = errors.New("brain compiler configuration is invalid")
+	ErrCompileSynthesis      = errors.New("brain compiler synthesis is invalid")
+	ErrCompileValidation     = errors.New("brain compiler validation failed")
+	ErrCompileRetraction     = errors.New("brain compiler retraction check failed")
+	ErrCompileStage          = errors.New("brain compiler staging failed")
+	ErrCompileInfrastructure = errors.New("brain compiler infrastructure failure")
+	ErrCompileSource         = errors.New("brain compiler source infrastructure failure")
+	ErrCompileLLM            = errors.New("brain compiler LLM infrastructure failure")
+	ErrCompileRepository     = errors.New("brain compiler repository infrastructure failure")
 )
 
 // BuildRequest fixes the authorized project scope and provenance cutoff for one
@@ -86,7 +91,7 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (Manifest, error
 
 	sources, err := c.Sources.Read(ctx, req.Ref, req.Cutoff)
 	if err != nil {
-		return Manifest{}, compileCause(ErrCompileSynthesis, err)
+		return Manifest{}, compileInfrastructure(ErrCompileSource, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return Manifest{}, err
@@ -131,7 +136,10 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (Manifest, error
 	callCtx = llm.WithMaxOutputTokens(callCtx, limits.maxOutputTokens)
 	output, usage, err := c.synthesize(callCtx, llmConfig, systemPrompt, userPrompt, schema, sources)
 	if err != nil {
-		return Manifest{}, compileCause(ErrCompileSynthesis, err)
+		if errors.Is(err, llm.ErrStructuredOutput) {
+			return Manifest{}, ErrCompileSynthesis
+		}
+		return Manifest{}, compileInfrastructure(ErrCompileLLM, err)
 	}
 	if err := callCtx.Err(); err != nil {
 		return Manifest{}, err
@@ -163,7 +171,7 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (Manifest, error
 		SourceHashes:        append([]string(nil), sources.SourceHashes...),
 		RetractionWatermark: watermark,
 		Model:               llmConfig.Model,
-		PromptVersion:       compilerPromptDigest(systemPrompt),
+		PromptVersion:       compilerPromptDigest(systemPrompt, schema),
 		ConfigDigest:        compilerConfigDigest(req.Ref, llmConfig, limits),
 		Usage:               usage,
 		EstimatedCostUSD:    estimatedCost,
@@ -186,7 +194,7 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (Manifest, error
 	}
 	manifest, err := c.Repository.CreateStage(callCtx, req.Ref, draft)
 	if err != nil {
-		return Manifest{}, compileCause(ErrCompileStage, err)
+		return Manifest{}, compileInfrastructure(ErrCompileRepository, ErrCompileStage, err)
 	}
 	return manifest, nil
 }
@@ -233,7 +241,10 @@ func compilerLLMConfig(snapshot *config.Config) (llm.Config, compilerLimits, err
 	if endpoint.BaseURL != "" {
 		baseURL = endpoint.BaseURL
 	}
-	inputCost, outputCost := compilerPricing(snapshot, endpoint)
+	inputCost, outputCost, err := compilerPricing(snapshot, endpoint)
+	if err != nil {
+		return llm.Config{}, compilerLimits{}, err
+	}
 	return llm.Config{
 			Scene:                   brainCompilerScene,
 			Provider:                "gemini",
@@ -244,6 +255,7 @@ func compilerLLMConfig(snapshot *config.Config) (llm.Config, compilerLimits, err
 			InputCostPerMillionUSD:  inputCost,
 			OutputCostPerMillionUSD: outputCost,
 			MaxOutputTokens:         snapshot.Brain.Compiler.MaxOutputTokens,
+			StrictJSONSchema:        true,
 		}, compilerLimits{
 			maxInputBytes:        snapshot.Brain.Compiler.MaxInputBytes,
 			maxOutputTokens:      snapshot.Brain.Compiler.MaxOutputTokens,
@@ -252,7 +264,7 @@ func compilerLLMConfig(snapshot *config.Config) (llm.Config, compilerLimits, err
 		}, nil
 }
 
-func compilerPricing(snapshot *config.Config, endpoint config.LLMEndpointConfig) (float64, float64) {
+func compilerPricing(snapshot *config.Config, endpoint config.LLMEndpointConfig) (float64, float64, error) {
 	input := endpoint.InputCostPerMillionUSD
 	output := endpoint.OutputCostPerMillionUSD
 	if input == nil {
@@ -261,14 +273,10 @@ func compilerPricing(snapshot *config.Config, endpoint config.LLMEndpointConfig)
 	if output == nil {
 		output = snapshot.LLM.Gateway.OutputCostPerMillionUSD
 	}
-	var inputValue, outputValue float64
-	if input != nil {
-		inputValue = *input
+	if input == nil || output == nil || !finiteNonNegative(*input) || !finiteNonNegative(*output) || (*input == 0 && *output == 0) {
+		return 0, 0, ErrCompileConfiguration
 	}
-	if output != nil {
-		outputValue = *output
-	}
-	return inputValue, outputValue
+	return *input, *output, nil
 }
 
 func compilerRequest(ref ProjectRef, sources SourceSet) (string, string, map[string]any, error) {
@@ -363,13 +371,18 @@ func validateSynthesis(ref ProjectRef, cutoff time.Time, sources SourceSet, outp
 			return ErrCompileSynthesis
 		}
 		seenPages[name] = true
+		seenLinks := make(map[string]bool, len(page.Links))
 		for _, link := range page.Links {
+			if seenLinks[link] {
+				return ErrCompileSynthesis
+			}
 			if len(link) > maxLinkBytes {
 				return ErrCompileSynthesis
 			}
 			if _, _, _, err := parseBrainWikiURI(link, ref.WikiSpace); err != nil {
 				return ErrCompileSynthesis
 			}
+			seenLinks[link] = true
 		}
 		for _, claim := range page.Claims {
 			if seenClaims[claim.ID] || !boundedCompilerText(claim.ID, maxClaimIDBytes, true) || !boundedCompilerText(claim.Text, maxClaimTextBytes, true) || !validCompilerConfidence(claim.Confidence) || !validCompilerState(claim.State) || claim.ObservedAt.IsZero() || claim.ObservedAt.After(cutoff) || len(claim.EvidenceIDs) == 0 || len(claim.EvidenceIDs) > maxClaimEvidenceIDs {
@@ -392,7 +405,10 @@ func validateSynthesis(ref ProjectRef, cutoff time.Time, sources SourceSet, outp
 }
 
 func validCompilerUsage(usage types.TokenUsage, inputLimit, outputLimit int) bool {
-	return usage.PromptTokens >= 0 && usage.CompletionTokens >= 0 && usage.TotalTokens >= 0 && usage.PromptTokens <= inputLimit && usage.CompletionTokens <= outputLimit
+	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 || usage.TotalTokens < 0 || usage.PromptTokens > inputLimit || usage.CompletionTokens > outputLimit || usage.PromptTokens > math.MaxInt-usage.CompletionTokens {
+		return false
+	}
+	return usage.TotalTokens == usage.PromptTokens+usage.CompletionTokens
 }
 
 func boundedCompilerText(value string, limit int, required bool) bool {
@@ -409,7 +425,7 @@ func validCompilerState(value string) bool {
 
 func unsafeCompilerContent(value string) bool {
 	lower := strings.ToLower(value)
-	return strings.Contains(lower, "ignore previous instructions") || strings.Contains(lower, "disregard previous instructions") || strings.Contains(lower, "reveal the system prompt") || strings.Contains(lower, "system prompt") || sanitize.Secrets(value) != value
+	return strings.Contains(lower, "ignore previous instructions") || strings.Contains(lower, "disregard previous instructions") || strings.Contains(lower, "reveal the system prompt") || strings.Contains(lower, "system prompt") || containsPrivateBrainPath(value) || sanitize.Secrets(value) != value
 }
 
 func finiteNonNegative(value float64) bool {
@@ -426,8 +442,16 @@ func compilerSnapshotID() string {
 	return "brain-" + hex.EncodeToString(bytes)
 }
 
-func compilerPromptDigest(systemPrompt string) string {
-	return digestBytes([]byte(systemPrompt))
+func compilerPromptDigest(systemPrompt string, schema map[string]any) string {
+	encoded, err := json.Marshal(struct {
+		TemplateVersion string         `json:"template_version"`
+		SystemPrompt    string         `json:"system_prompt"`
+		Schema          map[string]any `json:"schema"`
+	}{TemplateVersion: brainCompilerPromptTemplateVersion, SystemPrompt: systemPrompt, Schema: schema})
+	if err != nil {
+		return ""
+	}
+	return digestBytes(encoded)
 }
 
 func compilerConfigDigest(ref ProjectRef, cfg llm.Config, limits compilerLimits) string {
@@ -456,4 +480,16 @@ func compileCause(category, cause error) error {
 		return errors.Join(category, cause)
 	}
 	return category
+}
+
+func compileInfrastructure(categories ...error) error {
+	if len(categories) == 0 {
+		return ErrCompileInfrastructure
+	}
+	cause := categories[len(categories)-1]
+	classification := append([]error{ErrCompileInfrastructure}, categories[:len(categories)-1]...)
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		classification = append(classification, cause)
+	}
+	return errors.Join(classification...)
 }

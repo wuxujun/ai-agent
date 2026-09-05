@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,16 +22,22 @@ type compilerFakeCaller struct {
 	calls  int
 	output Synthesis
 	usage  types.TokenUsage
+	err    error
 	cfg    llm.Config
 	schema map[string]any
+	user   string
 }
 
-func (f *compilerFakeCaller) CallJSON(ctx context.Context, cfg llm.Config, _, _ string, schema map[string]any, dest any) (types.TokenUsage, error) {
+func (f *compilerFakeCaller) CallJSON(ctx context.Context, cfg llm.Config, _, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error) {
 	f.calls++
 	f.cfg = cfg
 	f.schema = schema
+	f.user = userPrompt
 	if err := ctx.Err(); err != nil {
 		return types.TokenUsage{}, err
+	}
+	if f.err != nil {
+		return types.TokenUsage{}, f.err
 	}
 	out, ok := dest.(*Synthesis)
 	if !ok {
@@ -108,6 +115,50 @@ func TestCompilerRejectsEstimatedCostReservationBeforeLLMCall(t *testing.T) {
 	}
 }
 
+func TestCompilerRejectsMissingOrInvalidPricingBeforeLLMCall(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Compiler)
+	}{
+		{
+			name: "missing",
+			mutate: func(compiler *Compiler) {
+				compiler.Config.LLM.Scenes = map[string]config.LLMEndpointConfig{brainCompilerScene: {}}
+				compiler.Config.LLM.Gateway = config.LLMEndpointConfig{}
+			},
+		},
+		{
+			name: "not finite",
+			mutate: func(compiler *Compiler) {
+				price := math.NaN()
+				compiler.Config.LLM.Scenes[brainCompilerScene] = config.LLMEndpointConfig{InputCostPerMillionUSD: &price, OutputCostPerMillionUSD: &price}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &compilerFakeCaller{}
+			compiler := testCompiler(t, fake, compilerTestOptions{})
+			tt.mutate(compiler)
+
+			_, err := compiler.Build(t.Context(), compilerBuildRequest())
+			if !errors.Is(err, ErrCompileConfiguration) || fake.calls != 0 {
+				t.Fatalf("calls=%d err=%v", fake.calls, err)
+			}
+		})
+	}
+}
+
+func TestCompilerRejectsInconsistentUsageTotalsBeforeStaging(t *testing.T) {
+	fake := &compilerFakeCaller{output: compilerValidSynthesis(), usage: types.TokenUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 4}}
+	compiler := testCompiler(t, fake, compilerTestOptions{})
+
+	_, err := compiler.Build(t.Context(), compilerBuildRequest())
+	if !errors.Is(err, ErrCompileBudget) || fake.calls != 1 || compilerHasStagedSnapshot(t, compiler) {
+		t.Fatalf("calls=%d staged=%t err=%v", fake.calls, compilerHasStagedSnapshot(t, compiler), err)
+	}
+}
+
 func TestCompilerRejectsMalformedStructuredOutputBeforeStaging(t *testing.T) {
 	output := compilerValidSynthesis()
 	output.Pages[0].Claims[0].EvidenceIDs = []string{"unknown-evidence"}
@@ -129,6 +180,76 @@ func TestCompilerRejectsPromptInjectionFindingsBeforeStaging(t *testing.T) {
 	_, err := compiler.Build(t.Context(), compilerBuildRequest())
 	if !errors.Is(err, ErrCompileValidation) || fake.calls != 1 || compilerHasStagedSnapshot(t, compiler) {
 		t.Fatalf("calls=%d staged=%t err=%v", fake.calls, compilerHasStagedSnapshot(t, compiler), err)
+	}
+}
+
+func TestCompilerRejectsPrivatePathsBeforeModelAndStaging(t *testing.T) {
+	const privatePath = "/Users/example/private-plan.md"
+	t.Run("source", func(t *testing.T) {
+		fake := &compilerFakeCaller{}
+		compiler := testCompiler(t, fake, compilerTestOptions{})
+		compiler.Sources = NewSourceReader(&compilerSourceStore{tasks: []*types.Task{compilerSourceTask("task-a", privatePath)}})
+
+		_, err := compiler.Build(t.Context(), compilerBuildRequest())
+		if !errors.Is(err, ErrCompileSynthesis) || fake.calls != 0 || strings.Contains(fake.user, privatePath) {
+			t.Fatalf("calls=%d staged=%t err=%v", fake.calls, compilerHasStagedSnapshot(t, compiler), err)
+		}
+	})
+	t.Run("generated", func(t *testing.T) {
+		output := compilerValidSynthesis()
+		output.Pages[0].Summary = privatePath
+		fake := &compilerFakeCaller{output: output}
+		compiler := testCompiler(t, fake, compilerTestOptions{})
+
+		_, err := compiler.Build(t.Context(), compilerBuildRequest())
+		if !errors.Is(err, ErrCompileValidation) || fake.calls != 1 || compilerHasStagedSnapshot(t, compiler) {
+			t.Fatalf("calls=%d staged=%t err=%v", fake.calls, compilerHasStagedSnapshot(t, compiler), err)
+		}
+	})
+}
+
+func TestCompilerClassifiesInfrastructureFailuresWithoutLeakingCauses(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*Compiler, *compilerFakeCaller)
+		want  error
+		calls int
+	}{
+		{
+			name: "source",
+			setup: func(compiler *Compiler, _ *compilerFakeCaller) {
+				compiler.Sources = NewSourceReader(&compilerSourceStore{err: errors.New("backend unavailable")})
+			},
+			want: ErrCompileSource,
+		},
+		{
+			name: "llm",
+			setup: func(_ *Compiler, fake *compilerFakeCaller) {
+				fake.err = errors.New("provider unavailable")
+			},
+			want:  ErrCompileLLM,
+			calls: 1,
+		},
+		{
+			name: "repository",
+			setup: func(compiler *Compiler, _ *compilerFakeCaller) {
+				compiler.Repository = &Repository{}
+			},
+			want:  ErrCompileRepository,
+			calls: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &compilerFakeCaller{output: compilerValidSynthesis()}
+			compiler := testCompiler(t, fake, compilerTestOptions{})
+			tt.setup(compiler, fake)
+
+			_, err := compiler.Build(t.Context(), compilerBuildRequest())
+			if !errors.Is(err, ErrCompileInfrastructure) || !errors.Is(err, tt.want) || errors.Is(err, ErrCompileSynthesis) || fake.calls != tt.calls {
+				t.Fatalf("calls=%d err=%v", fake.calls, err)
+			}
+		})
 	}
 }
 
@@ -163,10 +284,10 @@ func TestCompilerStagesValidatedProposalWithoutPublishingAndRecordsSafeManifest(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fake.calls != 1 || fake.cfg.Scene != brainCompilerScene || fake.cfg.Provider != "gemini" || fake.cfg.Model != "gemini-test-model" || fake.cfg.APIKey != secret || fake.cfg.MaxOutputTokens != 12000 || llm.MaxOutputTokensFromContext(t.Context()) != 0 {
+	if fake.calls != 1 || fake.cfg.Scene != brainCompilerScene || fake.cfg.Provider != "gemini" || fake.cfg.Model != "gemini-test-model" || fake.cfg.APIKey != secret || !fake.cfg.StrictJSONSchema || fake.cfg.MaxOutputTokens != 12000 || llm.MaxOutputTokensFromContext(t.Context()) != 0 {
 		t.Fatalf("caller=%+v calls=%d", fake.cfg, fake.calls)
 	}
-	if fake.schema["additionalProperties"] != false || !compilerSchemaHasEvidenceEnums(fake.schema) {
+	if !compilerSchemaHasStrictNestedBounds(fake.schema) {
 		t.Fatalf("schema is not bounded/closed: %#v", fake.schema)
 	}
 	if manifest.SourceCutoff != compilerBuildRequest().Cutoff || len(manifest.SourceIDs) != 1 || len(manifest.SourceHashes) != 1 || manifest.Model != "gemini-test-model" || !strings.HasPrefix(manifest.PromptVersion, "sha256:") || !strings.HasPrefix(manifest.ConfigDigest, "sha256:") || manifest.Usage != fake.usage || manifest.EstimatedCostUSD <= 0 || manifest.RetractionWatermark != "sha256:stable" || !manifest.Validation.Publishable {
@@ -270,11 +391,17 @@ func compilerTempRoot(t *testing.T) string {
 	return root
 }
 
-type compilerSourceStore struct{ tasks []*types.Task }
+type compilerSourceStore struct {
+	tasks []*types.Task
+	err   error
+}
 
 func (s *compilerSourceStore) ListTasks(ctx context.Context, filter store.ListFilter) ([]*types.Task, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if s.err != nil {
+		return nil, s.err
 	}
 	var result []*types.Task
 	for _, task := range s.tasks {
@@ -308,7 +435,10 @@ func compilerHasStagedSnapshot(t *testing.T, compiler *Compiler) bool {
 	return len(entries) > 0
 }
 
-func compilerSchemaHasEvidenceEnums(schema map[string]any) bool {
+func compilerSchemaHasStrictNestedBounds(schema map[string]any) bool {
+	if schema["additionalProperties"] != false {
+		return false
+	}
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
 		return false
@@ -318,7 +448,7 @@ func compilerSchemaHasEvidenceEnums(schema map[string]any) bool {
 		return false
 	}
 	items, ok := pages["items"].(map[string]any)
-	if !ok {
+	if !ok || items["additionalProperties"] != false || pages["maxItems"] != maxCompilerPages {
 		return false
 	}
 	pageProperties, ok := items["properties"].(map[string]any)
@@ -326,11 +456,11 @@ func compilerSchemaHasEvidenceEnums(schema map[string]any) bool {
 		return false
 	}
 	claims, ok := pageProperties["claims"].(map[string]any)
-	if !ok {
+	if !ok || claims["maxItems"] != maxCompilerClaims {
 		return false
 	}
 	claimItems, ok := claims["items"].(map[string]any)
-	if !ok {
+	if !ok || claimItems["additionalProperties"] != false {
 		return false
 	}
 	claimProperties, ok := claimItems["properties"].(map[string]any)
@@ -338,13 +468,25 @@ func compilerSchemaHasEvidenceEnums(schema map[string]any) bool {
 		return false
 	}
 	evidenceIDs, ok := claimProperties["evidence_ids"].(map[string]any)
-	if !ok {
+	if !ok || evidenceIDs["uniqueItems"] != true || evidenceIDs["maxItems"] != maxClaimEvidenceIDs {
 		return false
 	}
 	evidenceItems, ok := evidenceIDs["items"].(map[string]any)
 	if !ok {
 		return false
 	}
-	_, ok = evidenceItems["enum"].([]string)
-	return ok
+	if _, ok = evidenceItems["enum"].([]string); !ok {
+		return false
+	}
+	links, ok := pageProperties["links"].(map[string]any)
+	return ok && links["uniqueItems"] == true && links["maxItems"] == maxCompilerLinks
+}
+
+func TestCompilerPromptDigestChangesWhenSchemaChanges(t *testing.T) {
+	schema := compilerSchema([]string{"sha256:evidence-a"})
+	baseline := compilerPromptDigest("system", schema)
+	schema["required"] = []string{"pages", "version"}
+	if baseline == compilerPromptDigest("system", schema) {
+		t.Fatal("prompt digest did not change when the schema changed")
+	}
 }

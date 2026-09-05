@@ -248,6 +248,23 @@ func (v *snapshotValidator) validateUnsafeContent(location, content string) {
 	if sanitize.Secrets(content) != content {
 		v.add("secret", location)
 	}
+	if containsPrivateBrainPath(content) {
+		v.add("private_path", location)
+	}
+}
+
+// containsPrivateBrainPath recognizes a deliberately conservative set of
+// local-user and temporary filesystem roots. Brain source/model text is
+// untrusted, so false positives are safer than allowing a private local path
+// into a provider prompt, rendered page, finding, or manifest.
+func containsPrivateBrainPath(content string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(content, "\\", "/"))
+	for _, root := range []string{"/users/", "/home/", "/root/", "/private/", "/var/folders/", "file:///"} {
+		if strings.Contains(normalized, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *snapshotValidator) add(code, location string) {

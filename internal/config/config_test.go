@@ -218,7 +218,7 @@ func TestValidateBrainCompilerSettingsWhenDisabled(t *testing.T) {
 func TestReloadRejectsInvalidBrainCandidateAndPreservesPrevious(t *testing.T) {
 	configPath, before := loadBrainReloadFixture(t)
 
-	if err := os.WriteFile(configPath, []byte("brain:\n  enabled: true\n  root: ''\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, brainReloadConfig("''"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := Reload(); err == nil {
@@ -231,7 +231,7 @@ func TestReloadRejectsInvalidBrainCandidateAndPreservesPrevious(t *testing.T) {
 
 func TestReloadAppliesValidBrainCandidateAndMarksRestartRequired(t *testing.T) {
 	configPath, before := loadBrainReloadFixture(t)
-	if err := os.WriteFile(configPath, []byte("brain:\n  enabled: true\n  root: ./data/brain-next\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, brainReloadConfig("./data/brain-next"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	after, changes, err := Reload()
@@ -259,7 +259,7 @@ func loadBrainReloadFixture(t *testing.T) (string, *Config) {
 	t.Cleanup(resetConfig)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("brain:\n  enabled: true\n  root: ./data/brain\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, brainReloadConfig("./data/brain"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	setupViper()
@@ -278,6 +278,10 @@ func loadBrainReloadFixture(t *testing.T) (string, *Config) {
 	globalConfig = before
 	mu.Unlock()
 	return configPath, before
+}
+
+func brainReloadConfig(root string) []byte {
+	return []byte("llm:\n  scenes:\n    brain_compiler:\n      input_cost_per_million_usd: 1\n      output_cost_per_million_usd: 1\nbrain:\n  enabled: true\n  root: " + root + "\n")
 }
 
 func TestValidateWikiSettings(t *testing.T) {
@@ -1063,6 +1067,21 @@ func TestValidateLLMCostBudgetRequiresPricing(t *testing.T) {
 	cfg.LLM.Gateway.InputCostPerMillionUSD = testPtr(1.0)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("priced task cost budget rejected: %v", err)
+	}
+}
+
+func TestValidateBrainCompilerRequiresUsablePricing(t *testing.T) {
+	cfg := &Config{}
+	cfg.LLM.Provider = "openai"
+	cfg.LLM.TimeoutSeconds = 30
+	cfg.Brain = BrainConfig{Enabled: true, Root: "./data/brain", CompactIndexMaxBytes: 1, Compiler: BrainCompilerConfig{Provider: "gemini", Model: "gemini-test", MaxInputBytes: 1, MaxOutputTokens: 1, MaxCostUSD: 1}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "pricing") {
+		t.Fatalf("missing brain compiler pricing error = %v", err)
+	}
+	input, output := 1.0, 2.0
+	cfg.LLM.Scenes = map[string]LLMEndpointConfig{"brain_compiler": {InputCostPerMillionUSD: &input, OutputCostPerMillionUSD: &output}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("priced brain compiler rejected: %v", err)
 	}
 }
 

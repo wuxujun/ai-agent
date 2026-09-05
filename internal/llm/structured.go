@@ -32,7 +32,17 @@ type Config struct {
 	InputCostPerMillionUSD         float64
 	OutputCostPerMillionUSD        float64
 	MaxOutputTokens                int
+	// StrictJSONSchema asks native transports that cannot fully express a JSON
+	// schema to apply deterministic local schema validation to the provider's
+	// raw response before decoding it. The zero value preserves the historic
+	// permissive decoding behavior for existing callers.
+	StrictJSONSchema bool
 }
+
+// ErrStructuredOutput marks a provider response that could not be parsed into
+// the caller's declared structured-output contract. It deliberately carries no
+// provider response text.
+var ErrStructuredOutput = errors.New("structured LLM output is invalid")
 
 type StructuredCaller interface {
 	CallJSON(ctx context.Context, cfg Config, systemPrompt, userPrompt string, schema map[string]any, dest any) (types.TokenUsage, error)

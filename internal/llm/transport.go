@@ -6,11 +6,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
@@ -65,6 +69,9 @@ func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPr
 		if resp.UsageMetadata != nil {
 			usage = types.TokenUsage{PromptTokens: int(resp.UsageMetadata.PromptTokenCount), CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount), TotalTokens: int(resp.UsageMetadata.TotalTokenCount)}
 		}
+		if cfg.StrictJSONSchema {
+			return usage, parseStructuredJSONStrict(resp.Text(), dest, schema)
+		}
 		return usage, parseStructuredJSON(resp.Text(), dest)
 	}
 	body, responseKind, err := structuredRequest(cfg, systemPrompt, userPrompt, schema)
@@ -102,6 +109,9 @@ func (nativeStructuredCaller) CallVisionJSON(ctx context.Context, cfg Config, sy
 		var usage types.TokenUsage
 		if resp.UsageMetadata != nil {
 			usage = types.TokenUsage{PromptTokens: int(resp.UsageMetadata.PromptTokenCount), CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount), TotalTokens: int(resp.UsageMetadata.TotalTokenCount)}
+		}
+		if cfg.StrictJSONSchema {
+			return usage, parseStructuredJSONStrict(resp.Text(), dest, schema)
 		}
 		return usage, parseStructuredJSON(resp.Text(), dest)
 	}
@@ -401,7 +411,293 @@ func parseStructuredJSON(text string, dest any) error {
 	if first >= 0 && last > first && json.Unmarshal([]byte(text[first:last+1]), dest) == nil {
 		return nil
 	}
-	return fmt.Errorf("could not parse JSON from LLM response")
+	return structuredOutputParseError{}
+}
+
+// structuredOutputParseError keeps the legacy parser error text for existing
+// callers while allowing security-sensitive callers to classify it with
+// errors.Is(err, ErrStructuredOutput).
+type structuredOutputParseError struct{}
+
+func (structuredOutputParseError) Error() string { return "could not parse JSON from LLM response" }
+func (structuredOutputParseError) Unwrap() error { return ErrStructuredOutput }
+
+var errStrictStructuredJSON = errors.Join(ErrStructuredOutput, errors.New("structured JSON does not match schema"))
+
+// parseStructuredJSONStrict validates the complete response before decoding it.
+// Gemini's native schema omits some JSON-Schema controls (notably object
+// closure and uniqueItems), so opt-in callers need this deterministic local
+// boundary to keep provider output untrusted. Errors are intentionally generic
+// so response content is never surfaced to callers or logs.
+func parseStructuredJSONStrict(text string, dest any, schema map[string]any) error {
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.UseNumber()
+	value, err := decodeUniqueJSONValue(decoder)
+	if err != nil {
+		return errStrictStructuredJSON
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errStrictStructuredJSON
+	}
+	if !validStrictJSONSchema(value, schema) {
+		return errStrictStructuredJSON
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return errStrictStructuredJSON
+	}
+	decode := json.NewDecoder(bytes.NewReader(encoded))
+	decode.DisallowUnknownFields()
+	if err := decode.Decode(dest); err != nil {
+		return errStrictStructuredJSON
+	}
+	if err := decode.Decode(&struct{}{}); err != io.EOF {
+		return errStrictStructuredJSON
+	}
+	return nil
+}
+
+func decodeUniqueJSONValue(decoder *json.Decoder) (any, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch value := token.(type) {
+	case json.Delim:
+		switch value {
+		case '{':
+			object := make(map[string]any)
+			for decoder.More() {
+				rawKey, err := decoder.Token()
+				if err != nil {
+					return nil, err
+				}
+				key, ok := rawKey.(string)
+				if !ok {
+					return nil, errStrictStructuredJSON
+				}
+				if _, exists := object[key]; exists {
+					return nil, errStrictStructuredJSON
+				}
+				entry, err := decodeUniqueJSONValue(decoder)
+				if err != nil {
+					return nil, err
+				}
+				object[key] = entry
+			}
+			closing, err := decoder.Token()
+			if err != nil || closing != json.Delim('}') {
+				return nil, errStrictStructuredJSON
+			}
+			return object, nil
+		case '[':
+			array := make([]any, 0)
+			for decoder.More() {
+				entry, err := decodeUniqueJSONValue(decoder)
+				if err != nil {
+					return nil, err
+				}
+				array = append(array, entry)
+			}
+			closing, err := decoder.Token()
+			if err != nil || closing != json.Delim(']') {
+				return nil, errStrictStructuredJSON
+			}
+			return array, nil
+		default:
+			return nil, errStrictStructuredJSON
+		}
+	default:
+		return value, nil
+	}
+}
+
+func validStrictJSONSchema(value any, schema map[string]any) bool {
+	if schema == nil {
+		return false
+	}
+	if value == nil {
+		nullable, _ := schema["nullable"].(bool)
+		return nullable
+	}
+	if variants, ok := schema["anyOf"].([]any); ok && len(variants) > 0 {
+		for _, raw := range variants {
+			variant, ok := raw.(map[string]any)
+			if ok && validStrictJSONSchema(value, variant) {
+				return true
+			}
+		}
+		return false
+	}
+	schemaType, _ := schema["type"].(string)
+	switch schemaType {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		for _, required := range stringSlice(schema["required"]) {
+			if _, exists := object[required]; !exists {
+				return false
+			}
+		}
+		closed, _ := schema["additionalProperties"].(bool)
+		for key, item := range object {
+			rawProperty, exists := properties[key]
+			if !exists {
+				if closed {
+					return false
+				}
+				continue
+			}
+			property, ok := rawProperty.(map[string]any)
+			if !ok || !validStrictJSONSchema(item, property) {
+				return false
+			}
+		}
+		return true
+	case "array":
+		array, ok := value.([]any)
+		if !ok || !strictArrayLength(array, schema) {
+			return false
+		}
+		if unique, _ := schema["uniqueItems"].(bool); unique && !strictUniqueJSONValues(array) {
+			return false
+		}
+		if rawItems, exists := schema["items"]; exists {
+			items, ok := rawItems.(map[string]any)
+			if !ok {
+				return false
+			}
+			for _, item := range array {
+				if !validStrictJSONSchema(item, items) {
+					return false
+				}
+			}
+		}
+		return true
+	case "string":
+		text, ok := value.(string)
+		if !ok || !strictStringLength(text, schema) || !strictStringEnum(text, schema) {
+			return false
+		}
+		pattern, _ := schema["pattern"].(string)
+		if pattern == "" {
+			return true
+		}
+		re, err := regexp.Compile(pattern)
+		return err == nil && re.MatchString(text)
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "number", "integer":
+		number, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		parsed, err := strconv.ParseFloat(number.String(), 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+			return false
+		}
+		if schemaType == "integer" {
+			if _, err := number.Int64(); err != nil {
+				return false
+			}
+		}
+		return strictNumberRange(parsed, schema)
+	case "":
+		return true
+	default:
+		return false
+	}
+}
+
+func strictArrayLength(values []any, schema map[string]any) bool {
+	if min, ok := strictSchemaInt(schema["minItems"]); ok && len(values) < min {
+		return false
+	}
+	if max, ok := strictSchemaInt(schema["maxItems"]); ok && len(values) > max {
+		return false
+	}
+	return true
+}
+
+func strictUniqueJSONValues(values []any) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return false
+		}
+		key := string(encoded)
+		if _, exists := seen[key]; exists {
+			return false
+		}
+		seen[key] = struct{}{}
+	}
+	return true
+}
+
+func strictStringLength(value string, schema map[string]any) bool {
+	length := utf8.RuneCountInString(value)
+	if min, ok := strictSchemaInt(schema["minLength"]); ok && length < min {
+		return false
+	}
+	if max, ok := strictSchemaInt(schema["maxLength"]); ok && length > max {
+		return false
+	}
+	return true
+}
+
+func strictStringEnum(value string, schema map[string]any) bool {
+	enum, exists := schema["enum"]
+	if !exists {
+		return true
+	}
+	for _, allowed := range stringSlice(enum) {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func strictNumberRange(value float64, schema map[string]any) bool {
+	if min, ok := strictSchemaFloat(schema["minimum"]); ok && value < min {
+		return false
+	}
+	if max, ok := strictSchemaFloat(schema["maximum"]); ok && value > max {
+		return false
+	}
+	return true
+}
+
+func strictSchemaInt(value any) (int, bool) {
+	switch number := value.(type) {
+	case int:
+		return number, true
+	case int64:
+		return int(number), int64(int(number)) == number
+	case float64:
+		return int(number), number == math.Trunc(number) && !math.IsInf(number, 0) && !math.IsNaN(number)
+	default:
+		return 0, false
+	}
+}
+
+func strictSchemaFloat(value any) (float64, bool) {
+	switch number := value.(type) {
+	case float64:
+		return number, !math.IsNaN(number) && !math.IsInf(number, 0)
+	case int:
+		return float64(number), true
+	case int64:
+		return float64(number), true
+	default:
+		return 0, false
+	}
 }
 
 // geminiSchemaFromJSON converts the JSON-Schema subset used by structured LLM

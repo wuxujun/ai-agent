@@ -1471,6 +1471,18 @@ func (c *Config) Validate() error {
 		if c.Brain.CompactIndexMaxBytes <= 0 || c.Brain.Compiler.MaxInputBytes <= 0 || c.Brain.Compiler.MaxOutputTokens <= 0 {
 			return fmt.Errorf("enabled brain compact index and compiler input/output limits must be > 0")
 		}
+		compilerEndpoint := c.LLM.Scenes["brain_compiler"]
+		inputCost := compilerEndpoint.InputCostPerMillionUSD
+		outputCost := compilerEndpoint.OutputCostPerMillionUSD
+		if inputCost == nil {
+			inputCost = c.LLM.Gateway.InputCostPerMillionUSD
+		}
+		if outputCost == nil {
+			outputCost = c.LLM.Gateway.OutputCostPerMillionUSD
+		}
+		if inputCost == nil || outputCost == nil || math.IsNaN(*inputCost) || math.IsInf(*inputCost, 0) || *inputCost < 0 || math.IsNaN(*outputCost) || math.IsInf(*outputCost, 0) || *outputCost < 0 || (*inputCost == 0 && *outputCost == 0) {
+			return fmt.Errorf("enabled brain compiler requires finite non-zero pricing for at least one token type and explicit pricing for both input and output tokens")
+		}
 	}
 	brainCompilerConfigured := c.Brain.Enabled || c.Brain.Root != "" || c.Brain.CompactIndexMaxBytes != 0 || c.Brain.Compiler.Provider != "" || c.Brain.Compiler.Model != "" || c.Brain.Compiler.MaxInputBytes != 0 || c.Brain.Compiler.MaxOutputTokens != 0 || c.Brain.Compiler.MaxCostUSD != 0
 	if brainCompilerConfigured && (c.Brain.CompactIndexMaxBytes < 0 || c.Brain.Compiler.MaxInputBytes < 0 || c.Brain.Compiler.MaxOutputTokens < 0) {

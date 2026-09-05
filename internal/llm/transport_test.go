@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,8 +93,91 @@ func TestParseStructuredJSONFallback(t *testing.T) {
 	if err := parseStructuredJSON("result: ```json\n{\"answer\":\"42\"}\n```", &output); err != nil || output.Answer != "42" {
 		t.Fatalf("output=%+v err=%v", output, err)
 	}
-	if err := parseStructuredJSON("no object", &output); err == nil {
-		t.Fatal("expected unparseable response error")
+	if err := parseStructuredJSON("no object", &output); err == nil || err.Error() != "could not parse JSON from LLM response" || !errors.Is(err, ErrStructuredOutput) {
+		t.Fatalf("unexpected unparseable response error: %v", err)
+	}
+}
+
+func TestParseStructuredJSONStrictRejectsNestedUnknownAndDuplicateValues(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"pages": map[string]any{
+				"type": "array", "maxItems": 1,
+				"items": map[string]any{
+					"type": "object", "additionalProperties": false,
+					"properties": map[string]any{
+						"title": map[string]any{"type": "string", "maxLength": 8},
+						"links": map[string]any{"type": "array", "maxItems": 2, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^wiki://"}},
+					},
+					"required": []string{"title", "links"},
+				},
+			},
+		},
+		"required": []string{"pages"},
+	}
+	tests := []string{
+		`{"pages":[{"title":"page","links":[],"unexpected":"value"}]}`,
+		`{"pages":[{"title":"page","links":["wiki://space/a","wiki://space/a"]}]}`,
+		`{"pages":[{"title":"page","title":"other","links":[]}]}`,
+		`{"pages":[{"title":"page","links":["https://example.test"]}]}`,
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			var output struct {
+				Pages []struct {
+					Title string   `json:"title"`
+					Links []string `json:"links"`
+				} `json:"pages"`
+			}
+			if err := parseStructuredJSONStrict(raw, &output, schema); err == nil {
+				t.Fatal("expected strict schema rejection")
+			}
+		})
+	}
+}
+
+func TestParseStructuredJSONStrictAcceptsExactNestedSchema(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"answer": map[string]any{"type": "string", "minLength": 1, "maxLength": 16},
+		},
+		"required": []string{"answer"},
+	}
+	var output struct {
+		Answer string `json:"answer"`
+	}
+	if err := parseStructuredJSONStrict(`{"answer":"bounded"}`, &output, schema); err != nil || output.Answer != "bounded" {
+		t.Fatalf("output=%+v err=%v", output, err)
+	}
+}
+
+func TestNativeGeminiStrictSchemaRejectsNestedUnknownResponse(t *testing.T) {
+	resetGeminiPool(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, ":generateContent") {
+			t.Fatalf("unexpected Gemini path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":[{"text":"{\"answer\":\"ok\",\"unknown\":\"rejected\"}"}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}`)
+	}))
+	defer server.Close()
+
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"answer": map[string]any{"type": "string"}},
+		"required":             []string{"answer"},
+	}
+	var output struct {
+		Answer string `json:"answer"`
+	}
+	_, err := (nativeStructuredCaller{}).CallJSON(context.Background(), Config{Provider: llmprovider.Gemini, APIKey: "test-key", Model: "gemini-test", BaseURL: server.URL, StrictJSONSchema: true}, "system", "user", schema, &output)
+	if !errors.Is(err, ErrStructuredOutput) {
+		t.Fatalf("err=%v output=%+v", err, output)
 	}
 }
 
