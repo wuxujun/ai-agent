@@ -35,3 +35,5 @@ the pinner/Engine/JIT path above.
 - Snapshot pin admission now reads `config.Get()` on every Pin call, rechecks
   Brain enablement, tenant/project authorization, and root drift, and fails
   closed after an allowlist/config reload.
+- Added hot-reload regression coverage for disabled Brain, removed project
+  authorization, and admission digest drift.
