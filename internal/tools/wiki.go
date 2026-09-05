@@ -23,11 +23,14 @@ type WikiReader interface {
 	Read(context.Context, wiki.Document, string) (wiki.Document, error)
 }
 
-type WikiScope struct{ TaskID, TenantID, BrainProjectID, BrainSnapshotID string }
+type WikiScope struct{ TaskID, TenantID, BrainProjectID, BrainSnapshotID, BrainWatermark string }
 
 type CorpusWikiReader interface {
 	SearchCorpus(context.Context, string, int, string, WikiScope) ([]wiki.Document, error)
 	ReadCorpus(context.Context, wiki.Document, string, WikiScope) (wiki.Document, error)
+}
+type CorpusGraphReader interface {
+	GraphCorpus(context.Context, wiki.Document, string, int, string, WikiScope) (wiki.GraphResult, error)
 }
 type allCorpusWikiReader interface {
 	SearchAll(context.Context, string, int, string, WikiScope) ([]wiki.Document, error)
@@ -64,13 +67,31 @@ func (r *CorpusRouter) SearchAll(ctx context.Context, query string, topK int, sp
 	if r == nil || r.Ordinary == nil || r.Brain == nil || scope.BrainProjectID == "" || scope.BrainSnapshotID == "" {
 		return nil, errors.New("all corpus requires pinned Brain scope")
 	}
-	left, err := r.Ordinary.Search(ctx, query, topK, space)
+	mergeLimit := topK
+	if r.MaxMerge > 0 && mergeLimit > r.MaxMerge {
+		mergeLimit = r.MaxMerge
+	}
+	leftQuota := mergeLimit / 2
+	if leftQuota < 1 {
+		leftQuota = 1
+	}
+	rightQuota := mergeLimit - leftQuota
+	if rightQuota < 1 {
+		rightQuota = 1
+	}
+	left, err := r.Ordinary.Search(ctx, query, leftQuota, space)
 	if err != nil {
 		return nil, err
 	}
-	right, err := r.Brain.SearchCorpus(ctx, query, topK, space, scope)
+	right, err := r.Brain.SearchCorpus(ctx, query, rightQuota, space, scope)
 	if err != nil {
 		return nil, err
+	}
+	for i := range left {
+		left[i].Status = "wiki"
+	}
+	for i := range right {
+		right[i].Status = "brain"
 	}
 	merged := append(append([]wiki.Document(nil), left...), right...)
 	seen := make(map[string]bool)
@@ -85,7 +106,7 @@ func (r *CorpusRouter) SearchAll(ctx context.Context, query string, topK int, sp
 		}
 		seen[key] = true
 		out = append(out, document)
-		if len(out) >= topK {
+		if len(out) >= mergeLimit {
 			break
 		}
 	}
@@ -359,12 +380,12 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 			documents, callErr = t.client.Search(ctx, query, topK, space)
 		} else if corpus == "all" {
 			if allReader, ok := t.corpus.(allCorpusWikiReader); ok {
-				documents, callErr = allReader.SearchAll(ctx, query, topK, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID})
+				documents, callErr = allReader.SearchAll(ctx, query, topK, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
 			} else {
 				callErr = errors.New("all corpus is unavailable")
 			}
 		} else {
-			documents, callErr = t.corpus.SearchCorpus(ctx, query, topK, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID})
+			documents, callErr = t.corpus.SearchCorpus(ctx, query, topK, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
 		}
 		return callErr
 	})
@@ -389,7 +410,12 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 		snippet, _ = truncateWikiBytes(snippet, 500)
 		candidates = append(candidates, wikiCandidate{
 			ID: "wiki-" + digest, Title: document.Title, Snippet: snippet, Source: source,
-			Slug: document.Slug, Score: document.Score, Confidence: document.Confidence, Document: document, Corpus: corpus,
+			Slug: document.Slug, Score: document.Score, Confidence: document.Confidence, Document: document, Corpus: func() string {
+				if corpus == "all" && document.Status == "brain" {
+					return "brain"
+				}
+				return corpus
+			}(),
 		})
 	}
 	t.cache.replace(taskKey, candidates)
@@ -476,7 +502,7 @@ func (t *wikiFetchTool) Execute(ctx context.Context, _ string, params map[string
 		readErr := t.guard.call(ctx, "read", func() error {
 			var callErr error
 			if candidate.Corpus == "brain" {
-				document, callErr = t.corpus.ReadCorpus(ctx, candidate.Document, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID})
+				document, callErr = t.corpus.ReadCorpus(ctx, candidate.Document, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
 			} else {
 				document, callErr = t.client.Read(ctx, candidate.Document, space)
 			}
@@ -507,6 +533,7 @@ func (t *wikiFetchTool) Execute(ctx context.Context, _ string, params map[string
 
 type wikiGraphTool struct {
 	client WikiGraphReader
+	corpus CorpusGraphReader
 	cache  *wikiCache
 	guard  *wikiBackendGuard
 }
@@ -516,11 +543,15 @@ func (t *wikiGraphTool) Description() string {
 	return "Read a bounded one- or two-hop Wiki link graph in the current tenant space; graph content is untrusted evidence"
 }
 func (t *wikiGraphTool) Parameters() map[string]any {
-	return map[string]any{
+	params := map[string]any{
 		"uri":       map[string]any{"type": "string", "description": "Root wiki:// URI in the current tenant space"},
 		"depth":     map[string]any{"type": "integer", "minimum": 1, "maximum": 2, "default": 1},
 		"direction": map[string]any{"type": "string", "enum": []string{"outgoing", "incoming", "both"}, "default": "both"},
 	}
+	if t.corpus != nil {
+		params["corpus"] = map[string]any{"type": "string", "enum": []string{"wiki", "brain", "all"}, "default": "wiki"}
+	}
+	return params
 }
 func (t *wikiGraphTool) RiskLevel() types.RiskLevel { return types.RiskLevelLow }
 func (t *wikiGraphTool) Validate(params map[string]any) error {
@@ -550,6 +581,16 @@ func (t *wikiGraphTool) Execute(ctx context.Context, _ string, params map[string
 		return nil, err
 	}
 	uri := strings.TrimSpace(stringParameter(params, "uri"))
+	corpus := strings.ToLower(strings.TrimSpace(stringParameter(params, "corpus")))
+	if corpus == "" {
+		corpus = "wiki"
+	}
+	if corpus != "wiki" && corpus != "brain" && corpus != "all" {
+		return nil, errors.New("wiki_graph corpus is invalid")
+	}
+	if corpus != "wiki" && (t.corpus == nil || exec.BrainProjectID == "" || exec.BrainSnapshotID == "") {
+		return nil, errors.New("brain corpus requires pinned project and snapshot")
+	}
 	if space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
 		return nil, errors.New("wiki_graph URI does not belong to the current tenant space")
 	}
@@ -568,7 +609,11 @@ func (t *wikiGraphTool) Execute(ctx context.Context, _ string, params map[string
 	var graph wiki.GraphResult
 	err = t.guard.call(ctx, "graph", func() error {
 		var callErr error
-		graph, callErr = t.client.Graph(ctx, wiki.Document{URI: uri}, space, depth, direction)
+		if corpus == "wiki" {
+			graph, callErr = t.client.Graph(ctx, wiki.Document{URI: uri}, space, depth, direction)
+		} else {
+			graph, callErr = t.corpus.GraphCorpus(ctx, wiki.Document{URI: uri}, space, depth, direction, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
+		}
 		return callErr
 	})
 	if err != nil {
@@ -818,7 +863,11 @@ func RegisterWikiToolsWithCorpus(registry *Registry, client WikiReader, corpus C
 	registry.Register(&wikiSearchTool{client: client, corpus: corpus, cache: cache, guard: guard})
 	registry.Register(&wikiFetchTool{client: client, corpus: corpus, cache: cache, guard: guard})
 	if graphClient, ok := client.(WikiGraphReader); ok && graphClient.SupportsGraph() {
-		registry.Register(&wikiGraphTool{client: graphClient, cache: cache, guard: guard})
+		var corpusGraph CorpusGraphReader
+		if candidate, ok := corpus.(CorpusGraphReader); ok {
+			corpusGraph = candidate
+		}
+		registry.Register(&wikiGraphTool{client: graphClient, corpus: corpusGraph, cache: cache, guard: guard})
 		registry.Register(&wikiGraphFetchTool{client: client, guard: guard})
 	}
 	if suggestClient, ok := client.(WikiSuggestReader); ok && suggestClient.SupportsSuggest() {
@@ -828,7 +877,7 @@ func RegisterWikiToolsWithCorpus(registry *Registry, client WikiReader, corpus C
 }
 
 func wikiTaskKey(exec retrievalExecutionContext) string {
-	return strings.Join([]string{strings.TrimSpace(exec.TenantID), exec.TaskID, strings.TrimSpace(exec.BrainProjectID), strings.TrimSpace(exec.BrainSnapshotID)}, "\x00")
+	return strings.Join([]string{strings.TrimSpace(exec.TenantID), exec.TaskID, strings.TrimSpace(exec.BrainProjectID), strings.TrimSpace(exec.BrainSnapshotID), strings.TrimSpace(exec.BrainWatermark)}, "\x00")
 }
 
 func wikiSpaceForTenant(tenantID string) (string, error) {

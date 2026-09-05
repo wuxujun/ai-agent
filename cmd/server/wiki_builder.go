@@ -49,6 +49,13 @@ func (a *brainCorpusAdapter) ReadCorpus(ctx context.Context, document wiki.Docum
 	}
 	return a.provider.ReadCorpus(ctx, document, space, ref, scope.BrainSnapshotID)
 }
+func (a *brainCorpusAdapter) GraphCorpus(ctx context.Context, document wiki.Document, space string, depth int, direction string, scope tools.WikiScope) (wiki.GraphResult, error) {
+	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	if err != nil {
+		return wiki.GraphResult{}, err
+	}
+	return a.provider.GraphCorpus(ctx, document, space, depth, direction, ref, scope.BrainSnapshotID)
+}
 
 func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wikiClient) error {
 	if cfg == nil || !cfg.Brain.Enabled {

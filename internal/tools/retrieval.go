@@ -22,6 +22,7 @@ type retrievalExecutionContext struct {
 	TenantID        string
 	BrainProjectID  string
 	BrainSnapshotID string
+	BrainWatermark  string
 }
 
 type RetrievalContextOption func(*retrievalExecutionContext)
@@ -30,6 +31,9 @@ func WithBrainScope(projectID, snapshotID string) RetrievalContextOption {
 	return func(exec *retrievalExecutionContext) {
 		exec.BrainProjectID, exec.BrainSnapshotID = projectID, snapshotID
 	}
+}
+func WithBrainWatermark(watermark string) RetrievalContextOption {
+	return func(exec *retrievalExecutionContext) { exec.BrainWatermark = watermark }
 }
 
 // WithRetrievalExecutionContext makes task identity available to JIT retrieval

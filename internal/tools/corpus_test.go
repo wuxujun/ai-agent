@@ -35,3 +35,11 @@ func TestWikiSearchSchemaAddsCorpusOnlyWhenConfigured(t *testing.T) {
 		t.Fatal("enabled corpus missing schema")
 	}
 }
+
+func TestBrainWatermarkSeparatesWikiCacheScope(t *testing.T) {
+	first, _ := retrievalExecutionFromContext(WithRetrievalExecutionContext(t.Context(), "task", "tenant", WithBrainScope("atlas", "snap"), WithBrainWatermark("wm-1")))
+	second, _ := retrievalExecutionFromContext(WithRetrievalExecutionContext(t.Context(), "task", "tenant", WithBrainScope("atlas", "snap"), WithBrainWatermark("wm-2")))
+	if wikiTaskKey(first) == wikiTaskKey(second) {
+		t.Fatal("watermark did not isolate wiki cache scope")
+	}
+}

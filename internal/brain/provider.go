@@ -36,6 +36,7 @@ func (p *Provider) Read(context.Context, wiki.Document, string) (wiki.Document, 
 }
 
 func (p *Provider) SearchCorpus(ctx context.Context, query string, topK int, space string, scope ProjectRef, snapshotID string) ([]wiki.Document, error) {
+	space = scope.WikiSpace
 	client, release, watermark, err := p.open(ctx, scope, snapshotID)
 	if err != nil {
 		return nil, err
@@ -52,6 +53,7 @@ func (p *Provider) SearchCorpus(ctx context.Context, query string, topK int, spa
 }
 
 func (p *Provider) ReadCorpus(ctx context.Context, document wiki.Document, space string, scope ProjectRef, snapshotID string) (wiki.Document, error) {
+	space = scope.WikiSpace
 	client, _, watermark, err := p.open(ctx, scope, snapshotID)
 	if err != nil {
 		return wiki.Document{}, err
@@ -62,6 +64,22 @@ func (p *Provider) ReadCorpus(ctx context.Context, document wiki.Document, space
 	}
 	if err := p.checkWatermark(ctx, scope, watermark); err != nil {
 		return wiki.Document{}, err
+	}
+	return result, nil
+}
+
+func (p *Provider) GraphCorpus(ctx context.Context, document wiki.Document, space string, depth int, direction string, scope ProjectRef, snapshotID string) (wiki.GraphResult, error) {
+	space = scope.WikiSpace
+	client, _, watermark, err := p.open(ctx, scope, snapshotID)
+	if err != nil {
+		return wiki.GraphResult{}, err
+	}
+	result, err := client.Graph(ctx, document, space, depth, direction)
+	if err != nil {
+		return wiki.GraphResult{}, err
+	}
+	if err := p.checkWatermark(ctx, scope, watermark); err != nil {
+		return wiki.GraphResult{}, err
 	}
 	return result, nil
 }
