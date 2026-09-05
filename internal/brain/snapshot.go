@@ -32,6 +32,7 @@ const (
 	maxSnapshotEvidenceRecords  = 1000
 	maxSnapshotEvidenceFieldLen = 32 * 1024
 	maxSnapshotPathBytes        = 4096
+	maxStatusSnapshotIDs        = 128
 )
 
 var (
@@ -328,6 +329,14 @@ func (r *Repository) Status(ctx context.Context, ref ProjectRef) (RepositoryStat
 		directory.close()
 		if namesErr != nil {
 			return status, namesErr
+		}
+		if len(names) > maxStatusSnapshotIDs {
+			return status, ErrSnapshotTooLarge
+		}
+		for _, name := range names {
+			if !safeSingleComponent(name) {
+				return status, ErrSnapshotCorrupt
+			}
 		}
 		*spec.out = names
 	}

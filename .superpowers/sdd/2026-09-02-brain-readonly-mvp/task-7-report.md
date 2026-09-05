@@ -53,3 +53,11 @@ git diff --check
 
 The sandbox denied the Go module stat-cache write during `go build
 ./cmd/brain-compile`; the targeted package tests and vet completed successfully.
+
+## Review fix round 2
+
+- Added a fixed 128-ID cap and safe-component validation to repository status
+  directory enumeration.
+- Added real repository tests for staged snapshot opening and lifecycle status
+  metadata.
+- Added CLI tests proving inspect/verify fall back from release to staging.

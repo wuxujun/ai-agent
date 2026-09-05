@@ -70,6 +70,42 @@ func TestRunLifecycleCommandsStayBoundedAndOnlyBuildOpensStore(t *testing.T) {
 	}
 }
 
+func TestRunInspectAndVerifyFallBackToStaging(t *testing.T) {
+	tracking := &trackingRepository{}
+	deps := testDeps(nil)
+	deps.newRepository = func(string, *brain.FileRetractionLedger) (repository, error) { return tracking, nil }
+	for _, command := range []string{"inspect", "verify"} {
+		if code := run([]string{command, "--tenant", "tenant-a", "--project", "atlas", "--snapshot", "staged"}, &bytes.Buffer{}, &bytes.Buffer{}, deps); code != 0 {
+			t.Fatalf("%s code = %d", command, code)
+		}
+	}
+	if tracking.stagingReads != 2 {
+		t.Fatalf("staging reads = %d, want 2", tracking.stagingReads)
+	}
+}
+
+type trackingRepository struct{ stagingReads int }
+
+func (r *trackingRepository) Current(context.Context, brain.ProjectRef) (string, error) {
+	return "", nil
+}
+func (r *trackingRepository) OpenRelease(context.Context, brain.ProjectRef, string) (brain.Release, error) {
+	return brain.Release{}, brain.ErrSnapshotNotFound
+}
+func (r *trackingRepository) OpenStaging(context.Context, brain.ProjectRef, string) (brain.Release, error) {
+	r.stagingReads++
+	return brain.Release{Manifest: brain.Manifest{SnapshotID: "staged"}}, nil
+}
+func (r *trackingRepository) Status(context.Context, brain.ProjectRef) (brain.RepositoryStatus, error) {
+	return brain.RepositoryStatus{}, nil
+}
+func (r *trackingRepository) Publish(context.Context, brain.ProjectRef, string, string) (brain.Manifest, error) {
+	return brain.Manifest{}, nil
+}
+func (r *trackingRepository) Rollback(context.Context, brain.ProjectRef, string, string) (brain.Manifest, error) {
+	return brain.Manifest{}, nil
+}
+
 type fakeRepository struct{ err error }
 
 func (f fakeRepository) Current(context.Context, brain.ProjectRef) (string, error) { return "", nil }
