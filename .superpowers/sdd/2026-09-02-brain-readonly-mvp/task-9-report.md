@@ -29,3 +29,9 @@ the pinner/Engine/JIT path above.
 - Pinned Brain memory-intent JIT requests route to `wiki_search` with Brain
   corpus, Brain repository initialization is fail-closed, and the bounded
   release compact index is loaded into `TaskContext`.
+
+## Dynamic configuration fix
+
+- Snapshot pin admission now reads `config.Get()` on every Pin call, rechecks
+  Brain enablement, tenant/project authorization, and root drift, and fails
+  closed after an allowlist/config reload.

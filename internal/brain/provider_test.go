@@ -36,6 +36,8 @@ func TestSnapshotPinnerPinsCurrentAndPreservesExistingSnapshot(t *testing.T) {
 	cfg.Brain.Enabled = true
 	cfg.Brain.Root = repo.root
 	cfg.API.Tenants = map[string]config.APITenantConfig{"tenant-a": {BrainProjects: map[string]config.BrainProjectConfig{"atlas": {WikiSpace: "brain-atlas"}}}}
+	restore := config.OverrideForTesting(func(global *config.Config) { *global = *cfg })
+	defer restore()
 	ref, err := ResolveProject(cfg, "tenant-a", "atlas")
 	if err != nil {
 		t.Fatal(err)

@@ -49,10 +49,14 @@ func NewSnapshotPinner(repository *Repository, ledger RetractionView, cfg *confi
 	return &SnapshotPinnerImpl{Repository: repository, Ledger: ledger, Config: cfg}
 }
 func (p *SnapshotPinnerImpl) Pin(ctx context.Context, task *types.Task) (TaskContext, bool, error) {
-	if p == nil || p.Repository == nil || p.Ledger == nil || p.Config == nil || task == nil || strings.TrimSpace(task.BrainProjectID) == "" {
+	if p == nil || p.Repository == nil || p.Ledger == nil || task == nil || strings.TrimSpace(task.BrainProjectID) == "" {
 		return TaskContext{}, false, nil
 	}
-	ref, err := ResolveProject(p.Config, task.TenantID, task.BrainProjectID)
+	cfg := config.Get()
+	if cfg == nil || !cfg.Brain.Enabled || (p.Config != nil && strings.TrimSpace(p.Config.Brain.Root) != "" && filepath.Clean(cfg.Brain.Root) != filepath.Clean(p.Config.Brain.Root)) {
+		return TaskContext{}, false, ErrPinConfiguration
+	}
+	ref, err := ResolveProject(cfg, task.TenantID, task.BrainProjectID)
 	if err != nil {
 		return TaskContext{}, false, ErrPinConfiguration
 	}
@@ -77,7 +81,7 @@ func (p *SnapshotPinnerImpl) Pin(ctx context.Context, task *types.Task) (TaskCon
 		return TaskContext{}, false, ErrProviderWatermark
 	}
 	compactIndex := ""
-	if limit := p.Config.Brain.CompactIndexMaxBytes; limit > 0 {
+	if limit := cfg.Brain.CompactIndexMaxBytes; limit > 0 {
 		index, readErr := os.ReadFile(filepath.Join(release.Root, "wiki", "_index.md"))
 		if readErr != nil || len(index) > limit {
 			return TaskContext{}, false, ErrPinMissing
