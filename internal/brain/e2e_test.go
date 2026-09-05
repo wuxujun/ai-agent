@@ -14,6 +14,9 @@ func TestReadOnlyMVPCompilePublishProviderRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if manifest.TenantID != "tenant-a" || manifest.ProjectID != "atlas" || manifest.SnapshotID == "" || len(manifest.FileHashes) == 0 {
+		t.Fatalf("manifest scope/hash = %+v", manifest)
+	}
 	if _, err := compiler.Repository.Publish(t.Context(), compilerBuildRequest().Ref, manifest.SnapshotID, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -21,6 +24,9 @@ func TestReadOnlyMVPCompilePublishProviderRollback(t *testing.T) {
 	docs, err := provider.SearchCorpus(t.Context(), "source", 3, "brain-atlas", compilerBuildRequest().Ref, manifest.SnapshotID)
 	if err != nil || len(docs) == 0 {
 		t.Fatalf("search docs=%d err=%v", len(docs), err)
+	}
+	if docs[0].URI == "" || !containsString(docs[0].URI, "brain-atlas") {
+		t.Fatalf("document provenance = %+v", docs[0])
 	}
 	if _, err := provider.ReadCorpus(t.Context(), docs[0], "brain-atlas", compilerBuildRequest().Ref, manifest.SnapshotID); err != nil {
 		t.Fatal(err)
@@ -53,7 +59,23 @@ func TestReadOnlyMVPRetractionAfterSearchInvalidatesFetch(t *testing.T) {
 		t.Fatalf("search docs=%d err=%v", len(docs), err)
 	}
 	appendRetractionFixture(t, ledger, firstEvidenceURI)
+	status, statusErr := repo.Status(t.Context(), atlasRef())
+	if statusErr == nil || status.RevocationState != "revoked_or_invalid" {
+		t.Fatalf("status after retraction = %+v err=%v", status, statusErr)
+	}
+	if _, err := repo.Rollback(t.Context(), atlasRef(), manifest.SnapshotID, manifest.SnapshotID); err == nil {
+		t.Fatal("rollback unexpectedly succeeded after retraction")
+	}
 	if _, err := provider.ReadCorpus(t.Context(), docs[0], "brain-atlas", atlasRef(), manifest.SnapshotID); !errors.Is(err, ErrProviderWatermark) && !errors.Is(err, ErrProviderUnavailable) {
 		t.Fatalf("fetch after retraction err=%v", err)
 	}
+}
+
+func containsString(value, part string) bool {
+	for i := 0; i+len(part) <= len(value); i++ {
+		if value[i:i+len(part)] == part {
+			return true
+		}
+	}
+	return false
 }
