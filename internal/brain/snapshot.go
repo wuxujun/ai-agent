@@ -325,13 +325,10 @@ func (r *Repository) Status(ctx context.Context, ref ProjectRef) (RepositoryStat
 		if openErr != nil {
 			return status, openErr
 		}
-		names, namesErr := directory.childNames()
+		names, namesErr := directory.childNamesBounded(maxStatusSnapshotIDs)
 		directory.close()
 		if namesErr != nil {
 			return status, namesErr
-		}
-		if len(names) > maxStatusSnapshotIDs {
-			return status, ErrSnapshotTooLarge
 		}
 		for _, name := range names {
 			if !safeSingleComponent(name) {
@@ -1122,15 +1119,29 @@ func (d *secureDir) verifyChildIdentity(name string, child *secureDir) error {
 }
 
 func (d *secureDir) childNames() ([]string, error) {
+	return d.childNamesBounded(-1)
+}
+
+func (d *secureDir) childNamesBounded(limit int) ([]string, error) {
 	fd, err := unix.Dup(d.fd)
 	if err != nil {
 		return nil, ErrSnapshotCorrupt
 	}
 	file := os.NewFile(uintptr(fd), "brain-directory")
-	entries, err := file.ReadDir(-1)
+	readLimit := -1
+	if limit >= 0 {
+		readLimit = limit + 1
+	}
+	entries, err := file.ReadDir(readLimit)
 	closeErr := file.Close()
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
 	if err != nil || closeErr != nil {
 		return nil, ErrSnapshotCorrupt
+	}
+	if limit >= 0 && len(entries) > limit {
+		return nil, ErrSnapshotTooLarge
 	}
 	names := make([]string, len(entries))
 	for index, entry := range entries {

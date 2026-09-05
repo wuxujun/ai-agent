@@ -61,3 +61,18 @@ The sandbox denied the Go module stat-cache write during `go build
 - Added real repository tests for staged snapshot opening and lifecycle status
   metadata.
 - Added CLI tests proving inspect/verify fall back from release to staging.
+
+## Review fix round 3
+
+- Pushed the lifecycle status enumeration cap into directory reads: status now
+  requests at most 129 entries and returns `ErrSnapshotTooLarge` before
+  allocating an unbounded name list.
+- Added a regression test with 129 staging IDs.
+
+Verification passed:
+
+```text
+GOCACHE=/private/tmp/brain-mvp-go-cache go test ./internal/brain ./cmd/brain-compile ./internal/store -run 'Test(RepositoryStatus|RepositoryStatusRejects|RunInspect|RunLifecycle|Open)' -count=1
+GOCACHE=/private/tmp/brain-mvp-go-cache go vet ./internal/brain ./cmd/brain-compile ./internal/store
+git diff --check
+```
