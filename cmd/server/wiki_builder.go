@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wuxujun/ai-agent/internal/brain"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/wiki"
@@ -27,6 +28,38 @@ type wikiRuntime struct {
 
 type localWikiStatusProvider interface {
 	Status() wiki.DirectoryStatus
+}
+
+type brainCorpusAdapter struct {
+	provider *brain.Provider
+	cfg      *config.Config
+}
+
+func (a *brainCorpusAdapter) SearchCorpus(ctx context.Context, query string, topK int, space string, scope tools.WikiScope) ([]wiki.Document, error) {
+	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	if err != nil {
+		return nil, err
+	}
+	return a.provider.SearchCorpus(ctx, query, topK, space, ref, scope.BrainSnapshotID)
+}
+func (a *brainCorpusAdapter) ReadCorpus(ctx context.Context, document wiki.Document, space string, scope tools.WikiScope) (wiki.Document, error) {
+	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	if err != nil {
+		return wiki.Document{}, err
+	}
+	return a.provider.ReadCorpus(ctx, document, space, ref, scope.BrainSnapshotID)
+}
+
+func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wikiClient) error {
+	if cfg == nil || !cfg.Brain.Enabled {
+		return nil
+	}
+	ledger := brain.NewFileRetractionLedger(cfg.Brain.Root)
+	repo, err := brain.NewRepository(cfg.Brain.Root, ledger)
+	if err != nil {
+		return err
+	}
+	return tools.RegisterWikiToolsWithCorpus(registry, client, &brainCorpusAdapter{provider: brain.NewProvider(repo, ledger), cfg: cfg})
 }
 
 func (r *wikiRuntime) Check(ctx context.Context) error {
@@ -83,6 +116,9 @@ func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, regist
 		if err := tools.RegisterWikiTools(registry, client); err != nil {
 			return nil, err
 		}
+		if err := attachBrainCorpus(cfg, registry, client); err != nil {
+			return nil, err
+		}
 		runtime.client = client
 		slog.Info("read-only local Wiki initialized",
 			"directory", cfg.Wiki.Directory,
@@ -130,6 +166,12 @@ func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, regist
 		return runtime, nil
 	}
 	if err := tools.RegisterWikiTools(registry, client); err != nil {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = client.Close(closeCtx)
+		cancel()
+		return nil, err
+	}
+	if err := attachBrainCorpus(cfg, registry, client); err != nil {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = client.Close(closeCtx)
 		cancel()

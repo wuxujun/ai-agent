@@ -18,14 +18,30 @@ import (
 type retrievalContextKey struct{}
 
 type retrievalExecutionContext struct {
-	TaskID   string
-	TenantID string
+	TaskID          string
+	TenantID        string
+	BrainProjectID  string
+	BrainSnapshotID string
+}
+
+type RetrievalContextOption func(*retrievalExecutionContext)
+
+func WithBrainScope(projectID, snapshotID string) RetrievalContextOption {
+	return func(exec *retrievalExecutionContext) {
+		exec.BrainProjectID, exec.BrainSnapshotID = projectID, snapshotID
+	}
 }
 
 // WithRetrievalExecutionContext makes task identity available to JIT retrieval
 // tools without expanding the generic Tool.Execute signature.
-func WithRetrievalExecutionContext(ctx context.Context, taskID, tenantID string) context.Context {
-	return context.WithValue(ctx, retrievalContextKey{}, retrievalExecutionContext{TaskID: taskID, TenantID: tenantID})
+func WithRetrievalExecutionContext(ctx context.Context, taskID, tenantID string, options ...RetrievalContextOption) context.Context {
+	exec := retrievalExecutionContext{TaskID: taskID, TenantID: tenantID}
+	for _, option := range options {
+		if option != nil {
+			option(&exec)
+		}
+	}
+	return context.WithValue(ctx, retrievalContextKey{}, exec)
 }
 
 func retrievalExecutionFromContext(ctx context.Context) (retrievalExecutionContext, error) {
