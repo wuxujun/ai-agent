@@ -90,6 +90,7 @@ api:
 
 # 可选的、按项目隔离的只读 Brain Wiki。默认关闭。
 # root 指向不可变快照存储目录；修改后需要重启。
+# CURRENT 为空只报告生命周期状态，不阻塞普通流量。
 brain:
   enabled: false
   root: "./data/brain"

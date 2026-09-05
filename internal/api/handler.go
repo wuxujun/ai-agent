@@ -63,6 +63,7 @@ type Handler struct {
 	wikiReady   WikiReadinessChecker
 	wikiPages   WikiPageReader
 	brainPages  BrainPageReader
+	brainStatus interface{ BrainStatus(context.Context) any }
 }
 
 // WikiReadinessChecker probes the configured read-only Wiki dependency.
@@ -217,6 +218,15 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		if provider, ok := h.wikiReady.(wikiStatusProvider); ok {
 			wikiStatus = provider.Status()
 		}
+		brainConfigured := runtimeConfig.Brain.Enabled
+		brainHealthy := true
+		var brainStatus any = gin.H{"configured": false, "healthy": true, "current_projects": 0}
+		if brainConfigured {
+			brainStatus = gin.H{"configured": true, "healthy": true, "current_projects": len(runtimeConfig.API.Tenants)}
+			if h.brainStatus != nil {
+				brainStatus = h.brainStatus.BrainStatus(ctx)
+			}
+		}
 		ready := healthy && (!wikiCfg.Required || wikiHealthy) && teamHealth.Healthy
 		if wikiCfg.Required && !wikiHealthy {
 			tools.ObserveWikiReadinessFailure(ctx)
@@ -228,7 +238,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		c.JSON(status, gin.H{
 			"ready": ready, "llm_verified": verified, "llm_readiness_mode": readinessMode, "llm_scenes": scenes,
 			"wiki":  gin.H{"configured": wikiConfigured, "required": wikiCfg.Required, "healthy": wikiHealthy, "error": wikiError, "status": wikiStatus},
-			"teams": teamHealth,
+			"teams": teamHealth, "brain": brainStatus, "brain_healthy": brainHealthy,
 		})
 	})
 
@@ -248,6 +258,9 @@ func (h *Handler) SetWikiReadinessChecker(checker WikiReadinessChecker) {
 // Brain-disabled and ordinary Wiki deployments retain their existing path.
 func (h *Handler) SetBrainPageReader(reader BrainPageReader) {
 	h.brainPages = reader
+	if provider, ok := reader.(interface{ BrainStatus(context.Context) any }); ok {
+		h.brainStatus = provider
+	}
 }
 
 // Wait blocks until all background run-all goroutines complete. Call during shutdown.
@@ -1238,8 +1251,9 @@ func (h *Handler) getMetrics(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, struct {
 		metrics.Snapshot
-		Wiki tools.WikiMetricsSnapshot `json:"wiki"`
-	}{Snapshot: h.metrics.Snapshot(), Wiki: tools.CurrentWikiMetrics()})
+		Wiki  tools.WikiMetricsSnapshot `json:"wiki"`
+		Brain brain.MetricsSnapshot     `json:"brain"`
+	}{Snapshot: h.metrics.Snapshot(), Wiki: tools.CurrentWikiMetrics(), Brain: brain.CurrentMetrics()})
 }
 
 func (h *Handler) getTenantUsage(c *gin.Context) {

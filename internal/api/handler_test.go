@@ -73,6 +73,33 @@ func (failingWikiReadiness) Status() any {
 	return map[string]any{"backend": "directory", "serving_stale_snapshot": true}
 }
 
+func TestReadyReportsBrainStatusWithoutBlockingDisabledBrain(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.APIKey = "brain-ready-key"
+		cfg.Brain.Enabled = false
+		cfg.LLM.ReadinessMode = config.LLMReadinessConfigOnly
+	}))
+	r := gin.New()
+	api.RegisterRoutes(r, store.NewMemoryStore(), nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("ready status = %d: %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Ready bool                               `json:"ready"`
+		Brain struct{ Configured, Healthy bool } `json:"brain"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Ready || body.Brain.Configured || !body.Brain.Healthy {
+		t.Fatalf("ready brain = %+v ready=%v", body.Brain, body.Ready)
+	}
+}
+
 type wikiHTTPPlanner struct{}
 
 func (wikiHTTPPlanner) Plan(context.Context, string, string, []types.Memory) (*multiagent.ResearchPlan, error) {

@@ -1,5 +1,19 @@
 # AI Agent — Go Runtime Engine
 
+### Brain read-only operations
+
+Brain is disabled by default. When enabled, operate it only through
+`brain-compile` with explicit `--tenant` and `--project` values. Review and
+verify staging before CAS `publish`; `publish` and `rollback` require the
+expected CURRENT value. Exit codes are 0 for success, 1 for controlled
+validation/provider failures, and 2 for usage/configuration errors. `/ready`
+and `/api/metrics` expose only bounded lifecycle metadata; no page content,
+credentials, or tenant/project/task/snapshot identifiers are emitted.
+
+`brain.root` is a restart-required setting. Retraction is a logical read block,
+not physical erasure, and Brain has no HTTP write route. Compiler credentials
+must come from the configured secret environment (normally `GEMINI_API_KEY`).
+
 > A production-grade, multi-LLM AI Agent execution runtime built in Go. It orchestrates autonomous research, code analysis, and task execution within a secure sandboxed workspace, powered by a dual Multi-Agent workflow engine and a comprehensive answer quality pipeline.
 
 [![Go 1.25](https://img.shields.io/badge/Go-1.25-blue)](https://go.dev/) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)

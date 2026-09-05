@@ -114,6 +114,20 @@ func (a *brainCorpusAdapter) ReadBrain(ctx context.Context, document wiki.Docume
 	return a.provider.ReadCorpus(ctx, document, space, ref, snapshot)
 }
 
+func (a *brainCorpusAdapter) BrainStatus(ctx context.Context) any {
+	cfg, err := a.currentConfig()
+	if err != nil {
+		return map[string]any{"configured": true, "healthy": false, "current_projects": 0}
+	}
+	projects := 0
+	for _, tenant := range cfg.API.Tenants {
+		projects += len(tenant.BrainProjects)
+	}
+	// Empty CURRENT is a reportable lifecycle state, not a server readiness
+	// failure for unrelated ordinary Wiki traffic.
+	return map[string]any{"configured": true, "healthy": true, "current_projects": projects}
+}
+
 func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wikiClient) (*brainCorpusAdapter, error) {
 	if cfg == nil || !cfg.Brain.Enabled {
 		return nil, nil

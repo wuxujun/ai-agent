@@ -92,6 +92,7 @@ api:
 
 # Optional project-scoped, read-only Brain Wiki. Brain is disabled by default.
 # The root selects immutable snapshot storage; changing it requires a restart.
+# Empty CURRENT is reported as a lifecycle state and does not block ordinary traffic.
 brain:
   enabled: false
   root: "./data/brain"
