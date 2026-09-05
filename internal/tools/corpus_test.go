@@ -43,3 +43,13 @@ func TestBrainWatermarkSeparatesWikiCacheScope(t *testing.T) {
 		t.Fatal("watermark did not isolate wiki cache scope")
 	}
 }
+
+func TestWikiCacheCorpusPartitionsDoNotOverwrite(t *testing.T) {
+	cache := newWikiCache()
+	cache.replace("tenant\x00task", []wikiCandidate{{ID: "wiki-1", Corpus: "wiki"}})
+	cache.replace("tenant\x00task", []wikiCandidate{{ID: "brain-1", Corpus: "brain"}})
+	selected, err := cache.selectCandidates("tenant\x00task", []string{"wiki-1", "brain-1"})
+	if err != nil || len(selected) != 2 {
+		t.Fatalf("selected = %#v, err=%v", selected, err)
+	}
+}

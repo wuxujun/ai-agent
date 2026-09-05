@@ -181,6 +181,7 @@ type wikiCandidate struct {
 
 type wikiTaskCache struct {
 	candidates   map[string]wikiCandidate
+	corpora      map[string]map[string]wikiCandidate
 	fetched      map[string]bool
 	graphCalls   int
 	suggestCalls int
@@ -236,7 +237,7 @@ func (c *wikiCache) task(key string, create bool) *wikiTaskCache {
 				observeWikiCacheRemoval("capacity")
 			}
 		}
-		task = &wikiTaskCache{candidates: make(map[string]wikiCandidate), fetched: make(map[string]bool)}
+		task = &wikiTaskCache{candidates: make(map[string]wikiCandidate), corpora: make(map[string]map[string]wikiCandidate), fetched: make(map[string]bool)}
 		c.tasks[key] = task
 		registerWikiCacheOwner(key, c)
 		observeWikiCacheTaskAdded()
@@ -251,10 +252,21 @@ func (c *wikiCache) replace(taskKey string, candidates []wikiCandidate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	task := c.task(taskKey, true)
-	task.candidates = make(map[string]wikiCandidate, len(candidates))
+	corpus := "wiki"
+	if len(candidates) > 0 && candidates[0].Corpus != "" {
+		corpus = candidates[0].Corpus
+	}
+	partition := make(map[string]wikiCandidate, len(candidates))
 	task.fetched = make(map[string]bool)
 	for _, candidate := range candidates {
-		task.candidates[candidate.ID] = candidate
+		partition[candidate.ID] = candidate
+	}
+	task.corpora[corpus] = partition
+	task.candidates = make(map[string]wikiCandidate)
+	for _, group := range task.corpora {
+		for id, candidate := range group {
+			task.candidates[id] = candidate
+		}
 	}
 }
 

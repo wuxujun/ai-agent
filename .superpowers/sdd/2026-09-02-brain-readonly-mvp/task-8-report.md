@@ -37,3 +37,9 @@ Verification passed for focused Brain/Tools race tests, server Wiki builder test
   Brain Wiki space in the URI. Ordinary neighbors continue through the
   ordinary reader and tenant-space validation, allowing mixed graph results
   without task-wide Brain misrouting.
+
+## Final cache partition fix
+
+- Wiki candidate caches now retain independent corpus partitions for one task;
+  a Brain search cannot overwrite ordinary candidates, and fetch can safely
+  select both provenance classes.
