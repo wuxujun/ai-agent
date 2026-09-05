@@ -66,8 +66,23 @@ func TestReadOnlyMVPRetractionAfterSearchInvalidatesFetch(t *testing.T) {
 	if _, err := repo.Rollback(t.Context(), atlasRef(), manifest.SnapshotID, manifest.SnapshotID); err == nil {
 		t.Fatal("rollback unexpectedly succeeded after retraction")
 	}
-	if _, err := provider.ReadCorpus(t.Context(), docs[0], "brain-atlas", atlasRef(), manifest.SnapshotID); !errors.Is(err, ErrProviderWatermark) && !errors.Is(err, ErrProviderUnavailable) {
+	if _, err := provider.ReadCorpus(t.Context(), docs[0], "brain-atlas", atlasRef(), manifest.SnapshotID); !errors.Is(err, ErrProviderWatermark) {
 		t.Fatalf("fetch after retraction err=%v", err)
+	}
+	cleanRepo, cleanLedger := repositoryWithLedger(t)
+	cleanManifest := stageVerified(t, cleanRepo, "clean-rebuild", "", secondEvidenceURI)
+	if _, err := cleanRepo.Publish(t.Context(), atlasRef(), cleanManifest.SnapshotID, ""); err != nil {
+		t.Fatal(err)
+	}
+	cleanProvider := NewProvider(cleanRepo, cleanLedger)
+	cleanDocs, err := cleanProvider.SearchCorpus(t.Context(), "brain", 2, "brain-atlas", atlasRef(), cleanManifest.SnapshotID)
+	if err != nil || len(cleanDocs) == 0 {
+		t.Fatalf("clean rebuild docs=%d err=%v", len(cleanDocs), err)
+	}
+	for _, document := range cleanDocs {
+		if document.URI == firstEvidenceURI || containsString(document.Content, firstEvidenceURI) {
+			t.Fatalf("retracted claim survived clean rebuild: %+v", document)
+		}
 	}
 }
 

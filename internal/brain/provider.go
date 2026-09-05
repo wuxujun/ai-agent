@@ -179,6 +179,10 @@ func (p *Provider) open(ctx context.Context, scope ProjectRef, snapshotID string
 	}
 	release, err := p.Repository.OpenRelease(ctx, scope, snapshotID)
 	if err != nil {
+		if errors.Is(err, ErrSnapshotRevoked) {
+			ObserveRetractionBlocked(ctx, "brain")
+			return nil, Release{}, "", ErrProviderWatermark
+		}
 		return nil, Release{}, "", fmt.Errorf("%w: %v", ErrProviderUnavailable, sanitizeProviderError(err))
 	}
 	watermark, err := p.Ledger.Watermark(ctx, scope)
