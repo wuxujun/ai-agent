@@ -48,6 +48,21 @@ func WithRetrievalExecutionContext(ctx context.Context, taskID, tenantID string,
 	return context.WithValue(ctx, retrievalContextKey{}, exec)
 }
 
+// WithPreservedRetrievalExecutionContext rebuilds the execution scope without
+// discarding a pinned Brain project, snapshot, or live watermark already bound
+// to the context by Engine.Next.
+func WithPreservedRetrievalExecutionContext(ctx context.Context, taskID, tenantID string) context.Context {
+	_, _, projectID, snapshotID, watermark, ok := RetrievalContextScope(ctx)
+	options := make([]RetrievalContextOption, 0, 2)
+	if ok && projectID != "" && snapshotID != "" {
+		options = append(options, WithBrainScope(projectID, snapshotID))
+		if watermark != "" {
+			options = append(options, WithBrainWatermark(watermark))
+		}
+	}
+	return WithRetrievalExecutionContext(ctx, taskID, tenantID, options...)
+}
+
 func retrievalExecutionFromContext(ctx context.Context) (retrievalExecutionContext, error) {
 	value, ok := ctx.Value(retrievalContextKey{}).(retrievalExecutionContext)
 	if !ok || strings.TrimSpace(value.TaskID) == "" {

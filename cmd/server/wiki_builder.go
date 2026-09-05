@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ type wikiClientFactory func(wiki.Config) (wikiClient, error)
 
 type wikiRuntime struct {
 	client wikiClient
+	brain  *brainCorpusAdapter
 }
 
 type localWikiStatusProvider interface {
@@ -33,55 +35,103 @@ type localWikiStatusProvider interface {
 type brainCorpusAdapter struct {
 	provider *brain.Provider
 	cfg      *config.Config
+	root     string
+}
+
+func (a *brainCorpusAdapter) currentConfig() (*config.Config, error) {
+	cfg := config.Get()
+	if cfg == nil || !cfg.Brain.Enabled || a == nil || filepath.Clean(cfg.Brain.Root) != a.root {
+		return nil, brain.ErrPinConfiguration
+	}
+	return cfg, nil
 }
 
 func (a *brainCorpusAdapter) SearchCorpus(ctx context.Context, query string, topK int, space string, scope tools.WikiScope) ([]wiki.Document, error) {
-	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	cfg, err := a.currentConfig()
+	if err != nil {
+		return nil, err
+	}
+	ref, err := brain.ResolveProject(cfg, scope.TenantID, scope.BrainProjectID)
 	if err != nil {
 		return nil, err
 	}
 	return a.provider.SearchCorpus(ctx, query, topK, space, ref, scope.BrainSnapshotID)
 }
 func (a *brainCorpusAdapter) ReadCorpus(ctx context.Context, document wiki.Document, space string, scope tools.WikiScope) (wiki.Document, error) {
-	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	cfg, err := a.currentConfig()
+	if err != nil {
+		return wiki.Document{}, err
+	}
+	ref, err := brain.ResolveProject(cfg, scope.TenantID, scope.BrainProjectID)
 	if err != nil {
 		return wiki.Document{}, err
 	}
 	return a.provider.ReadCorpus(ctx, document, space, ref, scope.BrainSnapshotID)
 }
 func (a *brainCorpusAdapter) GraphCorpus(ctx context.Context, document wiki.Document, space string, depth int, direction string, scope tools.WikiScope) (wiki.GraphResult, error) {
-	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	cfg, err := a.currentConfig()
+	if err != nil {
+		return wiki.GraphResult{}, err
+	}
+	ref, err := brain.ResolveProject(cfg, scope.TenantID, scope.BrainProjectID)
 	if err != nil {
 		return wiki.GraphResult{}, err
 	}
 	return a.provider.GraphCorpus(ctx, document, space, depth, direction, ref, scope.BrainSnapshotID)
 }
 func (a *brainCorpusAdapter) CurrentWatermark(ctx context.Context, scope tools.WikiScope) (string, error) {
-	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	cfg, err := a.currentConfig()
+	if err != nil {
+		return "", err
+	}
+	ref, err := brain.ResolveProject(cfg, scope.TenantID, scope.BrainProjectID)
 	if err != nil {
 		return "", err
 	}
 	return a.provider.Ledger.Watermark(ctx, ref)
 }
 func (a *brainCorpusAdapter) BrainSpace(scope tools.WikiScope) string {
-	ref, err := brain.ResolveProject(a.cfg, scope.TenantID, scope.BrainProjectID)
+	cfg, err := a.currentConfig()
+	if err != nil {
+		return ""
+	}
+	ref, err := brain.ResolveProject(cfg, scope.TenantID, scope.BrainProjectID)
 	if err != nil {
 		return ""
 	}
 	return ref.WikiSpace
 }
 
-func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wikiClient) error {
-	if cfg == nil || !cfg.Brain.Enabled {
-		return nil
+func (a *brainCorpusAdapter) ReadBrain(ctx context.Context, document wiki.Document, space, tenant, project, snapshot string) (wiki.Document, error) {
+	cfg, err := a.currentConfig()
+	if err != nil {
+		return wiki.Document{}, err
 	}
+	ref, err := brain.ResolveProject(cfg, tenant, project)
+	if err != nil || ref.WikiSpace != space {
+		return wiki.Document{}, fmt.Errorf("brain page is not authorized")
+	}
+	return a.provider.ReadCorpus(ctx, document, space, ref, snapshot)
+}
+
+func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wikiClient) (*brainCorpusAdapter, error) {
+	if cfg == nil || !cfg.Brain.Enabled {
+		return nil, nil
+	}
+	adapter, err := newBrainCorpusAdapter(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return adapter, tools.RegisterWikiToolsWithCorpus(registry, client, &tools.CorpusRouter{Ordinary: client, Brain: adapter, MaxMerge: 10})
+}
+
+func newBrainCorpusAdapter(cfg *config.Config) (*brainCorpusAdapter, error) {
 	ledger := brain.NewFileRetractionLedger(cfg.Brain.Root)
 	repo, err := brain.NewRepository(cfg.Brain.Root, ledger)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	adapter := &brainCorpusAdapter{provider: brain.NewProvider(repo, ledger), cfg: cfg}
-	return tools.RegisterWikiToolsWithCorpus(registry, client, &tools.CorpusRouter{Ordinary: client, Brain: adapter, MaxMerge: 10})
+	return &brainCorpusAdapter{provider: brain.NewProvider(repo, ledger), cfg: cfg, root: filepath.Clean(cfg.Brain.Root)}, nil
 }
 
 func (r *wikiRuntime) Check(ctx context.Context) error {
@@ -116,6 +166,13 @@ func buildWikiRuntime(ctx context.Context, cfg *config.Config, registry *tools.R
 
 func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, registry *tools.Registry, factory wikiClientFactory) (*wikiRuntime, error) {
 	runtime := &wikiRuntime{}
+	if cfg != nil && cfg.Brain.Enabled {
+		adapter, err := newBrainCorpusAdapter(cfg)
+		if err != nil {
+			return nil, err
+		}
+		runtime.brain = adapter
+	}
 	if cfg == nil || (strings.TrimSpace(cfg.Wiki.URL) == "" && strings.TrimSpace(cfg.Wiki.Directory) == "") {
 		return runtime, nil
 	}
@@ -138,10 +195,12 @@ func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, regist
 		if err := tools.RegisterWikiTools(registry, client); err != nil {
 			return nil, err
 		}
-		if err := attachBrainCorpus(cfg, registry, client); err != nil {
+		brainAdapter, err := attachBrainCorpus(cfg, registry, client)
+		if err != nil {
 			return nil, err
 		}
 		runtime.client = client
+		runtime.brain = brainAdapter
 		slog.Info("read-only local Wiki initialized",
 			"directory", cfg.Wiki.Directory,
 			"search_mode", cfg.Wiki.LocalSearchMode,
@@ -193,13 +252,15 @@ func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, regist
 		cancel()
 		return nil, err
 	}
-	if err := attachBrainCorpus(cfg, registry, client); err != nil {
+	brainAdapter, err := attachBrainCorpus(cfg, registry, client)
+	if err != nil {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = client.Close(closeCtx)
 		cancel()
 		return nil, err
 	}
 	runtime.client = client
+	runtime.brain = brainAdapter
 	slog.Info("read-only LLM Wiki initialized", "url", cfg.Wiki.URL, "default_space", cfg.Wiki.DefaultSpace)
 	return runtime, nil
 }

@@ -27,8 +27,10 @@ func (h *Handler) getWikiPage(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "wiki page reader is unavailable"})
 		return
 	}
+	cfg := config.Get()
+	principal := principalFromGin(c)
 	space := strings.TrimSpace(c.Param("space"))
-	allowedSpaces := wikiSpacesForPrincipal(principalFromGin(c))
+	allowedSpaces := wikiSpacesForPrincipal(cfg, principal)
 	if len(allowedSpaces) == 0 || space == "" || !allowedSpaces[space] {
 		c.JSON(http.StatusForbidden, gin.H{"error": "wiki space is not available to the current tenant"})
 		return
@@ -36,6 +38,36 @@ func (h *Handler) getWikiPage(c *gin.Context) {
 	slug, err := normalizeWikiPageSlug(c.Param("slug"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid wiki page slug"})
+		return
+	}
+	if projectID, ok := brainProjectForSpace(cfg, principal, space); ok {
+		if h.brainPages == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "brain page reader is unavailable"})
+			return
+		}
+		snapshotID := strings.TrimSpace(c.Query("brain_snapshot_id"))
+		requestedProject := strings.TrimSpace(c.Query("brain_project_id"))
+		if requestedProject != "" && requestedProject != projectID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "brain project is not authorized"})
+			return
+		}
+		if snapshotID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "brain snapshot is required"})
+			return
+		}
+		document, err := h.brainPages.ReadBrain(c.Request.Context(), wiki.Document{Slug: slug, URI: "wiki://" + space + "/" + slug}, space, principal.TenantID, projectID, snapshotID)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "wiki page not found"})
+				return
+			}
+			log.Warn("Brain page read failed", "tenant_id", principal.TenantID, "space", space)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "wiki page could not be read"})
+			return
+		}
+		c.Header("Cache-Control", "private, no-store")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.JSON(http.StatusOK, wikiPageResponse{URI: document.URI, Space: space, Slug: slug, Title: document.Title, Content: document.Content})
 		return
 	}
 	document, err := h.wikiPages.Read(c.Request.Context(), wiki.Document{
@@ -58,8 +90,31 @@ func (h *Handler) getWikiPage(c *gin.Context) {
 	})
 }
 
-func wikiSpaceForPrincipal(principal Principal) (string, bool) {
-	cfg := config.Get()
+func brainProjectForSpace(cfg *config.Config, principal Principal, space string) (string, bool) {
+	if cfg == nil || !cfg.Brain.Enabled {
+		return "", false
+	}
+	tenant, ok := cfg.API.Tenants[strings.TrimSpace(principal.TenantID)]
+	if !ok {
+		return "", false
+	}
+	var projectID string
+	for id, project := range tenant.BrainProjects {
+		if strings.TrimSpace(project.WikiSpace) != space {
+			continue
+		}
+		if projectID != "" {
+			return "", false
+		}
+		projectID = id
+	}
+	return projectID, projectID != ""
+}
+
+func wikiSpaceForPrincipal(cfg *config.Config, principal Principal) (string, bool) {
+	if cfg == nil {
+		return "", false
+	}
 	tenantID := strings.TrimSpace(principal.TenantID)
 	if tenant, exists := cfg.API.Tenants[tenantID]; exists {
 		if space := strings.TrimSpace(tenant.WikiSpace); space != "" {
@@ -75,12 +130,14 @@ func wikiSpaceForPrincipal(principal Principal) (string, bool) {
 	return "", false
 }
 
-func wikiSpacesForPrincipal(principal Principal) map[string]bool {
+func wikiSpacesForPrincipal(cfg *config.Config, principal Principal) map[string]bool {
 	spaces := make(map[string]bool)
-	if ordinary, ok := wikiSpaceForPrincipal(principal); ok {
+	if cfg == nil {
+		return spaces
+	}
+	if ordinary, ok := wikiSpaceForPrincipal(cfg, principal); ok {
 		spaces[ordinary] = true
 	}
-	cfg := config.Get()
 	if tenant, exists := cfg.API.Tenants[strings.TrimSpace(principal.TenantID)]; exists && cfg.Brain.Enabled {
 		for _, project := range tenant.BrainProjects {
 			if space := strings.TrimSpace(project.WikiSpace); space != "" {

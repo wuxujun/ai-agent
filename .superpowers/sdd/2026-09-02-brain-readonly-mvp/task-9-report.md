@@ -44,3 +44,22 @@ the pinner/Engine/JIT path above.
   space plus its explicitly allowlisted Brain project spaces.
 - Multi-Agent coordinator preserves the Engine's pinned Brain TaskContext when
   constructing retrieval execution context, matching Eino/ADK/Executor paths.
+
+## Final API/context fix round
+
+- Authenticated Brain page GETs now require an allowlisted tenant project and
+  explicit pinned snapshot, then route through the Brain provider's verified
+  release reader; ordinary Wiki requests and disabled Brain behavior remain
+  unchanged. Server wiring exposes the Brain adapter even when ordinary Wiki
+  is not configured.
+- Default Executor and ADK tool wrappers rebuild retrieval context through the
+  preservation helper, retaining Brain project, snapshot, and watermark
+  injected by Engine.Next.
+- Added regression coverage for authorized Brain routing, disabled/cross-tenant
+  rejection, and preservation of pinned retrieval scope.
+
+Verification passed:
+
+```text
+GOCACHE=/private/tmp/brain-mvp-go-cache go test -race ./internal/api ./internal/tools ./internal/executor ./internal/orchestrator ./cmd/server -run 'Test(GetWikiPage|WithPreserved|Retrieval|Executor|Adk|BuildWiki|Corpus)' -count=1
+```

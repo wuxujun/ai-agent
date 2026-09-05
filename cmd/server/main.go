@@ -217,6 +217,9 @@ func run() error {
 	}
 	app := buildApp(cfg, st, engineBuild.engine, engineBuild.metrics, engineBuild.runtime)
 	app.tasks.SetWikiReadinessChecker(wikiRuntime)
+	if wikiRuntime.brain != nil {
+		app.tasks.SetBrainPageReader(wikiRuntime.brain)
+	}
 
 	// Wait for SIGINT, SIGTERM (shutdown) or SIGHUP (hot-reload).
 	quit := make(chan os.Signal, 1)

@@ -148,7 +148,7 @@ func ragSearchHandler(ctx tool.Context, args RAGSearchArgs) (RAGSearchResult, er
 		return RAGSearchResult{}, fmt.Errorf("rag_search is not registered")
 	}
 	workspace, _ := ctx.Value(workspaceKey).(string)
-	execCtx := tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID)
+	execCtx := tools.WithPreservedRetrievalExecutionContext(ctx, task.ID, task.TenantID)
 	searchResult, err := searchTool.Execute(execCtx, workspace, map[string]any{"query": query, "top_k": topK})
 	if err != nil {
 		return RAGSearchResult{}, err
@@ -605,7 +605,7 @@ func buildADKMCPTools() ([]tool.Tool, error) {
 			if task == nil {
 				return nil, fmt.Errorf("task not found in context")
 			}
-			executionCtx := tools.WithRetrievalExecutionContext(toolCtx, task.ID, task.TenantID)
+			executionCtx := tools.WithPreservedRetrievalExecutionContext(toolCtx, task.ID, task.TenantID)
 			response, err := registeredTool.Execute(executionCtx, task.Workspace, args)
 			if err != nil {
 				return nil, err

@@ -62,6 +62,7 @@ type Handler struct {
 	approvalBus *orchestrator.ApprovalBus
 	wikiReady   WikiReadinessChecker
 	wikiPages   WikiPageReader
+	brainPages  BrainPageReader
 }
 
 // WikiReadinessChecker probes the configured read-only Wiki dependency.
@@ -73,6 +74,13 @@ type WikiReadinessChecker interface {
 // browser API. Implementations retain their normal path and backend checks.
 type WikiPageReader interface {
 	Read(context.Context, wiki.Document, string) (wiki.Document, error)
+}
+
+// BrainPageReader is the pinned, tenant-scoped Brain page boundary. The
+// caller supplies an already selected immutable snapshot; implementations
+// must never fall back to CURRENT.
+type BrainPageReader interface {
+	ReadBrain(context.Context, wiki.Document, string, string, string, string) (wiki.Document, error)
 }
 
 type wikiStatusProvider interface {
@@ -234,6 +242,12 @@ func (h *Handler) SetWikiReadinessChecker(checker WikiReadinessChecker) {
 	if reader, ok := checker.(WikiPageReader); ok {
 		h.wikiPages = reader
 	}
+}
+
+// SetBrainPageReader wires the pinned Brain page boundary. It is optional so
+// Brain-disabled and ordinary Wiki deployments retain their existing path.
+func (h *Handler) SetBrainPageReader(reader BrainPageReader) {
+	h.brainPages = reader
 }
 
 // Wait blocks until all background run-all goroutines complete. Call during shutdown.

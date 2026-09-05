@@ -13,6 +13,15 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+func TestWithPreservedRetrievalExecutionContextKeepsBrainScope(t *testing.T) {
+	ctx := WithRetrievalExecutionContext(context.Background(), "task-old", "tenant-old", WithBrainScope("atlas", "snap-1"), WithBrainWatermark("wm-1"))
+	ctx = WithPreservedRetrievalExecutionContext(ctx, "task-new", "tenant-new")
+	taskID, tenantID, projectID, snapshotID, watermark, ok := RetrievalContextScope(ctx)
+	if !ok || taskID != "task-new" || tenantID != "tenant-new" || projectID != "atlas" || snapshotID != "snap-1" || watermark != "wm-1" {
+		t.Fatalf("scope = %q %q %q %q %q ok=%v", taskID, tenantID, projectID, snapshotID, watermark, ok)
+	}
+}
+
 func TestRAGSearchCachesQueriesAndFetchesStableCandidates(t *testing.T) {
 	taskID := "retrieval-cache-test"
 	ClearRetrievalContext(taskID)

@@ -23,6 +23,27 @@ type fakeWikiPageRuntime struct {
 	slug     string
 }
 
+type fakeBrainPageReader struct {
+	document wiki.Document
+	reads    int
+	tenant   string
+	project  string
+	snapshot string
+}
+
+func (f *fakeBrainPageReader) ReadBrain(_ context.Context, document wiki.Document, space, tenant, project, snapshot string) (wiki.Document, error) {
+	f.reads++
+	f.tenant, f.project, f.snapshot = tenant, project, snapshot
+	result := f.document
+	if result.URI == "" {
+		result.URI = document.URI
+	}
+	if result.Content == "" {
+		result.Content = "brain"
+	}
+	return result, nil
+}
+
 func (*fakeWikiPageRuntime) Check(context.Context) error { return nil }
 
 func (f *fakeWikiPageRuntime) Read(_ context.Context, document wiki.Document, space string) (wiki.Document, error) {
@@ -80,6 +101,82 @@ func TestGetWikiPageEnforcesTenantSpaceAndReturnsMarkdown(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden || runtime.reads != 1 {
 		t.Fatalf("cross-space response = %d %s, reads=%d", response.Code, response.Body.String(), runtime.reads)
+	}
+}
+
+func TestGetWikiPageRoutesAuthorizedBrainSpaceToPinnedReader(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "brain-key", BrainProjects: map[string]config.BrainProjectConfig{"atlas": {WikiSpace: "brain-atlas"}}},
+			"tenant-b": {APIKey: "tenant-b-key", BrainProjects: map[string]config.BrainProjectConfig{"other": {WikiSpace: "brain-other"}}},
+		}
+		cfg.Brain.Enabled = true
+	}))
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	h := RegisterRoutes(router, store.NewMemoryStore(), nil, nil)
+	ordinary := &fakeWikiPageRuntime{document: wiki.Document{Content: "ordinary"}}
+	brainReader := &fakeBrainPageReader{document: wiki.Document{Content: "brain"}}
+	h.SetWikiReadinessChecker(ordinary)
+	h.SetBrainPageReader(brainReader)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/wiki/pages/brain-atlas/concepts/one?brain_project_id=atlas&brain_snapshot_id=snap-1", nil)
+	request.Header.Set("X-API-Key", "brain-key")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"content":"brain"`) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	if brainReader.reads != 1 || brainReader.tenant != "tenant-a" || brainReader.project != "atlas" || brainReader.snapshot != "snap-1" || ordinary.reads != 0 {
+		t.Fatalf("brain route = %+v ordinary=%d", brainReader, ordinary.reads)
+	}
+}
+
+func TestGetWikiPageRejectsBrainSpaceWhenDisabledOrCrossTenant(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "brain-key", BrainProjects: map[string]config.BrainProjectConfig{"atlas": {WikiSpace: "brain-atlas"}}},
+		}
+		cfg.Brain.Enabled = false
+	}))
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	h := RegisterRoutes(router, store.NewMemoryStore(), nil, nil)
+	h.SetWikiReadinessChecker(&fakeWikiPageRuntime{})
+	h.SetBrainPageReader(&fakeBrainPageReader{})
+	for _, key := range []string{"brain-key", "tenant-b-key", "other-key"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/wiki/pages/brain-atlas/concepts/one?brain_project_id=atlas&brain_snapshot_id=snap-1", nil)
+		request.Header.Set("X-API-Key", key)
+		router.ServeHTTP(response, request)
+		if response.Code == http.StatusOK {
+			t.Fatalf("key %q unexpectedly read disabled/cross-tenant brain page", key)
+		}
+	}
+}
+
+func TestGetWikiPageRejectsOtherTenantBrainSpace(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "a-key", BrainProjects: map[string]config.BrainProjectConfig{"atlas": {WikiSpace: "brain-atlas"}}},
+			"tenant-b": {APIKey: "b-key", BrainProjects: map[string]config.BrainProjectConfig{"other": {WikiSpace: "brain-other"}}},
+		}
+		cfg.Brain.Enabled = true
+	}))
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	h := RegisterRoutes(router, store.NewMemoryStore(), nil, nil)
+	h.SetWikiReadinessChecker(&fakeWikiPageRuntime{})
+	h.SetBrainPageReader(&fakeBrainPageReader{})
+	request := httptest.NewRequest(http.MethodGet, "/api/wiki/pages/brain-atlas/concepts/one?brain_project_id=atlas&brain_snapshot_id=snap-1", nil)
+	request.Header.Set("X-API-Key", "b-key")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("cross-tenant status = %d: %s", response.Code, response.Body.String())
 	}
 }
 
