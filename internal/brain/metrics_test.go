@@ -24,3 +24,13 @@ func TestBrainMetricsExcludeHighCardinalityLabels(t *testing.T) {
 		t.Fatalf("publish total = %d", got)
 	}
 }
+
+func TestBrainMetricsCountsPublishConflictAndRetraction(t *testing.T) {
+	before := CurrentMetrics()
+	ObservePublish(context.Background(), "conflict", "brain")
+	ObserveRetractionBlocked(context.Background(), "brain")
+	after := CurrentMetrics()
+	if after.PublishConflicts != before.PublishConflicts+1 || after.RetractionBlocked != before.RetractionBlocked+1 {
+		t.Fatalf("metrics delta = before=%+v after=%+v", before, after)
+	}
+}

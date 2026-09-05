@@ -13,3 +13,12 @@ and 2 usage/configuration failure. Retraction is logical blocking, not physical
 erasure; `brain.root` changes require restart; no HTTP write route exists.
 
 Verification: focused Brain/API tests, vet, and `git diff --check` passed.
+
+## Review fix round
+
+Compiler, publish, provider search/fetch, and retraction-block paths now feed
+the bounded runtime counters. Publish conflicts are classified separately.
+Brain status enumerates configured tenant projects through repository status,
+reporting empty and revoked projects without exposing identifiers; readiness
+uses the same healthy result. README now includes review/publish/rollback
+examples and alert guidance.

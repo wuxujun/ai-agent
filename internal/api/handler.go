@@ -226,8 +226,13 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 			if h.brainStatus != nil {
 				brainStatus = h.brainStatus.BrainStatus(ctx)
 			}
+			if status, ok := brainStatus.(map[string]any); ok {
+				if healthy, exists := status["healthy"].(bool); exists {
+					brainHealthy = healthy
+				}
+			}
 		}
-		ready := healthy && (!wikiCfg.Required || wikiHealthy) && teamHealth.Healthy
+		ready := healthy && (!wikiCfg.Required || wikiHealthy) && teamHealth.Healthy && (!brainConfigured || brainHealthy)
 		if wikiCfg.Required && !wikiHealthy {
 			tools.ObserveWikiReadinessFailure(ctx)
 		}

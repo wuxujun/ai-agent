@@ -14,6 +14,18 @@ credentials, or tenant/project/task/snapshot identifiers are emitted.
 not physical erasure, and Brain has no HTTP write route. Compiler credentials
 must come from the configured secret environment (normally `GEMINI_API_KEY`).
 
+Typical review flow:
+
+```text
+brain-compile inspect --tenant tenant-a --project atlas --snapshot snap-1
+brain-compile verify --tenant tenant-a --project atlas --snapshot snap-1
+brain-compile publish --tenant tenant-a --project atlas --snapshot snap-1 --expected-current snap-0
+brain-compile rollback --tenant tenant-a --project atlas --snapshot snap-0 --expected-current snap-1
+```
+
+Alert on sustained Brain provider errors, revoked projects, or unexpected
+readiness loss; an empty CURRENT alone is an expected pre-publication state.
+
 > A production-grade, multi-LLM AI Agent execution runtime built in Go. It orchestrates autonomous research, code analysis, and task execution within a secure sandboxed workspace, powered by a dual Multi-Agent workflow engine and a comprehensive answer quality pipeline.
 
 [![Go 1.25](https://img.shields.io/badge/Go-1.25-blue)](https://go.dev/) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)

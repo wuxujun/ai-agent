@@ -115,16 +115,21 @@ func (p *Provider) Read(context.Context, wiki.Document, string) (wiki.Document, 
 }
 
 func (p *Provider) SearchCorpus(ctx context.Context, query string, topK int, space string, scope ProjectRef, snapshotID string) ([]wiki.Document, error) {
+	outcome := "success"
+	defer func() { ObserveSearch(ctx, "brain", outcome) }()
 	space = scope.WikiSpace
 	client, release, watermark, err := p.open(ctx, scope, snapshotID)
 	if err != nil {
+		outcome = "error"
 		return nil, err
 	}
 	documents, err := client.Search(ctx, query, topK, space)
 	if err != nil {
+		outcome = "error"
 		return nil, err
 	}
 	if err := p.checkWatermark(ctx, scope, watermark); err != nil {
+		outcome = "error"
 		return nil, err
 	}
 	_ = release
@@ -132,16 +137,21 @@ func (p *Provider) SearchCorpus(ctx context.Context, query string, topK int, spa
 }
 
 func (p *Provider) ReadCorpus(ctx context.Context, document wiki.Document, space string, scope ProjectRef, snapshotID string) (wiki.Document, error) {
+	outcome := "success"
+	defer func() { ObserveFetch(ctx, "brain", outcome) }()
 	space = scope.WikiSpace
 	client, _, watermark, err := p.open(ctx, scope, snapshotID)
 	if err != nil {
+		outcome = "error"
 		return wiki.Document{}, err
 	}
 	result, err := client.Read(ctx, document, space)
 	if err != nil {
+		outcome = "error"
 		return wiki.Document{}, err
 	}
 	if err := p.checkWatermark(ctx, scope, watermark); err != nil {
+		outcome = "error"
 		return wiki.Document{}, err
 	}
 	return result, nil
@@ -188,6 +198,7 @@ func (p *Provider) open(ctx context.Context, scope ProjectRef, snapshotID string
 func (p *Provider) checkWatermark(ctx context.Context, scope ProjectRef, expected string) error {
 	watermark, err := p.Ledger.Watermark(ctx, scope)
 	if err != nil || watermark != expected {
+		ObserveRetractionBlocked(ctx, "brain")
 		return ErrProviderWatermark
 	}
 	return nil

@@ -348,7 +348,17 @@ func (r *Repository) Status(ctx context.Context, ref ProjectRef) (RepositoryStat
 	return status, nil
 }
 
-func (r *Repository) Publish(ctx context.Context, ref ProjectRef, snapshotID, expectedCurrent string) (Manifest, error) {
+func (r *Repository) Publish(ctx context.Context, ref ProjectRef, snapshotID, expectedCurrent string) (manifest Manifest, err error) {
+	defer func() {
+		outcome := "success"
+		if err != nil {
+			outcome = "error"
+			if errors.Is(err, ErrCurrentConflict) {
+				outcome = "conflict"
+			}
+		}
+		ObservePublish(ctx, outcome, "brain")
+	}()
 	if err := validateLifecycleIdentifiers(ctx, snapshotID, expectedCurrent); err != nil {
 		return Manifest{}, err
 	}

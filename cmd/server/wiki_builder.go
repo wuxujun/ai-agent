@@ -119,13 +119,26 @@ func (a *brainCorpusAdapter) BrainStatus(ctx context.Context) any {
 	if err != nil {
 		return map[string]any{"configured": true, "healthy": false, "current_projects": 0}
 	}
-	projects := 0
-	for _, tenant := range cfg.API.Tenants {
-		projects += len(tenant.BrainProjects)
+	projects, revoked, empty := 0, 0, 0
+	for tenantID, tenant := range cfg.API.Tenants {
+		for projectID := range tenant.BrainProjects {
+			ref, resolveErr := brain.ResolveProject(cfg, tenantID, projectID)
+			if resolveErr != nil {
+				continue
+			}
+			projects++
+			status, statusErr := a.provider.Repository.Status(ctx, ref)
+			if statusErr != nil || status.RevocationState == "revoked_or_invalid" {
+				revoked++
+			}
+			if status.Current == "" {
+				empty++
+			}
+		}
 	}
 	// Empty CURRENT is a reportable lifecycle state, not a server readiness
 	// failure for unrelated ordinary Wiki traffic.
-	return map[string]any{"configured": true, "healthy": true, "current_projects": projects}
+	return map[string]any{"configured": true, "healthy": revoked == 0, "current_projects": projects - empty, "empty_projects": empty, "revoked_projects": revoked}
 }
 
 func attachBrainCorpus(cfg *config.Config, registry *tools.Registry, client wikiClient) (*brainCorpusAdapter, error) {
