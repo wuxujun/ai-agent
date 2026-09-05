@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -32,40 +31,10 @@ type builtApp struct {
 }
 
 func buildStore(cfg *config.Config) (store.Store, error) {
-	switch cfg.Store.Type {
-	case "memory":
-		return store.NewMemoryStore(), nil
-	case "postgres":
-		if cfg.Store.DSN == "" {
-			return nil, errors.New("Store DSN is required when AI_AGENT_STORE_TYPE=postgres")
-		}
-		st, err := store.NewPostgresStore(cfg.Store.DSN)
-		if err != nil {
-			return nil, fmt.Errorf("initialize PostgresStore: %w", err)
-		}
-		return st, nil
-	case "redis":
-		if cfg.Store.DSN == "" {
-			return nil, errors.New("Store DSN (Redis URL) is required when AI_AGENT_STORE_TYPE=redis")
-		}
-		st, err := store.NewRedisStoreFromURL(cfg.Store.DSN)
-		if err != nil {
-			return nil, fmt.Errorf("initialize RedisStore: %w", err)
-		}
-		return st, nil
-	case "sqlite":
-		fallthrough
-	default:
-		dsn := cfg.Store.DSN
-		if dsn == "" {
-			dsn = "data/agent.db"
-		}
-		st, err := store.NewSQLiteStore(dsn)
-		if err != nil {
-			return nil, fmt.Errorf("initialize SQLiteStore: %w", err)
-		}
-		return st, nil
+	if cfg == nil {
+		return nil, errors.New("store configuration is required")
 	}
+	return store.Open(cfg.Store.Type, cfg.Store.DSN)
 }
 
 func buildApp(cfg *config.Config, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector, llmRuntime *llmcore.Runtime) builtApp {
