@@ -3,6 +3,7 @@ package brain
 import (
 	"bytes"
 	"context"
+	"net/url"
 	"path"
 	"sort"
 	"strconv"
@@ -259,12 +260,45 @@ func (v *snapshotValidator) validateUnsafeContent(location, content string) {
 // into a provider prompt, rendered page, finding, or manifest.
 func containsPrivateBrainPath(content string) bool {
 	normalized := strings.ToLower(strings.ReplaceAll(content, "\\", "/"))
-	for _, root := range []string{"/users/", "/home/", "/root/", "/private/", "/var/folders/", "file:///"} {
-		if strings.Contains(normalized, root) {
-			return true
+	for _, root := range []string{"/users/", "/home/", "/root/", "/private/", "/var/folders/", "/tmp/", "/var/tmp/"} {
+		for offset := strings.Index(normalized, root); offset >= 0; {
+			if offset == 0 || !isPathTokenByte(normalized[offset-1]) {
+				return true
+			}
+			next := strings.Index(normalized[offset+len(root):], root)
+			if next < 0 {
+				break
+			}
+			offset += len(root) + next
 		}
 	}
+	for offset := strings.Index(normalized, "file://"); offset >= 0; {
+		if (offset == 0 || !isPathTokenByte(normalized[offset-1])) && fileURLIsLocal(normalized[offset:]) {
+			return true
+		}
+		next := strings.Index(normalized[offset+len("file://"):], "file://")
+		if next < 0 {
+			break
+		}
+		offset += len("file://") + next
+	}
 	return false
+}
+
+func isPathTokenByte(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '_' || value == '.'
+}
+
+func fileURLIsLocal(value string) bool {
+	end := len(value)
+	if index := strings.IndexAny(value, " \t\r\n\"'<>)]}"); index >= 0 {
+		end = index
+	}
+	parsed, err := url.Parse(value[:end])
+	if err != nil || parsed.Scheme != "file" || parsed.Path == "" {
+		return false
+	}
+	return parsed.Host == "" || parsed.Host == "localhost"
 }
 
 func (v *snapshotValidator) add(code, location string) {

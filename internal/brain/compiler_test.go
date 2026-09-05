@@ -48,14 +48,19 @@ func (f *compilerFakeCaller) CallJSON(ctx context.Context, cfg llm.Config, _, us
 }
 
 type compilerLedger struct {
-	watermarks []string
-	watermark  int
-	retracted  map[string]bool
+	watermarks   []string
+	watermark    int
+	retracted    map[string]bool
+	watermarkErr error
+	containsErr  error
 }
 
 func (l *compilerLedger) Watermark(ctx context.Context, _ ProjectRef) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+	if l.watermarkErr != nil {
+		return "", l.watermarkErr
 	}
 	if len(l.watermarks) == 0 {
 		return "", errors.New("missing test watermark")
@@ -72,7 +77,57 @@ func (l *compilerLedger) Contains(ctx context.Context, _ ProjectRef, uri string)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	if l.containsErr != nil {
+		return false, l.containsErr
+	}
 	return l.retracted[uri], nil
+}
+
+func TestCompilerClassifiesRetractionInfrastructureSeparately(t *testing.T) {
+	ledger := &compilerLedger{watermarkErr: errors.New("ledger unavailable")}
+	caller := &compilerFakeCaller{}
+	root := compilerTempRoot(t)
+	repo, err := NewRepository(root, ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := testCompiler(t, caller, compilerTestOptions{})
+	compiler.Ledger = ledger
+	compiler.Repository = repo
+
+	_, err = compiler.Build(t.Context(), compilerBuildRequest())
+	if !errors.Is(err, ErrCompileInfrastructure) || !errors.Is(err, ErrCompileRetractionInfrastructure) || errors.Is(err, ErrCompileRetraction) || caller.calls != 0 {
+		t.Fatalf("calls=%d err=%v", caller.calls, err)
+	}
+
+	t.Run("contains", func(t *testing.T) {
+		ledger := &compilerLedger{watermarks: []string{"sha256:stable"}, containsErr: errors.New("ledger read failed")}
+		caller := &compilerFakeCaller{}
+		root := compilerTempRoot(t)
+		repo, err := NewRepository(root, ledger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compiler := testCompiler(t, caller, compilerTestOptions{})
+		compiler.Ledger = ledger
+		compiler.Repository = repo
+
+		_, err = compiler.Build(t.Context(), compilerBuildRequest())
+		if !errors.Is(err, ErrCompileInfrastructure) || !errors.Is(err, ErrCompileRetractionInfrastructure) || errors.Is(err, ErrCompileRetraction) || caller.calls != 0 {
+			t.Fatalf("calls=%d err=%v", caller.calls, err)
+		}
+	})
+}
+
+func TestCompilerDoesNotClassifyRepositoryIOAsStageGate(t *testing.T) {
+	caller := &compilerFakeCaller{output: compilerValidSynthesis()}
+	compiler := testCompiler(t, caller, compilerTestOptions{})
+	compiler.Repository = &Repository{}
+
+	_, err := compiler.Build(t.Context(), compilerBuildRequest())
+	if !errors.Is(err, ErrCompileInfrastructure) || !errors.Is(err, ErrCompileRepository) || errors.Is(err, ErrCompileStage) || caller.calls != 1 {
+		t.Fatalf("calls=%d err=%v", caller.calls, err)
+	}
 }
 
 func TestCompilerRejectsInputBeforeLLMCall(t *testing.T) {
@@ -184,18 +239,27 @@ func TestCompilerRejectsPromptInjectionFindingsBeforeStaging(t *testing.T) {
 }
 
 func TestCompilerRejectsPrivatePathsBeforeModelAndStaging(t *testing.T) {
-	const privatePath = "/Users/example/private-plan.md"
-	t.Run("source", func(t *testing.T) {
-		fake := &compilerFakeCaller{}
-		compiler := testCompiler(t, fake, compilerTestOptions{})
-		compiler.Sources = NewSourceReader(&compilerSourceStore{tasks: []*types.Task{compilerSourceTask("task-a", privatePath)}})
+	privatePaths := []string{
+		"/Users/example/private-plan.md",
+		"/tmp/private-plan.md",
+		"/var/tmp/private-plan.md",
+		"/private/var/folders/xx/private-plan.md",
+		"file://localhost/tmp/private-plan.md",
+	}
+	for _, privatePath := range privatePaths {
+		t.Run("source/"+strings.ReplaceAll(privatePath, "/", "_"), func(t *testing.T) {
+			fake := &compilerFakeCaller{}
+			compiler := testCompiler(t, fake, compilerTestOptions{})
+			compiler.Sources = NewSourceReader(&compilerSourceStore{tasks: []*types.Task{compilerSourceTask("task-a", privatePath)}})
 
-		_, err := compiler.Build(t.Context(), compilerBuildRequest())
-		if !errors.Is(err, ErrCompileSynthesis) || fake.calls != 0 || strings.Contains(fake.user, privatePath) {
-			t.Fatalf("calls=%d staged=%t err=%v", fake.calls, compilerHasStagedSnapshot(t, compiler), err)
-		}
-	})
+			_, err := compiler.Build(t.Context(), compilerBuildRequest())
+			if !errors.Is(err, ErrCompileSynthesis) || fake.calls != 0 || strings.Contains(fake.user, privatePath) {
+				t.Fatalf("calls=%d staged=%t err=%v", fake.calls, compilerHasStagedSnapshot(t, compiler), err)
+			}
+		})
+	}
 	t.Run("generated", func(t *testing.T) {
+		const privatePath = "file://localhost/var/tmp/private-plan.md"
 		output := compilerValidSynthesis()
 		output.Pages[0].Summary = privatePath
 		fake := &compilerFakeCaller{output: output}
@@ -206,6 +270,18 @@ func TestCompilerRejectsPrivatePathsBeforeModelAndStaging(t *testing.T) {
 			t.Fatalf("calls=%d staged=%t err=%v", fake.calls, compilerHasStagedSnapshot(t, compiler), err)
 		}
 	})
+}
+
+func TestCompilerPrivatePathDetectionDoesNotRejectHTTPSURLs(t *testing.T) {
+	for _, value := range []string{
+		"https://example.com/tmp/private-plan.md",
+		"https://example.com/var/tmp/private-plan.md",
+		"https://example.com/private/plan.md",
+	} {
+		if containsPrivateBrainPath(value) {
+			t.Fatalf("safe URL was classified as private path: %q", value)
+		}
+	}
 }
 
 func TestCompilerClassifiesInfrastructureFailuresWithoutLeakingCauses(t *testing.T) {

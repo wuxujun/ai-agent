@@ -31,16 +31,17 @@ const (
 )
 
 var (
-	ErrCompileBudget         = errors.New("brain compiler budget exceeded")
-	ErrCompileConfiguration  = errors.New("brain compiler configuration is invalid")
-	ErrCompileSynthesis      = errors.New("brain compiler synthesis is invalid")
-	ErrCompileValidation     = errors.New("brain compiler validation failed")
-	ErrCompileRetraction     = errors.New("brain compiler retraction check failed")
-	ErrCompileStage          = errors.New("brain compiler staging failed")
-	ErrCompileInfrastructure = errors.New("brain compiler infrastructure failure")
-	ErrCompileSource         = errors.New("brain compiler source infrastructure failure")
-	ErrCompileLLM            = errors.New("brain compiler LLM infrastructure failure")
-	ErrCompileRepository     = errors.New("brain compiler repository infrastructure failure")
+	ErrCompileBudget                   = errors.New("brain compiler budget exceeded")
+	ErrCompileConfiguration            = errors.New("brain compiler configuration is invalid")
+	ErrCompileSynthesis                = errors.New("brain compiler synthesis is invalid")
+	ErrCompileValidation               = errors.New("brain compiler validation failed")
+	ErrCompileRetraction               = errors.New("brain compiler retraction check failed")
+	ErrCompileRetractionInfrastructure = errors.New("brain compiler retraction infrastructure failure")
+	ErrCompileStage                    = errors.New("brain compiler staging failed")
+	ErrCompileInfrastructure           = errors.New("brain compiler infrastructure failure")
+	ErrCompileSource                   = errors.New("brain compiler source infrastructure failure")
+	ErrCompileLLM                      = errors.New("brain compiler LLM infrastructure failure")
+	ErrCompileRepository               = errors.New("brain compiler repository infrastructure failure")
 )
 
 // BuildRequest fixes the authorized project scope and provenance cutoff for one
@@ -101,12 +102,12 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (Manifest, error
 	}
 	watermark, err := c.Ledger.Watermark(ctx, req.Ref)
 	if err != nil {
-		return Manifest{}, compileCause(ErrCompileRetraction, err)
+		return Manifest{}, compileInfrastructure(ErrCompileRetractionInfrastructure, err)
 	}
 	for _, evidence := range sources.Evidence {
 		retracted, containsErr := c.Ledger.Contains(ctx, req.Ref, evidence.URI)
 		if containsErr != nil {
-			return Manifest{}, compileCause(ErrCompileRetraction, containsErr)
+			return Manifest{}, compileInfrastructure(ErrCompileRetractionInfrastructure, containsErr)
 		}
 		if retracted {
 			return Manifest{}, ErrCompileRetraction
@@ -187,14 +188,14 @@ func (c *Compiler) Build(ctx context.Context, req BuildRequest) (Manifest, error
 	// repository mutation performed by this method.
 	currentWatermark, err := c.Ledger.Watermark(callCtx, req.Ref)
 	if err != nil {
-		return Manifest{}, compileCause(ErrCompileRetraction, err)
+		return Manifest{}, compileInfrastructure(ErrCompileRetractionInfrastructure, err)
 	}
 	if currentWatermark != watermark {
 		return Manifest{}, ErrRetractionChanged
 	}
 	manifest, err := c.Repository.CreateStage(callCtx, req.Ref, draft)
 	if err != nil {
-		return Manifest{}, compileInfrastructure(ErrCompileRepository, ErrCompileStage, err)
+		return Manifest{}, compileInfrastructure(ErrCompileRepository, err)
 	}
 	return manifest, nil
 }

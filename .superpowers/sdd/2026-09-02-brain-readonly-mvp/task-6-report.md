@@ -243,3 +243,32 @@ Remaining concern: this sandbox prevents the native Gemini fake-server test
 from binding loopback. The deterministic parser tests and all Brain/config
 tests passed locally; run the native `httptest` test in a normal CI/developer
 environment for final transport-wire confirmation.
+
+### Fix round 2: infrastructure classifications and private-path boundaries
+
+Review follow-up requested three corrections against baseline `00264f5`:
+
+- retraction ledger `Watermark`/`Contains` failures now return the dedicated
+  `ErrCompileRetractionInfrastructure` category together with the generic
+  infrastructure category, without matching the business retraction gate;
+- repository `CreateStage` failures now retain only the repository
+  infrastructure category and no longer match `ErrCompileStage`;
+- private-path detection now covers `/tmp/`, `/var/tmp/`, macOS temporary
+  roots, and local `file://localhost` URLs at both source and generated-output
+  boundaries, while HTTPS URLs remain accepted.
+
+RED tests were added first in `internal/brain/compiler_test.go`, then the
+minimal compiler and validator changes were applied.
+
+Verification:
+
+```text
+GOCACHE=/private/tmp/ai-agent-brain-mvp-go-cache go test ./internal/brain -count=1
+ok   github.com/wuxujun/ai-agent/internal/brain
+
+GOCACHE=/private/tmp/ai-agent-brain-mvp-go-cache go vet ./internal/brain
+exit 0
+
+git diff --check
+exit 0
+```
