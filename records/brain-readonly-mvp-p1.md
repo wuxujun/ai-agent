@@ -7,8 +7,8 @@ identifiers, and raw error payloads.
 ## Task 11 offline verification
 
 - Final pre-review commit: `40b76f1`; verification review commit: `60fdbbb`.
-- Final verification commit: `f480ad2`.
-- Latest E2E/source-store fix commit: `f9ef54c`.
+- Final deterministic E2E implementation commit: `f9ef54c`.
+- Final verification commits: `b27bcb9`, `5c8ea4d`.
 - Coverage: temporary-directory compile/publish/provider search-read/rollback;
   retraction after search; repository status and rollback rejection.
 - Focused deterministic command: `GOCACHE=/private/tmp/brain-mvp-go-cache go test ./internal/brain -run 'TestReadOnlyMVP' -count=1` (exit 0).
@@ -28,9 +28,9 @@ identifiers, and raw error payloads.
 - Fixture constructors: `testCompiler`, `repositoryWithLedger`, `stageVerified`,
   and `verifiedDraft` create all data under `t.TempDir()` with fake synthesis.
 - Offline evaluator availability check: `test -f evals/brain/dataset.yaml` and
-  `test -x ./cmd/brain-eval` both exit 0; the evaluator was not executed because
-  this verification remains offline-only and no live/provider run was requested.
+  `test -x ./cmd/brain-eval` both exit 0. Dataset SHA-256:
+  `d130aec473e6754a836b135e00f2fdfe53e148fa4eeff6eedd97b9f622872dc4`.
 - Latest deterministic E2E command: `GOCACHE=/private/tmp/brain-mvp-go-cache go test ./internal/brain -run 'TestReadOnlyMVP' -count=1` (exit 0).
 - Latest race E2E command: `GOCACHE=/private/tmp/brain-mvp-go-cache go test -race ./internal/brain -run 'TestReadOnlyMVP' -count=1` (exit 0).
 - Offline evaluator run: `GOCACHE=/private/tmp/ai-agent-brain-mvp-go-cache go run ./cmd/brain-eval -input evals/brain/dataset.yaml -mode offline -format json` (exit 0; paired gate passed). Candidate summary: 24 comparable cases, evidence recall 0.9667, evidence URI recall 0.9583, citation coverage 1.0, fresh claim recall 1.0, scope/entity/retraction/prompt-injection recurrences 0, token/cost totals 0. Baseline critical fixtures remain expected dataset negatives; no live calls were made.
-- Final verification commit before this record update: `b27bcb9` (E2E source/store/rebuild coverage is in `f9ef54c`).
+- Final verification commit before this record update: `5c8ea4d` (E2E source/store/rebuild coverage is in `f9ef54c`).

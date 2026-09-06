@@ -165,6 +165,13 @@ func TestReadOnlyMVPRetractionAfterSearchInvalidatesFetch(t *testing.T) {
 	if _, err := provider.ReadCorpus(t.Context(), docs[0], "brain-atlas", request.Ref, manifest.SnapshotID); !errors.Is(err, ErrProviderWatermark) {
 		t.Fatalf("fetch after retraction err=%v", err)
 	}
+	fake.output = compilerSynthesisForTask("task-a", compilerTestCutoff)
+	blockedRequest := compilerBuildRequest()
+	blockedRequest.Ref = request.Ref
+	blockedRequest.Cutoff = env.Cutoff
+	if _, err := env.Compiler.Build(t.Context(), blockedRequest); !errors.Is(err, ErrCompileRetraction) {
+		t.Fatalf("retracted source rebuild err=%v", err)
+	}
 	if deleted, err := env.Store.(store.TaskDeletionStore).DeleteTask(t.Context(), "task-a"); err != nil || !deleted {
 		t.Fatalf("delete retracted source task deleted=%v err=%v", deleted, err)
 	}
