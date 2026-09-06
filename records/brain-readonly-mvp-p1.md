@@ -26,3 +26,6 @@ identifiers, and raw error payloads.
   scope, pinned snapshot IDs, and Brain URI provenance; no raw content is recorded.
 - Fixture constructors: `testCompiler`, `repositoryWithLedger`, `stageVerified`,
   and `verifiedDraft` create all data under `t.TempDir()` with fake synthesis.
+- Offline evaluator availability check: `test -f evals/brain/dataset.yaml` and
+  `test -x ./cmd/brain-eval` both exit 0; the evaluator was not executed because
+  this verification remains offline-only and no live/provider run was requested.

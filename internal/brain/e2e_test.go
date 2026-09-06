@@ -4,44 +4,87 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+type e2eEnvironment struct {
+	Store    store.Store
+	Ledger   *compilerLedger
+	Repo     *Repository
+	Provider *Provider
+	Compiler *Compiler
+	Pinner   *SnapshotPinnerImpl
+}
+
+func newE2EEnvironment(t *testing.T, fake *compilerFakeCaller) *e2eEnvironment {
+	t.Helper()
+	root := compilerTempRoot(t)
+	ledger := &compilerLedger{watermarks: []string{"sha256:stable"}}
+	repo, err := NewRepository(root, ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := testCompiler(t, fake, compilerTestOptions{})
+	compiler.Repository, compiler.Ledger = repo, ledger
+	cfg := compilerTestConfig("gemini-test-key", 0.25)
+	cfg.Brain.Root = root
+	ref := compilerProjectRef()
+	cfg.API.Tenants = map[string]config.APITenantConfig{"tenant-a": {BrainProjects: map[string]config.BrainProjectConfig{"atlas": {WikiSpace: ref.WikiSpace}}}}
+	restore := config.OverrideForTesting(func(global *config.Config) { *global = *cfg })
+	t.Cleanup(restore)
+	return &e2eEnvironment{Store: store.NewMemoryStore(), Ledger: ledger, Repo: repo, Provider: NewProvider(repo, ledger), Compiler: compiler, Pinner: NewSnapshotPinner(repo, ledger, cfg)}
+}
+
 func TestReadOnlyMVPCompilePublishProviderRollback(t *testing.T) {
 	fake := &compilerFakeCaller{output: compilerValidSynthesis(), usage: types.TokenUsage{PromptTokens: 4, CompletionTokens: 3, TotalTokens: 7}}
-	compiler := testCompiler(t, fake, compilerTestOptions{})
-	manifest, err := compiler.Build(t.Context(), compilerBuildRequest())
+	env := newE2EEnvironment(t, fake)
+	compiler := env.Compiler
+	request := compilerBuildRequest()
+	request.Ref, _ = ResolveProject(config.Get(), "tenant-a", "atlas")
+	manifest, err := compiler.Build(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manifest.TenantID != "tenant-a" || manifest.ProjectID != "atlas" || manifest.SnapshotID == "" || len(manifest.FileHashes) == 0 {
 		t.Fatalf("manifest scope/hash = %+v", manifest)
 	}
-	if _, err := compiler.Repository.Publish(t.Context(), compilerBuildRequest().Ref, manifest.SnapshotID, ""); err != nil {
+	if _, err := compiler.Repository.Publish(t.Context(), request.Ref, manifest.SnapshotID, ""); err != nil {
 		t.Fatal(err)
 	}
-	provider := NewProvider(compiler.Repository, compiler.Ledger)
-	docs, err := provider.SearchCorpus(t.Context(), "source", 3, "brain-atlas", compilerBuildRequest().Ref, manifest.SnapshotID)
+	provider := env.Provider
+	docs, err := provider.SearchCorpus(t.Context(), "source", 3, "brain-atlas", request.Ref, manifest.SnapshotID)
 	if err != nil || len(docs) == 0 {
 		t.Fatalf("search docs=%d err=%v", len(docs), err)
 	}
-	if docs[0].URI == "" || !containsString(docs[0].URI, "brain-atlas") {
+	if docs[0].URI != "wiki://brain-atlas/concepts/compiled-source" {
 		t.Fatalf("document provenance = %+v", docs[0])
 	}
-	if _, err := provider.ReadCorpus(t.Context(), docs[0], "brain-atlas", compilerBuildRequest().Ref, manifest.SnapshotID); err != nil {
+	task := &types.Task{ID: "e2e-pin", TenantID: "tenant-a", BrainProjectID: "atlas"}
+	ctx, changed, err := env.Pinner.Pin(t.Context(), task)
+	if err != nil || !changed || ctx.SnapshotID != manifest.SnapshotID || task.BrainSnapshotID != manifest.SnapshotID || task.BrainConfigDigest != ProjectConfigDigest(request.Ref) {
+		t.Fatalf("durable pin task=%+v ctx=%+v changed=%v err=%v", task, ctx, changed, err)
+	}
+	for name, hash := range manifest.FileHashes {
+		if name == "" || hash == "" {
+			t.Fatalf("invalid file hash %q=%q", name, hash)
+		}
+	}
+	if _, err := provider.ReadCorpus(t.Context(), docs[0], "brain-atlas", request.Ref, manifest.SnapshotID); err != nil {
 		t.Fatal(err)
 	}
-	second, err := compiler.Repository.CreateStage(t.Context(), compilerBuildRequest().Ref, verifiedDraft(t, compiler.Repository, "rollback-snap", manifest.SnapshotID, secondEvidenceURI))
+	second, err := compiler.Repository.CreateStage(t.Context(), request.Ref, verifiedDraft(t, compiler.Repository, "rollback-snap", manifest.SnapshotID, secondEvidenceURI))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiler.Repository.Publish(t.Context(), compilerBuildRequest().Ref, second.SnapshotID, manifest.SnapshotID); err != nil {
+	if _, err := compiler.Repository.Publish(t.Context(), request.Ref, second.SnapshotID, manifest.SnapshotID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiler.Repository.Rollback(t.Context(), compilerBuildRequest().Ref, manifest.SnapshotID, second.SnapshotID); err != nil {
+	if _, err := compiler.Repository.Rollback(t.Context(), request.Ref, manifest.SnapshotID, second.SnapshotID); err != nil {
 		t.Fatal(err)
 	}
-	current, err := compiler.Repository.Current(t.Context(), compilerBuildRequest().Ref)
+	current, err := compiler.Repository.Current(t.Context(), request.Ref)
 	if err != nil || current != manifest.SnapshotID {
 		t.Fatalf("current=%q err=%v", current, err)
 	}
