@@ -33,4 +33,4 @@ identifiers, and raw error payloads.
 - Latest deterministic E2E command: `GOCACHE=/private/tmp/brain-mvp-go-cache go test ./internal/brain -run 'TestReadOnlyMVP' -count=1` (exit 0).
 - Latest race E2E command: `GOCACHE=/private/tmp/brain-mvp-go-cache go test -race ./internal/brain -run 'TestReadOnlyMVP' -count=1` (exit 0).
 - Offline evaluator run: `GOCACHE=/private/tmp/ai-agent-brain-mvp-go-cache go run ./cmd/brain-eval -input evals/brain/dataset.yaml -mode offline -format json` (exit 0; paired gate passed). Candidate summary: 24 comparable cases, evidence recall 0.9667, evidence URI recall 0.9583, citation coverage 1.0, fresh claim recall 1.0, scope/entity/retraction/prompt-injection recurrences 0, token/cost totals 0. Baseline critical fixtures remain expected dataset negatives; no live calls were made.
-- Final verification commit before this record update: `5c8ea4d` (E2E source/store/rebuild coverage is in `f9ef54c`).
+- Final verification commit before this record update: `982366c` (E2E source/store/rebuild coverage spans `f9ef54c` and `982366c`).
