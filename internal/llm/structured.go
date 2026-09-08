@@ -413,6 +413,11 @@ func (r *Runtime) callStructured(ctx context.Context, cfg Config, visited map[st
 	if limit := MaxOutputTokensFromContext(ctx); limit > 0 && (cfg.MaxOutputTokens <= 0 || limit < cfg.MaxOutputTokens) {
 		cfg.MaxOutputTokens = limit
 	}
+	if cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+	}
 	started := time.Now()
 	ctx, span := otel.Tracer("ai-agent/llm").Start(ctx, "llm.structured_call")
 	defer span.End()

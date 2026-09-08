@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
@@ -64,6 +65,14 @@ func (r *routingCaller) CallJSON(_ context.Context, cfg Config, _, _ string, _ m
 
 type visionCaller struct{ image VisionInput }
 
+type deadlineCaller struct{ observed chan error }
+
+func (c *deadlineCaller) CallJSON(ctx context.Context, _ Config, _, _ string, _ map[string]any, _ any) (types.TokenUsage, error) {
+	<-ctx.Done()
+	c.observed <- ctx.Err()
+	return types.TokenUsage{}, ctx.Err()
+}
+
 func (v *visionCaller) CallJSON(context.Context, Config, string, string, map[string]any, any) (types.TokenUsage, error) {
 	return types.TokenUsage{}, nil
 }
@@ -88,6 +97,31 @@ func TestRuntimeCallVisionJSON(t *testing.T) {
 	}
 	if !output.OK || usage.TotalTokens != 6 || caller.image.MIMEType != "image/png" {
 		t.Fatalf("output=%+v usage=%+v image=%+v", output, usage, caller.image)
+	}
+}
+
+func TestRuntimeCallJSONAppliesConfiguredTimeoutToCallerContext(t *testing.T) {
+	caller := &deadlineCaller{observed: make(chan error, 1)}
+	runtime := NewRuntime(caller, nil)
+	parent, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	_, err := runtime.CallJSON(parent, Config{Scene: "timeout", Provider: "gemini", Model: "model", Timeout: 20 * time.Millisecond}, "", "", nil, &struct{}{})
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("call elapsed %s, configured timeout was not applied", elapsed)
+	}
+	select {
+	case observed := <-caller.observed:
+		if !errors.Is(observed, context.DeadlineExceeded) {
+			t.Fatalf("caller context error = %v, want context deadline exceeded", observed)
+		}
+	default:
+		t.Fatal("caller did not observe configured deadline")
 	}
 }
 
