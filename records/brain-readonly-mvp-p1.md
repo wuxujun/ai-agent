@@ -74,6 +74,7 @@ identifiers, and raw error payloads.
 
 ## Post-review hardening
 
+- Implementation commit: `f1f7fe0`.
 - Configuration reload now rejects Brain runtime changes (enablement, root, or
   compiler bounds) and tenant Brain project-allowlist changes, preserving the
   active snapshot until restart. Regression coverage also proves unrelated
