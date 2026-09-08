@@ -61,5 +61,13 @@ identifiers, and raw error payloads.
   Writer/Judge calls as `execution_ok=true` and `comparable=true`; 12 calls,
   1,945 tokens, and $0.001952 were recorded. This is recovery evidence only,
   not a replacement for a fresh full-dataset Live gate.
-- Full Live gate status: pending a fresh approved budget/run; no Live pass is
-  claimed from the partial run or the targeted recovery check.
+- Fresh full Live command rerun after the retry configuration:
+  `GOCACHE=/private/tmp/ai-agent-brain-mvp-go-cache go run ./cmd/brain-eval -input evals/brain/dataset.yaml -mode live -format text -repetitions 3 -max-total-tokens 60000 -max-total-cost-usd 1.00`.
+  The report recorded 24/24 comparable cases, zero infrastructure errors,
+  zero judge failures, 288 calls, 48,929 total tokens, and $0.048079. The
+  comparison reported `passed=true`, with p95 latency ratio 1.049 and total
+  token ratio 1.129. Candidate summary: evidence recall 0.967, evidence URI
+  recall 0.958, citation coverage 1.0, fresh claim recall 1.0, answer
+  accuracy 0.258, and no-answer false-positive rates 0.0.
+- Full Live gate status: passed. The uncommitted `config.yaml` remains
+  user-owned; no credentials or provider response bodies were committed.
