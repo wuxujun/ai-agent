@@ -35,3 +35,31 @@ identifiers, and raw error payloads.
 - Offline evaluator run: `GOCACHE=/private/tmp/ai-agent-brain-mvp-go-cache go run ./cmd/brain-eval -input evals/brain/dataset.yaml -mode offline -format json` (exit 0; paired gate passed). Candidate summary: 24 comparable cases, evidence recall 0.9667, evidence URI recall 0.9583, citation coverage 1.0, fresh claim recall 1.0, scope/entity/retraction/prompt-injection recurrences 0, token/cost totals 0. Baseline critical fixtures remain expected dataset negatives; no live calls were made.
 - Final verification commit before this record update: `982366c` (E2E source/store/rebuild coverage spans `f9ef54c` and `982366c`).
 - Approved Live gate attempt: `go run ./cmd/brain-eval -input evals/brain/dataset.yaml -mode live -format json -repetitions 3 -max-total-tokens 60000 -max-total-cost-usd 1.00` reached preflight and exited 2 because the environment had no credential for `task_finalizer`; no provider calls, tokens, or cost were incurred.
+
+## Live verification follow-up
+
+- After the user supplied Gemini configuration in the worktree-root
+  `config.yaml`, the same two scenes resolved to Gemini with credentials,
+  disabled fallback, and configured pricing. The configuration remains a
+  user-owned uncommitted change and is not included in repository commits.
+- Runtime hardening commit: `d725727` applies each scene timeout to the
+  context passed into the structured caller; focused timeout, race, evaluator,
+  vet, and diff checks passed.
+- Full Live command (run in a network-enabled environment):
+  `GOCACHE=/private/tmp/ai-agent-brain-mvp-go-cache go run ./cmd/brain-eval -input evals/brain/dataset.yaml -mode live -format text -repetitions 3 -max-total-tokens 60000 -max-total-cost-usd 1.00`.
+  It completed 21 cases before the `retraction_vendor` Writer request ended
+  with a sanitized transient `unexpected EOF`. The report recorded 253 calls,
+  43,491 total tokens, and $0.043055; the full Live gate did not pass because
+  both arms of that case were marked incomparable.
+- Root-cause evidence: the direct Gemini endpoint returned valid structured JSON
+  with a 64-token cap, while the effective Live scene retry count was 0;
+  generic transport errors are classified retryable but therefore had no
+  retry opportunity. The worktree config now sets `max_retries: 1` for both
+  `task_finalizer` and `answer_verifier` (still uncommitted user config).
+- Targeted recovery check used an ephemeral one-case dataset, removed after
+  the run, with three matched repetitions. `retraction_vendor` completed all
+  Writer/Judge calls as `execution_ok=true` and `comparable=true`; 12 calls,
+  1,945 tokens, and $0.001952 were recorded. This is recovery evidence only,
+  not a replacement for a fresh full-dataset Live gate.
+- Full Live gate status: pending a fresh approved budget/run; no Live pass is
+  claimed from the partial run or the targeted recovery check.
