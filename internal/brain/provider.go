@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -128,11 +129,14 @@ func (p *Provider) SearchCorpus(ctx context.Context, query string, topK int, spa
 		outcome = "error"
 		return nil, err
 	}
+	if err := p.revalidateRelease(ctx, scope, snapshotID, release); err != nil {
+		outcome = "error"
+		return nil, err
+	}
 	if err := p.checkWatermark(ctx, scope, watermark); err != nil {
 		outcome = "error"
 		return nil, err
 	}
-	_ = release
 	return documents, nil
 }
 
@@ -140,13 +144,17 @@ func (p *Provider) ReadCorpus(ctx context.Context, document wiki.Document, space
 	outcome := "success"
 	defer func() { ObserveFetch(ctx, "brain", outcome) }()
 	space = scope.WikiSpace
-	client, _, watermark, err := p.open(ctx, scope, snapshotID)
+	client, release, watermark, err := p.open(ctx, scope, snapshotID)
 	if err != nil {
 		outcome = "error"
 		return wiki.Document{}, err
 	}
 	result, err := client.Read(ctx, document, space)
 	if err != nil {
+		outcome = "error"
+		return wiki.Document{}, err
+	}
+	if err := p.revalidateRelease(ctx, scope, snapshotID, release); err != nil {
 		outcome = "error"
 		return wiki.Document{}, err
 	}
@@ -159,12 +167,15 @@ func (p *Provider) ReadCorpus(ctx context.Context, document wiki.Document, space
 
 func (p *Provider) GraphCorpus(ctx context.Context, document wiki.Document, space string, depth int, direction string, scope ProjectRef, snapshotID string) (wiki.GraphResult, error) {
 	space = scope.WikiSpace
-	client, _, watermark, err := p.open(ctx, scope, snapshotID)
+	client, release, watermark, err := p.open(ctx, scope, snapshotID)
 	if err != nil {
 		return wiki.GraphResult{}, err
 	}
 	result, err := client.Graph(ctx, document, space, depth, direction)
 	if err != nil {
+		return wiki.GraphResult{}, err
+	}
+	if err := p.revalidateRelease(ctx, scope, snapshotID, release); err != nil {
 		return wiki.GraphResult{}, err
 	}
 	if err := p.checkWatermark(ctx, scope, watermark); err != nil {
@@ -197,7 +208,31 @@ func (p *Provider) open(ctx context.Context, scope ProjectRef, snapshotID string
 	if err := client.Initialize(ctx); err != nil {
 		return nil, Release{}, "", ErrProviderUnavailable
 	}
+	if err := p.revalidateRelease(ctx, scope, snapshotID, release); err != nil {
+		return nil, Release{}, "", err
+	}
 	return client, release, watermark, nil
+}
+
+// revalidateRelease closes the verification window opened by DirectoryClient:
+// OpenRelease verifies hashes before the directory is indexed, while this
+// second check ensures no tampered tree can be returned after path-based reads.
+func (p *Provider) revalidateRelease(ctx context.Context, scope ProjectRef, snapshotID string, expected Release) error {
+	if p == nil || p.Repository == nil {
+		return ErrProviderScope
+	}
+	verified, err := p.Repository.OpenRelease(ctx, scope, snapshotID)
+	if err != nil {
+		if errors.Is(err, ErrSnapshotRevoked) {
+			ObserveRetractionBlocked(ctx, "brain")
+			return ErrProviderWatermark
+		}
+		return fmt.Errorf("%w: %v", ErrProviderUnavailable, sanitizeProviderError(err))
+	}
+	if (expected.Root != "" && verified.Root != expected.Root) || !reflect.DeepEqual(verified.Manifest, expected.Manifest) {
+		return ErrProviderUnavailable
+	}
+	return nil
 }
 
 func (p *Provider) checkWatermark(ctx context.Context, scope ProjectRef, expected string) error {

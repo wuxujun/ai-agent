@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,26 @@ type wikiClient interface {
 }
 
 type wikiClientFactory func(wiki.Config) (wikiClient, error)
+
+// brainOnlyWikiReader keeps the ordinary Wiki tool boundary non-nil when the
+// optional ordinary Wiki is disabled. Brain corpus calls are routed through
+// CorpusRouter; accidental ordinary-corpus calls fail explicitly instead of
+// making the tools disappear during startup.
+type brainOnlyWikiReader struct{}
+
+func (brainOnlyWikiReader) Search(context.Context, string, int, string) ([]wiki.Document, error) {
+	return nil, errors.New("ordinary Wiki is not configured")
+}
+
+func (brainOnlyWikiReader) Read(context.Context, wiki.Document, string) (wiki.Document, error) {
+	return wiki.Document{}, errors.New("ordinary Wiki is not configured")
+}
+
+func (brainOnlyWikiReader) SupportsGraph() bool { return true }
+
+func (brainOnlyWikiReader) Graph(context.Context, wiki.Document, string, int, string) (wiki.GraphResult, error) {
+	return wiki.GraphResult{}, errors.New("ordinary Wiki graph is not configured")
+}
 
 type wikiRuntime struct {
 	client wikiClient
@@ -202,6 +223,12 @@ func buildWikiRuntimeWithFactory(ctx context.Context, cfg *config.Config, regist
 		runtime.brain = adapter
 	}
 	if cfg == nil || (strings.TrimSpace(cfg.Wiki.URL) == "" && strings.TrimSpace(cfg.Wiki.Directory) == "") {
+		if runtime.brain != nil {
+			ordinary := brainOnlyWikiReader{}
+			if err := tools.RegisterWikiToolsWithCorpus(registry, ordinary, &tools.CorpusRouter{Ordinary: ordinary, Brain: runtime.brain, MaxMerge: 10}); err != nil {
+				return nil, err
+			}
+		}
 		return runtime, nil
 	}
 	if strings.TrimSpace(cfg.Wiki.Directory) != "" {

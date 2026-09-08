@@ -102,3 +102,40 @@ func TestBuildWikiRuntimeSkipsUnconfiguredWiki(t *testing.T) {
 		t.Fatalf("runtime=%#v err=%v tools=%v", runtime, err, registry.Names())
 	}
 }
+
+func TestBuildWikiRuntimeBrainOnlyRegistersCorpusTools(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Brain.Enabled = true
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Brain.Root = root
+	cfg.API.Tenants = map[string]config.APITenantConfig{
+		"tenant-a": {BrainProjects: map[string]config.BrainProjectConfig{
+			"atlas": {WikiSpace: "brain-atlas"},
+		}},
+	}
+	registry := tools.NewRegistry()
+	runtime, err := buildWikiRuntimeWithFactory(t.Context(), cfg, registry, func(wiki.Config) (wikiClient, error) {
+		t.Fatal("ordinary Wiki factory should not be called for Brain-only config")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime == nil || runtime.client != nil || runtime.brain == nil {
+		t.Fatalf("Brain-only runtime = %#v", runtime)
+	}
+	for _, name := range []string{"wiki_search", "wiki_fetch"} {
+		tool, ok := registry.Get(name)
+		if !ok {
+			t.Fatalf("Brain-only tool %q was not registered", name)
+		}
+		if name == "wiki_search" {
+			if _, ok := tool.Parameters()["corpus"]; !ok {
+				t.Fatal("Brain-only wiki_search schema omitted corpus selector")
+			}
+		}
+	}
+}

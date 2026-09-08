@@ -4,7 +4,7 @@ import "testing"
 
 func TestRepositoryStatusAndOpenStagingExposeBoundedLifecycleMetadata(t *testing.T) {
 	repo, _ := repositoryWithLedger(t)
-	manifest := stageVerified(t, repo, "staged-1", "", "wiki://brain-atlas/tasks/task-a/traces/1")
+	manifest := stageVerified(t, repo, "staged-1", "", firstEvidenceURI)
 	release, err := repo.OpenStaging(t.Context(), atlasRef(), manifest.SnapshotID)
 	if err != nil || release.Manifest.SnapshotID != manifest.SnapshotID {
 		t.Fatalf("OpenStaging() = %q, %v", release.Manifest.SnapshotID, err)

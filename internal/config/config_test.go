@@ -229,27 +229,59 @@ func TestReloadRejectsInvalidBrainCandidateAndPreservesPrevious(t *testing.T) {
 	}
 }
 
-func TestReloadAppliesValidBrainCandidateAndMarksRestartRequired(t *testing.T) {
+func TestReloadRejectsRestartRequiredBrainCandidateAndPreservesPrevious(t *testing.T) {
 	configPath, before := loadBrainReloadFixture(t)
 	if err := os.WriteFile(configPath, brainReloadConfig("./data/brain-next"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	after, changes, err := Reload()
-	if err != nil {
+	if _, _, err := Reload(); err == nil {
+		t.Fatal("expected restart-required Brain reload to fail")
+	}
+	if Get() != before {
+		t.Fatal("restart-required Brain reload replaced active config")
+	}
+}
+
+func TestReloadRejectsBrainEnablementChangeAndPreservesPrevious(t *testing.T) {
+	configPath, before := loadBrainReloadFixture(t)
+	if err := os.WriteFile(configPath, brainReloadConfigWithEnabled("./data/brain", false), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if after == before || after.Brain.Root != "./data/brain-next" {
-		t.Fatalf("valid reload did not install Brain candidate: before=%p after=%+v", before, after)
+	if _, _, err := Reload(); err == nil {
+		t.Fatal("expected restart-required Brain enablement reload to fail")
 	}
-	foundRestartRequired := false
-	for _, change := range changes {
-		if change == "brain: changed (restart required)" {
-			foundRestartRequired = true
-			break
-		}
+	if Get() != before {
+		t.Fatal("restart-required Brain enablement reload replaced active config")
 	}
-	if !foundRestartRequired {
-		t.Fatalf("Brain reload changes = %v", changes)
+}
+
+func TestReloadRejectsBrainProjectAllowlistChangeAndPreservesPrevious(t *testing.T) {
+	configPath, before := loadBrainReloadTenantFixture(t, "brain-atlas")
+	if err := os.WriteFile(configPath, brainReloadTenantConfig("./data/brain", "brain-orbit"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Reload(); err == nil {
+		t.Fatal("expected restart-required Brain project reload to fail")
+	}
+	if Get() != before {
+		t.Fatal("restart-required Brain project reload replaced active config")
+	}
+}
+
+func TestBrainProjectAllowlistDiffIgnoresOtherTenantChanges(t *testing.T) {
+	old := map[string]APITenantConfig{
+		"tenant-a": {APIKey: "old", BrainProjects: map[string]BrainProjectConfig{
+			"atlas": {WikiSpace: "brain-atlas"},
+		}},
+	}
+	newConfig := map[string]APITenantConfig{
+		"tenant-a": {APIKey: "new", BrainProjects: map[string]BrainProjectConfig{
+			"atlas": {WikiSpace: "brain-atlas"},
+		}},
+		"tenant-b": {APIKey: "tenant-b"},
+	}
+	if brainProjectAllowlistsChanged(old, newConfig) {
+		t.Fatal("non-Brain tenant changes were treated as a Brain allowlist change")
 	}
 }
 
@@ -280,8 +312,48 @@ func loadBrainReloadFixture(t *testing.T) (string, *Config) {
 	return configPath, before
 }
 
+func loadBrainReloadTenantFixture(t *testing.T, wikiSpace string) (string, *Config) {
+	t.Helper()
+	resetConfig()
+	t.Cleanup(resetConfig)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, brainReloadTenantConfig("./data/brain", wikiSpace), 0644); err != nil {
+		t.Fatal(err)
+	}
+	setupViper()
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := unmarshalConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := before.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	globalConfig = before
+	mu.Unlock()
+	return configPath, before
+}
+
 func brainReloadConfig(root string) []byte {
-	return []byte("llm:\n  scenes:\n    brain_compiler:\n      input_cost_per_million_usd: 1\n      output_cost_per_million_usd: 1\nbrain:\n  enabled: true\n  root: " + root + "\n")
+	return brainReloadConfigWithEnabled(root, true)
+}
+
+func brainReloadConfigWithEnabled(root string, enabled bool) []byte {
+	enabledValue := "false"
+	if enabled {
+		enabledValue = "true"
+	}
+	return []byte("llm:\n  scenes:\n    brain_compiler:\n      input_cost_per_million_usd: 1\n      output_cost_per_million_usd: 1\nbrain:\n  enabled: " + enabledValue + "\n  root: " + root + "\n")
+}
+
+func brainReloadTenantConfig(root, wikiSpace string) []byte {
+	return []byte("api:\n  tenants:\n    tenant-a:\n      api_key: tenant-key\n      brain_projects:\n        atlas:\n          wiki_space: " + wikiSpace + "\n" +
+		"llm:\n  scenes:\n    brain_compiler:\n      input_cost_per_million_usd: 1\n      output_cost_per_million_usd: 1\nbrain:\n  enabled: true\n  root: " + root + "\n")
 }
 
 func TestValidateWikiSettings(t *testing.T) {

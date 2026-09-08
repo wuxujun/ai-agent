@@ -2,6 +2,10 @@ package brain
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"testing"
@@ -123,5 +127,25 @@ func TestProviderRejectsImplicitScope(t *testing.T) {
 	provider := &Provider{}
 	if _, err := provider.Search(t.Context(), "query", 1, "space"); !errors.Is(err, ErrProviderScope) {
 		t.Fatalf("Search error = %v", err)
+	}
+}
+
+func TestProviderRevalidatesReleaseAfterDirectorySetup(t *testing.T) {
+	repo, ledger := repositoryWithLedger(t)
+	manifest := stageVerified(t, repo, "revalidate-snap", "", firstEvidenceURI)
+	if _, err := repo.Publish(t.Context(), atlasRef(), manifest.SnapshotID, ""); err != nil {
+		t.Fatal(err)
+	}
+	provider := NewProvider(repo, ledger)
+	_, release, _, err := provider.open(t.Context(), atlasRef(), manifest.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexPath := filepath.Join(release.Root, "wiki", "_index.md")
+	if err := os.WriteFile(indexPath, []byte(strings.Repeat("tampered\n", 2)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.revalidateRelease(t.Context(), atlasRef(), manifest.SnapshotID, release); !errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("revalidation error = %v", err)
 	}
 }

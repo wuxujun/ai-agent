@@ -461,6 +461,7 @@ var (
 type ReloadValidator func(*Config) error
 
 var ErrCrossConfigValidation = errors.New("cross-config validation failed")
+var ErrRestartRequired = errors.New("configuration change requires restart")
 
 var (
 	reloadValidatorsMu sync.RWMutex
@@ -923,6 +924,9 @@ func Reload() (*Config, []string, error) {
 	if err := validateReloadCandidate(newCfg); err != nil {
 		return nil, nil, fmt.Errorf("config reload: %w: %v", ErrCrossConfigValidation, err)
 	}
+	if err := validateRestartRequiredReload(globalConfig, newCfg); err != nil {
+		return nil, nil, fmt.Errorf("config reload: %w", err)
+	}
 
 	changes := applyReloadedConfig(newCfg)
 
@@ -935,6 +939,49 @@ func Reload() (*Config, []string, error) {
 		}
 	}
 	return globalConfig, changes, nil
+}
+
+// validateRestartRequiredReload rejects changes whose consumers are wired at
+// process startup. Brain repositories and providers retain the configured
+// snapshot root, while tenant project allowlists are part of their admission
+// boundary; installing either change through hot reload would leave those
+// long-lived dependencies inconsistent with config.Get().
+func validateRestartRequiredReload(old, new *Config) error {
+	if old == nil || new == nil {
+		return nil
+	}
+	if !reflect.DeepEqual(old.Brain, new.Brain) {
+		return fmt.Errorf("%w: brain configuration changed", ErrRestartRequired)
+	}
+	if brainProjectAllowlistsChanged(old.API.Tenants, new.API.Tenants) {
+		return fmt.Errorf("%w: Brain tenant project allowlist changed", ErrRestartRequired)
+	}
+	return nil
+}
+
+func brainProjectAllowlistsChanged(old, new map[string]APITenantConfig) bool {
+	tenantIDs := make(map[string]struct{}, len(old)+len(new))
+	for tenantID := range old {
+		tenantIDs[tenantID] = struct{}{}
+	}
+	for tenantID := range new {
+		tenantIDs[tenantID] = struct{}{}
+	}
+	for tenantID := range tenantIDs {
+		oldProjects, oldExists := old[tenantID]
+		newProjects, newExists := new[tenantID]
+		var oldAllowlist, newAllowlist map[string]BrainProjectConfig
+		if oldExists {
+			oldAllowlist = oldProjects.BrainProjects
+		}
+		if newExists {
+			newAllowlist = newProjects.BrainProjects
+		}
+		if !reflect.DeepEqual(oldAllowlist, newAllowlist) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyReloadedConfig installs a validated snapshot while mu is held. A no-op

@@ -419,10 +419,6 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 	if err := refreshBrainWatermark(ctx, &exec, t.corpus); err != nil {
 		return nil, err
 	}
-	space, err := wikiSpaceForTenant(exec.TenantID)
-	if err != nil {
-		return nil, err
-	}
 	query := strings.TrimSpace(stringParameter(params, "query"))
 	topK := intParameter(params, "top_k")
 	configuredTopK := config.Get().Wiki.SearchTopK
@@ -442,6 +438,11 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 	if corpus != "wiki" && corpus != "brain" && corpus != "all" {
 		return nil, errors.New("wiki_search corpus is invalid")
 	}
+	scope := WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark}
+	space, err := wikiSpaceForScope(exec.TenantID, t.corpus, scope)
+	if err != nil {
+		return nil, err
+	}
 	var documents []wiki.Document
 	err = t.guard.call(ctx, "search", func() error {
 		var callErr error
@@ -449,12 +450,12 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 			documents, callErr = t.client.Search(ctx, query, topK, space)
 		} else if corpus == "all" {
 			if allReader, ok := t.corpus.(allCorpusWikiReader); ok {
-				documents, callErr = allReader.SearchAll(ctx, query, topK, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
+				documents, callErr = allReader.SearchAll(ctx, query, topK, space, scope)
 			} else {
 				callErr = errors.New("all corpus is unavailable")
 			}
 		} else {
-			documents, callErr = t.corpus.SearchCorpus(ctx, query, topK, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
+			documents, callErr = t.corpus.SearchCorpus(ctx, query, topK, space, scope)
 		}
 		return callErr
 	})
@@ -550,7 +551,8 @@ func (t *wikiFetchTool) Execute(ctx context.Context, _ string, params map[string
 	if err := refreshBrainWatermark(ctx, &exec, t.corpus); err != nil {
 		return nil, err
 	}
-	space, err := wikiSpaceForTenant(exec.TenantID)
+	scope := WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark}
+	space, err := wikiSpaceForScope(exec.TenantID, t.corpus, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -574,7 +576,7 @@ func (t *wikiFetchTool) Execute(ctx context.Context, _ string, params map[string
 		readErr := t.guard.call(ctx, "read", func() error {
 			var callErr error
 			if candidate.Corpus == "brain" {
-				document, callErr = t.corpus.ReadCorpus(ctx, candidate.Document, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
+				document, callErr = t.corpus.ReadCorpus(ctx, candidate.Document, space, scope)
 			} else {
 				document, callErr = t.client.Read(ctx, candidate.Document, space)
 			}
@@ -648,7 +650,8 @@ func (t *wikiGraphTool) Execute(ctx context.Context, _ string, params map[string
 	if err != nil {
 		return nil, err
 	}
-	space, err := wikiSpaceForTenant(exec.TenantID)
+	scope := WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark}
+	space, err := wikiSpaceForScope(exec.TenantID, t.corpus, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -690,7 +693,7 @@ func (t *wikiGraphTool) Execute(ctx context.Context, _ string, params map[string
 		if corpus == "wiki" {
 			graph, callErr = t.client.Graph(ctx, wiki.Document{URI: uri}, space, depth, direction)
 		} else {
-			graph, callErr = t.corpus.GraphCorpus(ctx, wiki.Document{URI: uri}, space, depth, direction, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
+			graph, callErr = t.corpus.GraphCorpus(ctx, wiki.Document{URI: uri}, space, depth, direction, scope)
 		}
 		return callErr
 	})
@@ -888,7 +891,8 @@ func (t *wikiGraphFetchTool) Execute(ctx context.Context, _ string, params map[s
 	if err != nil {
 		return nil, err
 	}
-	space, err := wikiSpaceForTenant(exec.TenantID)
+	scope := WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark}
+	space, err := wikiSpaceForScope(exec.TenantID, t.corpus, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -908,7 +912,7 @@ func (t *wikiGraphFetchTool) Execute(ctx context.Context, _ string, params map[s
 		uri = strings.TrimSpace(uri)
 		brainSpace := ""
 		if resolver, ok := t.corpus.(corpusSpaceResolver); ok {
-			brainSpace = resolver.BrainSpace(WikiScope{TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID})
+			brainSpace = resolver.BrainSpace(scope)
 		}
 		isBrain := brainSpace != "" && strings.HasPrefix(uri, "wiki://"+strings.Trim(brainSpace, "/")+"/")
 		if !isBrain && space != "" && !strings.HasPrefix(uri, "wiki://"+strings.Trim(space, "/")+"/") {
@@ -918,7 +922,7 @@ func (t *wikiGraphFetchTool) Execute(ctx context.Context, _ string, params map[s
 		readErr := t.guard.call(ctx, "graph_read", func() error {
 			var callErr error
 			if isBrain && t.corpus != nil {
-				document, callErr = t.corpus.ReadCorpus(ctx, wiki.Document{URI: uri}, space, WikiScope{TaskID: exec.TaskID, TenantID: exec.TenantID, BrainProjectID: exec.BrainProjectID, BrainSnapshotID: exec.BrainSnapshotID, BrainWatermark: exec.BrainWatermark})
+				document, callErr = t.corpus.ReadCorpus(ctx, wiki.Document{URI: uri}, space, scope)
 			} else {
 				document, callErr = t.client.Read(ctx, wiki.Document{URI: uri}, space)
 			}
@@ -990,6 +994,19 @@ func wikiSpaceForTenant(tenantID string) (string, error) {
 		return "", nil
 	}
 	return "", fmt.Errorf("tenant %q has no api.tenants.%s.wiki_space and wiki.default_space is empty", tenantID, tenantID)
+}
+
+func wikiSpaceForScope(tenantID string, corpus any, scope WikiScope) (string, error) {
+	space, err := wikiSpaceForTenant(tenantID)
+	if err == nil {
+		return space, nil
+	}
+	if resolver, ok := corpus.(corpusSpaceResolver); ok {
+		if brainSpace := strings.TrimSpace(resolver.BrainSpace(scope)); brainSpace != "" {
+			return brainSpace, nil
+		}
+	}
+	return "", err
 }
 
 func truncateWikiBytes(value string, limit int) (string, bool) {

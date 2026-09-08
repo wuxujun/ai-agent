@@ -95,6 +95,19 @@ func TestRetractionRejectsMalformedOrTruncatedJSONL(t *testing.T) {
 	}
 }
 
+func TestRetractionRejectsCrossScopeEvidenceURI(t *testing.T) {
+	root := canonicalTempDir(t)
+	writeRetractionsFixture(t, root, atlasRef(), Retraction{
+		EvidenceURI: "brain-evidence://tenant-b/atlas/tasks/other#trace/1",
+		Reason:      "wrong project",
+		RetractedAt: retractionTime,
+	})
+	ledger := NewFileRetractionLedger(root)
+	if _, err := ledger.Watermark(t.Context(), atlasRef()); !errors.Is(err, ErrRetractionLedger) {
+		t.Fatalf("cross-scope watermark error = %v", err)
+	}
+}
+
 func TestRetractionRejectsValidLineThatExceedsScannerLimit(t *testing.T) {
 	root := canonicalTempDir(t)
 	encoded, err := canonicalRetraction(Retraction{

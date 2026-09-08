@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -61,7 +62,7 @@ func (l *FileRetractionLedger) Contains(ctx context.Context, ref ProjectRef, evi
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if !validRetractionURI(evidenceURI) {
+	if !validRetractionURIForRef(evidenceURI, ref) {
 		return false, fmt.Errorf("brain retraction evidence URI is invalid: %w", ErrRetractionLedger)
 	}
 	records, err := l.read(ctx, ref)
@@ -116,6 +117,9 @@ func (l *FileRetractionLedger) read(ctx context.Context, ref ProjectRef) (map[st
 		record, encoded, err := decodeRetraction(line)
 		if err != nil {
 			return nil, err
+		}
+		if !validRetractionURIForRef(record.EvidenceURI, ref) {
+			return nil, fmt.Errorf("brain retraction evidence URI is outside the project scope: %w", ErrRetractionLedger)
 		}
 		records[string(encoded)] = record
 	}
@@ -224,6 +228,31 @@ func validRetractionURI(value string) bool {
 	}
 	parsed, err := url.Parse(value)
 	return err == nil && parsed.Scheme != "" && parsed.String() == value
+}
+
+func validRetractionURIForRef(value string, ref ProjectRef) bool {
+	if !validRetractionURI(value) || !canonicalSegment(ref.TenantID) || !canonicalSegment(ref.ProjectID) {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "brain-evidence" || parsed.Host != ref.TenantID || parsed.RawQuery != "" || parsed.RawPath != "" || parsed.String() != value {
+		return false
+	}
+	prefix := "/" + ref.ProjectID + "/tasks/"
+	if !strings.HasPrefix(parsed.Path, prefix) {
+		return false
+	}
+	taskID := strings.TrimPrefix(parsed.Path, prefix)
+	if !canonicalSegment(taskID) {
+		return false
+	}
+	const tracePrefix = "trace/"
+	if !strings.HasPrefix(parsed.Fragment, tracePrefix) {
+		return false
+	}
+	stepText := strings.TrimPrefix(parsed.Fragment, tracePrefix)
+	step, err := strconv.Atoi(stepText)
+	return err == nil && step >= 0 && strconv.Itoa(step) == stepText
 }
 
 func requireJSONEOF(decoder *json.Decoder) error {

@@ -71,3 +71,29 @@ identifiers, and raw error payloads.
   accuracy 0.258, and no-answer false-positive rates 0.0.
 - Full Live gate status: passed. The uncommitted `config.yaml` remains
   user-owned; no credentials or provider response bodies were committed.
+
+## Post-review hardening
+
+- Configuration reload now rejects Brain runtime changes (enablement, root, or
+  compiler bounds) and tenant Brain project-allowlist changes, preserving the
+  active snapshot until restart. Regression coverage also proves unrelated
+  tenant fields do not trigger this restart-required guard.
+- Brain-only runtime configuration now registers `wiki_search`/`wiki_fetch`
+  with an explicit `corpus` selector and a fail-closed ordinary Wiki stub;
+  ordinary Wiki calls remain unavailable instead of silently falling back.
+- Brain provider operations re-open and re-verify the pinned release after
+  directory initialization and after search/read/graph operations. A mutated
+  release is rejected before content is returned.
+- Retraction ledger records are required to use canonical
+  `brain-evidence://<tenant>/<project>/tasks/<task>#trace/<step>` URIs matching
+  the resolved project; cross-scope records now invalidate the ledger.
+- Production-shaped Engine.Next coverage now exercises registered read-only
+  Brain search/fetch, restart/resume retaining the original snapshot after a
+  newer CURRENT release, watermark change rejection between search and fetch,
+  and Eino/Legacy/Step/ADK/Multi-Agent mode admission.
+- Targeted verification after hardening:
+  `go test -race ./internal/brain`, targeted config/tools/orchestrator/server
+  race tests, `go vet ./internal/brain ./internal/config ./internal/tools
+  ./internal/orchestrator ./cmd/server`, `git diff --check`, and the offline
+  evaluator package tests all exited 0. The worktree-root `config.yaml`
+  remains an intentionally unstaged user change.
