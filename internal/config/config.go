@@ -400,6 +400,8 @@ func (c *Config) ResolveLLMProviderConfig(provider string) ResolvedLLMConfig {
 }
 
 const (
+	configFileEnv = "AI_AGENT_CONFIG_FILE"
+
 	LLMReadinessConfigOnly = "config_only"
 	LLMReadinessGateway    = "gateway"
 	LLMReadinessInference  = "inference"
@@ -506,14 +508,17 @@ func validateReloadCandidate(candidate *Config) error {
 // setupViper registers file paths, env-var bindings, and default values on the
 // package-level viper instance. Idempotent and safe to call multiple times.
 func setupViper() {
+	configPath := strings.TrimSpace(os.Getenv(configFileEnv))
 	if os.Getenv("TEST_NO_CONFIG") == "true" {
 		viper.SetConfigName("non_existent_config_for_testing")
+	} else if configPath != "" {
+		viper.SetConfigFile(configPath)
 	} else {
 		viper.SetConfigName("config")
+		viper.AddConfigPath(".")
+		viper.AddConfigPath("../../")
 	}
 	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
-	viper.AddConfigPath("../../")
 
 	// Set Environment Variable Prefix and replace . with _
 	viper.SetEnvPrefix("AI_AGENT")
@@ -693,6 +698,20 @@ func setupViper() {
 	_ = viper.BindEnv("langfuse.bootstrap_timeout_seconds", "LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS")
 }
 
+func readConfigFile() error {
+	if err := viper.ReadInConfig(); err != nil {
+		_, notFound := err.(viper.ConfigFileNotFoundError)
+		if notFound || os.IsNotExist(err) {
+			if configPath := strings.TrimSpace(os.Getenv(configFileEnv)); configPath != "" && os.Getenv("TEST_NO_CONFIG") != "true" {
+				return fmt.Errorf("explicit config file %q not found: %w", configPath, err)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // unmarshalConfig reads the current viper state into a fresh Config struct.
 // Returns an error if unmarshalling fails; does NOT update globalConfig.
 func unmarshalConfig() (*Config, error) {
@@ -745,13 +764,12 @@ func LoadConfig() *Config {
 
 	setupViper()
 
-	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			logger.Warn("no config file found, using defaults and environment variables")
-		} else {
-			logger.Error("error reading config file", "error", err)
-			panic(fmt.Sprintf("fatal config error: %v", err))
-		}
+	if err := readConfigFile(); err != nil {
+		logger.Error("error reading config file", "error", err)
+		panic(fmt.Sprintf("fatal config error: %v", err))
+	}
+	if viper.ConfigFileUsed() == "" {
+		logger.Warn("no config file found, using defaults and environment variables")
 	}
 
 	c, err := unmarshalConfig()
@@ -907,11 +925,8 @@ func Reload() (*Config, []string, error) {
 	defer mu.Unlock()
 
 	// Re-read the config file (picks up any on-disk changes).
-	if err := viper.ReadInConfig(); err != nil {
-		if _, notFound := err.(viper.ConfigFileNotFoundError); !notFound {
-			return nil, nil, fmt.Errorf("config reload: read file failed: %w", err)
-		}
-		// No config file is not fatal; env-vars still apply.
+	if err := readConfigFile(); err != nil {
+		return nil, nil, fmt.Errorf("config reload: read file failed: %w", err)
 	}
 
 	newCfg, err := unmarshalConfig()

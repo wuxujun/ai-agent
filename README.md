@@ -141,6 +141,7 @@ readiness loss; an empty CURRENT alone is an expected pre-publication state.
 │   ├── types/                  # Shared types (Task, StepTrace, Evidence, …)
 │   └── workspace/              # Workspace management
 ├── config.yaml                 # Main configuration (hot-reloadable)
+├── config.wiki.yaml            # Standalone Wiki/Brain configuration
 ├── teams.yaml                  # Multi-agent team and workflow configuration
 ├── teams_zh.yml                # teams.yaml — Chinese-annotated version
 ├── skills/                     # Built-in skills (code-review, …)
@@ -194,8 +195,12 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 ## ⚙️ Configuration
 
 All settings live in [`config.yaml`](config.yaml) and can be overridden by
-`AI_AGENT_*` environment variables. Runtime dependencies marked “restart
-required” must be reinitialized by restarting the service.
+`AI_AGENT_*` environment variables. Set `AI_AGENT_CONFIG_FILE` to select an
+alternate local YAML file such as [`config.wiki.yaml`](config.wiki.yaml);
+the selected file is also used by hot reload and filesystem watching. An
+explicitly selected file that is missing or unreadable fails startup/reload
+instead of silently falling back to defaults. Runtime dependencies marked
+“restart required” must be reinitialized by restarting the service.
 
 | Section | Key settings |
 |:---|:---|
