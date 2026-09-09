@@ -1574,3 +1574,39 @@ func TestLocalizedConfigMatchesPrimaryConfig(t *testing.T) {
 		t.Fatal("config_zh.yml keys or values differ from config.yaml")
 	}
 }
+
+func TestWikiConfigFileIsStandaloneAndContainsBrainSettings(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "config.wiki.yaml"))
+	if err != nil {
+		t.Fatalf("read config.wiki.yaml: %v", err)
+	}
+
+	parser := viper.New()
+	parser.SetConfigType("yaml")
+	if err := parser.ReadConfig(bytes.NewReader(content)); err != nil {
+		t.Fatalf("parse config.wiki.yaml: %v", err)
+	}
+	var cfg Config
+	if err := parser.Unmarshal(&cfg); err != nil {
+		t.Fatalf("unmarshal config.wiki.yaml: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config.wiki.yaml: %v", err)
+	}
+
+	if !parser.IsSet("api.addr") || parser.GetString("api.addr") == "" {
+		t.Fatal("config.wiki.yaml must remain a standalone runtime configuration")
+	}
+	if !parser.IsSet("wiki.local_search_mode") || parser.GetString("wiki.local_search_mode") != "bm25" {
+		t.Fatalf("config.wiki.yaml must preserve Wiki settings, got %q", parser.GetString("wiki.local_search_mode"))
+	}
+	if !parser.IsSet("brain.enabled") || parser.GetBool("brain.enabled") {
+		t.Fatalf("config.wiki.yaml must explicitly keep Brain disabled by default")
+	}
+	if parser.GetString("brain.root") != "./data/brain" {
+		t.Fatalf("unexpected Brain root: %q", parser.GetString("brain.root"))
+	}
+	if parser.GetString("brain.compiler.provider") != "gemini" || parser.GetString("brain.compiler.model") == "" {
+		t.Fatalf("config.wiki.yaml must include the constrained Brain compiler settings")
+	}
+}

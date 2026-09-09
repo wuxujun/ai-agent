@@ -1,0 +1,629 @@
+# Standalone Wiki/Brain runtime configuration.
+# This file mirrors config.yaml and includes the Brain-specific settings.
+# It is not loaded automatically; select it explicitly for a Wiki deployment.
+# The runtime loader watches config.yaml by default, so use this file as the
+# selected runtime config when enabling the Wiki/Brain deployment.
+
+# ai-agent configuration file
+# Environment variables prefixed with "AI_AGENT_" can override these values.
+# e.g., AI_AGENT_API_ADDR overrides api.addr.
+
+# API server configuration
+api:
+  # The host:port address for the HTTP server to listen on.
+  # Env override: AI_AGENT_API_ADDR
+  addr: "127.0.0.1:8088"
+
+  # Optional security key for API authorization.
+  # MUST be set via environment variable — do NOT store secrets in this file.
+  # Env override: AI_AGENT_API_KEY
+  api_key: ""
+
+  # Authentication mode: api_key, jwt, introspection, or hybrid.
+  # hybrid accepts existing static keys and one configured Bearer strategy.
+  auth:
+    mode: "introspection"
+    # Production multi-tenant deployments should enable this. Non-admin tenants
+    # must then be listed below with an isolated workspace_root.
+    # Env override: AI_AGENT_API_REQUIRE_TENANT_WORKSPACE_ROOT
+    require_tenant_workspace_root: false
+    bearer:
+      # Bearer strategy used by hybrid mode: jwks or introspection.
+      validation_mode: "jwks"
+    jwt:
+      # Required in jwt/hybrid mode. The JWT signature, issuer, audience,
+      # expiration, and not-before time are validated before tenant_claim is read.
+      issuer: "https://auth.thinktown.com"
+      audience: "ai-agent"
+      jwks_url: "https://auth.thinktown.com"
+      tenant_claim: "user_code"
+      allowed_algorithms: ["RS256"]
+      # Reject a valid JWT unless its tenant claim exists under api.tenants.
+      require_known_tenant: true
+      clock_skew_seconds: 30
+      jwks_cache_ttl_seconds: 300
+      jwks_request_timeout_seconds: 5
+    introspection:
+      # Third-party GET endpoint for Authorization: Bearer tokens. X-API-Key is
+      # validated only against local API keys and is never forwarded. HTTPS is mandatory.
+      url: "https://api.thinktown.com/api/auth/check"
+      # Dot-separated paths are supported for nested JSON response fields.
+      tenant_claim: "data.userid"
+      active_claim: "data.active"
+      # Optional expected response claims. aud and exp are read from data.aud
+      # and data.exp (with top-level fallback). Non-empty values must match.
+      issuer: ""
+      audience: ""
+      require_expiration: false
+      require_known_tenant: false
+      # Keep false for public endpoints. Enable only for a trusted internal URL.
+      allow_private_network: false
+      timeout_seconds: 3
+      # Set 0 to disable caching. Successful results are keyed by token hash.
+      cache_ttl_seconds: 10
+
+  # Optional trusted tenant principals. API keys should be injected into the
+  # runtime config from a secret manager and must not be committed.
+  # In jwt/introspection/hybrid mode api_key may be omitted for a policy-only tenant; admin
+  # remains a local decision and is never taken from an untrusted JWT claim.
+  # The legacy api_key above remains the "default" administrator principal.
+  tenants:
+    project_a:
+      # api_key: "XKT#2026"
+      admin: false
+      workspace_root: "./workspace/demo"
+  #     # Empty or omitted preserves access to all configured Teams. Non-admin
+  #     # tenants with a non-empty list may only create tasks using these Teams.
+      default_multiagent_team: wiki
+      allowed_multiagent_teams:
+        - wiki
+        - wiki_graph
+      # daily_llm_call_budget: 100
+      # daily_llm_cost_budget_usd: 10
+      # answer_pipeline_enforcement: strict
+      # answer_pipeline_required_stages:
+        # - fact_freshness_check
+        # - numeric_consistency_check
+        # - answer_uncertainty_calibrate
+        # - safety_guard_output
+  #     # Required for tenant-isolated Wiki access unless wiki.default_space
+  #     # intentionally shares one space across tenants.
+      wiki_space: "project-a"
+      # Explicit Brain project allowlist. Project identity is never inferred
+      # from workspace; project IDs must be lowercase hyphenated slugs.
+      # brain_projects:
+      #   atlas:
+      #     wiki_space: "brain-atlas"
+
+# Optional project-scoped, read-only Brain Wiki. Brain is disabled by default.
+# The root selects immutable snapshot storage; changing it requires a restart.
+# Empty CURRENT is reported as a lifecycle state and does not block ordinary traffic.
+brain:
+  enabled: false
+  root: "./data/brain"
+  compact_index_max_bytes: 4000
+  compiler:
+    provider: "gemini"
+    model: "gemini-3.5-flash-lite"
+    max_input_bytes: 200000
+    max_output_tokens: 12000
+    max_cost_usd: 0.25
+
+# Storage configuration
+store:
+  # The storage backend. Supported: "sqlite", "postgres", "redis", "memory"
+  # Env override: AI_AGENT_STORE_TYPE
+  type: "sqlite"
+
+  # Data source connection string.
+  # sqlite: path to sqlite db (e.g. "data/agent.db")
+  # postgres: postgres dsn (e.g. "postgresql://user:pass@host:port/dbname")
+  # redis: redis url (e.g. "redis://host:port/db")
+  # Env override: AI_AGENT_STORE_DSN
+  dsn: "data/agent.db"
+
+  # Memory search mode. Supported: "in_process", "pgvector", "paradedb".
+  # "paradedb" fuses ParadeDB BM25 and pgvector rankings. PostgreSQL modes only
+  # apply when store.type is "postgres"; other backends ignore this setting.
+  # Env override: AI_AGENT_STORE_VECTOR_SEARCH
+  vector_search: "in_process"
+
+  # Optional pgvector HNSW index dimension, e.g. 128 for local fallback embeddings,
+  # 1536 for OpenAI text-embedding-3-small, 3072 for Gemini gemini-embedding-001.
+  # 0 keeps pgvector in exact-scan mode without creating an ANN index.
+  # Env override: AI_AGENT_STORE_PGVECTOR_DIMENSIONS
+  pgvector_dimensions: 0
+  # ParadeDB hybrid retrieval tuning. Candidate count per branch is
+  # requested limit * multiplier; RRF K controls rank smoothing.
+  # Env overrides: AI_AGENT_STORE_PARADEDB_CANDIDATE_MULTIPLIER,
+  # AI_AGENT_STORE_PARADEDB_RRF_K, AI_AGENT_STORE_PARADEDB_SLOW_QUERY_THRESHOLD_MS
+  paradedb_candidate_multiplier: 4
+  paradedb_rrf_k: 60
+  paradedb_slow_query_threshold_ms: 250
+
+  # Max recent memory rows loaded from disk before in-process cosine/keyword ranking.
+  # 0 falls back to default (200).
+  # Env override: AI_AGENT_STORE_MEMORY_CANDIDATE_LIMIT
+  memory_candidate_limit: 200
+
+# Orchestrator orchestration execution configuration
+orchestrator:
+  # Execution mode. Supported: "eino", "legacy", "step", "adk", "multiagent"
+  # Env override: AI_AGENT_ORCHESTRATOR_MODE
+  mode: "eino"
+
+  # Max concurrent task routines allowed.
+  # Env override: AI_AGENT_ORCHESTRATOR_MAX_CONCURRENT_TASKS
+  max_concurrent_tasks: 10
+
+  # Active execution budget for a run-all task loop in seconds. Time spent
+  # awaiting human approval is excluded; cancellation and shutdown still apply.
+  # 0 falls back to default (600s).
+  # Env override: AI_AGENT_ORCHESTRATOR_RUN_ALL_TIMEOUT_SECONDS
+  run_all_timeout_seconds: 600
+
+# Multi-agent team and DAG rollout settings. Environment overrides:
+# AI_AGENT_MULTIAGENT_TEAM, AI_AGENT_MULTIAGENT_RUNTIME,
+# AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT.
+multiagent:
+  team: "kb_qa"
+  runtime: "legacy"
+  dag_canary_percent: 0
+
+approval:
+  # Maximum age of a pending durable approval in seconds. 0 disables expiry.
+  # Env override: AI_AGENT_APPROVAL_TTL_SECONDS
+  ttl_seconds: 86400
+  # Retain consumed/expired approvals for this many days. 0 disables cleanup.
+  # Env override: AI_AGENT_APPROVAL_RETENTION_DAYS
+  retention_days: 30
+
+answer_pipeline:
+  enabled: true
+  enforcement: observe
+  audit_token_reserve: 4000
+  stage_timeout_seconds: 20
+  parallel_audits: true
+  on_required_stage_failure: partial
+  required_stages:
+    - wiki_citation_integrity
+    - fact_freshness_check
+    - numeric_consistency_check
+    - answer_uncertainty_calibrate
+    - safety_guard_output
+  stage_token_budgets:
+    citation_verify: 600
+    fact_freshness_check: 900
+    numeric_consistency_check: 900
+    answer_uncertainty_calibrate: 1000
+    safety_guard_output: 600
+
+# LLM provider configuration
+llm:
+  # The target LLM provider. Supported: "openai-responses", "openai", "gemini", "ollama", "litellm"
+  # Env override: AI_AGENT_LLM_PROVIDER
+  provider: "openai-responses"
+
+  # Fallback LLM API key.
+  # Env override: AI_AGENT_LLM_API_KEY
+  api_key: ""
+
+  # Dedicated LLM API keys. (Preferred over llm.api_key)
+  # Env overrides (no AI_AGENT_ prefix): OPENAI_API_KEY, GEMINI_API_KEY, GOOGLE_API_KEY
+  openai_api_key: ""
+  gemini_api_key: ""
+  google_api_key: ""
+
+  # LLM model name. If empty, uses provider default.
+  # e.g., "gpt-4o-mini", "gemini-2.5-flash"
+  # Env override: AI_AGENT_LLM_MODEL
+  model: ""
+
+  # Custom API base URL if using local proxies or self-hosted API endpoints.
+  # Env override: AI_AGENT_LLM_BASE_URL
+  base_url: ""
+
+  # Request timeout in seconds.
+  # Env override: AI_AGENT_LLM_TIMEOUT_SECONDS
+  timeout_seconds: 90
+  # Readiness probe level: config_only, gateway, or inference.
+  # gateway preserves the default behavior: LiteLLM liveness and model access
+  # are checked, while direct providers remain configured but unverified.
+  # inference sends a minimal structured generation request per configured scene
+  # and may incur provider cost. Env override: AI_AGENT_LLM_READINESS_MODE
+  readiness_mode: "gateway"
+  # Cache readiness results to limit probe traffic and inference cost.
+  # Increase this value when readiness_mode is inference.
+  # Env override: AI_AGENT_LLM_READINESS_CACHE_TTL_SECONDS
+  readiness_cache_ttl_seconds: 10
+  # Runtime resilience. Set any value to 0 to disable that guard.
+  circuit_breaker_failure_threshold: 5
+  circuit_breaker_cooldown_seconds: 30
+  retry_budget_per_minute: 60
+  # Default per-task logical LLM call limit; 0 disables the limit. A fallback
+  # scene counts as another call, while retries within one scene do not.
+  max_calls_per_task: 0
+  # Default per-task estimated USD limit; 0 disables the limit. Cost requires
+  # input/output pricing on every selected generation scene. Configure shared
+  # prices under llm.gateway or scene-specific prices under llm.scenes; task
+  # requests must leave llm_cost_budget_usd at 0 when pricing is unavailable.
+  max_estimated_cost_usd_per_task: 0
+  context_compression_trace_threshold: 8
+  # Optional: also trigger context compression when accumulated trace tokens exceed
+  # this total. 0 (default) disables the token-based trigger; useful for tasks that
+  # generate large observations without many steps (e.g. code execution outputs).
+  # Env override: AI_AGENT_LLM_CONTEXT_COMPRESSION_TOKEN_THRESHOLD
+  # context_compression_token_threshold: 40000
+
+  # Planner trace context limits. These protect every planning call even when
+  # the optional LLM context compressor is disabled or has not triggered yet.
+  planner_trace_max_items: 4
+  planner_observation_max_chars: 800
+  planner_evidence_max_items: 8
+  planner_evidence_line_max_chars: 300
+  planner_trace_max_chars: 5000
+
+  # Shared gateway defaults. LiteLLM exposes an OpenAI-compatible
+  # /v1/chat/completions endpoint and model aliases configured in LiteLLM.
+  gateway:
+    provider: "litellm"
+    api_key: ""
+    base_url: "http://127.0.0.1:4000/v1/chat/completions"
+    timeout_seconds: 120
+    # Optional pricing used only for estimated cost metrics.
+    # input_cost_per_million_usd: 2.0
+    # output_cost_per_million_usd: 8.0
+
+  # Per-call-site profiles. Omitted fields inherit gateway, then legacy settings.
+  # Dynamic routes apply to generation scenes; embedding and adk reject routes.
+  # Set fallback_scene: "", max_retries: 0, or min_remaining_tokens: 0 to
+  # explicitly clear the corresponding gateway policy for one scene.
+  scenes:
+    task_planner:
+      model: "agent-planner"
+      fallback_scene: "task_planner_legacy"
+      # Optional pricing and routing:
+      # input_cost_per_million_usd: 2.0
+      # output_cost_per_million_usd: 8.0
+      # min_remaining_tokens: 2000
+      # routes:
+      #   - target_scene: "task_planner_economy"
+      #     max_remaining_tokens: 4000
+      #     min_step_count: 2
+      #   - target_scene: "task_planner_quality"
+      #     intents: ["coding", "research"]
+      #     complexities: ["high"]
+      #     cost_tiers: ["unconstrained"]
+      #     latency_tiers: ["flexible"]
+      #     quality_tiers: ["quality"]
+    task_planner_legacy:
+      model: "agent-planner-legacy"
+      max_retries: 1
+    task_finalizer:
+      model: "agent-writer"
+      timeout_seconds: 30
+      fallback_scene: "task_finalizer_legacy"
+    task_finalizer_legacy:
+      model: "agent-writer-legacy"
+      max_retries: 1
+    multiagent_planner:
+      model: "agent-planner"
+      fallback_scene: "multiagent_planner_legacy"
+    multiagent_planner_legacy:
+      model: "agent-planner-legacy"
+      max_retries: 1
+    multiagent_replanner:
+      model: "agent-planner-fallback"
+      fallback_scene: "multiagent_replanner_legacy"
+    multiagent_replanner_legacy:
+      model: "agent-planner-fallback-legacy"
+      max_retries: 1
+    multiagent_writer:
+      model: "agent-writer"
+      fallback_scene: "multiagent_writer_legacy"
+    multiagent_writer_legacy:
+      model: "agent-writer-legacy"
+      max_retries: 1
+    embedding:
+      model: "agent-embedding"
+      base_url: "http://127.0.0.1:4000/v1/embeddings"
+
+    # Optional profiles. Uncomment entries directly under this scenes map.
+  #   task_planner_economy:
+  #     model: "agent-planner-fast"
+  #   task_planner_quality:
+  #     model: "agent-planner-strong"
+  #   citation_verifier:
+  #     model: "agent-verifier"
+  #   safety_guard:
+  #     model: "agent-safety"
+  #   tool_argument_repair:
+  #     model: "agent-fast"
+  #   intent_router:
+  #     model: "agent-fast"
+  #   memory_conflict_resolver:
+  #     model: "agent-verifier"
+  #   vision_analyzer:
+  #     # The selected model must accept image input. LiteLLM can route this
+  #     # alias to any OpenAI-compatible multimodal backend.
+  #     model: "agent-vision"
+  #   code_reviewer:
+  #     model: "agent-reviewer"
+  #   test_generator:
+  #     model: "agent-coder"
+  #   failure_diagnoser:
+  #     model: "agent-diagnoser"
+  #   plan_critic:
+  #     model: "agent-reviewer"
+  #   prompt_injection_detector:
+  #     model: "agent-safety"
+  #   evidence_relevance_filter:
+  #     model: "agent-reranker"
+  #   evidence_conflict_resolver:
+  #     model: "agent-verifier"
+  #   source_credibility_scorer:
+  #     model: "agent-verifier"
+  #   fact_freshness_checker:
+  #     model: "agent-verifier"
+  #   numeric_consistency_checker:
+  #     model: "agent-verifier"
+  #   answer_uncertainty_calibrator:
+  #     model: "agent-verifier"
+  #   context_compressor:
+  #     model: "agent-fast"
+  #   answer_verifier:
+  #     model: "agent-verifier"
+  #   memory_summarizer:
+  #     model: "agent-fast"
+  #   rag_query_rewriter:
+  #     model: "agent-fast"
+  #   rag_reranker:
+  #     model: "agent-reranker"
+  #   adk:
+  #     provider: "gemini"
+  #     model: "gemini-2.5-flash"
+
+# Embedding configuration
+embedding:
+  # Embedding model name. If empty, uses the provider's embedding default
+  # (for example gemini-embedding-001 or text-embedding-3-small), not its
+  # text-generation default.
+  # Env override: AI_AGENT_EMBEDDING_MODEL
+  model: ""
+
+# Retrieval-Augmented Generation (RAG) configuration
+rag:
+  # Optional URL of the external search/RAG API endpoint.
+  # Env override: AI_AGENT_RAG_SEARCH_URL
+  search_url: ""
+
+  # RAG transport: "MCP" performs initialize + tools/call; "POST" and "GET"
+  # are for plain REST endpoints. URLs ending in /mcp are always treated as
+  # MCP Streamable HTTP endpoints even if an environment override says POST.
+  # Env override: AI_AGENT_RAG_SEARCH_METHOD
+  search_method: "MCP"
+
+  # The name of the search tool exposed by the MCP server.
+  # Env override: AI_AGENT_RAG_TOOL_NAME
+  tool_name: "rag_search"
+
+  # Authorization token/header for the RAG search endpoint.
+  # MUST be set via environment variable — do NOT store secrets in this file.
+  # Env override: AI_AGENT_RAG_AUTHORIZATION
+  authorization: ""
+
+  # Context retrieval mode. "jit" lets the Planner call retrieval tools on
+  # demand; "prefetch" preserves the legacy retrieval-before-planning flow.
+  # Env override: AI_AGENT_RAG_CONTEXT_MODE
+  context_mode: "jit"
+
+  # Per-task limits. Network calls count real external searches; retrieval
+  # cycles count distinct search attempts; equivalent cache hits are reused.
+  # Env overrides: AI_AGENT_RAG_JIT_SEARCH_MAX_CALLS,
+  # AI_AGENT_RAG_JIT_RETRIEVAL_MAX_CYCLES,
+  # AI_AGENT_RAG_JIT_FETCH_MAX_ITEMS,
+  # AI_AGENT_RAG_JIT_RAG_FETCH_MAX_BYTES,
+  # AI_AGENT_RAG_JIT_MEMORY_FETCH_MAX_BYTES
+  jit_search_max_calls: 2
+  jit_retrieval_max_cycles: 2
+  jit_fetch_max_items: 3
+  jit_rag_fetch_max_bytes: 6000
+  jit_memory_fetch_max_bytes: 2000
+
+  # Completed tasks from the same session injected immediately, even before
+  # asynchronous embedding indexing finishes. 0 disables this direct history.
+  # Env override: AI_AGENT_RAG_SESSION_RECENT_TASK_LIMIT
+  session_recent_task_limit: 5
+
+  # Maximum number of reranked memories included in a planner prompt.
+  # Env override: AI_AGENT_RAG_MAX_PROMPT_MEMORIES
+  max_prompt_memories: 3
+
+  # UTF-8 byte budget for one memory after combining goal, findings and answer.
+  # Env override: AI_AGENT_RAG_MAX_MEMORY_BYTES
+  max_memory_bytes: 2500
+
+  # UTF-8 byte budget shared by all memories in one planner prompt.
+  # Env override: AI_AGENT_RAG_MAX_MEMORY_PROMPT_BYTES
+  max_memory_prompt_bytes: 8000
+
+  # Maximum raw third-party text retained when structured parsing fails.
+  # Env override: AI_AGENT_RAG_MAX_RAW_FALLBACK_BYTES
+  max_raw_fallback_bytes: 4000
+
+# General MCP Streamable HTTP services. Tools are discovered with tools/list at
+# startup and registered as <tool_prefix>_<remote_tool_name>. Changes to this
+# list currently require a service restart.
+mcp:
+  servers: []
+  # Example:
+  # servers:
+  #   - name: "github"
+  #     url: "https://mcp.example.com/mcp"
+  #     # Reads the credential from this environment variable. A bare token is
+  #     # sent as Bearer; a value containing a scheme is preserved as-is.
+  #     authorization_env: "GITHUB_MCP_AUTHORIZATION"
+  #     # Defaults to "mcp_<name>", producing e.g. mcp_github_search_code.
+  #     tool_prefix: "mcp_github"
+  #     # Remote tools default to high risk and therefore require approval.
+  #     risk_level: "high"
+  #     timeout_seconds: 15
+  #     # Maximum discovered tools accepted from this server (default 64).
+  #     max_tools: 64
+  #     # A required server prevents startup when discovery fails. Optional
+  #     # server failures are logged and isolated from healthy servers.
+  #     required: false
+  #     disabled: false
+  #     # Private/loopback endpoints are rejected unless explicitly enabled.
+  #     allow_private_network: false
+
+# Optional read-only LLM Wiki adapter. wiki_search and wiki_fetch are always
+# registered; wiki_graph and wiki_suggest are added only when supported. Write,
+# ingest, commit, schema, and space-management tools are not registered.
+# Changes require a service restart.
+wiki:
+  # Streamable HTTP MCP endpoint, for example http://127.0.0.1:18765/mcp.
+  # Env override: AI_AGENT_WIKI_URL
+  url: ""
+  # Alternatively, read an llm-wiki checkout directly. May point at its root
+  # (containing AGENTS.md/raw/wiki) or at the wiki directory itself.
+  # Mutually exclusive with url. Env override: AI_AGENT_WIKI_DIRECTORY
+  directory: ""
+  # Name of the environment variable containing the authorization value.
+  # The secret itself must not be stored in this file.
+  # Env override: AI_AGENT_WIKI_AUTHORIZATION_ENV
+  authorization_env: ""
+  # Shared fallback space. Prefer api.tenants.<tenant>.wiki_space for isolation.
+  # Env override: AI_AGENT_WIKI_DEFAULT_SPACE
+  default_space: ""
+  # Local directory ranker: bm25 or legacy. Use legacy for rollback. Changes require restart.
+  # Env override: AI_AGENT_WIKI_LOCAL_SEARCH_MODE
+  local_search_mode: "bm25"
+  # Seconds between lazy local-directory change checks. 0 means Probe-only.
+  # Env override: AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS
+  local_refresh_interval_seconds: 30
+  # Maximum nodes returned by local graph expansion. 0 uses the built-in default.
+  # Env override: AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES
+  local_graph_max_nodes: 12
+  timeout_seconds: 15
+  # Keep discovery wider than the fetch budget so category diversification can
+  # select linked source/entity pages without increasing full-page reads.
+  search_top_k: 8
+  fetch_max_items: 3
+  fetch_max_bytes: 12000
+  # Task-local candidate IDs are released at task completion. These limits are
+  # a bounded fallback for abandoned or interrupted tasks; 0 uses the built-in default.
+  # Env: AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS / AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS
+  candidate_cache_max_tasks: 1024
+  candidate_cache_ttl_seconds: 1800
+  # Consecutive backend failures before temporarily rejecting Wiki calls.
+  # Set either value to 0 to disable the circuit breaker.
+  circuit_breaker_failure_threshold: 3
+  circuit_breaker_cooldown_seconds: 30
+  # Loopback/private endpoints are rejected unless explicitly enabled.
+  allow_private_network: false
+  # Fail service startup when the configured Wiki cannot initialize.
+  required: false
+
+# Logging configuration
+log:
+  # Log verbosity. Supported: "debug", "info", "warn", "error"
+  # Env override: AI_AGENT_LOG_LEVEL
+  level: "info"
+
+  # Keep writing JSON logs to stdout.
+  # Env override: AI_AGENT_LOG_CONSOLE
+  console: true
+
+  # Write each level to its own daily-rotated file, for example
+  # logs/info-2026-07-15.log and logs/error-2026-07-15.log.
+  # Env override: AI_AGENT_LOG_FILE_ENABLED
+  file_enabled: true
+
+  # Write one structured JSON record per HTTP request to access-YYYY-MM-DD.log.
+  # Authorization, X-API-Key, cookies, query strings, and bodies are never logged.
+  # Env override: AI_AGENT_LOG_ACCESS_ENABLED
+  access_enabled: true
+
+  # Directory for rotated log files.
+  # Env override: AI_AGENT_LOG_DIRECTORY
+  directory: "logs"
+
+  # Delete rotated files older than this many days. 0 keeps them forever.
+  # Env override: AI_AGENT_LOG_RETENTION_DAYS
+  retention_days: 30
+
+# OpenTelemetry configuration
+telemetry:
+  # Enable OTLP traces and metrics export. If false, instrumentation stays no-op.
+  # Env override: AI_AGENT_TELEMETRY_ENABLED
+  enabled: true
+
+  # OTLP HTTP endpoint. Supports "host:port" or a full URL such as "http://127.0.0.1:4318".
+  # Env override: AI_AGENT_TELEMETRY_ENDPOINT
+  endpoint: "127.0.0.1:4318"
+
+  # Deployment environment resource attribute.
+  # Env override: AI_AGENT_TELEMETRY_ENVIRONMENT
+  environment: "dev"
+
+  # Exporter mode. Supported: "otlp", "stdout".
+  # Env override: AI_AGENT_TELEMETRY_EXPORTER
+  exporter: "otlp"
+
+# Tool execution configuration
+tool:
+  # Timeout limit for custom tool executions in seconds.
+  # Env override: AI_AGENT_TOOL_TIMEOUT_SECONDS
+  timeout_seconds: 120
+
+# Skill discovery configuration
+skill:
+  # Root directory scanned for skills (containing <name>/SKILL.md).
+  # Env override: AI_AGENT_SKILL_ROOT
+  root: "skills"
+
+# Web search configuration
+search:
+  # The default web search API URL (e.g. Firecrawl, DuckDuckGo)
+  # Default is Firecrawl search endpoint: https://api.firecrawl.dev/v1/search
+  # Env override: AI_AGENT_SEARCH_URL
+  url: "https://api.firecrawl.dev/v1/search"
+
+  # API key or authorization token for the search provider
+  # Env override: FIRECRAWL_API_KEY or AI_AGENT_SEARCH_API_KEY
+  api_key: ""
+
+# Langfuse Prompt Management configuration
+langfuse:
+  # Enable dynamic prompt fetching from Langfuse.
+  # Env override: LANGFUSE_ENABLED
+  enabled: false
+
+  # Langfuse host URL.
+  # Env override: LANGFUSE_BASE_URL
+  host: "https://cloud.langfuse.com"
+
+  # Langfuse Public Key (pk-lf-...)
+  # Env override: LANGFUSE_PUBLIC_KEY
+  public_key: ""
+
+  # Langfuse Secret Key (sk-lf-...)
+  # Env override: LANGFUSE_SECRET_KEY
+  secret_key: ""
+
+  # On startup, fetch every explicitly named teams.yaml prompt and create it
+  # from system_prompt only when the prompt name is confirmed absent.
+  # The same idempotent synchronization can be triggered dynamically by an
+  # administrator with POST /api/prompt/init, even when this startup flag is false.
+  # Keep disabled on ordinary replicas in a multi-instance deployment.
+  # Env override: LANGFUSE_BOOTSTRAP_MISSING_PROMPTS
+  bootstrap_missing_prompts: false
+
+  # Startup behavior when prompt synchronization fails: "fail" or "warn".
+  # Env override: LANGFUSE_BOOTSTRAP_FAILURE_POLICY
+  bootstrap_failure_policy: "fail"
+
+  # Total startup synchronization timeout in seconds. 0 uses 15 seconds.
+  # Env override: LANGFUSE_BOOTSTRAP_TIMEOUT_SECONDS
+  bootstrap_timeout_seconds: 15
