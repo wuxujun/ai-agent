@@ -1,6 +1,12 @@
 @baseUrl = http://127.0.0.1:8088
 @apiKey = replace-with-tenant-api-key
 
+# All request bodies are limited to 10 MiB, including chunked requests.
+# Oversized requests return 413 before a handler performs any operation:
+# {"error":"request body exceeds 10 MiB limit"}
+# The server reads headers within 10s and the complete request within 30s.
+# SSE responses remain open beyond these request-read deadlines.
+
 ### Create a read-only Brain-scoped task
 # Enable Brain and configure the authenticated tenant's brain_projects allowlist
 # before sending this request. brain_project_id is never inferred from workspace.
@@ -13,3 +19,42 @@ X-API-Key: {{apiKey}}
   "workspace": "./workspace/brain",
   "brain_project_id": "atlas"
 }
+
+
+### Create a task with an atomic, client-selected ID
+# First request returns 201. Reusing this ID (including concurrent requests)
+# returns 409 and preserves the existing task, tenant, and traces.
+# Custom stores must implement store.TaskCreationStore; otherwise this returns 501.
+POST {{baseUrl}}/api/tasks
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+  "id": "atomic-create-example",
+  "goal": "Summarize the files in the workspace.",
+  "workspace": "./workspace"
+}
+
+### Run the task with renewable execution ownership
+# Returns 202 for background execution, or 409 while another instance owns it.
+# Ownership is renewed during approval waits and cancellation flushes.
+# Lost ownership cancels execution and prevents stale task persistence.
+# Custom stores must implement strict store.TaskLeaseStore renewal and honor
+# store.WithTaskLease for saves/status transitions; unsupported renewal returns 501.
+POST {{baseUrl}}/api/tasks/atomic-create-example/run-all
+X-API-Key: {{apiKey}}
+
+### Reload dynamic configuration (administrator credentials required)
+# Dynamic changes return 200 with the active config_revision.
+# Changes to api.addr, store.type/dsn, orchestrator.mode, skill.root,
+# telemetry, mcp.servers, or Wiki startup bindings require a process restart.
+# These return 500 with an error containing "configuration change requires restart";
+# the previous active snapshot and revision remain unchanged.
+POST {{baseUrl}}/api/config/reload
+X-API-Key: {{apiKey}}
+
+### Read the complete ordered task trace
+# trace[].step remains the logical execution step; several audit events may share
+# the same step. SQL storage retains every event in array order independently.
+GET {{baseUrl}}/api/tasks/atomic-create-example
+X-API-Key: {{apiKey}}

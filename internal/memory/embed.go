@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -203,9 +204,15 @@ func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		var buf bytes.Buffer
-		_, _ = buf.ReadFrom(resp.Body)
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, buf.String())
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, (4<<10)+1))
+		return nil, llmcore.NewHTTPStatusError(resp.StatusCode, resp.Header, nil)
+	}
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > 4<<20 {
+		return nil, fmt.Errorf("embedding response exceeds 4 MiB limit")
 	}
 
 	var m struct {
@@ -213,8 +220,8 @@ func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 			Embedding []float32 `json:"embedding"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
-		return nil, err
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, fmt.Errorf("invalid embedding response")
 	}
 
 	if len(m.Data) == 0 {
@@ -272,16 +279,22 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		var buf bytes.Buffer
-		_, _ = buf.ReadFrom(resp.Body)
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, buf.String())
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, (4<<10)+1))
+		return nil, llmcore.NewHTTPStatusError(resp.StatusCode, resp.Header, nil)
+	}
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > 4<<20 {
+		return nil, fmt.Errorf("embedding response exceeds 4 MiB limit")
 	}
 
 	var m struct {
 		Embedding []float32 `json:"embedding"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
-		return nil, err
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, fmt.Errorf("invalid embedding response")
 	}
 
 	if len(m.Embedding) == 0 {

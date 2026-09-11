@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,8 +31,8 @@ func RunCommand(ctx context.Context, dir string, name string, args ...string) (s
 	cmd.Dir = dir
 	configureCommandCancellation(cmd)
 
-	var out bytes.Buffer
-	var stderr bytes.Buffer
+	var out boundedCommandOutput
+	var stderr boundedCommandOutput
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 
@@ -59,4 +58,32 @@ func RunCommand(ctx context.Context, dir string, name string, args ...string) (s
 		return out.String(), err
 	}
 	return out.String(), nil
+}
+
+// Continue draining pipes after the bound so subprocesses can exit normally.
+// stdout and stderr have separate writers, preserving existing failure output
+// selection while bounding retained memory on success, failure and cancellation.
+const maxCommandOutputBytes = 1 << 20
+const commandOutputTruncated = "\n[output truncated]\n"
+
+type boundedCommandOutput struct {
+	data      []byte
+	truncated bool
+}
+
+func (b *boundedCommandOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	keep := min(n, maxCommandOutputBytes-len(b.data))
+	b.data = append(b.data, p[:keep]...)
+	if keep < n {
+		b.truncated = true
+	}
+	return n, nil
+}
+func (b *boundedCommandOutput) Len() int { return len(b.data) }
+func (b *boundedCommandOutput) String() string {
+	if !b.truncated {
+		return string(b.data)
+	}
+	return string(b.data[:min(len(b.data), maxCommandOutputBytes-len(commandOutputTruncated))]) + commandOutputTruncated
 }

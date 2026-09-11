@@ -971,7 +971,47 @@ func validateRestartRequiredReload(old, new *Config) error {
 	if brainProjectAllowlistsChanged(old.API.Tenants, new.API.Tenants) {
 		return fmt.Errorf("%w: Brain tenant project allowlist changed", ErrRestartRequired)
 	}
+	for _, binding := range []struct {
+		name    string
+		changed bool
+	}{
+		{"api.addr", old.API.Addr != new.API.Addr},
+		{"store connection", old.Store.Type != new.Store.Type || old.Store.DSN != new.Store.DSN},
+		{"orchestrator.mode", old.Orchestrator.Mode != new.Orchestrator.Mode},
+		{"skill.root", old.Skill.Root != new.Skill.Root},
+		{"telemetry", !reflect.DeepEqual(old.Telemetry, new.Telemetry)},
+		{"mcp.servers", mcpServersChanged(old.MCP.Servers, new.MCP.Servers)},
+	} {
+		if binding.changed {
+			return fmt.Errorf("%w: %s changed", ErrRestartRequired, binding.name)
+		}
+	}
+	// Wiki clients retain transport and local-directory settings. Query bounds,
+	// tenant space selection, candidate cache and circuit settings are read at
+	// point of use and remain reloadable.
+	oldWiki, newWiki := old.Wiki, new.Wiki
+	oldWiki.DefaultSpace = newWiki.DefaultSpace
+	oldWiki.SearchTopK = newWiki.SearchTopK
+	oldWiki.FetchMaxItems = newWiki.FetchMaxItems
+	oldWiki.FetchMaxBytes = newWiki.FetchMaxBytes
+	oldWiki.CandidateCacheMaxTasks = newWiki.CandidateCacheMaxTasks
+	oldWiki.CandidateCacheTTLSeconds = newWiki.CandidateCacheTTLSeconds
+	oldWiki.CircuitBreakerFailureThreshold = newWiki.CircuitBreakerFailureThreshold
+	oldWiki.CircuitBreakerCooldownSeconds = newWiki.CircuitBreakerCooldownSeconds
+	if !reflect.DeepEqual(oldWiki, newWiki) {
+		return fmt.Errorf("%w: wiki startup bindings changed", ErrRestartRequired)
+	}
+
 	return nil
+}
+
+func mcpServersChanged(old, next []MCPServerConfig) bool {
+	// Decoding and snapshot cloning can represent an absent list as either
+	// nil or an empty slice; neither representation installs any servers.
+	if len(old) == 0 && len(next) == 0 {
+		return false
+	}
+	return !reflect.DeepEqual(old, next)
 }
 
 func brainProjectAllowlistsChanged(old, new map[string]APITenantConfig) bool {
@@ -1161,11 +1201,11 @@ func diffConfigs(old, new *Config) []string {
 
 	// MCP credentials are referenced by environment-variable name, never by
 	// value, so comparing the declarative server list is safe.
-	if !reflect.DeepEqual(old.MCP.Servers, new.MCP.Servers) {
+	if mcpServersChanged(old.MCP.Servers, new.MCP.Servers) {
 		changes = append(changes, "mcp.servers: changed")
 	}
 	if !reflect.DeepEqual(old.Wiki, new.Wiki) {
-		changes = append(changes, "wiki: changed (restart required)")
+		changes = append(changes, "wiki: changed")
 	}
 	if !reflect.DeepEqual(old.Brain, new.Brain) {
 		changes = append(changes, "brain: changed (restart required)")

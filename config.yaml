@@ -475,7 +475,9 @@ mcp:
 # Optional read-only LLM Wiki adapter. wiki_search and wiki_fetch are always
 # registered; wiki_graph and wiki_suggest are added only when supported. Write,
 # ingest, commit, schema, and space-management tools are not registered.
-# Changes require a service restart.
+# Transport, directory/ranker, authorization and startup-policy changes require
+# a service restart. Space selection, query bounds, candidate cache and circuit
+# breaker settings remain hot-reloadable.
 wiki:
   # Streamable HTTP MCP endpoint, for example http://127.0.0.1:18765/mcp.
   # Env override: AI_AGENT_WIKI_URL

@@ -636,6 +636,9 @@ func (e *Engine) effectiveMode(task *types.Task) Mode {
 }
 
 func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
+	if err := executionLeaseError(ctx); err != nil {
+		return err
+	}
 	ctx = logger.WithTaskID(ctx, task.ID)
 	effectiveMode := e.effectiveMode(task)
 	resumingMultiAgent := effectiveMode == ModeMultiAgent && e.CanResumeTask(task)
@@ -996,6 +999,9 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 
 	engineLog.Info("executing actions", "task_id", task.ID, "actions", actionNames)
 	xStart := time.Now()
+	if err := executionLeaseError(ctx); err != nil {
+		return err
+	}
 	traces, err := e.Executor.Execute(ctx, task, decision)
 	traces, injectionAudit := e.inspectExternalTraces(ctx, task, traces)
 	traces, relevanceAudits := e.filterExternalTraces(ctx, task, traces)
@@ -1083,7 +1089,7 @@ func (e *Engine) enforceApprovals(ctx context.Context, task *types.Task, decisio
 			ac.Parameters = newParams
 		}
 	}
-	return false, nil
+	return false, executionLeaseError(ctx)
 }
 
 // approvalStore returns the ApprovalStore this engine should use. When the
@@ -1147,7 +1153,13 @@ func (e *Engine) PersistApprovalResolution(ctx context.Context, taskID, approval
 	if record.Status != types.ApprovalPending {
 		return &request, true, false, nil
 	}
-	resolutionJSON, err := json.Marshal(result)
+	// Empty replacement parameters and absent parameters have different
+	// approval semantics. Override ApprovalResult's omitempty field so the
+	// durable representation preserves {} instead of restoring old arguments.
+	resolutionJSON, err := json.Marshal(struct {
+		types.ApprovalResult
+		Parameters map[string]any `json:"parameters"`
+	}{ApprovalResult: result, Parameters: result.Parameters})
 	if err != nil {
 		return nil, true, false, fmt.Errorf("marshal durable approval resolution: %w", err)
 	}
@@ -1280,6 +1292,17 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 	if task.ID != approval.TaskID || approval.Status != types.ApprovalApproved || !isRecoverableApprovalTask(task) {
 		return false, nil
 	}
+	ctx, releaseTaskLease, err := e.beginApprovalRecovery(ctx, task, owner)
+	if err != nil {
+		return false, err
+	}
+	defer releaseTaskLease()
+	if !isRecoverableApprovalTask(task) {
+		return false, nil
+	}
+	if err := recoveryExecutionError(ctx); err != nil {
+		return false, err
+	}
 	acquired, err := durableStore.AcquireApprovalLease(ctx, approval.ID, owner, time.Minute)
 	if err != nil || !acquired {
 		return false, err
@@ -1301,6 +1324,26 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 	if action.Action == "" || action.Action != latest.Request.Action {
 		return false, errors.New("approved action checkpoint identity mismatch")
 	}
+	if len(latest.ResolutionPayload) == 0 {
+		return false, errors.New("approved action checkpoint has no resolution")
+	}
+	resolutionJSON, err := e.ApprovalCodec.Decrypt(latest.ResolutionPayload)
+	if err != nil {
+		return false, fmt.Errorf("decrypt approved action resolution: %w", err)
+	}
+	var resolution types.ApprovalResult
+	if err := json.Unmarshal(resolutionJSON, &resolution); err != nil {
+		return false, errors.New("invalid approved action resolution")
+	}
+	if !resolution.Approved {
+		return false, errors.New("approved action resolution is not an approval")
+	}
+	if resolution.Parameters != nil {
+		action.Parameters = resolution.Parameters
+	}
+	if err := recoveryExecutionError(ctx); err != nil {
+		return false, err
+	}
 	consumed, err := durableStore.TransitionApproval(ctx, latest.ID, latest.TenantID, latest.Version, types.ApprovalApproved, types.ApprovalConsumed, latest.ResolutionPayload)
 	if err != nil {
 		return false, err
@@ -1315,6 +1358,9 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 		e.Metrics.ObserveDurableApproval(ctx, "consumed")
 	}
 
+	if err := recoveryExecutionError(ctx); err != nil {
+		return true, err
+	}
 	traces, executeErr := e.Executor.Execute(ctx, task, &planner.PlanDecision{Actions: []planner.ActionCall{action}})
 	task.Trace = append(task.Trace, traces...)
 	task.StepCount += len(traces)
@@ -1326,11 +1372,17 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 		})
 		task.StepCount++
 	}
-	saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := executionLeaseError(ctx); err != nil {
+		return true, err
+	}
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	saveErr := e.Store.SaveFullTask(saveCtx, task)
 	cancel()
 	if saveErr != nil {
 		return true, fmt.Errorf("save recovered approval action: %w", saveErr)
+	}
+	if err := executionLeaseError(ctx); err != nil {
+		return true, err
 	}
 	if e.EventCallback != nil {
 		e.EventCallback(task.ID, types.StatusPaused)
@@ -1351,6 +1403,17 @@ func (e *Engine) RecoverRejectedApproval(ctx context.Context, task *types.Task, 
 	if task.ID != approval.TaskID || approval.Status != types.ApprovalRejected || !isRecoverableApprovalTask(task) {
 		return false, nil
 	}
+	ctx, releaseTaskLease, err := e.beginApprovalRecovery(ctx, task, owner)
+	if err != nil {
+		return false, err
+	}
+	defer releaseTaskLease()
+	if !isRecoverableApprovalTask(task) {
+		return false, nil
+	}
+	if err := recoveryExecutionError(ctx); err != nil {
+		return false, err
+	}
 	acquired, err := durableStore.AcquireApprovalLease(ctx, approval.ID, owner, time.Minute)
 	if err != nil || !acquired {
 		return false, err
@@ -1367,6 +1430,9 @@ func (e *Engine) RecoverRejectedApproval(ctx context.Context, task *types.Task, 
 	var result types.ApprovalResult
 	if err := json.Unmarshal(plaintext, &result); err != nil {
 		return false, fmt.Errorf("decode rejected approval result: %w", err)
+	}
+	if err := recoveryExecutionError(ctx); err != nil {
+		return false, err
 	}
 	consumed, err := durableStore.TransitionApproval(ctx, latest.ID, latest.TenantID, latest.Version, types.ApprovalRejected, types.ApprovalConsumed, latest.ResolutionPayload)
 	if err != nil {
@@ -1393,11 +1459,17 @@ func (e *Engine) RecoverRejectedApproval(ctx context.Context, task *types.Task, 
 	})
 	task.StepCount++
 	task.Status = types.StatusPaused
-	saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := executionLeaseError(ctx); err != nil {
+		return true, err
+	}
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	saveErr := e.Store.SaveFullTask(saveCtx, task)
 	cancel()
 	if saveErr != nil {
 		return true, fmt.Errorf("save recovered rejection: %w", saveErr)
+	}
+	if err := executionLeaseError(ctx); err != nil {
+		return true, err
 	}
 	if e.EventCallback != nil {
 		e.EventCallback(task.ID, types.StatusPaused)
@@ -1409,6 +1481,9 @@ func (e *Engine) RecoverRejectedApproval(ctx context.Context, task *types.Task, 
 }
 
 func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, action string, params map[string]any) (bool, map[string]any, error) {
+	if err := executionLeaseError(ctx); err != nil {
+		return false, nil, err
+	}
 	approval := e.BuildApprovalRequest(task, action, params)
 	approvalRegistry := e.approvalStore()
 	approvalID, ch := approvalRegistry.Register(task.ID, approval)
@@ -1429,7 +1504,7 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		if tenantID == "" {
 			tenantID = "default"
 		}
-		persistCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		err = durableStore.CreateApproval(persistCtx, &types.DurableApproval{
 			ID: approvalID, TaskID: task.ID, TenantID: tenantID, Request: *approval,
 			ActionPayload: ciphertext, Status: types.ApprovalPending,
@@ -1450,7 +1525,7 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		// neither of which should be allowed to abort the awaiting_approval
 		// write. Without this, a task could observe ctx.Done() below and leave
 		// the DB row in a pre-suspend state, looking lost across restarts.
-		saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		err := e.Store.SaveFullTask(saveCtx, task)
 		cancel()
 		if err != nil {
@@ -1477,13 +1552,19 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 		}
 	}
 	resumeExecutionTimeout()
-	consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := executionLeaseError(ctx); err != nil {
+		return false, nil, err
+	}
+	consumeCtx, consumeCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	consumeErr := e.consumeDurableApproval(consumeCtx, task, approvalID, res)
 	consumeCancel()
 	if consumeErr != nil {
 		return false, nil, fmt.Errorf("consume durable approval: %w", consumeErr)
 	}
 
+	if err := executionLeaseError(ctx); err != nil {
+		return false, nil, err
+	}
 	if !res.Approved {
 		msg := res.Message
 		if msg == "" {
@@ -1513,9 +1594,12 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 
 		task.Status = types.StatusRunning
 		if e.Store != nil {
-			saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = e.Store.SaveFullTask(saveCtx, task)
+			saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			saveErr := e.Store.SaveFullTask(saveCtx, task)
 			cancel()
+			if saveErr != nil {
+				return false, nil, saveErr
+			}
 		}
 		if e.EventCallback != nil {
 			e.EventCallback(task.ID, types.StatusRunning)
@@ -1525,9 +1609,12 @@ func (e *Engine) SuspendForApproval(ctx context.Context, task *types.Task, actio
 
 	task.Status = types.StatusRunning
 	if e.Store != nil {
-		saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = e.Store.SaveFullTask(saveCtx, task)
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		saveErr := e.Store.SaveFullTask(saveCtx, task)
 		cancel()
+		if saveErr != nil {
+			return false, nil, saveErr
+		}
 	}
 	if e.EventCallback != nil {
 		e.EventCallback(task.ID, types.StatusRunning)
@@ -1554,6 +1641,9 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	resumeTerminal := e.CanResumeTask(task)
 	for !types.IsTerminalTaskStatus(task.Status) || resumeTerminal {
 		resumeTerminal = false
+		if err := executionLeaseError(ctx); err != nil {
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			engineLog.Warn("task canceled", "task_id", task.ID, "error", ctx.Err())
@@ -1583,6 +1673,9 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 			return ctx.Err()
 		}
 
+		if err := executionLeaseError(ctx); err != nil {
+			return err
+		}
 		if e.Store != nil {
 			if err := e.Store.SaveFullTask(ctx, task); err != nil {
 				engineLog.Error("failed to persist run-all progress", "task_id", task.ID, "error", err)

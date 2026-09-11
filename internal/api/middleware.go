@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -128,15 +129,29 @@ func AccessLogMiddleware() gin.HandlerFunc {
 // request headers or bodies. It must run inside AccessLogMiddleware so the
 // recovered request is still recorded with its final 500 status.
 func RecoveryMiddleware() gin.HandlerFunc {
-	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
-		log.Error("panic recovered",
-			"method", c.Request.Method,
-			"path", c.Request.URL.Path,
-			"error", fmt.Sprint(recovered),
-			"stack", string(debug.Stack()),
-		)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-	})
+	return func(c *gin.Context) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				// Panic values and net errors can contain raw requests or secrets. Record
+				// only the type, safe correlation IDs and stack, bypassing Gin's raw dump.
+				attrs := []any{"method", c.Request.Method, "path", c.Request.URL.Path, "panic_type", fmt.Sprintf("%T", recovered), "request_id", c.Writer.Header().Get("X-Request-ID"), "stack", string(debug.Stack())}
+				if span := trace.SpanContextFromContext(c.Request.Context()); span.IsValid() {
+					attrs = append(attrs, "trace_id", span.TraceID().String())
+				}
+				log.Error("panic recovered", attrs...)
+				c.Abort()
+				if c.Writer.Written() {
+					return
+				}
+				if err, ok := recovered.(error); ok && (errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)) {
+					c.Status(http.StatusInternalServerError)
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			}
+		}()
+		c.Next()
+	}
 }
 
 func validRequestID(value string) bool {

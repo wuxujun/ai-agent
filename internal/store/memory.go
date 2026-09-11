@@ -89,7 +89,30 @@ func (m *MemoryStore) GetTenantLLMUsage(_ context.Context, tenantID string, peri
 
 // SaveFullTask saves or updates a task and its traces in memory.
 func (m *MemoryStore) SaveFullTask(ctx context.Context, task *types.Task) error {
+	return m.saveFullTask(ctx, task, false)
+}
+
+// CreateTask inserts a task only if its ID has not already been persisted.
+func (m *MemoryStore) CreateTask(ctx context.Context, task *types.Task) error {
+	return m.saveFullTask(ctx, task, true)
+}
+
+func (m *MemoryStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool) error {
 	m.mu.Lock()
+	if err := m.guardTaskLeaseLocked(ctx, task.ID); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	if createOnly {
+		if err := ctx.Err(); err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		if _, exists := m.tasks[task.ID]; exists {
+			m.mu.Unlock()
+			return ErrTaskExists
+		}
+	}
 	if m.indexing == nil {
 		m.indexing = make(map[string]bool)
 	}
@@ -513,6 +536,10 @@ func (m *MemoryStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if err := m.guardTaskLeaseLocked(ctx, id); err != nil {
+		return false, err
+	}
+
 	task, exists := m.tasks[id]
 	if !exists {
 		return false, sql.ErrNoRows
@@ -546,6 +573,24 @@ func (m *MemoryStore) AcquireTaskLease(ctx context.Context, id, owner string, tt
 	defer m.mu.Unlock()
 	now := time.Now()
 	if lease, ok := m.leases[id]; ok && lease.owner != owner && lease.expiresAt.After(now) {
+		return false, nil
+	}
+	m.leases[id] = memoryLease{owner: owner, expiresAt: now.Add(ttl)}
+	return true, nil
+}
+
+func (m *MemoryStore) RenewTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if owner == "" || ttl <= 0 {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	lease := m.leases[id]
+	if lease.owner != owner || !lease.expiresAt.After(now) {
 		return false, nil
 	}
 	m.leases[id] = memoryLease{owner: owner, expiresAt: now.Add(ttl)}
@@ -704,4 +749,15 @@ func (m *MemoryStore) DeleteTerminalApprovalsBefore(ctx context.Context, cutoff 
 		}
 	}
 	return deleted, nil
+}
+
+// Caller holds m.mu for the entire guarded mutation.
+func (m *MemoryStore) guardTaskLeaseLocked(ctx context.Context, id string) error {
+	if scope, scoped := ctx.Value(taskLeaseContextKey{}).(taskLeaseScope); scoped {
+		lease := m.leases[id]
+		if scope.id != id || scope.owner == "" || lease.owner != scope.owner || !lease.expiresAt.After(time.Now()) {
+			return ErrTaskLeaseLost
+		}
+	}
+	return nil
 }

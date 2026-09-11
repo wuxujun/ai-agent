@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	}
 
 	columns := []sqliteColumnMigration{
+		{table: "traces", column: "execution_step", definition: "INTEGER"},
 		{table: "traces", column: "agent_role", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "traces", column: "error_text", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "traces", column: "prompt_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
@@ -393,94 +394,36 @@ error_message=excluded.error_message
 	return err
 }
 
-// ReplaceTraces persists step traces for a task using an append-only strategy to
-// avoid write amplification.
-//
-// Strategy:
-//  1. Query the highest step number already persisted in the DB (maxPersistedStep).
-//  2. Only INSERT traces whose step > maxPersistedStep — historical traces are
-//     never re-written, reducing per-save writes from O(N) to O(K) where K is the
-//     number of new steps added since the last save (typically 1).
-//  3. Handle the truncation/reset case (traces shortened) by deleting rows whose
-//     step > len(traces) before inserting new ones.
-//  4. INSERT OR IGNORE provides idempotency: a retry of the same trace set is safe.
-//
-// Overall complexity across a full task lifetime drops from O(N²) to O(N).
+// ReplaceTraces persists the complete ordered event snapshot. Event positions
+// are independent of execution steps; unchanged rows avoid physical rewrites.
 func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces []types.StepTrace) error {
-	if len(traces) == 0 {
-		// Nothing to write; clean up any orphaned rows from a prior reset.
-		_, err := s.db.ExecContext(ctx, `DELETE FROM traces WHERE task_id = ?`, taskID)
-		return err
-	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-
-	// Step 1: Find the highest step already persisted for this task.
-	var maxPersistedStep int
-	row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(step), -1) FROM traces WHERE task_id = ?`, taskID)
-	if err := row.Scan(&maxPersistedStep); err != nil {
+	if err := guardTaskLeaseSQL(ctx, tx, taskID, false); err != nil {
 		return err
 	}
-
-	// Step 2: Handle truncation — delete rows beyond the new trace length.
-	// This covers task-reset or step-rollback scenarios.
-	if maxPersistedStep > len(traces) {
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM traces WHERE task_id = ? AND step > ?`, taskID, len(traces),
-		); err != nil {
-			return err
-		}
-		// Re-read maxPersistedStep after truncation so we don't skip re-inserting
-		// rows that were just deleted (edge case: truncate then immediately append).
-		maxPersistedStep = len(traces)
+	if err := saveTraceSnapshotSQL(ctx, tx, taskID, traces, false); err != nil {
+		return err
 	}
-
-	// Step 3: INSERT only the truly new traces (step > maxPersistedStep).
-	// INSERT OR IGNORE makes concurrent or retry calls safe: a row that already
-	// exists at (task_id, step) is silently skipped without error.
-	for _, tr := range traces {
-		if tr.Step <= maxPersistedStep {
-			if tr.Action == "multiagent_workflow_checkpoint" {
-				ev, err := json.Marshal(tr.Evidence)
-				if err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx,
-					`UPDATE traces SET goal = ?, action = ?, query = ?, observation = ?, evidence_json = ?, agent_role = ?, error_text = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ? WHERE task_id = ? AND step = ?`,
-					tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole), tr.Error,
-					tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, taskID, tr.Step,
-				); err != nil {
-					return err
-				}
-			}
-			// Ordinary traces are append-only. Workflow checkpoints are the sole
-			// mutable trace because the DAG runtime keeps one row per graph/route.
-			continue
-		}
-		ev, err := json.Marshal(tr.Evidence)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO traces
-					(task_id, step, goal, action, query, observation, evidence_json, agent_role,
-					 error_text, prompt_tokens, completion_tokens, total_tokens)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			taskID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
-			tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
-		); err != nil {
-			return err
-		}
+	if err := guardTaskLeaseSQL(ctx, tx, taskID, false); err != nil {
+		return err
 	}
-
 	return tx.Commit()
 }
 
 func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error {
+	return s.saveFullTask(ctx, task, false)
+}
+
+// CreateTask inserts a complete task in a transaction without replacing an existing ID.
+func (s *SQLiteStore) CreateTask(ctx context.Context, task *types.Task) error {
+	return s.saveFullTask(ctx, task, true)
+}
+
+func (s *SQLiteStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool) error {
 	normalizeTaskTimestamps(task)
 	ctx, span := tracer.Start(ctx, "store.save_full_task")
 	defer span.End()
@@ -497,6 +440,10 @@ func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
+
+	if err := guardTaskLeaseSQL(ctx, tx, task.ID, false); err != nil {
+		return err
+	}
 
 	// 1. Save Task in transaction
 	unresolved, err := json.Marshal(task.Unresolved)
@@ -515,10 +462,14 @@ func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error 
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, `
+	query := `
 INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, error_code, error_message)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
+`
+	if createOnly {
+		query += "ON CONFLICT(id) DO NOTHING"
+	} else {
+		query += `ON CONFLICT(id) DO UPDATE SET
 goal=excluded.goal,
 tenant_id=excluded.tenant_id,
 session_id=excluded.session_id,
@@ -550,7 +501,9 @@ answer_audit_json=excluded.answer_audit_json,
 final_answer=excluded.final_answer,
 error_code=excluded.error_code,
 error_message=excluded.error_message
-`,
+`
+	}
+	result, err := tx.ExecContext(ctx, query,
 		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, task.Status, task.Mode, task.RequestedTeam, task.TeamSelectionSource, task.Team, task.TeamConfigDigest, task.BrainProjectID, task.BrainSnapshotID, task.BrainConfigDigest, task.MaxSteps, task.StepCount,
 		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer, task.ErrorCode, task.ErrorMessage,
 	)
@@ -560,69 +513,24 @@ error_message=excluded.error_message
 		return err
 	}
 
-	// 2. Replace Traces in same transaction
-	if len(task.Trace) > 0 {
-		var maxPersistedStep int
-		row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(step), -1) FROM traces WHERE task_id = ?`, task.ID)
-		if err := row.Scan(&maxPersistedStep); err != nil {
-			span.RecordError(err)
+	if createOnly {
+		inserted, err := result.RowsAffected()
+		if err != nil {
 			return err
 		}
-
-		if maxPersistedStep > len(task.Trace) {
-			if _, err := tx.ExecContext(ctx,
-				`DELETE FROM traces WHERE task_id = ? AND step > ?`, task.ID, len(task.Trace),
-			); err != nil {
-				span.RecordError(err)
-				return err
-			}
-			maxPersistedStep = len(task.Trace)
-		}
-
-		for _, tr := range task.Trace {
-			if tr.Step <= maxPersistedStep {
-				if tr.Action == "multiagent_workflow_checkpoint" {
-					ev, err := json.Marshal(tr.Evidence)
-					if err != nil {
-						span.RecordError(err)
-						return err
-					}
-					if _, err := tx.ExecContext(ctx,
-						`UPDATE traces SET goal = ?, action = ?, query = ?, observation = ?, evidence_json = ?, agent_role = ?, error_text = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ? WHERE task_id = ? AND step = ?`,
-						tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole), tr.Error,
-						tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, task.ID, tr.Step,
-					); err != nil {
-						span.RecordError(err)
-						return err
-					}
-				}
-				continue
-			}
-			ev, err := json.Marshal(tr.Evidence)
-			if err != nil {
-				span.RecordError(err)
-				return err
-			}
-			if _, err := tx.ExecContext(ctx,
-				`INSERT OR IGNORE INTO traces
-						(task_id, step, goal, action, query, observation, evidence_json, agent_role,
-						 error_text, prompt_tokens, completion_tokens, total_tokens)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				task.ID, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(ev), string(tr.AgentRole),
-				tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
-			); err != nil {
-				span.RecordError(err)
-				return err
-			}
-		}
-	} else {
-		// Clean up traces if empty
-		if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = ?`, task.ID); err != nil {
-			span.RecordError(err)
-			return err
+		if inserted == 0 {
+			return ErrTaskExists
 		}
 	}
 
+	if err := saveTraceSnapshotSQL(ctx, tx, task.ID, task.Trace, false); err != nil {
+		span.RecordError(err)
+		return err
+	}
+
+	if err := guardTaskLeaseSQL(ctx, tx, task.ID, false); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "commit tx failed")
@@ -705,7 +613,7 @@ FROM tasks WHERE id = ?
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-	SELECT step, goal, action, query, observation, evidence_json, agent_role,
+	SELECT COALESCE(execution_step, step), goal, action, query, observation, evidence_json, agent_role,
 	       error_text, prompt_tokens, completion_tokens, total_tokens
 FROM traces
 WHERE task_id = ?
@@ -1190,7 +1098,15 @@ func (s *SQLiteStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 	}
 	query := fmt.Sprintf("UPDATE tasks SET status = ? WHERE id = ? AND status IN (%s)", strings.Join(placeholders, ","))
 
-	res, err := s.db.ExecContext(ctx, query, args...)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if err := guardTaskLeaseSQL(ctx, tx, id, false); err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
 	}
@@ -1200,11 +1116,17 @@ func (s *SQLiteStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 	}
 	if rows == 0 {
 		var exists bool
-		err = s.db.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = ?`, id).Scan(&exists)
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = ?`, id).Scan(&exists)
 		if err == sql.ErrNoRows {
 			return false, sql.ErrNoRows
 		}
 		return false, nil
+	}
+	if err := guardTaskLeaseSQL(ctx, tx, id, false); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -1228,6 +1150,10 @@ WHERE task_leases.expires_at <= ? OR task_leases.owner = excluded.owner
 	}
 	rows, err := res.RowsAffected()
 	return rows > 0, err
+}
+
+func (s *SQLiteStore) RenewTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	return renewTaskLeaseSQL(ctx, s.db, id, owner, ttl, false)
 }
 
 func (s *SQLiteStore) ReleaseTaskLease(ctx context.Context, id, owner string) error {

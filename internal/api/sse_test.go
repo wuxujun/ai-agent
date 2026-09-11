@@ -1,6 +1,7 @@
 package api
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,92 @@ func newTestBus(now func() time.Time) *EventBus {
 		subs:    make(map[string][]chan StepEvent),
 		sticky:  make(map[string]stickyEvent),
 		nowFunc: now,
+	}
+}
+
+func TestEventBusConcurrentPublishAndUnsubscribe(t *testing.T) {
+	bus := newTestBus(time.Now)
+	const taskID = "task-concurrent"
+	event := StepEvent{TaskID: taskID, Status: types.StatusRunning}
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for range 4 {
+		workers.Add(2)
+		go func() {
+			defer workers.Done()
+			<-start
+			for range 4000 {
+				bus.Publish(taskID, event)
+			}
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			for range 1000 {
+				ch, _ := bus.Subscribe(taskID)
+				bus.Publish(taskID, event)
+				bus.Unsubscribe(taskID, ch)
+				// Unsubscribe must close the channel after any buffered events.
+			drain:
+				for {
+					select {
+					case _, ok := <-ch:
+						if !ok {
+							break drain
+						}
+					default:
+						t.Error("unsubscribed channel remains open")
+						return
+					}
+				}
+			}
+		}()
+	}
+	close(start)
+	done := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent publishing and unsubscribing did not finish")
+	}
+}
+
+func TestEventBusSlowSubscriberDoesNotBlockTerminalPublish(t *testing.T) {
+	bus := newTestBus(time.Now)
+	const taskID = "task-slow-subscriber"
+	slow, _ := bus.Subscribe(taskID)
+	for range cap(slow) {
+		bus.Publish(taskID, StepEvent{TaskID: taskID, Status: types.StatusRunning})
+	}
+	fast, _ := bus.Subscribe(taskID)
+	done := make(chan struct{})
+	go func() {
+		bus.Publish(taskID, StepEvent{TaskID: taskID, Status: types.StatusCompleted, Final: "done"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("full subscriber buffer blocked Publish")
+	}
+	defer bus.Unsubscribe(taskID, slow)
+	defer bus.Unsubscribe(taskID, fast)
+	select {
+	case got := <-fast:
+		if got.Status != types.StatusCompleted || got.Final != "done" {
+			t.Fatalf("fast subscriber got %+v, want completed/done", got)
+		}
+	default:
+		t.Fatal("fast subscriber did not receive terminal event")
+	}
+	late, sticky := bus.Subscribe(taskID)
+	defer bus.Unsubscribe(taskID, late)
+	if sticky == nil || sticky.Status != types.StatusCompleted || sticky.Final != "done" {
+		t.Fatalf("sticky event = %+v, want completed/done after slow-consumer drop", sticky)
 	}
 }
 

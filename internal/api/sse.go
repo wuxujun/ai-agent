@@ -1,6 +1,7 @@
 package api
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,10 +44,13 @@ type stickyEvent struct {
 
 // EventBus manages per-task SSE subscriber channels.
 type EventBus struct {
-	mu      sync.RWMutex
-	subs    map[string][]chan StepEvent
-	sticky  map[string]stickyEvent
-	nowFunc func() time.Time
+	mu          sync.RWMutex
+	subs        map[string][]chan StepEvent
+	sticky      map[string]stickyEvent
+	nowFunc     func() time.Time
+	stickyOrder *list.List
+	stickyNodes map[string]*list.Element
+	stickyTimer *time.Timer
 }
 
 var globalEventBus = &EventBus{
@@ -67,6 +71,7 @@ func GetBus() *EventBus { return globalEventBus }
 func (b *EventBus) Subscribe(taskID string) (chan StepEvent, *StepEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.pruneStickyLocked()
 	ch := make(chan StepEvent, 32)
 	b.subs[taskID] = append(b.subs[taskID], ch)
 	var sticky *StepEvent
@@ -75,7 +80,7 @@ func (b *EventBus) Subscribe(taskID string) (chan StepEvent, *StepEvent) {
 			ev := s.event
 			sticky = &ev
 		} else {
-			delete(b.sticky, taskID)
+			b.removeStickyLocked(taskID)
 		}
 	}
 	return ch, sticky
@@ -103,17 +108,13 @@ func (b *EventBus) Unsubscribe(taskID string, ch chan StepEvent) {
 // just after the publish can still receive them.
 func (b *EventBus) Publish(taskID string, event StepEvent) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pruneStickyLocked()
 	if event.isTerminal() {
-		b.sticky[taskID] = stickyEvent{
-			event:     event,
-			expiresAt: b.nowFunc().Add(stickyTerminalTTL),
-		}
+		b.rememberStickyLocked(taskID, event)
 	}
-	chans := make([]chan StepEvent, len(b.subs[taskID]))
-	copy(chans, b.subs[taskID])
-	b.mu.Unlock()
-
-	for _, ch := range chans {
+	// Keep sends under the same lock as Unsubscribe's channel close.
+	for _, ch := range b.subs[taskID] {
 		select {
 		case ch <- event:
 		default:
@@ -126,7 +127,8 @@ func (b *EventBus) Publish(taskID string, event StepEvent) {
 // Forget removes a cached terminal event after its task is deleted.
 func (b *EventBus) Forget(taskID string) {
 	b.mu.Lock()
-	delete(b.sticky, taskID)
+	b.removeStickyLocked(taskID)
+	b.scheduleStickyExpiryLocked()
 	b.mu.Unlock()
 }
 
@@ -134,6 +136,12 @@ func (b *EventBus) Forget(taskID string) {
 func (b *EventBus) ForgetAll() {
 	b.mu.Lock()
 	b.sticky = make(map[string]stickyEvent)
+	b.stickyOrder = nil
+	b.stickyNodes = nil
+	if b.stickyTimer != nil {
+		b.stickyTimer.Stop()
+		b.stickyTimer = nil
+	}
 	b.mu.Unlock()
 }
 

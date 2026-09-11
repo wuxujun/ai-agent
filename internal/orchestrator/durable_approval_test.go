@@ -148,6 +148,10 @@ func TestRecoverApprovedApprovalConsumesBeforeSingleExecution(t *testing.T) {
 		Request:       types.ApprovalRequest{ID: "recover-approval", TaskID: task.ID, Action: "write_file", RiskLevel: types.RiskLevelHigh},
 		ActionPayload: ciphertext, Status: types.ApprovalApproved,
 	}
+	approval.ResolutionPayload, err = codec.Encrypt([]byte(`{"approved":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := st.CreateApproval(context.Background(), approval); err != nil {
 		t.Fatal(err)
 	}

@@ -1654,13 +1654,13 @@ func TestConfigFileOverrideReloadUsesExplicitFile(t *testing.T) {
 	t.Setenv("TEST_NO_CONFIG", "")
 	t.Setenv("AI_AGENT_API_ADDR", "")
 	configPath := filepath.Join(t.TempDir(), "wiki.yaml")
-	writeConfig := func(addr string) {
+	writeConfig := func(timeout int) {
 		t.Helper()
-		if err := os.WriteFile(configPath, []byte(fmt.Sprintf("api:\n  addr: %q\n", addr)), 0o600); err != nil {
+		if err := os.WriteFile(configPath, []byte(fmt.Sprintf("api:\n  addr: \"127.0.0.1:19998\"\ntool:\n  timeout_seconds: %d\n", timeout)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeConfig("127.0.0.1:19998")
+	writeConfig(10)
 	t.Setenv("AI_AGENT_CONFIG_FILE", configPath)
 	resetConfig()
 	defer resetConfig()
@@ -1668,12 +1668,12 @@ func TestConfigFileOverrideReloadUsesExplicitFile(t *testing.T) {
 	if got := LoadConfig().API.Addr; got != "127.0.0.1:19998" {
 		t.Fatalf("initial explicit config addr = %q", got)
 	}
-	writeConfig("127.0.0.1:19997")
+	writeConfig(20)
 	cfg, _, err := Reload()
 	if err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
-	if cfg.API.Addr != "127.0.0.1:19997" {
-		t.Fatalf("reloaded explicit config addr = %q", cfg.API.Addr)
+	if cfg.API.Addr != "127.0.0.1:19998" || cfg.Tool.TimeoutSeconds != 20 {
+		t.Fatalf("reloaded explicit config addr = %q, tool timeout = %d", cfg.API.Addr, cfg.Tool.TimeoutSeconds)
 	}
 }

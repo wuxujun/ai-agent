@@ -147,3 +147,18 @@ func PauseExecutionTimeout(ctx context.Context) func() {
 	var once sync.Once
 	return func() { once.Do(c.resume) }
 }
+
+// WithExecutionLeaseCheck attaches a live ownership check to an execution.
+// It survives detached persistence contexts and takes priority over approval.
+func WithExecutionLeaseCheck(ctx context.Context, check func() error) context.Context {
+	return context.WithValue(ctx, executionLeaseKey{}, check)
+}
+
+type executionLeaseKey struct{}
+
+func executionLeaseError(ctx context.Context) error {
+	if check, ok := ctx.Value(executionLeaseKey{}).(func() error); ok {
+		return check()
+	}
+	return nil
+}

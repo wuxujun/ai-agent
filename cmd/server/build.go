@@ -56,7 +56,7 @@ func buildApp(cfg *config.Config, st store.Store, eng *orchestrator.Engine, mc *
 		addr = "127.0.0.1:8080"
 	}
 	return builtApp{
-		server: &http.Server{Addr: addr, Handler: router},
+		server: newHTTPServer(addr, router),
 		tasks:  apiHandler,
 		bus:    busRuntime,
 		expiry: expiryRuntime,
@@ -314,4 +314,10 @@ func wireEngineEvents(eng *orchestrator.Engine) {
 	if eng.Coordinator != nil {
 		eng.Coordinator.TokenCallback = eng.TokenCallback
 	}
+}
+
+// Read deadlines protect request admission; leave WriteTimeout unset because
+// task event streams may outlive ordinary request/response exchanges.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 }

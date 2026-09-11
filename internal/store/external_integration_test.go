@@ -25,6 +25,62 @@ type externalIntegrationStore interface {
 	TaskDeletionStore
 }
 
+func TestExternalStoresTaskCreation(t *testing.T) {
+	requireExternalIntegration(t)
+	t.Run("postgres", func(t *testing.T) {
+		dsn := os.Getenv("TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Skip("TEST_POSTGRES_DSN is not set")
+		}
+		st, err := NewPostgresStore(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		runTaskCreationContract(t, st)
+	})
+	t.Run("redis", func(t *testing.T) {
+		redisURL := os.Getenv("TEST_REDIS_URL")
+		if redisURL == "" {
+			t.Skip("TEST_REDIS_URL is not set")
+		}
+		st, err := NewRedisStoreFromURL(redisURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		runTaskCreationContract(t, st)
+	})
+}
+
+func TestExternalStoresTaskLeaseGuard(t *testing.T) {
+	requireExternalIntegration(t)
+	t.Run("postgres", func(t *testing.T) {
+		dsn := os.Getenv("TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Skip("TEST_POSTGRES_DSN is not set")
+		}
+		st, err := NewPostgresStore(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		runTaskLeaseGuardContract(t, st)
+	})
+	t.Run("redis", func(t *testing.T) {
+		redisURL := os.Getenv("TEST_REDIS_URL")
+		if redisURL == "" {
+			t.Skip("TEST_REDIS_URL is not set")
+		}
+		st, err := NewRedisStoreFromURL(redisURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		runTaskLeaseGuardContract(t, st)
+	})
+}
+
 func TestExternalStoresSessionLeaseAndIsolation(t *testing.T) {
 	requireExternalIntegration(t)
 
@@ -658,4 +714,19 @@ func requireExternalIntegration(t *testing.T) {
 	if os.Getenv("TEST_POSTGRES_DSN") == "" && os.Getenv("TEST_REDIS_URL") == "" {
 		t.Skip("TEST_POSTGRES_DSN and TEST_REDIS_URL are both unset")
 	}
+}
+
+func TestExternalPostgresTraceSequence(t *testing.T) {
+	requireExternalIntegration(t)
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	st, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	defer st.DeleteTask(context.Background(), "trace-sequence-contract")
+	runTraceSequenceContract(t, st)
 }

@@ -10,11 +10,32 @@ import (
 
 type tenantScopeContextKey struct{}
 type sessionScopeContextKey struct{}
+type taskLeaseContextKey struct{}
+
+type taskLeaseScope struct {
+	id    string
+	owner string
+}
 
 var (
+	ErrTaskExists      = errors.New("task already exists")
+	ErrTaskLeaseBusy   = errors.New("task execution lease is held by another owner")
+	ErrTaskLeaseLost   = errors.New("task execution lease lost")
 	ErrSessionNotFound = errors.New("session not found")
 	ErrSessionArchived = errors.New("session is archived")
 )
+
+// WithTaskLease requires SaveFullTask and TryTransitionTaskStatus to verify this live execution lease
+// atomically with persistence. The scope survives context.WithoutCancel.
+func WithTaskLease(ctx context.Context, id, owner string) context.Context {
+	return context.WithValue(ctx, taskLeaseContextKey{}, taskLeaseScope{id: id, owner: owner})
+}
+
+// TaskLeaseStore renews an existing, unexpired lease without reacquiring it
+// after a gap. Callers must use a unique owner for each execution attempt.
+type TaskLeaseStore interface {
+	RenewTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error)
+}
 
 func WithTenantScope(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantScopeContextKey{}, tenantID)
@@ -121,6 +142,15 @@ type Store interface {
 
 	// Close releases any resources held by the store.
 	Close() error
+}
+
+// TaskCreationStore atomically inserts a complete task and its traces. A task ID
+// is globally unique: duplicates return ErrTaskExists without modifying the
+// original task or its indexes, even when the proposed tenant differs.
+// This optional contract keeps existing Store adapters compatible; callers that
+// require insert-only persistence must not fall back to SaveFullTask.
+type TaskCreationStore interface {
+	CreateTask(ctx context.Context, task *types.Task) error
 }
 
 // TaskDeletionStore is implemented by stores that can remove persisted tasks.

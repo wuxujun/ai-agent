@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	// must abort and roll back the whole migration instead of surfacing later on
 	// the first task read/write.
 	statements := []postgresMigrationStatement{
+		{name: "add trace execution step", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS execution_step INT`},
 		{name: "add task token budget", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget INT NOT NULL DEFAULT 0`},
 		{name: "add task tenant", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`},
 		{name: "add task session", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`},
@@ -369,96 +370,36 @@ error_message=EXCLUDED.error_message
 	return err
 }
 
-// ReplaceTraces persists step traces for a task using an append-only strategy to
-// avoid write amplification.
-//
-// Strategy:
-//  1. Query the highest step number already persisted in the DB (maxPersistedStep).
-//  2. Only INSERT traces whose step > maxPersistedStep — historical traces are
-//     never re-written, reducing per-save writes from O(N) to O(K) where K is the
-//     number of new steps added since the last save (typically 1).
-//  3. Handle the truncation/reset case (traces shortened) by deleting rows whose
-//     step > len(traces) before inserting new ones.
-//  4. INSERT ... ON CONFLICT DO NOTHING provides idempotency for retries.
-//
-// Overall complexity across a full task lifetime drops from O(N²) to O(N).
+// ReplaceTraces persists the complete ordered event snapshot. Event positions
+// are independent of execution steps; unchanged rows avoid physical rewrites.
 func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces []types.StepTrace) error {
-	if len(traces) == 0 {
-		// Nothing to write; clean up any orphaned rows from a prior reset.
-		_, err := p.db.ExecContext(ctx, `DELETE FROM traces WHERE task_id = $1`, taskID)
-		return err
-	}
-
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-
-	// Step 1: Find the highest step already persisted for this task.
-	var maxPersistedStep int
-	row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(step), -1) FROM traces WHERE task_id = $1`, taskID)
-	if err := row.Scan(&maxPersistedStep); err != nil {
+	if err := guardTaskLeaseSQL(ctx, tx, taskID, true); err != nil {
 		return err
 	}
-
-	// Step 2: Handle truncation — delete rows beyond the new trace length.
-	// This covers task-reset or step-rollback scenarios.
-	if maxPersistedStep > len(traces) {
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM traces WHERE task_id = $1 AND step > $2`, taskID, len(traces),
-		); err != nil {
-			return err
-		}
-		// Re-read maxPersistedStep after truncation so we don't skip re-inserting
-		// rows that were just deleted (edge case: truncate then immediately append).
-		maxPersistedStep = len(traces)
+	if err := saveTraceSnapshotSQL(ctx, tx, taskID, traces, true); err != nil {
+		return err
 	}
-
-	// Step 3: INSERT only the truly new traces (step > maxPersistedStep).
-	// ON CONFLICT DO NOTHING makes concurrent or retry calls safe: a row that
-	// already exists at (task_id, step) is silently skipped without error.
-	for _, tr := range traces {
-		if tr.Step <= maxPersistedStep {
-			if tr.Action == "multiagent_workflow_checkpoint" {
-				ev, err := json.Marshal(tr.Evidence)
-				if err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx,
-					`UPDATE traces SET goal = $1, action = $2, query = $3, observation = $4, evidence_json = $5, agent_role = $6, error_text = $7, prompt_tokens = $8, completion_tokens = $9, total_tokens = $10 WHERE task_id = $11 AND step = $12`,
-					postgresText(tr.Goal), postgresText(tr.Action), postgresText(tr.Query), postgresText(tr.Observation), string(ev), postgresText(string(tr.AgentRole)), postgresText(tr.Error),
-					tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, postgresText(taskID), tr.Step,
-				); err != nil {
-					return err
-				}
-			}
-			// Ordinary traces are append-only. Workflow checkpoints are the sole
-			// mutable trace because the DAG runtime keeps one row per graph/route.
-			continue
-		}
-		ev, err := json.Marshal(tr.Evidence)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO traces
-					(task_id, step, goal, action, query, observation, evidence_json, agent_role,
-					 error_text, prompt_tokens, completion_tokens, total_tokens)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-				ON CONFLICT (task_id, step) DO NOTHING`,
-			postgresText(taskID), tr.Step, postgresText(tr.Goal), postgresText(tr.Action), postgresText(tr.Query), postgresText(tr.Observation), string(ev), postgresText(string(tr.AgentRole)),
-			postgresText(tr.Error), tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
-		); err != nil {
-			return err
-		}
+	if err := guardTaskLeaseSQL(ctx, tx, taskID, true); err != nil {
+		return err
 	}
-
 	return tx.Commit()
 }
 
-// SaveFullTask saves the task metadata and all associated traces inside a telemetry transaction.
 func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) error {
+	return p.saveFullTask(ctx, task, false)
+}
+
+// CreateTask inserts a complete task in a transaction without replacing an existing ID.
+func (p *PostgresStore) CreateTask(ctx context.Context, task *types.Task) error {
+	return p.saveFullTask(ctx, task, true)
+}
+
+func (p *PostgresStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool) error {
 	normalizeTaskTimestamps(task)
 	ctx, span := tracer.Start(ctx, "store.postgres.save_full_task")
 	defer span.End()
@@ -475,6 +416,10 @@ func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) erro
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
+
+	if err := guardTaskLeaseSQL(ctx, tx, task.ID, true); err != nil {
+		return err
+	}
 
 	// 1. Save Task in transaction
 	unresolved, err := json.Marshal(task.Unresolved)
@@ -493,10 +438,14 @@ func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) erro
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, `
+	query := `
 INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, error_code, error_message)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
-ON CONFLICT(id) DO UPDATE SET
+`
+	if createOnly {
+		query += "ON CONFLICT(id) DO NOTHING"
+	} else {
+		query += `ON CONFLICT(id) DO UPDATE SET
 goal=EXCLUDED.goal,
 tenant_id=EXCLUDED.tenant_id,
 session_id=EXCLUDED.session_id,
@@ -527,7 +476,9 @@ memories_json=EXCLUDED.memories_json,
 answer_audit_json=EXCLUDED.answer_audit_json,
 final_answer=EXCLUDED.final_answer,
 error_code=EXCLUDED.error_code,
-error_message=EXCLUDED.error_message`,
+error_message=EXCLUDED.error_message`
+	}
+	result, err := tx.ExecContext(ctx, query,
 		postgresText(task.ID), postgresText(task.TenantID), postgresText(task.SessionID), task.SequenceNo, task.CreatedAt, task.UpdatedAt, postgresText(task.Goal), postgresText(string(task.Status)), postgresText(task.Mode), postgresText(task.RequestedTeam), postgresText(task.TeamSelectionSource), postgresText(task.Team), postgresText(task.TeamConfigDigest), postgresText(task.BrainProjectID), postgresText(task.BrainSnapshotID), postgresText(task.BrainConfigDigest), task.MaxSteps, task.StepCount,
 		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(task.ErrorCode), postgresText(task.ErrorMessage),
 	)
@@ -537,70 +488,24 @@ error_message=EXCLUDED.error_message`,
 		return err
 	}
 
-	// 2. Replace Traces in same transaction
-	if len(task.Trace) > 0 {
-		var maxPersistedStep int
-		row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(step), -1) FROM traces WHERE task_id = $1`, task.ID)
-		if err := row.Scan(&maxPersistedStep); err != nil {
-			span.RecordError(err)
+	if createOnly {
+		inserted, err := result.RowsAffected()
+		if err != nil {
 			return err
 		}
-
-		if maxPersistedStep > len(task.Trace) {
-			if _, err := tx.ExecContext(ctx,
-				`DELETE FROM traces WHERE task_id = $1 AND step > $2`, task.ID, len(task.Trace),
-			); err != nil {
-				span.RecordError(err)
-				return err
-			}
-			maxPersistedStep = len(task.Trace)
-		}
-
-		for _, tr := range task.Trace {
-			if tr.Step <= maxPersistedStep {
-				if tr.Action == "multiagent_workflow_checkpoint" {
-					ev, err := json.Marshal(tr.Evidence)
-					if err != nil {
-						span.RecordError(err)
-						return err
-					}
-					if _, err := tx.ExecContext(ctx,
-						`UPDATE traces SET goal = $1, action = $2, query = $3, observation = $4, evidence_json = $5, agent_role = $6, error_text = $7, prompt_tokens = $8, completion_tokens = $9, total_tokens = $10 WHERE task_id = $11 AND step = $12`,
-						postgresText(tr.Goal), postgresText(tr.Action), postgresText(tr.Query), postgresText(tr.Observation), string(ev), postgresText(string(tr.AgentRole)), postgresText(tr.Error),
-						tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, postgresText(task.ID), tr.Step,
-					); err != nil {
-						span.RecordError(err)
-						return err
-					}
-				}
-				continue
-			}
-			ev, err := json.Marshal(tr.Evidence)
-			if err != nil {
-				span.RecordError(err)
-				return err
-			}
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO traces
-						(task_id, step, goal, action, query, observation, evidence_json, agent_role,
-						 error_text, prompt_tokens, completion_tokens, total_tokens)
-					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-					ON CONFLICT (task_id, step) DO NOTHING`,
-				postgresText(task.ID), tr.Step, postgresText(tr.Goal), postgresText(tr.Action), postgresText(tr.Query), postgresText(tr.Observation), string(ev), postgresText(string(tr.AgentRole)),
-				postgresText(tr.Error), tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens,
-			); err != nil {
-				span.RecordError(err)
-				return err
-			}
-		}
-	} else {
-		// Clean up traces if empty
-		if _, err := tx.ExecContext(ctx, `DELETE FROM traces WHERE task_id = $1`, task.ID); err != nil {
-			span.RecordError(err)
-			return err
+		if inserted == 0 {
+			return ErrTaskExists
 		}
 	}
 
+	if err := saveTraceSnapshotSQL(ctx, tx, task.ID, task.Trace, true); err != nil {
+		span.RecordError(err)
+		return err
+	}
+
+	if err := guardTaskLeaseSQL(ctx, tx, task.ID, true); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "commit tx failed")
@@ -684,7 +589,7 @@ FROM tasks WHERE id = $1
 	}
 
 	rows, err := p.db.QueryContext(ctx, `
-	SELECT step, goal, action, query, observation, evidence_json, agent_role,
+	SELECT COALESCE(execution_step, step), goal, action, query, observation, evidence_json, agent_role,
 	       error_text, prompt_tokens, completion_tokens, total_tokens
 FROM traces
 WHERE task_id = $1
@@ -1658,7 +1563,15 @@ func (p *PostgresStore) TryTransitionTaskStatus(ctx context.Context, id string, 
 	}
 	query := fmt.Sprintf("UPDATE tasks SET status = $1 WHERE id = $2 AND status IN (%s)", strings.Join(placeholders, ","))
 
-	res, err := p.db.ExecContext(ctx, query, args...)
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if err := guardTaskLeaseSQL(ctx, tx, id, true); err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
 	}
@@ -1668,11 +1581,17 @@ func (p *PostgresStore) TryTransitionTaskStatus(ctx context.Context, id string, 
 	}
 	if rows == 0 {
 		var exists bool
-		err = p.db.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = $1`, id).Scan(&exists)
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = $1`, id).Scan(&exists)
 		if err == sql.ErrNoRows {
 			return false, sql.ErrNoRows
 		}
 		return false, nil
+	}
+	if err := guardTaskLeaseSQL(ctx, tx, id, true); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -1696,6 +1615,10 @@ WHERE task_leases.expires_at <= $4 OR task_leases.owner = EXCLUDED.owner
 	}
 	rows, err := res.RowsAffected()
 	return rows > 0, err
+}
+
+func (p *PostgresStore) RenewTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	return renewTaskLeaseSQL(ctx, p.db, id, owner, ttl, true)
 }
 
 func (p *PostgresStore) ReleaseTaskLease(ctx context.Context, id, owner string) error {

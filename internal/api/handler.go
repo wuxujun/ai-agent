@@ -94,6 +94,7 @@ type wikiStatusProvider interface {
 type activeRun struct {
 	cancel context.CancelFunc
 	owner  string
+	lease  *store.ExecutionLease
 }
 
 type CreateTaskRequest struct {
@@ -135,6 +136,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	r.Use(RecoveryMiddleware())
 	r.Use(ErrorMiddleware())
 	r.Use(SpanAttributesMiddleware())
+	r.Use(RequestBodyLimitMiddleware())
 
 	api := r.Group("/api")
 	api.Use(AuthMiddleware())
@@ -326,37 +328,57 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 			continue
 		}
 
-		task, err := h.store.GetTask(rollbackCtx, e.taskID)
-		if err != nil {
-			log.Error("shutdown rollback: failed to fetch task", "task_id", e.taskID, "error", err)
+		if e.run.lease != nil && e.run.lease.Err() != nil {
 			continue
 		}
-		// Only roll back tasks that were running/queued — completed or already
-		// failed-for-a-real-reason tasks must not be touched.
-		if task.Status != types.StatusFailed && task.Status != types.StatusRunning {
-			continue
-		}
-		if task.Status == types.StatusFailed && task.FinalAnswer != "" &&
-			len(task.FinalAnswer) > 20 {
-			// Heuristic: a task with a real FinalAnswer failed for a business
-			// reason — do not resurrect it. Only tasks that failed due to
-			// context cancellation (short/empty FinalAnswer) get paused.
-			continue
-		}
-		success, transitionErr := h.store.TryTransitionTaskStatus(rollbackCtx, e.taskID, []types.TaskStatus{types.StatusRunning, types.StatusFailed}, types.StatusPaused)
-		if transitionErr != nil {
-			log.Error("shutdown rollback: failed to pause task", "task_id", e.taskID, "error", transitionErr)
-		} else if success {
-			log.Info("shutdown rollback: task paused for resumption", "task_id", e.taskID)
-		} else {
-			log.Info("shutdown rollback: task status changed concurrently, skipping pause", "task_id", e.taskID)
-		}
+		h.rollbackInterruptedTask(rollbackCtx, e.taskID)
 	}
 
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	return nil
+}
+
+// The execution lease has already been released by goroutine cleanup. Obtain a
+// fresh lease so a peer resuming the task cannot race shutdown's status rollback.
+func (h *Handler) rollbackInterruptedTask(ctx context.Context, taskID string) {
+	owner := uuid.NewString()
+	acquired, err := h.store.AcquireTaskLease(ctx, taskID, owner, 30*time.Second)
+	if err != nil || !acquired {
+		return
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = h.store.ReleaseTaskLease(releaseCtx, taskID, owner)
+	}()
+	ctx = store.WithTaskLease(ctx, taskID, owner)
+	task, err := h.store.GetTask(ctx, taskID)
+	if err != nil {
+		log.Error("shutdown rollback: failed to fetch task", "task_id", taskID, "error", err)
+		return
+	}
+	// Only roll back tasks that were running/queued — completed or already
+	// failed-for-a-real-reason tasks must not be touched.
+	if task.Status != types.StatusFailed && task.Status != types.StatusRunning {
+		return
+	}
+	if task.Status == types.StatusFailed && task.FinalAnswer != "" &&
+		len(task.FinalAnswer) > 20 {
+		// Heuristic: a task with a real FinalAnswer failed for a business
+		// reason — do not resurrect it. Only tasks that failed due to
+		// context cancellation (short/empty FinalAnswer) get paused.
+		return
+	}
+	success, transitionErr := h.store.TryTransitionTaskStatus(ctx, taskID, []types.TaskStatus{types.StatusRunning, types.StatusFailed}, types.StatusPaused)
+	if transitionErr != nil {
+		log.Error("shutdown rollback: failed to pause task", "task_id", taskID, "error", transitionErr)
+	} else if success {
+		log.Info("shutdown rollback: task paused for resumption", "task_id", taskID)
+	} else {
+		log.Info("shutdown rollback: task status changed concurrently, skipping pause", "task_id", taskID)
+	}
 }
 
 func (h *Handler) createTask(c *gin.Context) {
@@ -489,15 +511,11 @@ func (h *Handler) createTask(c *gin.Context) {
 	taskID := req.ID
 	if taskID == "" {
 		taskID = uuid.NewString()
-	} else {
-		// P8: Prevent silent overwrite of an existing task.
-		if exists, err := h.store.ExistsTask(ctx, taskID); err != nil {
-			c.Error(err)
-			return
-		} else if exists {
-			c.JSON(http.StatusConflict, gin.H{"error": "task already exists", "task_id": taskID})
-			return
-		}
+	}
+	creator, ok := h.store.(store.TaskCreationStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "atomic task creation is not supported by this store"})
+		return
 	}
 
 	task := &types.Task{
@@ -542,7 +560,11 @@ func (h *Handler) createTask(c *gin.Context) {
 		task.SequenceNo = sequence
 	}
 
-	if err := h.store.SaveFullTask(ctx, task); err != nil {
+	if err := creator.CreateTask(ctx, task); err != nil {
+		if errors.Is(err, store.ErrTaskExists) {
+			c.JSON(http.StatusConflict, gin.H{"error": "task already exists", "task_id": taskID})
+			return
+		}
 		c.Error(err)
 		return
 	}
@@ -783,7 +805,12 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "too many concurrent tasks, please try again later"})
 		return
 	}
-	defer h.taskSem.Release(limit)
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			h.taskSem.Release(limit)
+		}
+	}()
 
 	task, err := h.store.GetTask(ctx, c.Param("id"))
 	if err != nil {
@@ -805,7 +832,7 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 	}
 	h.activeTasks[task.ID] = run
 	h.activeTasksMu.Unlock()
-	defer func() {
+	cleanupRun := func() {
 		h.activeTasksMu.Lock()
 		if cur, ok := h.activeTasks[task.ID]; ok && cur == run {
 			delete(h.activeTasks, task.ID)
@@ -815,6 +842,11 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		defer releaseCancel()
 		if err := h.store.ReleaseTaskLease(releaseCtx, task.ID, owner); err != nil {
 			log.Warn("failed to release task lease", "task_id", task.ID, "error", err)
+		}
+	}
+	defer func() {
+		if !handedOff {
+			cleanupRun()
 		}
 	}()
 
@@ -828,6 +860,14 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		return
 	}
 
+	ctx = store.WithTaskLease(ctx, task.ID, owner)
+	freshTask, err := h.store.GetTask(ctx, task.ID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	task = freshTask
+
 	stream := c.Query("stream") == "true"
 	if stream {
 		c.Header("Content-Type", "text/event-stream")
@@ -839,7 +879,12 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		defer GetBus().Unsubscribe(task.ID, ch)
 
 		errChan := make(chan error, 1)
+		handedOff = true
+		h.wg.Add(1)
 		go func() {
+			defer h.wg.Done()
+			defer h.taskSem.Release(limit)
+			defer cleanupRun()
 			execErr := h.engine.Next(ctx, task)
 			if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
 				errChan <- saveErr
@@ -913,6 +958,12 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
+	leaseStore, ok := h.store.(store.TaskLeaseStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "store does not support task lease renewal"})
+		return
+	}
+
 	// Reserve the in-process slot BEFORE the DB transition so we never have to
 	// roll the DB back on collision. The slot is keyed by pointer identity
 	// (activeRun token) so a stale deferred cleanup can't clobber a slot that
@@ -926,12 +977,16 @@ func (h *Handler) runAll(c *gin.Context) {
 	// Detach the asynchronous task from the HTTP request cancellation while
 	// retaining request-scoped values such as the shared LLM Runtime and trace
 	// context. The task's own wall-clock timeout remains the cancellation owner.
-	bgBase := context.WithoutCancel(c.Request.Context())
-	bgCtx, bgCancel := orchestrator.WithPausableTimeout(bgBase, timeout)
 	owner := uuid.NewString()
+	var lease *store.ExecutionLease
+	bgBase := store.WithTaskLease(context.WithoutCancel(c.Request.Context()), task.ID, owner)
+	bgBase = orchestrator.WithExecutionLeaseCheck(bgBase, func() error { return lease.Err() })
+	bgCtx, bgCancel := orchestrator.WithPausableTimeout(bgBase, timeout)
+	lease = store.NewExecutionLease(func() { orchestrator.CancelExecution(bgCtx, store.ErrTaskLeaseLost) })
 	run := &activeRun{
 		cancel: func() { orchestrator.CancelExecution(bgCtx, orchestrator.ErrTaskCanceledViaAPI) },
 		owner:  owner,
+		lease:  lease,
 	}
 
 	h.activeTasksMu.Lock()
@@ -947,6 +1002,7 @@ func (h *Handler) runAll(c *gin.Context) {
 	h.activeTasks[task.ID] = run
 	h.activeTasksMu.Unlock()
 
+	acquiredAt := time.Now()
 	acquired, err := h.store.AcquireTaskLease(loadCtx, task.ID, owner, timeout+30*time.Second)
 	if err != nil || !acquired {
 		h.activeTasksMu.Lock()
@@ -966,17 +1022,9 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
-	// Perform atomic DB state transition to guard against multi-instance races.
-	// The activeTasks reservation already serializes in-process callers; this
-	// check protects against a peer process holding its own reservation.
-	// StatusPaused is accepted here to support resuming tasks that were
-	// interrupted by a previous graceful shutdown (P1 rollback).
-	startableStatuses := []types.TaskStatus{types.StatusCreated, types.StatusRunning, types.StatusAwaitingApproval, types.StatusPaused}
-	if resumingMultiAgent {
-		startableStatuses = append(startableStatuses, types.StatusPartial)
-	}
-	success, err := h.store.TryTransitionTaskStatus(loadCtx, task.ID, startableStatuses, types.StatusRunning)
-	if err != nil || !success {
+	lease.Start(bgBase, leaseStore, task.ID, owner, timeout+30*time.Second, acquiredAt)
+
+	cleanupStart := func() {
 		// Reservation cleanup with compare-and-delete so we never erase a slot
 		// some other goroutine just installed (cannot happen today because the
 		// activeTasks mutex serializes inserts, but kept defensive).
@@ -986,11 +1034,41 @@ func (h *Handler) runAll(c *gin.Context) {
 		}
 		h.activeTasksMu.Unlock()
 		bgCancel()
+		lease.Finish()
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		if releaseErr := h.store.ReleaseTaskLease(releaseCtx, task.ID, owner); releaseErr != nil {
 			log.Warn("failed to release task lease after transition rejection", "task_id", task.ID, "error", releaseErr)
 		}
 		releaseCancel()
+	}
+	// The pre-lease read was only for admission. A peer may have committed a
+	// newer checkpoint before releasing ownership; execution must use that copy.
+	freshTask, loadErr := h.store.GetTask(loadCtx, task.ID)
+	if loadErr != nil {
+		cleanupStart()
+		c.Error(loadErr)
+		return
+	}
+	task = freshTask
+	resumingMultiAgent = h.engine.CanResumeTask(task)
+	if types.IsTerminalTaskStatus(task.Status) && !resumingMultiAgent {
+		cleanupStart()
+		c.JSON(http.StatusOK, task)
+		return
+	}
+
+	// Perform atomic DB state transition to guard against multi-instance races.
+	// The activeTasks reservation already serializes in-process callers; this
+	// check protects against a peer process holding its own reservation.
+	// StatusPaused is accepted here to support resuming tasks that were
+	// interrupted by a previous graceful shutdown (P1 rollback).
+	startableStatuses := []types.TaskStatus{types.StatusCreated, types.StatusRunning, types.StatusAwaitingApproval, types.StatusPaused}
+	if resumingMultiAgent {
+		startableStatuses = append(startableStatuses, types.StatusPartial)
+	}
+	success, err := h.store.TryTransitionTaskStatus(store.WithTaskLease(loadCtx, task.ID, owner), task.ID, startableStatuses, types.StatusRunning)
+	if err != nil || !success {
+		cleanupStart()
 
 		if err != nil {
 			c.Error(err)
@@ -1031,6 +1109,7 @@ func (h *Handler) runAll(c *gin.Context) {
 	go func() {
 		defer h.wg.Done()
 		defer func() {
+			lease.Finish()
 			h.activeTasksMu.Lock()
 			if cur, ok := h.activeTasks[task.ID]; ok && cur == run {
 				delete(h.activeTasks, task.ID)
@@ -1050,8 +1129,12 @@ func (h *Handler) runAll(c *gin.Context) {
 			limit = 10
 		}
 		if !h.taskSem.Acquire(bgCtx, limit) {
+			if leaseErr := lease.Err(); leaseErr != nil {
+				errChan <- leaseErr
+				return
+			}
 			_ = orchestrator.SetTaskCanceled(task, "task_canceled", "Task was canceled.")
-			saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(bgCtx), 10*time.Second)
 			defer saveCancel()
 			if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
 				log.Error("failed to save canceled queued task", "task_id", task.ID, "error", saveErr)
@@ -1063,6 +1146,13 @@ func (h *Handler) runAll(c *gin.Context) {
 
 		log.Info("starting async run-all for task", "task_id", task.ID)
 		execErr := h.engine.RunAll(bgCtx, task)
+		if errors.Is(execErr, store.ErrTaskLeaseLost) {
+			lease.Lose()
+		}
+		if leaseErr := lease.Err(); leaseErr != nil {
+			errChan <- leaseErr
+			return
+		}
 
 		taskReportLog.Info("async run-all completed", "task_id", task.ID, "status", task.Status)
 		taskReportLog.Info("--- TASK DECOMPOSITION & PLANNING RESULTS ---", "task_id", task.ID, "goal", task.Goal)
@@ -1101,12 +1191,19 @@ func (h *Handler) runAll(c *gin.Context) {
 			// asynchronous memory indexing and could issue duplicate embedding
 			// requests. Retain only this compensation save for failure paths,
 			// where RunAll may return before persisting the failed status.
-			saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(bgCtx), 10*time.Second)
 			if saveErr := h.store.SaveFullTask(saveCtx, task); saveErr != nil {
+				if errors.Is(saveErr, store.ErrTaskLeaseLost) {
+					lease.Lose()
+				}
 				log.Error("failed to save task after run-all failure", "task_id", task.ID, "error", saveErr)
 			}
 			saveCancel()
 			log.Error("run-all failed for task", "task_id", task.ID, "error", execErr)
+		}
+		if leaseErr := lease.Err(); leaseErr != nil {
+			errChan <- leaseErr
+			return
 		}
 		// Publish terminal event to SSE subscribers
 		GetBus().Publish(task.ID, terminalStepEvent(task.ID, task))
@@ -1471,71 +1568,58 @@ func (h *Handler) startDurableApprovalRecovery(taskID, approvalID string) {
 	if h.engine == nil || taskID == "" || approvalID == "" {
 		return
 	}
+	durableStore, ok := h.store.(store.DurableApprovalStore)
+	if !ok {
+		return
+	}
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		owner := "approval-recovery-" + uuid.NewString()
-		var task *types.Task
 		for {
-			var err error
-			task, err = h.store.GetTask(ctx, taskID)
+			task, err := h.store.GetTask(ctx, taskID)
 			if err != nil {
-				h.observeDurableApproval(context.Background(), "recovery_failure")
-				log.Error("durable approval recovery task lookup failed", "task_id", taskID, "error", err)
+				h.observeDurableApproval(ctx, "recovery_failure")
 				return
 			}
-			acquired, leaseErr := h.store.AcquireTaskLease(ctx, taskID, owner, 30*time.Second)
-			if leaseErr != nil {
-				h.observeDurableApproval(context.Background(), "recovery_failure")
-				log.Error("durable approval recovery task lease failed", "task_id", taskID, "error", leaseErr)
+			tenantID := task.TenantID
+			if tenantID == "" {
+				tenantID = "default"
+			}
+			approval, err := durableStore.GetApproval(ctx, approvalID, tenantID)
+			if err != nil {
+				if !errors.Is(err, sql.ErrNoRows) {
+					h.observeDurableApproval(ctx, "recovery_failure")
+				}
 				return
 			}
-			if acquired {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				h.observeDurableApproval(context.Background(), "recovery_failure")
-				log.Warn("durable approval recovery timed out waiting for task lease", "task_id", taskID, "approval_id", approvalID)
+			var recovered bool
+			switch approval.Status {
+			case types.ApprovalApproved:
+				recovered, err = h.engine.RecoverApprovedApproval(ctx, task, approval, owner)
+			case types.ApprovalRejected:
+				recovered, err = h.engine.RecoverRejectedApproval(ctx, task, approval, owner)
+			default:
 				return
-			case <-time.After(500 * time.Millisecond):
 			}
-		}
-		defer func() { _ = h.store.ReleaseTaskLease(context.Background(), taskID, owner) }()
-		durableStore, ok := h.store.(store.DurableApprovalStore)
-		if !ok {
-			return
-		}
-		tenantID := task.TenantID
-		if tenantID == "" {
-			tenantID = "default"
-		}
-		approval, err := durableStore.GetApproval(ctx, approvalID, tenantID)
-		if err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				h.observeDurableApproval(context.Background(), "recovery_failure")
-				log.Error("durable approval recovery lookup failed", "task_id", taskID, "approval_id", approvalID, "error", err)
+			if errors.Is(err, store.ErrTaskLeaseBusy) {
+				select {
+				case <-ctx.Done():
+					h.observeDurableApproval(ctx, "recovery_failure")
+					return
+				case <-time.After(500 * time.Millisecond):
+					continue
+				}
+			}
+			if err != nil {
+				h.observeDurableApproval(ctx, "recovery_failure")
+				log.Error("durable approval recovery failed", "task_id", taskID, "approval_id", approvalID, "error", err)
+			} else if recovered {
+				log.Info("durable approval recovered", "task_id", taskID, "approval_id", approvalID, "status", types.StatusPaused)
 			}
 			return
-		}
-		var recovered bool
-		switch approval.Status {
-		case types.ApprovalApproved:
-			recovered, err = h.engine.RecoverApprovedApproval(ctx, task, approval, owner)
-		case types.ApprovalRejected:
-			recovered, err = h.engine.RecoverRejectedApproval(ctx, task, approval, owner)
-		default:
-			return
-		}
-		if err != nil {
-			h.observeDurableApproval(context.Background(), "recovery_failure")
-			log.Error("durable approval recovery failed", "task_id", taskID, "approval_id", approvalID, "error", err)
-			return
-		}
-		if recovered {
-			log.Info("durable approval recovered", "task_id", taskID, "approval_id", approvalID, "status", types.StatusPaused)
 		}
 	}()
 }

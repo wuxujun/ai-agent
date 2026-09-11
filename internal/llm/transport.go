@@ -215,6 +215,9 @@ func callStructuredHTTPStream(ctx context.Context, cfg Config, body map[string]a
 		}
 		if len(event.Choices) > 0 && event.Choices[0].Delta.Content != "" {
 			chunk := event.Choices[0].Delta.Content
+			if len(chunk) > (4<<20)-text.Len() {
+				return usage, fmt.Errorf("LLM response exceeds 4 MiB limit")
+			}
 			text.WriteString(chunk)
 			onChunk(chunk)
 		}
@@ -543,12 +546,23 @@ func validStrictJSONSchema(value any, schema map[string]any) bool {
 				return false
 			}
 		}
-		closed, _ := schema["additionalProperties"].(bool)
+		additional, hasAdditional := schema["additionalProperties"]
 		for key, item := range object {
 			rawProperty, exists := properties[key]
 			if !exists {
-				if closed {
-					return false
+				if hasAdditional {
+					switch rule := additional.(type) {
+					case bool:
+						if !rule {
+							return false
+						}
+					case map[string]any:
+						if !validStrictJSONSchema(item, rule) {
+							return false
+						}
+					default:
+						return false
+					}
 				}
 				continue
 			}

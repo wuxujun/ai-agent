@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/memory"
@@ -27,13 +28,19 @@ type RedisStore struct {
 const (
 	legacyTasksIndex          = "tasks:index"
 	tasksIndexV2              = "tasks:index:v2"
-	tasksIndexV2Marker        = "tasks:index:v3:migrated"
-	taskStatusIndexBase       = "tasks:status:"
+	tasksIndexV2Marker        = "tasks:index:v4:migrated"
+	taskStatusIndexBase       = "tasks:status:v4:"
 	taskTenantIndexBase       = "tasks:tenant:"
-	taskTenantStatusIndexBase = "tasks:tenant_status:"
+	taskTenantStatusIndexBase = "tasks:tenant_status:v4:"
 )
 
 var saveTaskScript = redis.NewScript(`
+	if ARGV[9] == '1' and redis.call('GET', KEYS[4]) ~= ARGV[10] then
+		return -1
+	end
+	if ARGV[8] == '1' and redis.call('EXISTS', KEYS[1]) == 1 then
+		return 0
+	end
 	local existing = redis.call('GET', KEYS[1])
 	if existing then
 		local ok, oldTask = pcall(cjson.decode, existing)
@@ -237,6 +244,23 @@ func (r *RedisStore) Close() error {
 
 // SaveFullTask serializes the entire task struct into JSON and saves it in Redis.
 func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
+	return r.saveFullTask(ctx, task, false)
+}
+
+// CreateTask inserts the task and its indexes in one atomic Redis script.
+func (r *RedisStore) CreateTask(ctx context.Context, task *types.Task) error {
+	return r.saveFullTask(ctx, task, true)
+}
+
+func (r *RedisStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool) error {
+	lease, scoped := ctx.Value(taskLeaseContextKey{}).(taskLeaseScope)
+	guarded := 0
+	if scoped {
+		if lease.id != task.ID || lease.owner == "" {
+			return ErrTaskLeaseLost
+		}
+		guarded = 1
+	}
 	normalizeTaskTimestamps(task)
 	ctx, span := tracer.Start(ctx, "store.redis.save_full_task")
 	defer span.End()
@@ -258,10 +282,14 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("failed to serialize task: %w", err)
 	}
 
-	err = saveTaskScript.Run(
+	insertOnly := 0
+	if createOnly {
+		insertOnly = 1
+	}
+	saved, err := saveTaskScript.Run(
 		ctx,
 		r.client,
-		[]string{r.taskKey(task.ID), tasksIndexV2, legacyTasksIndex},
+		[]string{r.taskKey(task.ID), tasksIndexV2, legacyTasksIndex, "task:lease:" + task.ID},
 		data,
 		task.ID,
 		string(task.Status),
@@ -269,11 +297,20 @@ func (r *RedisStore) SaveFullTask(ctx context.Context, task *types.Task) error {
 		taskStatusIndexBase,
 		taskTenantIndexBase,
 		taskTenantStatusIndexBase,
-	).Err()
+		insertOnly,
+		guarded,
+		lease.owner,
+	).Int64()
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "redis task save script failed")
 		return fmt.Errorf("failed to save task to redis: %w", err)
+	}
+	if saved == -1 {
+		return ErrTaskLeaseLost
+	}
+	if saved == 0 {
+		return ErrTaskExists
 	}
 
 	if memory.ShouldIndexTask(task) {
@@ -420,89 +457,101 @@ func (r *RedisStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Task
 	return tasks, nil
 }
 
+// v4 status indexes are built in a new namespace so stale/deleted memberships
+// from older status CAS implementations cannot corrupt tenant pagination.
+var repairTaskIndexScript = redis.NewScript(`
+ local raw = redis.call('GET', KEYS[1])
+ if not raw then return 0 end
+ local task = cjson.decode(raw)
+ local tenant = task['tenant_id'] or ''
+ local status = task['status'] or ''
+ for i = 5, #ARGV do
+  redis.call('ZREM', ARGV[2] .. ARGV[i], ARGV[1])
+  redis.call('ZREM', ARGV[4] .. tenant .. ':' .. ARGV[i], ARGV[1])
+ end
+ redis.call('ZADD', KEYS[2], 0, ARGV[1])
+ redis.call('ZADD', ARGV[2] .. status, 0, ARGV[1])
+ redis.call('ZADD', ARGV[3] .. tenant, 'NX', 0, ARGV[1])
+ redis.call('ZADD', ARGV[4] .. tenant .. ':' .. status, 0, ARGV[1])
+ return 1
+`)
+
+var finishTaskIndexMigrationScript = redis.NewScript(`
+ if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+ redis.call('SET', KEYS[2], '1')
+ return 1
+`)
+
 func (r *RedisStore) ensureTaskIndexes(ctx context.Context) error {
 	migrated, err := r.client.Exists(ctx, tasksIndexV2Marker).Result()
 	if err != nil || migrated > 0 {
 		return err
 	}
-
-	// Use Redis SETNX to acquire a distributed migration lock.
-	// We set a 5-minute timeout on the lock to prevent deadlocks in case of crashes.
-	lockKey := "tasks:index:v2:migration_lock"
-	acquired, err := r.client.SetNX(ctx, lockKey, "1", 5*time.Minute).Result()
+	lockKey := "tasks:index:v4:migration_lock"
+	owner := uuid.NewString()
+	acquired, err := r.client.SetNX(ctx, lockKey, owner, 5*time.Minute).Result()
 	if err != nil {
 		return err
 	}
-
 	if !acquired {
-		// Another instance holds the lock. Poll until the migration marker is set.
 		ticker := time.NewTicker(200 * time.Millisecond)
 		defer ticker.Stop()
-		timeout := time.After(30 * time.Second)
+		timeout := time.NewTimer(30 * time.Second)
+		defer timeout.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-timeout:
-				return fmt.Errorf("timeout waiting for Redis task index migration to be completed by peer")
+			case <-timeout.C:
+				return errors.New("timeout waiting for Redis task index migration")
 			case <-ticker.C:
 				migrated, err = r.client.Exists(ctx, tasksIndexV2Marker).Result()
-				if err != nil {
+				if err != nil || migrated > 0 {
 					return err
-				}
-				if migrated > 0 {
-					return nil
 				}
 			}
 		}
 	}
-	defer r.client.Del(ctx, lockKey)
-
-	// Double-check the marker now that we hold the lock.
-	migrated, err = r.client.Exists(ctx, tasksIndexV2Marker).Result()
-	if err != nil || migrated > 0 {
-		return err
-	}
-
-	ids, err := r.client.ZRange(ctx, legacyTasksIndex, 0, -1).Result()
-	if err != nil {
-		return err
-	}
-	const batchSize = 500
-	for start := 0; start < len(ids); start += batchSize {
-		end := start + batchSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		batch := ids[start:end]
-		keys := make([]string, len(batch))
-		for i, id := range batch {
-			keys[i] = r.taskKey(id)
-		}
-		values, err := r.client.MGet(ctx, keys...).Result()
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = releaseLeaseScript.Run(releaseCtx, r.client, []string{lockKey}, owner).Err()
+	}()
+	args := []any{"", taskStatusIndexBase, taskTenantIndexBase, taskTenantStatusIndexBase, "created", "running", "awaiting_approval", "paused", "completed", "partial", "failed"}
+	var cursor uint64
+	for {
+		// Bound memory and read current task JSON atomically with each index update,
+		// so concurrent saves/status transitions cannot install stale memberships.
+		renewed, err := renewTaskLeaseScript.Run(ctx, r.client, []string{lockKey}, owner, (5 * time.Minute).Milliseconds()).Int64()
 		if err != nil {
 			return err
 		}
-		pipe := r.client.TxPipeline()
-		for i, raw := range values {
-			text, ok := raw.(string)
-			if !ok {
-				continue
-			}
-			var task types.Task
-			if err := json.Unmarshal([]byte(text), &task); err != nil {
-				continue
-			}
-			pipe.ZAdd(ctx, tasksIndexV2, redis.Z{Score: 0, Member: batch[i]})
-			pipe.ZAdd(ctx, taskStatusIndexBase+string(task.Status), redis.Z{Score: 0, Member: batch[i]})
-			pipe.ZAdd(ctx, taskTenantIndexBase+task.TenantID, redis.Z{Score: 0, Member: batch[i]})
-			pipe.ZAdd(ctx, taskTenantStatusIndexBase+task.TenantID+":"+string(task.Status), redis.Z{Score: 0, Member: batch[i]})
+		if renewed != 1 {
+			return errors.New("Redis task index migration lease lost")
 		}
-		if _, err := pipe.Exec(ctx); err != nil {
+		entries, next, err := r.client.ZScan(ctx, legacyTasksIndex, cursor, "*", 500).Result()
+		if err != nil {
 			return err
 		}
+		for i := 0; i < len(entries); i += 2 {
+			args[0] = entries[i]
+			if err := repairTaskIndexScript.Run(ctx, r.client, []string{r.taskKey(entries[i]), tasksIndexV2}, args...).Err(); err != nil {
+				return err
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
 	}
-	return r.client.Set(ctx, tasksIndexV2Marker, "1", 0).Err()
+	finished, err := finishTaskIndexMigrationScript.Run(ctx, r.client, []string{lockKey, tasksIndexV2Marker}, owner).Int64()
+	if err != nil {
+		return err
+	}
+	if finished != 1 {
+		return errors.New("Redis task index migration lease lost")
+	}
+	return nil
 }
 
 // ExistsTask returns true if a task with the given id already exists.
@@ -921,6 +970,7 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 }
 
 var transitionScript = redis.NewScript(`
+	if ARGV[3] == '1' and redis.call('GET', KEYS[2]) ~= ARGV[4] then return -2 end
 	local taskKey = KEYS[1]
 	local toStatus = ARGV[1]
 	local statusPrefix = ARGV[2]
@@ -932,7 +982,7 @@ var transitionScript = redis.NewScript(`
 
 	local task = cjson.decode(val)
 	local matched = false
-	for i = 3, #ARGV do
+	for i = 6, #ARGV do
 		if task["status"] == ARGV[i] then
 			matched = true
 			break
@@ -948,6 +998,9 @@ var transitionScript = redis.NewScript(`
 	redis.call('SET', taskKey, cjson.encode(task))
 	redis.call('ZREM', statusPrefix .. oldStatus, task["id"])
 	redis.call('ZADD', statusPrefix .. toStatus, 0, task["id"])
+	local tenantPrefix = ARGV[5] .. (task["tenant_id"] or "") .. ":"
+	redis.call('ZREM', tenantPrefix .. oldStatus, task["id"])
+	redis.call('ZADD', tenantPrefix .. toStatus, 0, task["id"])
 	return 1
 `)
 
@@ -977,20 +1030,30 @@ func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, fro
 	ctx, span := tracer.Start(ctx, "store.redis.try_transition_task_status")
 	defer span.End()
 
-	args := make([]any, 0, len(from)+2)
+	guard, owner := "0", ""
+	if scope, scoped := ctx.Value(taskLeaseContextKey{}).(taskLeaseScope); scoped {
+		if scope.id != id || scope.owner == "" {
+			return false, ErrTaskLeaseLost
+		}
+		guard, owner = "1", scope.owner
+	}
+	args := make([]any, 0, len(from)+5)
 	args = append(args, string(to))
-	args = append(args, taskStatusIndexBase)
+	args = append(args, taskStatusIndexBase, guard, owner, taskTenantStatusIndexBase)
 	for _, f := range from {
 		args = append(args, string(f))
 	}
 
-	res, err := transitionScript.Run(ctx, r.client, []string{r.taskKey(id)}, args...).Int64()
+	res, err := transitionScript.Run(ctx, r.client, []string{r.taskKey(id), "task:lease:" + id}, args...).Int64()
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "redis transition script failed")
 		return false, err
 	}
 
+	if res == -2 {
+		return false, ErrTaskLeaseLost
+	}
 	if res == -1 {
 		return false, sql.ErrNoRows
 	}
@@ -1012,6 +1075,21 @@ func (r *RedisStore) AcquireTaskLease(ctx context.Context, id, owner string, ttl
 		return false, err
 	}
 	return res == 1, nil
+}
+
+var renewTaskLeaseScript = redis.NewScript(`
+	if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+		return 0
+	end
+	return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+`)
+
+func (r *RedisStore) RenewTaskLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error) {
+	if owner == "" || ttl.Milliseconds() <= 0 {
+		return false, nil
+	}
+	result, err := renewTaskLeaseScript.Run(ctx, r.client, []string{"task:lease:" + id}, owner, ttl.Milliseconds()).Int64()
+	return result == 1, err
 }
 
 func (r *RedisStore) ReleaseTaskLease(ctx context.Context, id, owner string) error {
