@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -356,7 +357,10 @@ CREATE TABLE memories (
     embedding_json TEXT NOT NULL
 );
 INSERT INTO tasks (id, goal, status, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, final_answer)
-VALUES ('legacy-task', 'legacy goal', 'created', 1, 0, '', '', '[]', 1, '');`
+VALUES ('legacy-task', 'legacy goal', 'created', 10, 7, '', '', '[]', 1, '');
+INSERT INTO traces (task_id, step, goal, action, query, observation, evidence_json)
+VALUES ('legacy-task', 0, 'legacy goal', 'read_file', '', 'initial source', 'null'),
+       ('legacy-task', 7, 'legacy goal', 'write_file', '', 'legacy result', 'null');`
 	if _, err := legacyDB.ExecContext(t.Context(), legacySchema); err != nil {
 		_ = legacyDB.Close()
 		t.Fatal(err)
@@ -371,7 +375,7 @@ VALUES ('legacy-task', 'legacy goal', 'created', 1, 0, '', '', '[]', 1, '');`
 	}
 	defer st.Close()
 	assertPostgresColumns(t, st.db, "tasks", "tenant_id", "session_id", "sequence_no", "created_at", "updated_at", "execution_mode", "requested_team", "team_selection_source", "team_name", "team_config_digest", "brain_project_id", "brain_snapshot_id", "brain_config_digest", "token_budget", "llm_call_budget", "memories_json", "answer_audit_json")
-	assertPostgresColumns(t, st.db, "traces", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens")
+	assertPostgresColumns(t, st.db, "traces", "execution_step", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens")
 	assertPostgresColumns(t, st.db, "memories", "tenant_id", "session_id")
 	var createdAt, updatedAt sql.NullTime
 	if err := st.db.QueryRowContext(t.Context(), `SELECT created_at, updated_at FROM tasks WHERE id = 'legacy-task'`).Scan(&createdAt, &updatedAt); err != nil {
@@ -386,6 +390,40 @@ VALUES ('legacy-task', 'legacy goal', 'created', 1, 0, '', '', '[]', 1, '');`
 	}
 	if projectID != "" || snapshotID != "" || configDigest != "" {
 		t.Fatalf("legacy Brain fields = %q/%q/%q, want empty values", projectID, snapshotID, configDigest)
+	}
+	var legacyTraceCount int
+	if err := st.db.QueryRowContext(t.Context(), `SELECT count(*) FROM traces WHERE task_id = 'legacy-task' AND execution_step IS NULL`).Scan(&legacyTraceCount); err != nil {
+		t.Fatal(err)
+	}
+	if legacyTraceCount != 2 {
+		t.Fatalf("legacy traces with nullable execution_step = %d, want 2", legacyTraceCount)
+	}
+	task, err := st.GetTask(t.Context(), "legacy-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(task.Trace) != 2 || task.Trace[0].Step != 0 || task.Trace[1].Step != 7 || task.StepCount != 7 || task.MaxSteps != 10 {
+		t.Fatalf("migration changed legacy trace steps or execution budget: %+v", task)
+	}
+	task.Trace = append(task.Trace, types.StepTrace{Step: 7, Action: "citation_verify", Observation: "after migration", TokenUsage: types.TokenUsage{TotalTokens: 6}})
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := st.SaveFullTask(t.Context(), task); err != nil {
+			t.Fatal(err)
+		}
+		restored, err := st.GetTask(t.Context(), task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(restored.Trace, task.Trace) || restored.StepCount != 7 || restored.MaxSteps != 10 {
+			t.Fatalf("conversion lost legacy trace or changed execution budget: %+v", restored)
+		}
+	}
+	var eventPositions, executionSteps pq.Int64Array
+	if err := st.db.QueryRowContext(t.Context(), `SELECT array_agg(step ORDER BY step), array_agg(execution_step ORDER BY step) FROM traces WHERE task_id = 'legacy-task'`).Scan(&eventPositions, &executionSteps); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(eventPositions, pq.Int64Array{1, 2, 3}) || !reflect.DeepEqual(executionSteps, pq.Int64Array{0, 7, 7}) {
+		t.Fatalf("converted trace positions=%v execution_steps=%v", eventPositions, executionSteps)
 	}
 }
 
