@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -47,7 +48,7 @@ func (t *SQLQueryTool) Validate(params map[string]any) error {
 
 	path, _ := params["path"].(string)
 	path = strings.TrimSpace(path)
-	if path != "" && (strings.HasPrefix(path, "/") || strings.Contains(path, "..")) {
+	if path != "" && (strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.ContainsAny(path, "?#")) {
 		return fmt.Errorf("invalid database path")
 	}
 
@@ -74,11 +75,20 @@ func (t *SQLQueryTool) Execute(ctx context.Context, workspace string, params map
 		return nil, fmt.Errorf("sql_query policy violation: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", fullPath)
+	if info, err := os.Stat(fullPath); err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("database path is not a regular file")
+		}
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	db, err := sql.Open("sqlite", "file:"+fullPath+"?mode=ro")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 	defer db.Close()
+	if _, err := db.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
+		return nil, fmt.Errorf("failed to enable read-only mode: %w", err)
+	}
 
 	// Execute with timeout context
 	rows, err := db.QueryContext(ctx, query)
@@ -104,6 +114,8 @@ func (t *SQLQueryTool) Execute(ctx context.Context, workspace string, params map
 	}
 
 	rowCount := 0
+	const maxEvidenceBytes = 1 << 20
+	evidenceBytes := 0
 	for rows.Next() {
 		if err := rows.Scan(valPtrs...); err != nil {
 			return nil, fmt.Errorf("scan error: %w", err)
@@ -123,13 +135,22 @@ func (t *SQLQueryTool) Execute(ctx context.Context, workspace string, params map
 				}
 			}
 		}
-		output = append(output, strings.Join(rowStrs, " | "))
+		line := strings.Join(rowStrs, " | ")
+		if evidenceBytes+len(line) > maxEvidenceBytes {
+			output = append(output, "...[truncated, output limit reached]")
+			break
+		}
+		output = append(output, line)
+		evidenceBytes += len(line)
 		rowCount++
 		// Cap observation rows to avoid context blowup
 		if rowCount >= 100 {
 			output = append(output, "...[truncated, showing top 100 rows]")
 			break
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	observation := strings.Join(output, "\n")
@@ -209,6 +230,10 @@ func tokenizeSQL(query string) ([]string, error) {
 
 		// Skip inline comments
 		if r == '-' && i+1 < n && runes[i+1] == '-' {
+			if buf.Len() > 0 {
+				tokens = append(tokens, buf.String())
+				buf.Reset()
+			}
 			i += 2
 			for i < n && runes[i] != '\n' {
 				i++
@@ -218,6 +243,10 @@ func tokenizeSQL(query string) ([]string, error) {
 
 		// Skip block comments
 		if r == '/' && i+1 < n && runes[i+1] == '*' {
+			if buf.Len() > 0 {
+				tokens = append(tokens, buf.String())
+				buf.Reset()
+			}
 			i += 2
 			foundEnd := false
 			for i < n {
@@ -235,16 +264,32 @@ func tokenizeSQL(query string) ([]string, error) {
 		}
 
 		// Handle string literals (treat as token placeholder to avoid false-positives inside strings)
+		if r == '[' {
+			if buf.Len() > 0 {
+				tokens = append(tokens, buf.String())
+				buf.Reset()
+			}
+			i++
+			for i < n {
+				if runes[i] == ']' {
+					i++
+					break
+				}
+				i++
+			}
+			tokens = append(tokens, "[identifier]")
+			continue
+		}
 		if r == '\'' || r == '"' || r == '`' {
 			quote := r
 			i++
 			foundEnd := false
 			for i < n {
-				if runes[i] == '\\' && i+1 < n {
-					i += 2
-					continue
-				}
 				if runes[i] == quote {
+					if i+1 < n && runes[i+1] == quote {
+						i += 2
+						continue
+					}
 					i++
 					foundEnd = true
 					break
