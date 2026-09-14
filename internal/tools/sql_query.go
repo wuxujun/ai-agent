@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,11 @@ import (
 )
 
 type SQLQueryTool struct{}
+
+const (
+	maxSQLResultBytes = 1 << 20
+	maxSQLResultRows  = 100
+)
 
 func (t *SQLQueryTool) Name() string {
 	return "sql_query"
@@ -29,7 +35,7 @@ func (t *SQLQueryTool) RetryPolicy() RetryPolicy {
 }
 
 func (t *SQLQueryTool) Description() string {
-	return "Execute a read-only SQL query against a SQLite database in the workspace. Protected by read-only AST checks."
+	return "Execute SELECT, WITH, or EXPLAIN SELECT queries against an existing workspace SQLite database. Uses SQL token checks and a read-only connection. Results are limited to 100 rows and 1 MiB per observation/evidence text."
 }
 
 func (t *SQLQueryTool) Parameters() map[string]any {
@@ -48,11 +54,11 @@ func (t *SQLQueryTool) Validate(params map[string]any) error {
 
 	path, _ := params["path"].(string)
 	path = strings.TrimSpace(path)
-	if path != "" && (strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.ContainsAny(path, "?#")) {
+	if path != "" && (filepath.IsAbs(path) || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\x00")) {
 		return fmt.Errorf("invalid database path")
 	}
 
-	// Run AST protection check
+	// This is a conservative SQLite token check, not a SQL AST parser.
 	if err := ValidateSQLReadOnly(query); err != nil {
 		return fmt.Errorf("SQL safety check failed: %w", err)
 	}
@@ -61,6 +67,10 @@ func (t *SQLQueryTool) Validate(params map[string]any) error {
 }
 
 func (t *SQLQueryTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
+	// Not every caller goes through planner validation.
+	if err := t.Validate(params); err != nil {
+		return nil, err
+	}
 	path, _ := params["path"].(string)
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -81,16 +91,13 @@ func (t *SQLQueryTool) Execute(ctx context.Context, workspace string, params map
 		}
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	db, err := sql.Open("sqlite", "file:"+fullPath+"?mode=ro")
+	db, err := openReadOnlySQLite(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 	defer db.Close()
-	if _, err := db.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
-		return nil, fmt.Errorf("failed to enable read-only mode: %w", err)
-	}
 
-	// Execute with timeout context
+	// The caller's timeout/cancellation applies to opening and iterating too.
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("SQL execution error: %w", err)
@@ -102,9 +109,30 @@ func (t *SQLQueryTool) Execute(ctx context.Context, workspace string, params map
 		return nil, fmt.Errorf("failed to read columns: %w", err)
 	}
 
-	// Scan results
+	// Reserve room for the observation prefix and truncation marker. Account for
+	// column names, separators, and newlines as well as cell data in both outputs.
+	const dataBudget = maxSQLResultBytes - 128
 	var output []string
-	output = append(output, strings.Join(cols, " | "))
+	outputBytes := 0
+	appendLine := func(parts []string) bool {
+		size := 0
+		if len(parts) > 0 {
+			size = (len(parts) - 1) * len(" | ")
+		}
+		if len(output) > 0 {
+			size++
+		}
+		for _, part := range parts {
+			size += len(part)
+		}
+		if size > dataBudget-outputBytes {
+			return false
+		}
+		output = append(output, strings.Join(parts, " | "))
+		outputBytes += size
+		return true
+	}
+	truncated := !appendLine(cols)
 
 	// Prepare pointers for scanning
 	vals := make([]interface{}, len(cols))
@@ -114,9 +142,11 @@ func (t *SQLQueryTool) Execute(ctx context.Context, workspace string, params map
 	}
 
 	rowCount := 0
-	const maxEvidenceBytes = 1 << 20
-	evidenceBytes := 0
-	for rows.Next() {
+	for !truncated && rows.Next() {
+		if rowCount == maxSQLResultRows {
+			truncated = true
+			break
+		}
 		if err := rows.Scan(valPtrs...); err != nil {
 			return nil, fmt.Errorf("scan error: %w", err)
 		}
@@ -129,41 +159,63 @@ func (t *SQLQueryTool) Execute(ctx context.Context, workspace string, params map
 				// Convert to string representation
 				switch v := val.(type) {
 				case []byte:
+					// The driver has already materialized the cell; avoid another
+					// unbounded allocation when rendering it.
+					if len(v) > dataBudget-outputBytes {
+						truncated = true
+						break
+					}
 					rowStrs = append(rowStrs, string(v))
+				case string:
+					rowStrs = append(rowStrs, v)
 				default:
 					rowStrs = append(rowStrs, fmt.Sprintf("%v", v))
 				}
 			}
 		}
-		line := strings.Join(rowStrs, " | ")
-		if evidenceBytes+len(line) > maxEvidenceBytes {
-			output = append(output, "...[truncated, output limit reached]")
+		if truncated || !appendLine(rowStrs) {
+			truncated = true
 			break
 		}
-		output = append(output, line)
-		evidenceBytes += len(line)
 		rowCount++
-		// Cap observation rows to avoid context blowup
-		if rowCount >= 100 {
-			output = append(output, "...[truncated, showing top 100 rows]")
-			break
-		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+	if truncated {
+		output = append(output, "...[truncated, row or byte limit reached]")
 	}
 
 	observation := strings.Join(output, "\n")
 
 	return &ToolResult{
 		Query:       query,
-		Observation: fmt.Sprintf("Query executed successfully. Returned %d row(s):\n%s", rowCount, observation),
+		Observation: fmt.Sprintf("Query result. Showing %d row(s):\n%s", rowCount, observation),
 		Evidence: []types.Evidence{{
 			Path:  path,
 			Lines: output,
 			Query: query,
 		}},
 	}, nil
+}
+
+// URI-encode the actual filename: percent escapes in a filesystem path must
+// never be interpreted as path traversal or SQLite connection parameters.
+// modernc applies _pragma to EVERY newly opened connection, including a pool
+// replacement; mode=ro independently prevents writes to the main database.
+func openReadOnlySQLite(path string) (*sql.DB, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	uriPath := filepath.ToSlash(absPath)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := url.URL{Scheme: "file", Path: uriPath, RawQuery: url.Values{
+		"mode": {"ro"}, "_pragma": {"query_only(1)"},
+	}.Encode()}
+	return sql.Open("sqlite", u.String())
 }
 
 // ValidateSQLReadOnly checks that the SQL query is strictly read-only
@@ -192,6 +244,12 @@ func ValidateSQLReadOnly(query string) error {
 		"GRANT":    true,
 		"REVOKE":   true,
 		"INTO":     true, // Blocks SELECT INTO
+		"PRAGMA":   true, // Some pragmas run during preparation, even under EXPLAIN.
+		"ATTACH":   true,
+		"DETACH":   true,
+		"VACUUM":   true,
+		"REINDEX":  true,
+		"ANALYZE":  true,
 	}
 
 	for _, token := range tokens {
@@ -220,6 +278,9 @@ func ValidateSQLReadOnly(query string) error {
 }
 
 func tokenizeSQL(query string) ([]string, error) {
+	if strings.IndexByte(query, 0) >= 0 {
+		return nil, fmt.Errorf("NUL byte in query")
+	}
 	var tokens []string
 	var buf strings.Builder
 	runes := []rune(query)
@@ -227,6 +288,11 @@ func tokenizeSQL(query string) ([]string, error) {
 
 	for i := 0; i < n; {
 		r := runes[i]
+		// SQLite can treat a token-leading UTF-8 BOM as whitespace. Reject it
+		// outside literals/comments so it cannot hide PRAGMA from this check.
+		if r == '\ufeff' {
+			return nil, fmt.Errorf("BOM outside quoted SQL literal or comment")
+		}
 
 		// Skip inline comments
 		if r == '-' && i+1 < n && runes[i+1] == '-' {
@@ -270,17 +336,26 @@ func tokenizeSQL(query string) ([]string, error) {
 				buf.Reset()
 			}
 			i++
+			foundEnd := false
 			for i < n {
 				if runes[i] == ']' {
 					i++
+					foundEnd = true
 					break
 				}
 				i++
+			}
+			if !foundEnd {
+				return nil, fmt.Errorf("unclosed bracketed identifier")
 			}
 			tokens = append(tokens, "[identifier]")
 			continue
 		}
 		if r == '\'' || r == '"' || r == '`' {
+			if buf.Len() > 0 {
+				tokens = append(tokens, buf.String())
+				buf.Reset()
+			}
 			quote := r
 			i++
 			foundEnd := false
@@ -304,7 +379,7 @@ func tokenizeSQL(query string) ([]string, error) {
 		}
 
 		// Whitespace
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f' {
 			if buf.Len() > 0 {
 				tokens = append(tokens, buf.String())
 				buf.Reset()

@@ -2,7 +2,7 @@
 
 > 基于 Go 语言构建的生产级、多 LLM AI Agent 执行运行时。它在安全沙箱工作区内，通过双工作流多智能体引擎和完整的答案质量审查流水线，编排自主研究、代码分析与任务执行。
 
-[![Go 1.25](https://img.shields.io/badge/Go-1.25-blue)](https://go.dev/) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-blue)](https://go.dev/) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
 
@@ -129,7 +129,7 @@
 
 ### 前置条件
 
-- Go 1.25 及以上版本
+- Go 1.26.8 及以上版本（本地、CI 和发布构建以 `go.mod` 中的最低版本为基准）
 - 可选：`ripgrep`（`rg`）和 `find` 命令，用于本地文件工具
 - 可选：本地运行 OTel Collector / Jaeger，监听 `127.0.0.1:4318`
 

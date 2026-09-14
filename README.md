@@ -28,7 +28,7 @@ readiness loss; an empty CURRENT alone is an expected pre-publication state.
 
 > A production-grade, multi-LLM AI Agent execution runtime built in Go. It orchestrates autonomous research, code analysis, and task execution within a secure sandboxed workspace, powered by a dual Multi-Agent workflow engine and a comprehensive answer quality pipeline.
 
-[![Go 1.25](https://img.shields.io/badge/Go-1.25-blue)](https://go.dev/) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-blue)](https://go.dev/) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
 
@@ -156,7 +156,7 @@ readiness loss; an empty CURRENT alone is an expected pre-publication state.
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26.8+ (local, CI, and release builds use the minimum version in `go.mod`)
 - Optional: `ripgrep` (`rg`) and `find` for local file tools
 - Optional: OTel Collector / Jaeger on `127.0.0.1:4318` for traces
 

@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version-file: go.mod
           cache: true
       - name: Format check
         run: |
@@ -46,6 +46,34 @@ jobs:
           -v "$PWD:/repo"
           ghcr.io/gitleaks/gitleaks:v8.27.2
           git --redact --verbose --config /repo/.gitleaks.toml /repo
+
+  vulnerability-scan:
+    name: Go vulnerability reachability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install pinned scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: Scan reachable vulnerabilities
+        shell: bash
+        run: |
+          mkdir -p artifacts/security
+          date -u +%FT%TZ | tee artifacts/security/scanned-at.txt
+          go version | tee artifacts/security/go-version.txt
+          govulncheck -version | tee artifacts/security/scanner-version.txt
+          govulncheck -show verbose ./... 2>&1 | tee artifacts/security/govulncheck.txt
+      - name: Upload vulnerability report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-vulnerability-report
+          path: artifacts/security/
+          retention-days: 14
 
   external-integration:
     name: PostgreSQL, pgvector, and Redis integration
@@ -84,7 +112,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version-file: go.mod
           cache: true
       - name: External backend contracts
         run: >-

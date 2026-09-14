@@ -1,6 +1,6 @@
 module github.com/wuxujun/ai-agent
 
-go 1.25.0
+go 1.26.8
 
 require (
 	github.com/cloudwego/eino v0.9.2
