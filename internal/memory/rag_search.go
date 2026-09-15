@@ -1,12 +1,11 @@
 package memory
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -51,15 +50,9 @@ func SearchThirdPartyRAG(ctx context.Context, query string) ([]types.Memory, err
 	// First attempt: try sending the request as configured
 	mems, err := doRAGRequest(ctx, ragURL, method, query, cfg.RAG.Authorization, false)
 	if err != nil {
-		errStr := err.Error()
 		// Self-healing: if the endpoint is an MCP server and rejected our payload
 		// with an invalid message version / expected 2.0 error, or session init error, retry as JSON-RPC 2.0 with handshake.
-		if strings.Contains(errStr, "invalid message version tag") ||
-			strings.Contains(errStr, "expected \"2.0\"") ||
-			strings.Contains(errStr, "malformed payload") ||
-			strings.Contains(errStr, "invalid during session initialization") ||
-			strings.Contains(errStr, "session") ||
-			strings.Contains(errStr, "jsonrpc") {
+		if requiresMCPInitialization(err) {
 			log.Warn("Detected MCP server requiring initialization, launching MCP client query", "task_id", taskID, "url", ragURL)
 			return queryMCP(ctx, ragURL, cfg.RAG.Authorization, query)
 		}
@@ -150,12 +143,11 @@ func doRAGRequest(ctx context.Context, ragURL, method, query, auth string, force
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		logRAGResponse(ctx, "third_party_rag", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
-		return nil, fmt.Errorf("third-party RAG returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		logRAGResponse(ctx, "third_party_rag", req.Method, req.URL.String(), resp.StatusCode, nil)
+		return nil, readRAGHTTPError(resp)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readRAGResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -451,53 +443,24 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		var endpointURL string
-		reader := bufio.NewReader(resp.Body)
-		var lastEvent string
-
-		// Set a timeout for reading the endpoint event to avoid hanging forever
-		readCtx, readCancel := context.WithTimeout(ctx, 3*time.Second)
-		defer readCancel()
-
-		errChan := make(chan error, 1)
-		go func() {
-			for {
-				line, readErr := reader.ReadString('\n')
-				if readErr != nil {
-					errChan <- readErr
-					return
-				}
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				if strings.HasPrefix(line, "event:") {
-					lastEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-				} else if strings.HasPrefix(line, "data:") {
-					dataVal := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-					if lastEvent == "endpoint" {
-						endpointURL = dataVal
-						log.Info("MCP SSE event received", "task_id", logger.TaskID(ctx), "event", lastEvent, "data", dataVal)
-						errChan <- nil
-						return
-					}
-				}
-			}
-		}()
-
-		select {
-		case <-readCtx.Done():
+		endpointURL, readErr := readMCPSSEEndpoint(ctx, resp.Body)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if errors.Is(readErr, errRAGResponseLimit) {
+			return nil, readErr
+		}
+		if errors.Is(readErr, context.DeadlineExceeded) {
 			log.Warn("Timeout waiting for SSE endpoint event, falling back to direct POST", "task_id", logger.TaskID(ctx))
-		case readErr := <-errChan:
-			if readErr == nil && endpointURL != "" {
-				base, parseErr := url.Parse(ragURL)
+		}
+		if readErr == nil && endpointURL != "" {
+			base, parseErr := url.Parse(ragURL)
+			if parseErr == nil {
+				resolvedURL, parseErr := base.Parse(endpointURL)
 				if parseErr == nil {
-					resolvedURL, parseErr := base.Parse(endpointURL)
-					if parseErr == nil {
-						postURL := resolvedURL.String()
-						log.Info("MCP SSE endpoint resolved", "task_id", logger.TaskID(ctx), "post_url", postURL)
-						return doMCPHandshakeAndCall(ctx, postURL, auth, query, initialHeaders)
-					}
+					postURL := resolvedURL.String()
+					log.Info("MCP SSE endpoint resolved", "task_id", logger.TaskID(ctx), "post_url", postURL)
+					return doMCPHandshakeAndCall(ctx, postURL, auth, query, initialHeaders)
 				}
 			}
 		}
@@ -505,6 +468,10 @@ func queryMCP(ctx context.Context, ragURL, auth, query string) ([]types.Memory, 
 
 	// Fallback/Direct: if it wasn't an SSE endpoint or SSE connection failed/timed out,
 	// run the 3-step initialization flow directly on ragURL.
+	_ = resp.Body.Close()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	log.Info("Running direct MCP initialization on URL", "task_id", logger.TaskID(ctx), "url", ragURL)
 	return doMCPHandshakeAndCall(ctx, ragURL, auth, query, initialHeaders)
 }
@@ -654,12 +621,11 @@ func sendJSONRPCWithHeaders(ctx context.Context, postURL, auth string, payload a
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		logRAGResponse(ctx, "mcp_jsonrpc", req.Method, req.URL.String(), resp.StatusCode, bodyBytes)
-		return nil, fmt.Errorf("POST returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		logRAGResponse(ctx, "mcp_jsonrpc", req.Method, req.URL.String(), resp.StatusCode, nil)
+		return nil, readRAGHTTPError(resp)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readRAGResponse(resp.Body)
 	if err != nil {
 		return nil, err
 	}
