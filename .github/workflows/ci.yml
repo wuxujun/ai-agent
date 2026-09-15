@@ -115,7 +115,10 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: External backend contracts
+        # Discover new TestExternal* contracts automatically, including API recovery.
+        # ParadeDB is optional: its test reports a skip on this pgvector image.
+        # Serialize packages that initialize the same dedicated database schema.
         run: >-
-          go test -race -v -count=1 -timeout=3m
-          ./internal/store ./internal/orchestrator
-          -run '^(TestExternalPostgresTraceSequence|TestExternalRedisStatusTransitionMaintainsTenantIndexes|TestExternalRedisRebuildsLegacyStatusIndexes|TestExternalStoresTaskCreation|TestExternalStoresTaskLeaseGuard|TestExternalStoresSessionLeaseAndIsolation|TestExternalPostgresPGVectorRanking|TestExternalPostgresMigrationUpgradesLegacySchema|TestExternalStoresPersistPausedTaskAcrossClients|TestApprovalBusAcrossRedisClients)$'
+          go test -race -v -count=1 -timeout=3m -p=1
+          ./internal/...
+          -run '^(TestExternal|TestApprovalBusAcrossRedisClients$)'

@@ -123,9 +123,9 @@ func TestExternalStoresSessionLeaseAndIsolation(t *testing.T) {
 	})
 }
 
-// TestRedisTaskBrainFieldsJSONRoundTrip verifies Redis retains all durable
+// TestExternalRedisTaskBrainFieldsJSONRoundTrip verifies Redis retains all durable
 // Brain identity fields through its JSON task payload.
-func TestRedisTaskBrainFieldsJSONRoundTrip(t *testing.T) {
+func TestExternalRedisTaskBrainFieldsJSONRoundTrip(t *testing.T) {
 	requireExternalIntegration(t)
 	redisURL := os.Getenv("TEST_REDIS_URL")
 	if redisURL == "" {
@@ -135,7 +135,7 @@ func TestRedisTaskBrainFieldsJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	t.Cleanup(func() { _ = st.Close() })
 	taskID := "integration-brain-json-" + uuid.NewString()
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
