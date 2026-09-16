@@ -6,12 +6,87 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
+
+	"github.com/go-ego/gse"
 )
 
 const directoryBM25FieldCount = 5
 
 var directoryBM25FieldWeights = [directoryBM25FieldCount]float64{8, 6, 4, 3, 1}
+
+// bm25GseSeg is the lazily initialised GSE segmenter used to split Chinese
+// text into meaningful words. It is loaded once from the embedded dictionary
+// bundled with the gse module. If loading fails the search path falls back to
+// bigram silently so the wiki is always usable.
+var (
+	bm25GseOnce sync.Once
+	bm25GseSeg  *gse.Segmenter
+)
+
+// bm25Segmenter returns the shared GSE segmenter, initialising it on the first
+// call. Returns nil when the embedded dictionary cannot be loaded.
+func bm25Segmenter() *gse.Segmenter {
+	bm25GseOnce.Do(func() {
+		var seg gse.Segmenter
+		if err := seg.LoadDictEmbed(); err != nil {
+			return
+		}
+		bm25GseSeg = &seg
+	})
+	return bm25GseSeg
+}
+
+// segmentHan splits a Han (CJK) rune slice into word tokens using GSE when
+// available, and falls back to overlapping bigrams otherwise. Both strategies
+// always emit at least single-character tokens so single-character queries
+// continue to match.
+func segmentHan(han []rune) []string {
+	if len(han) == 0 {
+		return nil
+	}
+	seg := bm25Segmenter()
+	if seg == nil || len(han) <= 1 {
+		// Bigram fallback (also handles single character).
+		return hanBigrams(han)
+	}
+	words := seg.Cut(string(han), true)
+	seen := make(map[string]bool, len(words)+len(han))
+	tokens := make([]string, 0, len(words)+len(han))
+	for _, w := range words {
+		w = strings.TrimSpace(strings.ToLower(w))
+		if w == "" || !strings.ContainsFunc(w, func(r rune) bool { return unicode.Is(unicode.Han, r) }) {
+			continue
+		}
+		if !seen[w] {
+			seen[w] = true
+			tokens = append(tokens, w)
+		}
+	}
+	// Always supplement with bigrams so that partial n-gram queries still hit
+	// documents even when the GSE vocabulary does not contain a given compound.
+	for _, bg := range hanBigrams(han) {
+		if !seen[bg] {
+			seen[bg] = true
+			tokens = append(tokens, bg)
+		}
+	}
+	return tokens
+}
+
+// hanBigrams produces overlapping 2-character windows from a Han rune slice,
+// falling back to a single-character token for length-1 input.
+func hanBigrams(han []rune) []string {
+	if len(han) == 1 {
+		return []string{string(han)}
+	}
+	tokens := make([]string, 0, len(han)-1)
+	for i := 0; i+1 < len(han); i++ {
+		tokens = append(tokens, string(han[i:i+2]))
+	}
+	return tokens
+}
 
 type directoryBM25Posting struct {
 	termFrequency [directoryBM25FieldCount]uint16
@@ -116,13 +191,7 @@ func directoryBM25Tokens(value string) []string {
 		}
 	}
 	flushHan := func() {
-		if len(han) == 1 {
-			tokens = append(tokens, string(han))
-		} else {
-			for index := 0; index+1 < len(han); index++ {
-				tokens = append(tokens, string(han[index:index+2]))
-			}
-		}
+		tokens = append(tokens, segmentHan(han)...)
 		han = han[:0]
 	}
 	for _, current := range value {
@@ -344,10 +413,55 @@ func directoryBM25HanRecallCapActive(query string, tokens int) bool {
 	return directoryBM25MinimumMatches(query, tokens) < int(math.Ceil(float64(tokens)*0.6))
 }
 
+// directoryBM25DiscriminativeStopWords is the set of tokens that are too
+// common or too generic to be treated as evidence of a discriminative match.
+// These are typically high-frequency Chinese function words and domain-generic
+// nouns that appear in virtually every document in a project Wiki, so a
+// posting list covering most documents is expected and must not be treated as
+// specific.
+var directoryBM25DiscriminativeStopWords = map[string]bool{
+	"项目":  true, // project - present in most project docs
+	"是":   true, // is/are
+	"的":   true, // possessive/particle
+	"了":   true, // aspect particle
+	"在":   true, // at/in/on
+	"有":   true, // have
+	"和":   true, // and
+	"与":   true, // and/with
+	"或":   true, // or
+	"不":   true, // not
+	"也":   true, // also
+	"都":   true, // all
+	"这":   true, // this
+	"那":   true, // that
+	"一":   true, // one/a
+	"个":   true, // measure word
+	"来":   true, // come
+	"说":   true, // say
+	"对":   true, // correct/to
+	"以":   true, // with/by
+	"为":   true, // for/as
+	"从":   true, // from
+	"会":   true, // will/can
+	"到":   true, // to/arrive
+	"他":   true, // he
+	"她":   true, // she
+	"我":   true, // I
+	"你":   true, // you
+	"我们":  true, // we
+	"他们":  true, // they
+	"什么":  true, // what
+	"怎么":  true, // how
+	"哪里":  true, // where
+	"谁":   true, // who
+	"何时":  true, // when
+	"为什么": true, // why
+}
+
 func directoryBM25HasDiscriminativeMatch(index *directoryBM25Index, queryTokens []string, documentID, documents int) bool {
 	titleOrSlugMatches := 0
 	for _, token := range queryTokens {
-		if token == "项目" {
+		if directoryBM25DiscriminativeStopWords[token] {
 			continue
 		}
 		postings := index.postings[token]

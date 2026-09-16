@@ -10,7 +10,10 @@ import (
 
 func TestDirectoryBM25TokensHandleMixedEnglishAndCJK(t *testing.T) {
 	got := uniqueDirectoryBM25Tokens("PBL历史旅行指南 2026")
-	want := []string{"pbl", "历史", "史旅", "旅行", "行指", "指南", "2026"}
+	// GSE splits "历史旅行指南" into [历史, 旅行, 指南] then supplements with
+	// bigrams that are not already covered: [史旅, 行指].
+	// "历史" bigram is deduped with the GSE word; same for "旅行" and "指南".
+	want := []string{"pbl", "历史", "旅行", "指南", "史旅", "行指", "2026"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tokens=%v want=%v", got, want)
 	}
