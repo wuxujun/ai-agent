@@ -10,13 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode"
-
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -159,31 +156,7 @@ func (l *FileRetractionLedger) WithProjectMutationLock(ctx context.Context, ref 
 }
 
 func (l *FileRetractionLedger) readStableFile(project *secureDir) ([]byte, error) {
-	fd, err := unix.Openat(project.fd, "retractions.jsonl", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
-	if errors.Is(err, unix.ENOENT) {
-		return nil, errSecurePathMissing
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open brain retraction ledger: %w", ErrUnsafePath)
-	}
-	file := os.NewFile(uintptr(fd), "brain-retraction-ledger")
-	defer file.Close()
-	var before unix.Stat_t
-	if err := unix.Fstat(fd, &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFREG || before.Size > maxRetractionFileBytes {
-		return nil, fmt.Errorf("inspect brain retraction ledger: %w", ErrRetractionLedger)
-	}
-	content, err := io.ReadAll(io.LimitReader(file, maxRetractionFileBytes+1))
-	if err != nil || len(content) > maxRetractionFileBytes || int64(len(content)) != before.Size {
-		return nil, fmt.Errorf("read brain retraction ledger: %w", ErrRetractionLedger)
-	}
-	if l.afterRead != nil {
-		l.afterRead()
-	}
-	var after unix.Stat_t
-	if err := unix.Fstat(fd, &after); err != nil || before.Dev != after.Dev || before.Ino != after.Ino || before.Size != after.Size || before.Mtim != after.Mtim || before.Ctim != after.Ctim {
-		return nil, fmt.Errorf("brain retraction ledger changed during read: %w", ErrRetractionLedger)
-	}
-	return content, nil
+	return readStableLedgerFile(project, maxRetractionFileBytes, l.afterRead)
 }
 
 func decodeRetraction(line []byte) (Retraction, []byte, error) {
