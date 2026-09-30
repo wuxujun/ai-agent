@@ -289,15 +289,11 @@ func (h *Handler) reauditTask(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "task has no answer to audit"})
 		return
 	}
-	limit := config.Get().Orchestrator.MaxConcurrentTasks
-	if limit <= 0 {
-		limit = 10
-	}
-	if !h.taskSem.Acquire(ctx, limit) {
+	if !h.taskSem.Acquire(ctx) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "too many concurrent tasks, please try again later"})
 		return
 	}
-	defer h.taskSem.Release(limit)
+	defer h.taskSem.Release()
 	owner := "reaudit-" + uuid.NewString()
 	acquired, err := h.store.AcquireTaskLease(ctx, task.ID, owner, time.Duration(timeout+30)*time.Second)
 	if err != nil {

@@ -154,20 +154,9 @@ func parseSearchReplacePatch(patch string) ([]patchBlock, error) {
 }
 
 func applySearchReplaceBlocks(workspace, filePath string, blocks []patchBlock) error {
-	if err := policy.ValidateReadPath(workspace, filePath); err != nil {
+	b, err := readWorkspaceFileSecurely(workspace, filePath)
+	if err != nil {
 		return err
-	}
-
-	// Open for reading with O_NOFOLLOW to prevent following symlinks.
-	fRead, err := os.OpenFile(filePath, os.O_RDONLY|policy.O_NOFOLLOW, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open file safely for reading: %w", err)
-	}
-	defer fRead.Close()
-
-	b, err := io.ReadAll(fRead)
-	if err != nil {
-		return fmt.Errorf("failed to read target file safely: %w", err)
 	}
 	content := string(b)
 
@@ -184,19 +173,88 @@ func applySearchReplaceBlocks(workspace, filePath string, blocks []patchBlock) e
 		content = strings.Replace(content, block.search, block.replace, 1)
 	}
 
+	return writeWorkspaceFileAtomically(workspace, filePath, []byte(content))
+}
+
+func readWorkspaceFileSecurely(workspace, filePath string) ([]byte, error) {
+	if err := policy.ValidateReadPath(workspace, filePath); err != nil {
+		return nil, err
+	}
+	if err := validateWorkspaceParent(workspace, filePath); err != nil {
+		return nil, err
+	}
+
+	// Open the leaf with O_NOFOLLOW to prevent following a target symlink. The
+	// parent validation immediately above resolves existing ancestors, so an
+	// attacker swapping a checked directory for a symlink is caught before open.
+	fRead, err := os.OpenFile(filePath, os.O_RDONLY|policy.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file safely for reading: %w", err)
+	}
+	defer fRead.Close()
+
+	b, err := io.ReadAll(fRead)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read target file safely: %w", err)
+	}
+	return b, nil
+}
+
+func writeWorkspaceFileAtomically(workspace, filePath string, content []byte) error {
 	if err := policy.ValidateWritePath(workspace, filePath); err != nil {
 		return err
 	}
-
-	// Open for writing with O_NOFOLLOW to prevent following symlinks.
-	fWrite, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC|policy.O_NOFOLLOW, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open file safely for writing: %w", err)
+	parent := filepath.Dir(filePath)
+	if err := validateWorkspaceParent(workspace, filePath); err != nil {
+		return err
 	}
-	defer fWrite.Close()
 
-	if _, err := fWrite.Write([]byte(content)); err != nil {
-		return fmt.Errorf("failed to write content safely: %w", err)
+	tmp, err := os.CreateTemp(parent, ".patch.tmp.*")
+	if err != nil {
+		return fmt.Errorf("failed to create safe temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := policy.ValidateWritePath(workspace, tmpName); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("temp file escaped workspace: %w", err)
+	}
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temp patch content: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp patch file: %w", err)
+	}
+	if err := validateWorkspaceParent(workspace, filePath); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, filePath); err != nil {
+		return fmt.Errorf("failed to atomically replace target file: %w", err)
+	}
+	removeTemp = false
+	return nil
+}
+
+func validateWorkspaceParent(workspace, filePath string) error {
+	parent := filepath.Dir(filePath)
+	if err := policy.ValidateReadPath(workspace, parent); err != nil {
+		return fmt.Errorf("target parent escaped workspace: %w", err)
+	}
+	info, err := os.Lstat(parent)
+	if err != nil {
+		return fmt.Errorf("failed to inspect target parent: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("target parent is not a directory")
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("target parent must not be a symlink")
 	}
 	return nil
 }

@@ -55,6 +55,7 @@ func SetTaskPartial(task *types.Task, finalAnswer, completionReason string) erro
 	task.FinalAnswer = finalAnswer
 	task.ErrorCode = ""
 	task.ErrorMessage = ""
+	task.TerminationKind = types.TerminationNone
 	return nil
 }
 
@@ -79,18 +80,26 @@ func SetTaskCompleted(task *types.Task, finalAnswer string) error {
 	task.FinalAnswer = finalAnswer
 	task.ErrorCode = ""
 	task.ErrorMessage = ""
+	task.TerminationKind = types.TerminationNone
 	return nil
 }
 
-// SetTaskFailed transitions the task to failed and records the failure reason.
+// SetTaskFailed transitions the task to failed and records a business failure.
 func SetTaskFailed(task *types.Task, reason string) error {
+	return SetTaskFailedWithKind(task, "", reason, types.TerminationBusinessFailed)
+}
+
+// SetTaskFailedWithKind transitions the task to failed and persists a structured
+// termination reason so recovery paths do not infer semantics from text length.
+func SetTaskFailedWithKind(task *types.Task, code, reason string, kind types.TerminationKind) error {
 	if err := TransitionTask(task, types.StatusFailed); err != nil {
 		return err
 	}
-	log.Error("task marked as failed", "task_id", task.ID, "reason", reason)
+	log.Error("task marked as failed", "task_id", task.ID, "reason", reason, "termination_kind", string(kind))
 	task.FinalAnswer = "Failed: " + reason
-	task.ErrorCode = ""
-	task.ErrorMessage = ""
+	task.ErrorCode = code
+	task.ErrorMessage = reason
+	task.TerminationKind = kind
 	return nil
 }
 
@@ -106,5 +115,6 @@ func SetTaskCanceled(task *types.Task, code, message string) error {
 	task.FinalAnswer = ""
 	task.ErrorCode = code
 	task.ErrorMessage = message
+	task.TerminationKind = types.TerminationClientCancelled
 	return nil
 }

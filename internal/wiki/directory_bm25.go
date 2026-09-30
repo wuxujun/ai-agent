@@ -12,7 +12,14 @@ import (
 	"github.com/go-ego/gse"
 )
 
-const directoryBM25FieldCount = 5
+const (
+	directoryBM25FieldCount = 5
+	// minDirectoryBM25RelevanceScore is an absolute confidence floor. Weak one-off
+	// lexical overlaps below this score are treated as no-answer matches instead
+	// of being returned solely because they satisfied minimum term count. Keep the
+	// floor low enough for tiny fixture corpora where IDF is naturally small.
+	minDirectoryBM25RelevanceScore = 0.25
+)
 
 var directoryBM25FieldWeights = [directoryBM25FieldCount]float64{8, 6, 4, 3, 1}
 
@@ -288,9 +295,12 @@ func (c *DirectoryClient) searchBM25(query string, _ []string, phrase, compactPh
 		if requireDiscriminativeMatch && detail.matchCount < fullMinimumMatches && !directoryBM25HasDiscriminativeMatch(index, queryTokens, documentID, len(pages)) {
 			continue
 		}
-		detail.qualified = true
-		applyDirectoryBM25PhraseBoost(pages[documentID], phrase, compactPhrase, detail, explain)
 		detail.lexicalScore = detail.score
+		if detail.lexicalScore < minDirectoryBM25RelevanceScore {
+			continue
+		}
+		applyDirectoryBM25PhraseBoost(pages[documentID], phrase, compactPhrase, detail, explain)
+		detail.qualified = true
 		qualifiedDocuments = append(qualifiedDocuments, documentID)
 	}
 	for _, documentID := range qualifiedDocuments {
@@ -314,6 +324,9 @@ func (c *DirectoryClient) searchBM25(query string, _ []string, phrase, compactPh
 		detail := &scores[documentID]
 		page := pages[documentID]
 		score := detail.score * directoryBM25NavigationMultiplier(page) * directoryBM25SourceMultiplier(page, phrase, compactPhrase)
+		if score < minDirectoryBM25RelevanceScore {
+			continue
+		}
 		rank := directoryBM25Rank{documentID: documentID, score: score, slug: page.slug}
 		if len(ranks) < topK {
 			heap.Push(&ranks, rank)

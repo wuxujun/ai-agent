@@ -132,10 +132,11 @@ func TestStores(t *testing.T) {
 						},
 					},
 				},
-				FinalAnswer:  "Done!",
-				ErrorCode:    "sample_error",
-				ErrorMessage: "Sample public error.",
-				AnswerAudit:  &types.AnswerAuditReport{PipelineVersion: "test", Publishable: true, Stages: []types.AnswerAuditStage{{Name: "freshness", Status: "passed", Findings: []types.AnswerAuditFinding{{Kind: "test", Detail: "kept"}}}}},
+				FinalAnswer:     "Done!",
+				TerminationKind: types.TerminationBusinessFailed,
+				ErrorCode:       "sample_error",
+				ErrorMessage:    "Sample public error.",
+				AnswerAudit:     &types.AnswerAuditReport{PipelineVersion: "test", Publishable: true, Stages: []types.AnswerAuditStage{{Name: "freshness", Status: "passed", Findings: []types.AnswerAuditFinding{{Kind: "test", Detail: "kept"}}}}},
 			}
 
 			err = s.SaveFullTask(ctx, task)
@@ -206,8 +207,8 @@ func TestStores(t *testing.T) {
 			if retrieved.FinalAnswer != task.FinalAnswer {
 				t.Errorf("expected FinalAnswer %q, got %q", task.FinalAnswer, retrieved.FinalAnswer)
 			}
-			if retrieved.ErrorCode != task.ErrorCode || retrieved.ErrorMessage != task.ErrorMessage {
-				t.Errorf("expected task error %q/%q, got %q/%q", task.ErrorCode, task.ErrorMessage, retrieved.ErrorCode, retrieved.ErrorMessage)
+			if retrieved.TerminationKind != task.TerminationKind || retrieved.ErrorCode != task.ErrorCode || retrieved.ErrorMessage != task.ErrorMessage {
+				t.Errorf("expected task termination/error %q/%q/%q, got %q/%q/%q", task.TerminationKind, task.ErrorCode, task.ErrorMessage, retrieved.TerminationKind, retrieved.ErrorCode, retrieved.ErrorMessage)
 			}
 			if retrieved.AnswerAudit == nil || retrieved.AnswerAudit.PipelineVersion != "test" || len(retrieved.AnswerAudit.Stages) != 1 {
 				t.Fatalf("answer audit did not round-trip: %+v", retrieved.AnswerAudit)

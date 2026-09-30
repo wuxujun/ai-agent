@@ -49,6 +49,17 @@ type StepTrace struct {
 
 type TaskStatus string
 
+type TerminationKind string
+
+const (
+	TerminationNone             TerminationKind = ""
+	TerminationBusinessFailed   TerminationKind = "business_failed"
+	TerminationShutdownRollback TerminationKind = "shutdown_rollback"
+	TerminationClientCancelled  TerminationKind = "client_cancelled"
+	TerminationTimeout          TerminationKind = "timeout"
+	TerminationLeaseLost        TerminationKind = "lease_lost"
+)
+
 const (
 	StatusCreated          TaskStatus = "created"
 	StatusRunning          TaskStatus = "running"
@@ -123,6 +134,7 @@ type Task struct {
 	LLMEstimatedCostUSD float64            `json:"llm_estimated_cost_usd"`
 	Trace               []StepTrace        `json:"trace"`
 	FinalAnswer         string             `json:"final_answer"`
+	TerminationKind     TerminationKind    `json:"termination_kind,omitempty"`
 	ErrorCode           string             `json:"error_code,omitempty"`
 	ErrorMessage        string             `json:"error_message,omitempty"`
 	Memories            []Memory           `json:"memories,omitempty"`

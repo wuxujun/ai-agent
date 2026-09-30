@@ -41,7 +41,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.Float64Var(&thresholds.MaxIrrelevantNodeRate, "max-irrelevant-node-rate", 0.75, "maximum unrelated graph-node rate")
 	flags.Float64Var(&thresholds.MinSuggestionRecall, "min-suggestion-recall", 0.80, "minimum expected Wiki suggestion recall")
 	flags.Float64Var(&thresholds.MaxSuggestionNoiseRate, "max-suggestion-noise-rate", 0.60, "maximum unexpected Wiki suggestion rate")
-	flags.Float64Var(&thresholds.MaxNoAnswerFalsePositiveRate, "max-no-answer-false-positive-rate", 1, "maximum false-positive rate for no-answer cases")
+	flags.Float64Var(&thresholds.MaxNoAnswerFalsePositiveRate, "max-no-answer-false-positive-rate", 0, "maximum false-positive rate for no-answer cases")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}

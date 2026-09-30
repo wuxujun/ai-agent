@@ -128,7 +128,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		store:       st,
 		engine:      eng,
 		metrics:     mc,
-		taskSem:     newResizableSemaphore(),
+		taskSem:     newResizableSemaphore(maxTasks),
 		activeTasks: make(map[string]*activeRun),
 	}
 
@@ -275,6 +275,11 @@ func (h *Handler) Wait() {
 	h.wg.Wait()
 }
 
+// ResizeTaskSemaphore applies a hot-reloaded concurrent task limit.
+func (h *Handler) ResizeTaskSemaphore(limit int) {
+	h.taskSem.Resize(limit)
+}
+
 // SetApprovalBus wires the optional distributed approval/cancel bus. Must be
 // called before any tasks are started. Safe to call with a nil bus (no-op).
 func (h *Handler) SetApprovalBus(bus *orchestrator.ApprovalBus) {
@@ -359,17 +364,25 @@ func (h *Handler) rollbackInterruptedTask(ctx context.Context, taskID string) {
 		log.Error("shutdown rollback: failed to fetch task", "task_id", taskID, "error", err)
 		return
 	}
-	// Only roll back tasks that were running/queued — completed or already
-	// failed-for-a-real-reason tasks must not be touched.
+	// Only roll back tasks that were running/queued or were explicitly canceled by
+	// shutdown. Business failures must not be resurrected based on FinalAnswer text.
 	if task.Status != types.StatusFailed && task.Status != types.StatusRunning {
 		return
 	}
-	if task.Status == types.StatusFailed && task.FinalAnswer != "" &&
-		len(task.FinalAnswer) > 20 {
-		// Heuristic: a task with a real FinalAnswer failed for a business
-		// reason — do not resurrect it. Only tasks that failed due to
-		// context cancellation (short/empty FinalAnswer) get paused.
-		return
+	if task.Status == types.StatusFailed {
+		switch task.TerminationKind {
+		case types.TerminationShutdownRollback, types.TerminationClientCancelled:
+			// Eligible for pausing after this process initiated graceful shutdown.
+		case types.TerminationNone:
+			// Backward-compatible fallback for pre-termination_kind rows: only empty
+			// cancellation-shaped failures are resumable.
+			if task.FinalAnswer != "" || task.ErrorCode == "" {
+				return
+			}
+		default:
+			return
+		}
+		task.TerminationKind = types.TerminationShutdownRollback
 	}
 	success, transitionErr := h.store.TryTransitionTaskStatus(ctx, taskID, []types.TaskStatus{types.StatusRunning, types.StatusFailed}, types.StatusPaused)
 	if transitionErr != nil {
@@ -796,19 +809,15 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
-	// Acquire concurrency slot dynamically
-	limit := config.Get().Orchestrator.MaxConcurrentTasks
-	if limit <= 0 {
-		limit = 10
-	}
-	if !h.taskSem.Acquire(ctx, limit) {
+	// Acquire concurrency slot using the semaphore's authoritative hot-reloaded limit.
+	if !h.taskSem.Acquire(ctx) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "too many concurrent tasks, please try again later"})
 		return
 	}
 	handedOff := false
 	defer func() {
 		if !handedOff {
-			h.taskSem.Release(limit)
+			h.taskSem.Release()
 		}
 	}()
 
@@ -883,7 +892,7 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		h.wg.Add(1)
 		go func() {
 			defer h.wg.Done()
-			defer h.taskSem.Release(limit)
+			defer h.taskSem.Release()
 			defer cleanupRun()
 			execErr := h.engine.Next(ctx, task)
 			if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
@@ -1124,11 +1133,7 @@ func (h *Handler) runAll(c *gin.Context) {
 		}()
 
 		// Wait for a concurrency slot, but honor cancellation while queued.
-		limit := config.Get().Orchestrator.MaxConcurrentTasks
-		if limit <= 0 {
-			limit = 10
-		}
-		if !h.taskSem.Acquire(bgCtx, limit) {
+		if !h.taskSem.Acquire(bgCtx) {
 			if leaseErr := lease.Err(); leaseErr != nil {
 				errChan <- leaseErr
 				return
@@ -1142,7 +1147,7 @@ func (h *Handler) runAll(c *gin.Context) {
 			errChan <- bgCtx.Err()
 			return
 		}
-		defer h.taskSem.Release(limit)
+		defer h.taskSem.Release()
 
 		log.Info("starting async run-all for task", "task_id", task.ID)
 		execErr := h.engine.RunAll(bgCtx, task)
@@ -1780,6 +1785,9 @@ func (h *Handler) deleteAllMemories(c *gin.Context) {
 //   - Model/timeout/log-level tuning in production.
 func (h *Handler) reloadConfig(c *gin.Context) {
 	cfg, changes, err := config.Reload()
+	if err == nil {
+		h.taskSem.Resize(cfg.Orchestrator.MaxConcurrentTasks)
+	}
 	if err != nil {
 		log.Error("manual config reload failed", "error", err)
 		status := http.StatusInternalServerError
@@ -1900,57 +1908,101 @@ func (h *Handler) CancelTaskByID(taskID string) bool {
 	return true
 }
 
+type waiterState int
+
+const (
+	waiterStatePending waiterState = iota
+	waiterStateGranted
+	waiterStateCancelled
+)
+
+type semWaiter struct {
+	ch    chan struct{}
+	state waiterState
+}
+
 type resizableSemaphore struct {
 	mu      sync.Mutex
+	limit   int
 	current int
-	waiters []chan struct{}
+	waiters []*semWaiter
 }
 
-func newResizableSemaphore() *resizableSemaphore {
-	return &resizableSemaphore{}
+func newResizableSemaphore(limit int) *resizableSemaphore {
+	if limit <= 0 {
+		limit = 10
+	}
+	return &resizableSemaphore{limit: limit}
 }
 
-func (s *resizableSemaphore) Acquire(ctx context.Context, limit int) bool {
+func (s *resizableSemaphore) Acquire(ctx context.Context) bool {
 	s.mu.Lock()
-	s.wakeWaiters(limit)
-	if s.current < limit {
+	if s.current < s.limit {
 		s.current++
 		s.mu.Unlock()
 		return true
 	}
 
-	ch := make(chan struct{})
-	s.waiters = append(s.waiters, ch)
+	w := &semWaiter{ch: make(chan struct{}), state: waiterStatePending}
+	s.waiters = append(s.waiters, w)
 	s.mu.Unlock()
 
 	select {
-	case <-ch:
+	case <-w.ch:
 		return true
 	case <-ctx.Done():
 		s.mu.Lock()
-		for i, w := range s.waiters {
-			if w == ch {
-				s.waiters = append(s.waiters[:i], s.waiters[i+1:]...)
-				break
-			}
+		defer s.mu.Unlock()
+		switch w.state {
+		case waiterStateGranted:
+			// A grant raced with cancellation. Return the slot so capacity does not leak.
+			s.current--
+			s.wakeWaitersLocked()
+		case waiterStatePending:
+			w.state = waiterStateCancelled
+			s.removeWaiterLocked(w)
 		}
-		s.mu.Unlock()
 		return false
 	}
 }
 
-func (s *resizableSemaphore) Release(limit int) {
+func (s *resizableSemaphore) Release() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.current--
-	s.wakeWaiters(limit)
+	if s.current > 0 {
+		s.current--
+	}
+	s.wakeWaitersLocked()
 }
 
-func (s *resizableSemaphore) wakeWaiters(limit int) {
-	for len(s.waiters) > 0 && s.current < limit {
-		ch := s.waiters[0]
+func (s *resizableSemaphore) Resize(limit int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 10
+	}
+	s.limit = limit
+	s.wakeWaitersLocked()
+}
+
+func (s *resizableSemaphore) removeWaiterLocked(target *semWaiter) {
+	for i, w := range s.waiters {
+		if w == target {
+			s.waiters = append(s.waiters[:i], s.waiters[i+1:]...)
+			return
+		}
+	}
+}
+
+func (s *resizableSemaphore) wakeWaitersLocked() {
+	for len(s.waiters) > 0 && s.current < s.limit {
+		w := s.waiters[0]
 		s.waiters = s.waiters[1:]
+		if w.state != waiterStatePending {
+			continue
+		}
+		w.state = waiterStateGranted
 		s.current++
-		close(ch)
+		close(w.ch)
 	}
 }

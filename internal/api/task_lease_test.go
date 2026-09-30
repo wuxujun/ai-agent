@@ -53,7 +53,7 @@ func (s *controlledLeaseStore) RenewTaskLease(ctx context.Context, id, owner str
 }
 
 func leaseHandler(st store.Store, executor *leaseCountingExecutor) *Handler {
-	return &Handler{store: st, engine: &orchestrator.Engine{Store: st, Mode: orchestrator.ModeLegacy, Planner: leaseApprovalPlanner{}, Executor: executor, Approvals: orchestrator.NewApprovalStore(), LLMSceneEnabled: func(string) bool { return false }}, activeTasks: make(map[string]*activeRun), taskSem: newResizableSemaphore()}
+	return &Handler{store: st, engine: &orchestrator.Engine{Store: st, Mode: orchestrator.ModeLegacy, Planner: leaseApprovalPlanner{}, Executor: executor, Approvals: orchestrator.NewApprovalStore(), LLMSceneEnabled: func(string) bool { return false }}, activeTasks: make(map[string]*activeRun), taskSem: newResizableSemaphore(10)}
 }
 
 func runLeaseRequest(h *Handler, id string) *httptest.ResponseRecorder {

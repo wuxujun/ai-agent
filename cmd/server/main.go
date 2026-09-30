@@ -232,10 +232,11 @@ func run() error {
 		bus:    app.bus,
 		expiry: app.expiry,
 		reload: func() error {
-			_, changes, err := config.Reload()
+			cfg, changes, err := config.Reload()
 			if err != nil {
 				return err
 			}
+			app.tasks.ResizeTaskSemaphore(cfg.Orchestrator.MaxConcurrentTasks)
 			slog.Info("config reloaded", "changes", len(changes))
 			if err := configureLogger(config.Get()); err != nil {
 				return fmt.Errorf("logging reconfiguration failed; keeping previous outputs: %w", err)

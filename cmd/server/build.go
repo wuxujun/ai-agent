@@ -140,7 +140,7 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
 			slog.Warn("startup scan: failed to list legacy cancellation failures", "error", failedErr)
 		} else {
 			for _, task := range failedTasks {
-				if strings.Contains(strings.ToLower(task.FinalAnswer), "context canceled") {
+				if task.TerminationKind == types.TerminationClientCancelled || task.TerminationKind == types.TerminationShutdownRollback || (task.TerminationKind == types.TerminationNone && strings.Contains(strings.ToLower(task.FinalAnswer), "context canceled")) {
 					awaitingTasks = append(awaitingTasks, task)
 				}
 			}
