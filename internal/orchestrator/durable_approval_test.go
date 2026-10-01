@@ -317,3 +317,21 @@ func TestRecoverableApprovalTaskRecognizesStructuredCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoverableApprovalTaskHonorsTerminationKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind types.TerminationKind
+		want bool
+	}{
+		{types.TerminationClientCancelled, true},
+		{types.TerminationShutdownRollback, true},
+		{types.TerminationTimeout, true},
+		{types.TerminationBusinessFailed, false},
+		{types.TerminationLeaseLost, false},
+	} {
+		task := &types.Task{Status: types.StatusFailed, TerminationKind: tc.kind, ErrorCode: "task_canceled", FinalAnswer: "context canceled"}
+		if got := isRecoverableApprovalTask(task); got != tc.want {
+			t.Errorf("kind %q recoverable = %t, want %t", tc.kind, got, tc.want)
+		}
+	}
+}

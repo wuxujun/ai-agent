@@ -151,10 +151,6 @@ func run() error {
 		}
 	}
 
-	// Start filesystem watcher so the config is hot-reloaded automatically
-	// whenever config.yaml is saved on disk (no signal required).
-	config.Watch()
-
 	// Build the skill capability layer before the planner first compiles its
 	// decision schema. RegisterUseSkill adds the use_skill tool to
 	// tools.DefaultRegistry, from which PlannerDecisionSchema,
@@ -220,6 +216,11 @@ func run() error {
 	if wikiRuntime.brain != nil {
 		app.tasks.SetBrainPageReader(wikiRuntime.brain)
 	}
+	// Apply automatic file-watch reloads to dependencies that retain runtime
+	// state. Start watching after the task handler has been constructed.
+	config.Watch(func() {
+		app.tasks.ResizeTaskSemaphore(config.Get().Orchestrator.MaxConcurrentTasks)
+	})
 
 	// Wait for SIGINT, SIGTERM (shutdown) or SIGHUP (hot-reload).
 	quit := make(chan os.Signal, 1)

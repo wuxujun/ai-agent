@@ -140,7 +140,7 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
 			slog.Warn("startup scan: failed to list legacy cancellation failures", "error", failedErr)
 		} else {
 			for _, task := range failedTasks {
-				if task.TerminationKind == types.TerminationClientCancelled || task.TerminationKind == types.TerminationShutdownRollback || (task.TerminationKind == types.TerminationNone && strings.Contains(strings.ToLower(task.FinalAnswer), "context canceled")) {
+				if recoverableStartupFailure(task) {
 					awaitingTasks = append(awaitingTasks, task)
 				}
 			}
@@ -181,6 +181,20 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
 			}
 		}
 	}()
+}
+
+func recoverableStartupFailure(task *types.Task) bool {
+	if task == nil || task.Status != types.StatusFailed {
+		return false
+	}
+	switch task.TerminationKind {
+	case types.TerminationClientCancelled, types.TerminationShutdownRollback, types.TerminationTimeout:
+		return true
+	case types.TerminationNone:
+		return strings.Contains(strings.ToLower(task.FinalAnswer), "context canceled")
+	default:
+		return false
+	}
 }
 
 type approvalExpiryRuntime struct {

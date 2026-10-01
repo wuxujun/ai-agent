@@ -532,7 +532,10 @@ func memoryRelevanceScore(query string, queryEmbedding []float32, mem *types.Mem
 
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
 // It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
-func (m *MemoryStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+func (m *MemoryStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus, kind ...types.TerminationKind) (bool, error) {
+	if len(kind) > 1 {
+		return false, fmt.Errorf("at most one termination kind may be supplied")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -558,6 +561,9 @@ func (m *MemoryStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 	}
 
 	task.Status = to
+	if len(kind) == 1 {
+		task.TerminationKind = kind[0]
+	}
 	return true, nil
 }
 

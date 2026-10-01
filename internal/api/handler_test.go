@@ -1557,7 +1557,9 @@ func TestCreateTask_AutoGenerateID(t *testing.T) {
 // the DB row is corrected.
 func TestRunAllAlreadyRunningInDBDoesNotLeakReservation(t *testing.T) {
 	st := store.NewMemoryStore()
-	mp := &mockPlanner{}
+	blockCh := make(chan struct{})
+	defer close(blockCh)
+	mp := &mockPlanner{blockCh: blockCh, startedCh: make(chan struct{}, 1)}
 	engine := &orchestrator.Engine{
 		Mode:     orchestrator.ModeLegacy,
 		Planner:  mp,
@@ -1596,6 +1598,11 @@ func TestRunAllAlreadyRunningInDBDoesNotLeakReservation(t *testing.T) {
 	r.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusAccepted {
 		t.Fatalf("expected second run-all to 202 after DB row corrected, got %d: %s", w2.Code, w2.Body.String())
+	}
+	select {
+	case <-mp.startedCh:
+	case <-time.After(time.Second):
+		t.Fatal("second run-all did not start")
 	}
 
 	// Drain the running task so the test doesn't leak a goroutine that

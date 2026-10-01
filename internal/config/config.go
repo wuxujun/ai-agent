@@ -1059,11 +1059,12 @@ func applyReloadedConfig(newCfg *Config) []string {
 
 // Watch registers a viper OnConfigChange hook so that the config is
 // automatically hot-reloaded whenever the config file is modified on disk.
-// It also starts viper's filesystem watcher goroutine.
+// onReload runs only after a valid snapshot has been installed. It also starts
+// viper's filesystem watcher goroutine.
 //
 // Call Watch() once from main() after the first LoadConfig(). Requires that a
 // config file was found (viper.ConfigFileUsed() != "").
-func Watch() {
+func Watch(onReload func()) {
 	if viper.ConfigFileUsed() == "" {
 		logger.Warn("Watch: no config file in use; filesystem watch not started")
 		return
@@ -1071,14 +1072,24 @@ func Watch() {
 
 	viper.OnConfigChange(func(e fsnotify.Event) {
 		logger.Info("config file changed, triggering hot reload")
-		if _, changes, err := Reload(); err != nil {
-			logger.Error("hot reload failed, keeping previous config", "error", err)
-		} else if len(changes) > 0 {
-			logger.Info("hot reload applied changes", "change_count", len(changes))
-		}
+		reloadWatchedConfig(onReload)
 	})
 	viper.WatchConfig()
 	logger.Info("watching config file for changes", "file", viper.ConfigFileUsed())
+}
+
+func reloadWatchedConfig(onReload func()) {
+	_, changes, err := Reload()
+	if err != nil {
+		logger.Error("hot reload failed, keeping previous config", "error", err)
+		return
+	}
+	if onReload != nil {
+		onReload()
+	}
+	if len(changes) > 0 {
+		logger.Info("hot reload applied changes", "change_count", len(changes))
+	}
 }
 
 // ── Diff helper ───────────────────────────────────────────────────────────────

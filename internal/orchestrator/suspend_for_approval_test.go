@@ -58,7 +58,7 @@ func (s *ctxAwareStore) SaveMemory(ctx context.Context, mem *types.Memory) error
 func (s *ctxAwareStore) QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error) {
 	return nil, nil
 }
-func (s *ctxAwareStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+func (s *ctxAwareStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus, kind ...types.TerminationKind) (bool, error) {
 	return true, nil
 }
 func (s *ctxAwareStore) AcquireTaskLease(context.Context, string, string, time.Duration) (bool, error) {

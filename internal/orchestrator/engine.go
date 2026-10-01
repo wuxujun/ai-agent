@@ -850,6 +850,14 @@ func isRecoverableApprovalTask(task *types.Task) bool {
 	if task.Status != types.StatusFailed {
 		return false
 	}
+	switch task.TerminationKind {
+	case types.TerminationClientCancelled, types.TerminationShutdownRollback, types.TerminationTimeout:
+		return true
+	case types.TerminationNone:
+		// Older rows predate structured termination kinds.
+	default:
+		return false
+	}
 	switch task.ErrorCode {
 	case "task_canceled", "client_disconnected", "execution_timeout":
 		return true

@@ -1677,3 +1677,36 @@ func TestConfigFileOverrideReloadUsesExplicitFile(t *testing.T) {
 		t.Fatalf("reloaded explicit config addr = %q, tool timeout = %d", cfg.API.Addr, cfg.Tool.TimeoutSeconds)
 	}
 }
+
+func TestWatchedReloadAppliesOnlyValidSnapshots(t *testing.T) {
+	t.Setenv("TEST_NO_CONFIG", "")
+	t.Setenv("AI_AGENT_API_ADDR", "")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	write := func(addr string, limit int) {
+		t.Helper()
+		content := fmt.Sprintf("api:\n  addr: %q\norchestrator:\n  max_concurrent_tasks: %d\n", addr, limit)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("127.0.0.1:19998", 2)
+	t.Setenv("AI_AGENT_CONFIG_FILE", path)
+	resetConfig()
+	defer resetConfig()
+	if got := LoadConfig().Orchestrator.MaxConcurrentTasks; got != 2 {
+		t.Fatalf("initial task limit = %d, want 2", got)
+	}
+	var observed []int
+	onReload := func() { observed = append(observed, Get().Orchestrator.MaxConcurrentTasks) }
+	write("127.0.0.1:19998", 4)
+	reloadWatchedConfig(onReload)
+	if len(observed) != 1 || observed[0] != 4 {
+		t.Fatalf("valid reload callbacks = %v, want [4]", observed)
+	}
+	previous := Get()
+	write("127.0.0.1:19999", 8)
+	reloadWatchedConfig(onReload)
+	if len(observed) != 1 || Get() != previous || Get().Orchestrator.MaxConcurrentTasks != 4 {
+		t.Fatalf("rejected reload changed callback or snapshot: callbacks=%v limit=%d", observed, Get().Orchestrator.MaxConcurrentTasks)
+	}
+}

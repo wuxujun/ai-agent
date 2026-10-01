@@ -1089,18 +1089,25 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query string, embedding
 
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
 // It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
-func (s *SQLiteStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+func (s *SQLiteStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus, kind ...types.TerminationKind) (bool, error) {
 	if len(from) == 0 {
 		return false, nil
 	}
+	if len(kind) > 1 {
+		return false, fmt.Errorf("at most one termination kind may be supplied")
+	}
+	terminationKind := types.TerminationNone
+	if len(kind) == 1 {
+		terminationKind = kind[0]
+	}
 	placeholders := make([]string, len(from))
-	args := make([]any, 0, len(from)+2)
-	args = append(args, to, id)
+	args := make([]any, 0, len(from)+4)
+	args = append(args, to, len(kind) == 1, string(terminationKind), id)
 	for i, f := range from {
 		placeholders[i] = "?"
 		args = append(args, f)
 	}
-	query := fmt.Sprintf("UPDATE tasks SET status = ? WHERE id = ? AND status IN (%s)", strings.Join(placeholders, ","))
+	query := fmt.Sprintf("UPDATE tasks SET status = ?, termination_kind = CASE WHEN ? THEN ? ELSE termination_kind END WHERE id = ? AND status IN (%s)", strings.Join(placeholders, ","))
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

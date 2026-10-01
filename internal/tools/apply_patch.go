@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -82,15 +84,14 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, workspace string, params m
 		}, nil
 	}
 
-	// 2. Fall back to Unified Diff via git apply or patch command
-	output, err := applyUnifiedDiff(ctx, workspace, path, patch)
-	if err != nil {
+	// 2. Apply a single-file Unified Diff through the same confined I/O path.
+	if err := applyUnifiedDiff(ctx, workspace, path, patch); err != nil {
 		return nil, fmt.Errorf("failed to apply unified diff: %w", err)
 	}
 
 	return &ToolResult{
 		Query:       path,
-		Observation: fmt.Sprintf("Successfully applied unified diff to %s.\nCommand Output:\n%s", path, output),
+		Observation: fmt.Sprintf("Successfully applied unified diff to %s", path),
 	}, nil
 }
 
@@ -154,7 +155,23 @@ func parseSearchReplacePatch(patch string) ([]patchBlock, error) {
 }
 
 func applySearchReplaceBlocks(workspace, filePath string, blocks []patchBlock) error {
-	b, err := readWorkspaceFileSecurely(workspace, filePath)
+	if err := policy.ValidateReadPath(workspace, filePath); err != nil {
+		return err
+	}
+	if err := policy.ValidateWritePath(workspace, filePath); err != nil {
+		return err
+	}
+	relativePath, err := filepath.Rel(workspace, filePath)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		return fmt.Errorf("failed to open workspace root: %w", err)
+	}
+	defer root.Close()
+
+	b, err := readWorkspaceFileSecurely(root, relativePath)
 	if err != nil {
 		return err
 	}
@@ -173,21 +190,20 @@ func applySearchReplaceBlocks(workspace, filePath string, blocks []patchBlock) e
 		content = strings.Replace(content, block.search, block.replace, 1)
 	}
 
-	return writeWorkspaceFileAtomically(workspace, filePath, []byte(content))
+	return writeWorkspaceFileAtomically(root, relativePath, []byte(content))
 }
 
-func readWorkspaceFileSecurely(workspace, filePath string) ([]byte, error) {
-	if err := policy.ValidateReadPath(workspace, filePath); err != nil {
-		return nil, err
+func readWorkspaceFileSecurely(root *os.Root, relativePath string) ([]byte, error) {
+	info, err := root.Lstat(relativePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect target file: %w", err)
 	}
-	if err := validateWorkspaceParent(workspace, filePath); err != nil {
-		return nil, err
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("patch target must be a regular file")
 	}
-
-	// Open the leaf with O_NOFOLLOW to prevent following a target symlink. The
-	// parent validation immediately above resolves existing ancestors, so an
-	// attacker swapping a checked directory for a symlink is caught before open.
-	fRead, err := os.OpenFile(filePath, os.O_RDONLY|policy.O_NOFOLLOW, 0)
+	// Root confines every path component to the opened workspace even if an
+	// ancestor changes between Lstat and OpenFile.
+	fRead, err := root.OpenFile(relativePath, os.O_RDONLY|policy.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file safely for reading: %w", err)
 	}
@@ -200,93 +216,39 @@ func readWorkspaceFileSecurely(workspace, filePath string) ([]byte, error) {
 	return b, nil
 }
 
-func writeWorkspaceFileAtomically(workspace, filePath string, content []byte) error {
-	if err := policy.ValidateWritePath(workspace, filePath); err != nil {
-		return err
+func writeWorkspaceFileAtomically(root *os.Root, relativePath string, content []byte) error {
+	info, err := root.Lstat(relativePath)
+	if err != nil {
+		return fmt.Errorf("failed to inspect target file: %w", err)
 	}
-	parent := filepath.Dir(filePath)
-	if err := validateWorkspaceParent(workspace, filePath); err != nil {
-		return err
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("patch target must be a regular file")
 	}
-
-	tmp, err := os.CreateTemp(parent, ".patch.tmp.*")
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return fmt.Errorf("failed to generate temp file name: %w", err)
+	}
+	tmpName := filepath.Join(filepath.Dir(relativePath), ".patch.tmp."+hex.EncodeToString(random))
+	tmp, err := root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to create safe temp file: %w", err)
 	}
-	tmpName := tmp.Name()
-	removeTemp := true
-	defer func() {
-		if removeTemp {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if err := policy.ValidateWritePath(workspace, tmpName); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("temp file escaped workspace: %w", err)
-	}
+	defer root.Remove(tmpName)
 	if _, err := tmp.Write(content); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("failed to write temp patch content: %w", err)
 	}
+	if err := tmp.Chmod(info.Mode()); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to preserve target permissions: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("failed to close temp patch file: %w", err)
 	}
-	if err := validateWorkspaceParent(workspace, filePath); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, filePath); err != nil {
+	if err := root.Rename(tmpName, relativePath); err != nil {
 		return fmt.Errorf("failed to atomically replace target file: %w", err)
 	}
-	removeTemp = false
 	return nil
-}
-
-func validateWorkspaceParent(workspace, filePath string) error {
-	parent := filepath.Dir(filePath)
-	if err := policy.ValidateReadPath(workspace, parent); err != nil {
-		return fmt.Errorf("target parent escaped workspace: %w", err)
-	}
-	info, err := os.Lstat(parent)
-	if err != nil {
-		return fmt.Errorf("failed to inspect target parent: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("target parent is not a directory")
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("target parent must not be a symlink")
-	}
-	return nil
-}
-
-func applyUnifiedDiff(ctx context.Context, workspace, relativePath, patchContent string) (string, error) {
-	tempFile, err := os.CreateTemp(workspace, "patch_*.diff")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp patch file: %w", err)
-	}
-	tempName := tempFile.Name()
-	defer os.Remove(tempName)
-
-	if _, err := tempFile.WriteString(patchContent); err != nil {
-		tempFile.Close()
-		return "", fmt.Errorf("failed to write temp patch file: %w", err)
-	}
-	tempFile.Close()
-
-	relPatchName := filepath.Base(tempName)
-
-	// Try git apply first
-	output, err := RunCommand(ctx, workspace, "git", "apply", relPatchName)
-	if err == nil {
-		return output, nil
-	}
-
-	// Fallback to patch utility
-	output2, err2 := RunCommand(ctx, workspace, "patch", "-p1", "-i", relPatchName)
-	if err2 != nil {
-		return "", fmt.Errorf("git apply failed (%v, output: %s) AND patch command failed (%v, output: %s)", err, output, err2, output2)
-	}
-	return output2, nil
 }
 
 func init() {

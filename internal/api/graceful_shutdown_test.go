@@ -50,7 +50,7 @@ func (s *inMemShutdownStore) SaveMemory(_ context.Context, _ *types.Memory) erro
 func (s *inMemShutdownStore) QueryMemories(_ context.Context, _ string, _ []float32, _ int) ([]*types.Memory, error) {
 	return nil, nil
 }
-func (s *inMemShutdownStore) TryTransitionTaskStatus(_ context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+func (s *inMemShutdownStore) TryTransitionTaskStatus(_ context.Context, id string, from []types.TaskStatus, to types.TaskStatus, kind ...types.TerminationKind) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
@@ -60,6 +60,9 @@ func (s *inMemShutdownStore) TryTransitionTaskStatus(_ context.Context, id strin
 	for _, f := range from {
 		if t.Status == f {
 			t.Status = to
+			if len(kind) == 1 {
+				t.TerminationKind = kind[0]
+			}
 			return true, nil
 		}
 	}
@@ -105,6 +108,43 @@ func TestShutdownRollback_RunningTaskPaused(t *testing.T) {
 	}
 	if got.Status != types.StatusPaused {
 		t.Errorf("expected StatusPaused after shutdown rollback, got %q", got.Status)
+	}
+	if got.TerminationKind != types.TerminationShutdownRollback {
+		t.Errorf("expected persisted shutdown_rollback kind, got %q", got.TerminationKind)
+	}
+}
+
+func TestShutdownRollbackDistinguishesBusinessFailureFromCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		kind       types.TerminationKind
+		answer     string
+		wantStatus types.TaskStatus
+		wantKind   types.TerminationKind
+	}{
+		{"short_business_failure", types.TerminationBusinessFailed, "Failed: 404", types.StatusFailed, types.TerminationBusinessFailed},
+		{"long_client_cancellation", types.TerminationClientCancelled, "Client cancelled after a lengthy request and a long diagnostic stack trace.", types.StatusPaused, types.TerminationShutdownRollback},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newInMemShutdownStore()
+			task := &types.Task{ID: tc.name, Status: types.StatusFailed, FinalAnswer: tc.answer, TerminationKind: tc.kind}
+			if err := st.SaveFullTask(context.Background(), task); err != nil {
+				t.Fatal(err)
+			}
+			h := &Handler{store: st, activeTasks: make(map[string]*activeRun)}
+			_, cancel := context.WithCancel(context.Background())
+			h.activeTasks[task.ID] = &activeRun{cancel: cancel}
+			if err := h.Shutdown(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got, err := st.GetTask(context.Background(), task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != tc.wantStatus || got.TerminationKind != tc.wantKind {
+				t.Fatalf("status/kind = %s/%s, want %s/%s", got.Status, got.TerminationKind, tc.wantStatus, tc.wantKind)
+			}
+		})
 	}
 }
 

@@ -128,9 +128,9 @@ type Store interface {
 	// If embedding is provided, it can perform vector similarity search.
 	QueryMemories(ctx context.Context, query string, embedding []float32, limit int) ([]*types.Memory, error)
 
-	// TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
-	// It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
-	TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error)
+	// TryTransitionTaskStatus atomically transitions status and, when supplied,
+	// termination kind. A failed status match leaves both fields unchanged.
+	TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus, kind ...types.TerminationKind) (bool, error)
 
 	// AcquireTaskLease obtains or renews an execution lease for task id.
 	// It succeeds when no lease exists, the existing lease expired, or owner

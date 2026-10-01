@@ -1554,18 +1554,25 @@ func (p *PostgresStore) QueryMemories(ctx context.Context, query string, embeddi
 
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
 // It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
-func (p *PostgresStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+func (p *PostgresStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus, kind ...types.TerminationKind) (bool, error) {
 	if len(from) == 0 {
 		return false, nil
 	}
+	if len(kind) > 1 {
+		return false, fmt.Errorf("at most one termination kind may be supplied")
+	}
+	terminationKind := types.TerminationNone
+	if len(kind) == 1 {
+		terminationKind = kind[0]
+	}
 	placeholders := make([]string, len(from))
-	args := make([]any, 0, len(from)+2)
-	args = append(args, to, id)
+	args := make([]any, 0, len(from)+4)
+	args = append(args, to, len(kind) == 1, string(terminationKind), id)
 	for i, f := range from {
-		placeholders[i] = fmt.Sprintf("$%d", i+3)
+		placeholders[i] = fmt.Sprintf("$%d", i+5)
 		args = append(args, f)
 	}
-	query := fmt.Sprintf("UPDATE tasks SET status = $1 WHERE id = $2 AND status IN (%s)", strings.Join(placeholders, ","))
+	query := fmt.Sprintf("UPDATE tasks SET status = $1, termination_kind = CASE WHEN $2 THEN $3 ELSE termination_kind END WHERE id = $4 AND status IN (%s)", strings.Join(placeholders, ","))
 
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {

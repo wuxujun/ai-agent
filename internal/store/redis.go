@@ -982,7 +982,7 @@ var transitionScript = redis.NewScript(`
 
 	local task = cjson.decode(val)
 	local matched = false
-	for i = 6, #ARGV do
+	for i = 8, #ARGV do
 		if task["status"] == ARGV[i] then
 			matched = true
 			break
@@ -995,6 +995,7 @@ var transitionScript = redis.NewScript(`
 
 	local oldStatus = task["status"]
 	task["status"] = toStatus
+	if ARGV[6] == '1' then task["termination_kind"] = ARGV[7] end
 	redis.call('SET', taskKey, cjson.encode(task))
 	redis.call('ZREM', statusPrefix .. oldStatus, task["id"])
 	redis.call('ZADD', statusPrefix .. toStatus, 0, task["id"])
@@ -1026,9 +1027,16 @@ var releaseLeaseScript = redis.NewScript(`
 
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
 // It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
-func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus) (bool, error) {
+func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus, kind ...types.TerminationKind) (bool, error) {
 	ctx, span := tracer.Start(ctx, "store.redis.try_transition_task_status")
 	defer span.End()
+	if len(kind) > 1 {
+		return false, fmt.Errorf("at most one termination kind may be supplied")
+	}
+	terminationKind := types.TerminationNone
+	if len(kind) == 1 {
+		terminationKind = kind[0]
+	}
 
 	guard, owner := "0", ""
 	if scope, scoped := ctx.Value(taskLeaseContextKey{}).(taskLeaseScope); scoped {
@@ -1037,9 +1045,15 @@ func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, fro
 		}
 		guard, owner = "1", scope.owner
 	}
-	args := make([]any, 0, len(from)+5)
+	args := make([]any, 0, len(from)+7)
 	args = append(args, string(to))
 	args = append(args, taskStatusIndexBase, guard, owner, taskTenantStatusIndexBase)
+	if len(kind) == 1 {
+		args = append(args, "1")
+	} else {
+		args = append(args, "0")
+	}
+	args = append(args, string(terminationKind))
 	for _, f := range from {
 		args = append(args, string(f))
 	}

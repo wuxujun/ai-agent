@@ -31,3 +31,23 @@ func TestSetTaskCanceledPersistsClientCancelledKind(t *testing.T) {
 		t.Fatalf("answer/code = %q/%q", task.FinalAnswer, task.ErrorCode)
 	}
 }
+
+func TestSetTaskCanceledDistinguishesTimeout(t *testing.T) {
+	task := &types.Task{ID: "timed-out", Status: types.StatusRunning}
+	if err := SetTaskCanceled(task, "execution_timeout", "Task execution timed out."); err != nil {
+		t.Fatal(err)
+	}
+	if task.TerminationKind != types.TerminationTimeout {
+		t.Fatalf("termination kind = %q, want %q", task.TerminationKind, types.TerminationTimeout)
+	}
+}
+
+func TestSetTaskRunningClearsOldTerminationKind(t *testing.T) {
+	task := &types.Task{ID: "resume", Status: types.StatusPaused, TerminationKind: types.TerminationShutdownRollback}
+	if err := SetTaskRunning(task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != types.StatusRunning || task.TerminationKind != types.TerminationNone {
+		t.Fatalf("status/kind = %s/%s, want running/none", task.Status, task.TerminationKind)
+	}
+}

@@ -61,7 +61,11 @@ func SetTaskPartial(task *types.Task, finalAnswer, completionReason string) erro
 
 // SetTaskRunning transitions the task to running.
 func SetTaskRunning(task *types.Task) error {
-	return TransitionTask(task, types.StatusRunning)
+	if err := TransitionTask(task, types.StatusRunning); err != nil {
+		return err
+	}
+	task.TerminationKind = types.TerminationNone
+	return nil
 }
 
 // SetTaskCompleted transitions the task to completed and records the final answer.
@@ -116,5 +120,8 @@ func SetTaskCanceled(task *types.Task, code, message string) error {
 	task.ErrorCode = code
 	task.ErrorMessage = message
 	task.TerminationKind = types.TerminationClientCancelled
+	if code == "execution_timeout" {
+		task.TerminationKind = types.TerminationTimeout
+	}
 	return nil
 }

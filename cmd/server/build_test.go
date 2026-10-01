@@ -18,6 +18,25 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+func TestRecoverableStartupFailureUsesTerminationKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind types.TerminationKind
+		want bool
+	}{
+		{types.TerminationClientCancelled, true},
+		{types.TerminationShutdownRollback, true},
+		{types.TerminationTimeout, true},
+		{types.TerminationBusinessFailed, false},
+		{types.TerminationLeaseLost, false},
+		{types.TerminationNone, true},
+	} {
+		task := &types.Task{Status: types.StatusFailed, TerminationKind: tc.kind, FinalAnswer: "context canceled"}
+		if got := recoverableStartupFailure(task); got != tc.want {
+			t.Errorf("kind %q recoverable = %t, want %t", tc.kind, got, tc.want)
+		}
+	}
+}
+
 func TestExpirePendingApprovalsTransitionsStaleRecord(t *testing.T) {
 	restore := config.OverrideForTesting(func(cfg *config.Config) { cfg.Approval.TTLSeconds = 1 })
 	t.Cleanup(restore)

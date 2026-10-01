@@ -382,9 +382,8 @@ func (h *Handler) rollbackInterruptedTask(ctx context.Context, taskID string) {
 		default:
 			return
 		}
-		task.TerminationKind = types.TerminationShutdownRollback
 	}
-	success, transitionErr := h.store.TryTransitionTaskStatus(ctx, taskID, []types.TaskStatus{types.StatusRunning, types.StatusFailed}, types.StatusPaused)
+	success, transitionErr := h.store.TryTransitionTaskStatus(ctx, taskID, []types.TaskStatus{types.StatusRunning, types.StatusFailed}, types.StatusPaused, types.TerminationShutdownRollback)
 	if transitionErr != nil {
 		log.Error("shutdown rollback: failed to pause task", "task_id", taskID, "error", transitionErr)
 	} else if success {
@@ -1075,7 +1074,7 @@ func (h *Handler) runAll(c *gin.Context) {
 	if resumingMultiAgent {
 		startableStatuses = append(startableStatuses, types.StatusPartial)
 	}
-	success, err := h.store.TryTransitionTaskStatus(store.WithTaskLease(loadCtx, task.ID, owner), task.ID, startableStatuses, types.StatusRunning)
+	success, err := h.store.TryTransitionTaskStatus(store.WithTaskLease(loadCtx, task.ID, owner), task.ID, startableStatuses, types.StatusRunning, types.TerminationNone)
 	if err != nil || !success {
 		cleanupStart()
 
@@ -1091,6 +1090,7 @@ func (h *Handler) runAll(c *gin.Context) {
 	}
 
 	task.Status = types.StatusRunning
+	task.TerminationKind = types.TerminationNone
 
 	// Snapshot the fields used in the response BEFORE handing the task pointer
 	// to the goroutine. The goroutine may mutate task.Status (via engine /

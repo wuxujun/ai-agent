@@ -345,16 +345,23 @@ func TestStores(t *testing.T) {
 
 			// ── Scenario D: TryTransitionTaskStatus ────────
 			// 1. Invalid status from list (should fail)
-			success, err := s.TryTransitionTaskStatus(ctx, task.ID, []types.TaskStatus{types.StatusCompleted}, types.StatusRunning)
+			success, err := s.TryTransitionTaskStatus(ctx, task.ID, []types.TaskStatus{types.StatusCompleted}, types.StatusRunning, types.TerminationTimeout)
 			if err != nil {
 				t.Fatalf("TryTransitionTaskStatus error: %v", err)
 			}
 			if success {
 				t.Errorf("expected transition to fail, but succeeded")
 			}
+			unchanged, err := s.GetTask(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unchanged.TerminationKind != types.TerminationBusinessFailed {
+				t.Fatalf("rejected transition changed termination kind to %q", unchanged.TerminationKind)
+			}
 
 			// 2. Valid status transition (should succeed)
-			success, err = s.TryTransitionTaskStatus(ctx, task.ID, []types.TaskStatus{types.StatusCreated}, types.StatusRunning)
+			success, err = s.TryTransitionTaskStatus(ctx, task.ID, []types.TaskStatus{types.StatusCreated}, types.StatusRunning, types.TerminationNone)
 			if err != nil {
 				t.Fatalf("TryTransitionTaskStatus error: %v", err)
 			}
@@ -369,6 +376,20 @@ func TestStores(t *testing.T) {
 			}
 			if gotTrans.Status != types.StatusRunning {
 				t.Errorf("expected status to be 'running', got %s", gotTrans.Status)
+			}
+			if gotTrans.TerminationKind != types.TerminationNone {
+				t.Errorf("running task retained termination kind %q", gotTrans.TerminationKind)
+			}
+			success, err = s.TryTransitionTaskStatus(ctx, task.ID, []types.TaskStatus{types.StatusRunning}, types.StatusPaused, types.TerminationShutdownRollback)
+			if err != nil || !success {
+				t.Fatalf("status and termination transition failed: success=%t err=%v", success, err)
+			}
+			gotTrans, err = s.GetTask(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotTrans.Status != types.StatusPaused || gotTrans.TerminationKind != types.TerminationShutdownRollback {
+				t.Fatalf("status/kind = %s/%s, want paused/shutdown_rollback", gotTrans.Status, gotTrans.TerminationKind)
 			}
 
 			// 3. Try transition on non-existent task

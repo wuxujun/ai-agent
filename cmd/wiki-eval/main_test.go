@@ -59,10 +59,21 @@ func TestRunEvaluatesNoAnswerFalsePositiveGate(t *testing.T) {
 	if err := os.WriteFile(dataset, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"-directory", root, "-input", dataset, "-search-mode", "legacy", "-max-p95-ms", "5000", "-max-no-answer-false-positive-rate", "0"}, &stdout, &stderr)
-	if code != 1 || !strings.Contains(stdout.String(), "no_answer_false_positive_rate 1.000 > 0.000") {
-		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	baseArgs := []string{"-directory", root, "-input", dataset, "-search-mode", "legacy", "-max-p95-ms", "5000"}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"default_gate", baseArgs},
+		{"explicit_gate", append(append([]string(nil), baseArgs...), "-max-no-answer-false-positive-rate", "0")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tc.args, &stdout, &stderr)
+			if code != 1 || !strings.Contains(stdout.String(), "no_answer_false_positive_rate 1.000 > 0.000") {
+				t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 
