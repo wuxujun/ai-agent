@@ -559,7 +559,82 @@ VERSION=v1.0.0
 go build -ldflags="-X github.com/wuxujun/ai-agent/internal/buildinfo.Version=${VERSION}" -o server ./cmd/server
 ```
 
+
+### DAG Runtime — What It Is and Why It Matters
+
+**DAG** stands for **Directed Acyclic Graph** — the execution model used by the
+newer Multi-Agent runtime to orchestrate agent roles.
+
+#### Background: Legacy vs DAG
+
+The codebase ships two Multi-Agent runtime implementations side-by-side,
+selectable via `AI_AGENT_MULTIAGENT_RUNTIME`:
+
+| | **Legacy** runtime | **DAG** runtime |
+|---|---|---|
+| **Topology** | Imperative Go code: each role calls the next one directly via `if/switch` logic | Declarative graph: roles are *nodes*; execution order derives from `DependsOn` edges |
+| **Scheduling** | Fixed call sequence hard-coded per workflow | `TopologicalLevels()` — Kahn's algorithm groups independent nodes into concurrent batches |
+| **Parallelism** | Sequential only | Nodes in the same level with no shared dependency run concurrently (bounded by `maxBatchConcurrency = 5`) |
+| **Checkpoint / Resume** | Manual per-workflow save points | Unified `WorkflowRuntimeCheckpoint`: node states (`pending` / `succeeded` / `skipped` / `failed`) and results are persisted after every node; tasks resume from the last checkpoint without re-running completed nodes |
+| **Graph validation** | None | `WorkflowGraph.Validate()` on startup: checks for duplicate nodes, unknown dependencies, cycles (`topologicalLevels`), and illegal root conditions |
+
+#### The Workflow Graph
+
+Every Multi-Agent workflow is a `WorkflowGraph` — a list of typed nodes with
+`DependsOn` edges and activation `Condition`s:
+
+```
+Research workflow (planner_researcher_writer):
+
+  [plan] ──▶ [research] ──▶ [write]
+
+Reviewed workflow (planner_critic_executor_verifier):
+
+  [plan] ──▶ [critique] ──▶ [execute] ──▶ [verify]
+                              ↑ condition: approved (Critic must pass)
+
+Adaptive workflow (auto-selects one branch at runtime):
+
+  [plan] ──▶ [research] ──▶ [write]      ← research branch
+          └▶ [critique] ──▶ [execute] ──▶ [verify]   ← reviewed branch
+```
+
+Each node maps to a dedicated agent role (`Planner`, `Critic`, `Researcher`,
+`Executor`, `Writer`, `Verifier`). A node only runs when all its dependencies
+have succeeded **and** its `Condition` is met (e.g. `approved` means the Critic
+approved the plan; `route_research` means the Adaptive router selected the
+research branch).
+
+#### Canary Rollout (DAG vs Legacy)
+
+The DAG runtime is currently in controlled rollout. The `dag_canary_percent`
+field in `teams.yaml` (or `AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT`) determines
+what percentage of tasks use DAG when `runtime=legacy` is the server default:
+
+```yaml
+multiagent:
+  runtime: legacy          # server default
+  dag_canary_percent: 5    # 5% of tasks are deterministically bucketed to DAG
+```
+
+Tasks are **deterministically bucketed** by team + task ID — the same task ID
+always maps to the same runtime. The chosen runtime is recorded in the task
+Trace and reused on resume, so a task never switches runtimes mid-execution.
+
+Setting `runtime=dag` bypasses the canary and routes 100% of tasks to DAG.
+Setting `dag_canary_percent=0` (the default) keeps all tasks on Legacy.
+
+#### Current Status
+
+The DAG runtime has passed unit, race, and integration tests and is used in
+production at low canary percentages. Full rollout (removing the Legacy
+fallback) is gated on completing the HA dual-instance validation documented in
+[`deploy/ha/README.md`](deploy/ha/README.md).
+
+---
+
 ### Multi-Agent Orchestration Mode
+
 
 ```bash
 export AI_AGENT_ORCHESTRATOR_MODE=multiagent

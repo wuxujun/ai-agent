@@ -444,7 +444,80 @@ export AI_AGENT_APPROVAL_ENCRYPTION_PREVIOUS_KEYS="<旧-base64-密钥>[,<更旧-
 Workspace 超出该根目录，服务会返回 `403`。兼容默认值为 `false`；即使未开启严格
 模式，只要租户配置了 `workspace_root`，该边界也始终生效。
 
+
+### DAG 运行时 — 是什么，为什么重要
+
+**DAG** 全称 **有向无环图（Directed Acyclic Graph）** — 是新版 Multi-Agent
+运行时用于编排各 Agent 角色的执行模型。
+
+#### 背景：Legacy 与 DAG 的区别
+
+代码库中同时内置了两套 Multi-Agent 运行时实现，可通过
+`AI_AGENT_MULTIAGENT_RUNTIME` 切换：
+
+| | **Legacy** 运行时 | **DAG** 运行时 |
+|---|---|---|
+| **拓扑结构** | 命令式 Go 代码：每个角色通过 `if/switch` 硬编码调用下一个角色 | 声明式图：角色是*节点*，执行顺序由 `DependsOn` 边定义 |
+| **调度方式** | 每个工作流固定的调用顺序 | `TopologicalLevels()` — Kahn 拓扑排序算法将无依赖的节点分组为可并发的批次 |
+| **并发能力** | 纯串行 | 同层无依赖节点并发执行（上限 `maxBatchConcurrency = 5` 个 Worker）|
+| **断点续跑** | 每个工作流手动设置保存点 | 统一 `WorkflowRuntimeCheckpoint`：每个节点完成后持久化节点状态（`pending` / `succeeded` / `skipped` / `failed`）与结果；任务恢复时从上一个检查点继续，已完成节点不重跑 |
+| **图校验** | 无 | 启动时执行 `WorkflowGraph.Validate()`：检查重复节点、未知依赖、环路（`topologicalLevels`）及非法根节点条件 |
+
+#### 工作流图结构
+
+每个 Multi-Agent 工作流都是一个 `WorkflowGraph` — 由带 `DependsOn` 边和
+激活 `Condition` 的类型化节点列表构成：
+
+```
+Research 工作流（planner_researcher_writer）：
+
+  [plan] ──▶ [research] ──▶ [write]
+
+Reviewed 工作流（planner_critic_executor_verifier）：
+
+  [plan] ──▶ [critique] ──▶ [execute] ──▶ [verify]
+                               ↑ 条件：approved（Critic 必须通过）
+
+Adaptive 工作流（运行时自动选择分支）：
+
+  [plan] ──▶ [research] ──▶ [write]                  ← research 分支
+          └▶ [critique] ──▶ [execute] ──▶ [verify]   ← reviewed 分支
+```
+
+每个节点对应一个专用的 Agent 角色（`Planner`、`Critic`、`Researcher`、
+`Executor`、`Writer`、`Verifier`）。节点只有在所有依赖节点成功完成**且**
+自身 `Condition` 满足时才会执行（例如 `approved` 表示 Critic 已批准计划；
+`route_research` 表示 Adaptive 路由器选择了 research 分支）。
+
+#### 金丝雀灰度（DAG vs Legacy）
+
+DAG 运行时目前处于受控灰度阶段。`teams.yaml` 中的 `dag_canary_percent`
+（或 `AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT`）决定了在服务端默认
+`runtime=legacy` 时有多少比例的任务走 DAG：
+
+```yaml
+multiagent:
+  runtime: legacy          # 服务端默认
+  dag_canary_percent: 5    # 5% 的任务被确定性分桶到 DAG
+```
+
+任务按**团队名 + 任务 ID 确定性分桶** — 相同的任务 ID 始终映射到同一
+运行时。所选运行时写入任务 Trace 并在恢复时沿用，因此一个任务在整个
+执行过程中不会切换运行时。
+
+将 `runtime=dag` 时绕过金丝雀，100% 任务走 DAG。
+将 `dag_canary_percent=0`（默认）时，所有任务走 Legacy。
+
+#### 当前状态
+
+DAG 运行时已通过单元测试、竞态测试和集成测试，并在低比例金丝雀下用于
+生产。全量放量（移除 Legacy 回退路径）的前提是完成
+[`deploy/ha/README.md`](deploy/ha/README.md) 中记录的 HA 双实例验证。
+
+---
+
 ### Multi-Agent 编排模式
+
 
 ```bash
 export AI_AGENT_ORCHESTRATOR_MODE=multiagent
