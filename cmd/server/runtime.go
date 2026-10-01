@@ -19,7 +19,23 @@ type appTaskManager interface {
 	Shutdown(context.Context) error
 }
 
+// BackgroundRunner owns a cancellable background operation. Wait joins all
+// store access before the caller releases persistence resources.
+type BackgroundRunner interface {
+	Stop()
+	Wait()
+}
+
+type pausedTaskRuntime struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (r *pausedTaskRuntime) Stop() { r.cancel() }
+func (r *pausedTaskRuntime) Wait() { <-r.done }
+
 type appRuntime struct {
+	paused          BackgroundRunner
 	server          appHTTPServer
 	tasks           appTaskManager
 	bus             *approvalBusRuntime
@@ -92,6 +108,10 @@ waitLoop:
 		}
 	}
 
+	if runtime.paused != nil {
+		runtime.paused.Stop()
+		runtime.paused.Wait()
+	}
 	slog.Info("waiting for background tasks to finish")
 	taskDrainCtx, taskDrainCancel := context.WithTimeout(context.Background(), runtime.shutdownTimeout)
 	defer taskDrainCancel()

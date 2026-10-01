@@ -1549,6 +1549,8 @@ func appendUnresolvedReason(task *types.Task, reason string) {
 	}
 }
 
+const maxBatchConcurrency = 5
+
 // runBatchParallel executes a batch of read-only steps concurrently.
 func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, batch []ResearchStep) (evidence []StepEvidence, anyFailed bool) {
 	type result struct {
@@ -1564,51 +1566,65 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 	agentRole, agentLabel := executionTraceIdentity(ctx)
 
 	var wg sync.WaitGroup
-	for i, step := range batch {
+	jobs := make(chan int)
+	for worker := 0; worker < min(maxBatchConcurrency, len(batch)); worker++ {
 		wg.Add(1)
-		go func(idx int, s ResearchStep) {
+		go func() {
 			defer wg.Done()
-			start := time.Now()
-			ev, err := c.executeWorkflowStep(ctx, task.Workspace, s)
-			elapsed := time.Since(start)
+			// Each worker owns disjoint result indices; no task state is mutated
+			// until all workers finish. Avoid a goroutine for every queued step.
+			for idx := range jobs {
+				s := batch[idx]
+				start := time.Now()
+				var ev *StepEvidence
+				err := ctx.Err()
+				if err == nil {
+					ev, err = c.executeWorkflowStep(ctx, task.Workspace, s)
+				}
+				elapsed := time.Since(start)
 
-			var obs string
-			failed := (err != nil) || (ev != nil && ev.Failed)
-			if err != nil {
-				obs = fmt.Sprintf("[%s] fatal error: %v", agentLabel, err)
-			} else if ev != nil {
-				obs = fmt.Sprintf("[%s] %s", agentLabel, ev.Observation)
-			}
+				var obs string
+				failed := (err != nil) || (ev != nil && ev.Failed)
+				if err != nil {
+					obs = fmt.Sprintf("[%s] fatal error: %v", agentLabel, err)
+				} else if ev != nil {
+					obs = fmt.Sprintf("[%s] %s", agentLabel, ev.Observation)
+				}
 
-			var trEvidence []types.Evidence
-			if ev != nil {
-				trEvidence = ev.Evidence
-			}
-			var tokenUsage types.TokenUsage
-			if ev != nil {
-				tokenUsage = ev.TokenUsage
-			}
+				var trEvidence []types.Evidence
+				if ev != nil {
+					trEvidence = ev.Evidence
+				}
+				var tokenUsage types.TokenUsage
+				if ev != nil {
+					tokenUsage = ev.TokenUsage
+				}
 
-			tr := types.StepTrace{
-				Goal:        task.Goal,
-				Action:      s.Action,
-				Query:       buildStepQuery(s),
-				Observation: obs,
-				Evidence:    trEvidence,
-				TokenUsage:  tokenUsage,
-				AgentRole:   agentRole,
-			}
+				tr := types.StepTrace{
+					Goal:        task.Goal,
+					Action:      s.Action,
+					Query:       buildStepQuery(s),
+					Observation: obs,
+					Evidence:    trEvidence,
+					TokenUsage:  tokenUsage,
+					AgentRole:   agentRole,
+				}
 
-			results[idx] = result{
-				ev:      ev,
-				tr:      tr,
-				failed:  failed,
-				elapsed: elapsed,
-				action:  s.Action,
-				err:     err,
+				results[idx] = result{
+					ev:      ev,
+					tr:      tr,
+					failed:  failed,
+					elapsed: elapsed,
+					action:  s.Action,
+					err:     err,
+				}
 			}
-		}(i, step)
+		}()
 	}
+	for idx := range batch {
+		jobs <- idx
+	}
+	close(jobs)
 	wg.Wait()
 
 	// Merge results back into task state (in order)

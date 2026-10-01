@@ -232,6 +232,7 @@ func run() error {
 		tasks:  app.tasks,
 		bus:    app.bus,
 		expiry: app.expiry,
+		paused: app.paused,
 		reload: func() error {
 			cfg, changes, err := config.Reload()
 			if err != nil {

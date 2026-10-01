@@ -115,6 +115,12 @@ store:
   # 环境变量覆盖：AI_AGENT_STORE_DSN
   dsn: "data/agent.db"
 
+  # PostgreSQL 连接池配置，修改后需重启；0 使用有界默认值。
+  postgres:
+    max_open_conns: 50
+    max_idle_conns: 10
+    conn_max_lifetime_minutes: 30
+
   # 向量搜索模式。支持：“in_process”、“pgvector”。
   # “pgvector”仅在 store.type 为“postgres”时生效，其他后端会忽略该配置。
   # 环境变量覆盖：AI_AGENT_STORE_VECTOR_SEARCH

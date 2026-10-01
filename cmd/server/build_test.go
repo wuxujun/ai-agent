@@ -144,6 +144,8 @@ func TestBuildAppCreatesDefaultHTTPTransport(t *testing.T) {
 	eng := &orchestrator.Engine{Store: st, Metrics: mc}
 	app := buildApp(cfg, st, eng, mc, llmcore.NewDefaultRuntime(mc))
 	defer app.bus.Close()
+	defer app.expiry.Close()
+	defer func() { app.paused.Stop(); app.paused.Wait() }()
 
 	if app.server.Addr != "127.0.0.1:8080" {
 		t.Fatalf("server address = %q", app.server.Addr)

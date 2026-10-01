@@ -28,8 +28,9 @@ type Config struct {
 	} `mapstructure:"api"`
 
 	Store struct {
-		Type string `mapstructure:"type"`
-		DSN  string `mapstructure:"dsn"`
+		Postgres PostgresPoolConfig `mapstructure:"postgres"`
+		Type     string             `mapstructure:"type"`
+		DSN      string             `mapstructure:"dsn"`
 		// VectorSearch controls how Store.QueryMemories ranks memories.
 		// "in_process" keeps the existing JSON load + Go ranking path,
 		// "pgvector" enables PostgreSQL vector ranking, and "paradedb" fuses
@@ -546,6 +547,9 @@ func setupViper() {
 	viper.SetDefault("api.auth.introspection.cache_ttl_seconds", 10)
 	viper.SetDefault("store.type", "sqlite")
 	viper.SetDefault("store.dsn", "data/agent.db")
+	viper.SetDefault("store.postgres.max_open_conns", 50)
+	viper.SetDefault("store.postgres.max_idle_conns", 10)
+	viper.SetDefault("store.postgres.conn_max_lifetime_minutes", 30)
 	viper.SetDefault("store.vector_search", "in_process")
 	viper.SetDefault("store.pgvector_dimensions", 0)
 	viper.SetDefault("store.paradedb_candidate_multiplier", 4)
@@ -976,6 +980,7 @@ func validateRestartRequiredReload(old, new *Config) error {
 		changed bool
 	}{
 		{"api.addr", old.API.Addr != new.API.Addr},
+		{"store.postgres", old.Store.Postgres != new.Store.Postgres},
 		{"store connection", old.Store.Type != new.Store.Type || old.Store.DSN != new.Store.DSN},
 		{"orchestrator.mode", old.Orchestrator.Mode != new.Orchestrator.Mode},
 		{"skill.root", old.Skill.Root != new.Skill.Root},
@@ -1564,6 +1569,9 @@ func isBrainProjectSlug(value string) bool {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	if _, err := c.Store.Postgres.Normalized(); err != nil {
+		return err
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Orchestrator.Mode)) {
 	case "", "eino", "legacy", "adk", "step", "multiagent":
 	default:

@@ -28,6 +28,7 @@ type builtApp struct {
 	tasks  *api.Handler
 	bus    *approvalBusRuntime
 	expiry *approvalExpiryRuntime
+	paused BackgroundRunner
 }
 
 func buildStore(cfg *config.Config) (store.Store, error) {
@@ -48,7 +49,7 @@ func buildApp(cfg *config.Config, st store.Store, eng *orchestrator.Engine, mc *
 	apiHandler := api.RegisterRoutes(router, st, eng, mc)
 	busRuntime := buildApprovalBus(cfg, eng, apiHandler)
 	wireEngineEvents(eng)
-	startPausedTaskScan(st, eng)
+	pausedRuntime := startPausedTaskScan(st, eng)
 	expiryRuntime := startApprovalExpiryScan(st, eng)
 
 	addr := cfg.API.Addr
@@ -60,6 +61,7 @@ func buildApp(cfg *config.Config, st store.Store, eng *orchestrator.Engine, mc *
 		tasks:  apiHandler,
 		bus:    busRuntime,
 		expiry: expiryRuntime,
+		paused: pausedRuntime,
 	}
 }
 
@@ -107,12 +109,20 @@ func buildApprovalBus(cfg *config.Config, eng *orchestrator.Engine, apiHandler *
 	return runtime
 }
 
-func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
+func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) BackgroundRunner {
+	scanCtx, scanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	runner := &pausedTaskRuntime{cancel: scanCancel, done: make(chan struct{})}
 	go func() {
-		scanCtx, scanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer close(runner.done)
 		defer scanCancel()
+		if scanCtx.Err() != nil {
+			return
+		}
 		pausedTasks, err := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusPaused, Limit: 500})
 		if err != nil {
+			if scanCtx.Err() != nil {
+				return
+			}
 			slog.Warn("startup scan: failed to list paused tasks", "error", err)
 			return
 		}
@@ -132,11 +142,17 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
 		}
 		awaitingTasks, err := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusAwaitingApproval, Limit: 500})
 		if err != nil {
+			if scanCtx.Err() != nil {
+				return
+			}
 			slog.Warn("startup scan: failed to list awaiting approval tasks", "error", err)
 			return
 		}
 		failedTasks, failedErr := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusFailed, Limit: 500})
 		if failedErr != nil {
+			if scanCtx.Err() != nil {
+				return
+			}
 			slog.Warn("startup scan: failed to list legacy cancellation failures", "error", failedErr)
 		} else {
 			for _, task := range failedTasks {
@@ -147,17 +163,29 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
 		}
 		owner := "startup-recovery-" + uuid.NewString()
 		for _, task := range awaitingTasks {
+			if scanCtx.Err() != nil {
+				return
+			}
 			tenantID := task.TenantID
 			if tenantID == "" {
 				tenantID = "default"
 			}
 			for _, status := range []types.DurableApprovalStatus{types.ApprovalApproved, types.ApprovalRejected} {
+				if scanCtx.Err() != nil {
+					return
+				}
 				resolved, listErr := durableStore.ListTaskApprovals(scanCtx, task.ID, tenantID, status)
 				if listErr != nil {
+					if scanCtx.Err() != nil {
+						return
+					}
 					slog.Warn("startup scan: failed to list resolved checkpoints", "task_id", task.ID, "status", status, "error", listErr)
 					continue
 				}
 				for _, approval := range resolved {
+					if scanCtx.Err() != nil {
+						return
+					}
 					var recovered bool
 					var recoverErr error
 					if status == types.ApprovalApproved {
@@ -181,6 +209,7 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) {
 			}
 		}
 	}()
+	return runner
 }
 
 func recoverableStartupFailure(task *types.Task) bool {

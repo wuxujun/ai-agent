@@ -63,6 +63,10 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 		return nil, err
 	}
 
+	if err := configurePostgresPool(db, config.Get().Store.Postgres); err != nil {
+		db.Close()
+		return nil, err
+	}
 	p := &PostgresStore{db: db}
 	if err := p.init(); err != nil {
 		db.Close()
@@ -1635,4 +1639,16 @@ func (p *PostgresStore) RenewTaskLease(ctx context.Context, id, owner string, tt
 func (p *PostgresStore) ReleaseTaskLease(ctx context.Context, id, owner string) error {
 	_, err := p.db.ExecContext(ctx, `DELETE FROM task_leases WHERE task_id = $1 AND owner = $2`, id, owner)
 	return err
+}
+
+// configurePostgresPool runs before migrations or any other database access.
+func configurePostgresPool(db *sql.DB, settings config.PostgresPoolConfig) error {
+	pool, err := settings.Normalized()
+	if err != nil {
+		return err
+	}
+	db.SetMaxOpenConns(pool.MaxOpenConns)
+	db.SetMaxIdleConns(pool.MaxIdleConns)
+	db.SetConnMaxLifetime(time.Duration(pool.ConnMaxLifetimeMinutes) * time.Minute)
+	return nil
 }
