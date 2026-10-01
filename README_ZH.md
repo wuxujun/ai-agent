@@ -80,48 +80,147 @@
 | `internal/promptguard` | Prompt 注入检测 |
 | `internal/vision` | 多模态图像分析 |
 | `internal/skills` | 基于文件的技能发现（`skills/<name>/SKILL.md`） |
+| `internal/wiki` | 本地目录 BM25 + 图谱 Wiki 检索；MCP 远程模式；字节预算候选缓存 |
+| `internal/wikieval` | 离线 Wiki 检索质量评测（Recall@K、NDCG、No-Answer FP） |
+| `internal/brain` | LLM 编译知识库（Claim/Evidence）；跨平台安全快照读取与撤回账本 |
+| `internal/approvalcrypto` | AES-GCM 持久化审批载荷加密，支持版本化密钥轮换 |
+| `internal/review` | 基于 git diff 的代码变更分析与 LLM 代码评审 |
+| `internal/testgen` | LLM 驱动的 Go 测试代码生成 |
+| `internal/sanitize` | 写入存储前对 LLM 观测结果进行敏感信息脱敏 |
+| `internal/canarygate` | DAG/Legacy 金丝雀灰度分桶与门禁 |
+| `internal/diagnostics` | 运行时健康与依赖项诊断接口 |
 
 ---
 
 ## 📂 项目结构
 
 ```text
-├── cmd/server/main.go          # 启动入口 — 初始化数据库、OTel、HTTP 服务
+├── cmd/
+│   ├── server/                 # 生产服务入口（main.go、build.go、runtime.go）
+│   ├── brain-compile/          # CLI：检查 / 校验 / 发布 / 回滚 Brain 快照
+│   ├── brain-eval/             # Brain 知识库离线评测
+│   ├── wiki-eval/              # Wiki 检索质量门禁（Recall@K、NDCG、No-Answer FP）
+│   ├── multiagent-eval/        # DAG vs Legacy 运行时对比评测
+│   ├── llm-eval/               # LLM 提供商延迟 / 正确率评测
+│   ├── critic-eval/            # 计划评审（Critic）质量评测
+│   ├── rag-eval-stub/          # 本地 loopback RAG 夹具（确定性评测）
+│   └── canary-gate/            # 金丝雀发布门禁 CLI
 ├── internal/
-│   ├── api/                    # REST 处理器、SSE、中间件
-│   ├── orchestrator/           # 任务运行主循环（Eino / Legacy / ADK / Multiagent）
-│   ├── multiagent/             # 双工作流协调器（Research + Reviewed）
-│   ├── planner/                # LLM / Mock / Fallback 规划器
+│   ├── api/                    # Gin 路由（按职责拆分）：
+│   │   ├── handler.go          #   路由注册与共享依赖
+│   │   ├── task_handler.go     #   任务创建 / run / run-all
+│   │   ├── task_execution.go   #   运行循环辅助逻辑
+│   │   ├── task_lifecycle.go   #   取消 / 删除 / 状态查询
+│   │   ├── task_approval_handler.go  # 审批 / 拒绝
+│   │   ├── session.go          #   会话 CRUD 与归档
+│   │   ├── memory_handler.go   #   记忆 CRUD
+│   │   ├── metrics_handler.go  #   /api/metrics
+│   │   ├── team_handler.go     #   /api/teams
+│   │   ├── config_handler.go   #   热重载接口
+│   │   ├── semaphore.go        #   可调整大小的并发信号量
+│   │   ├── sse.go              #   SSE 事件流
+│   │   ├── middleware.go       #   访问日志、认证、恢复、链路追踪
+│   │   ├── jwt.go              #   JWT / JWKS / Introspection 认证
+│   │   ├── audit.go            #   请求审计日志
+│   │   └── wiki.go             #   Wiki 健康检查接口
+│   ├── orchestrator/           # 任务运行主循环（按职责拆分）：
+│   │   ├── engine.go           #   Engine 定义与包级状态
+│   │   ├── engine_lifecycle.go #   启动 / 停止 / 优雅排空
+│   │   ├── engine_approvals.go #   审批总线与持久化恢复
+│   │   ├── engine_gates.go     #   答案质量门禁
+│   │   └── engine_legacy_steps.go  # Legacy 步骤执行
+│   ├── multiagent/             # 协调器（按职责拆分）：
+│   │   ├── coordinator.go      #   主编排流程
+│   │   ├── dag_scheduler.go    #   批次拆解与有界调度
+│   │   ├── agent_dispatch.go   #   角色路由分发
+│   │   ├── coordinator_audit.go  # 审计与校验
+│   │   ├── coordinator_plan.go #   规划辅助逻辑
+│   │   ├── coordinator_retrieval.go  # JIT 检索
+│   │   ├── planner_agent.go    #   规划器角色
+│   │   ├── critic_agent.go     #   评审师（计划审查）角色
+│   │   ├── researcher_agent.go #   研究员 / 执行器角色
+│   │   ├── writer_agent.go     #   写作者角色
+│   │   ├── verifier_agent.go   #   验证师（双调用）角色
+│   │   ├── research_workflow_runtime.go   # Research 工作流
+│   │   ├── reviewed_workflow_runtime.go   # Reviewed 工作流
+│   │   ├── adaptive_workflow_runtime.go   # 自适应路由
+│   │   ├── runtime_canary.go   #   DAG / Legacy 金丝雀分桶
+│   │   ├── teams.go            #   团队注册表与配置
+│   │   └── team_lifecycle_audit.go  # 团队生命周期审计日志
+│   ├── planner/                # LLM / Mock / Fallback 规划器；JIT 检索路由
 │   ├── executor/               # 单 Agent 动作分发器
-│   ├── tools/                  # 工具注册表与具体实现
-│   ├── policy/                 # 安全策略、审批门控
-│   ├── answerpipeline/         # 答案质量并行审计
-│   ├── plancritic/             # 计划评审（Critic）
-│   ├── llm/                    # LLM 提供商抽象层
+│   ├── tools/                  # 工具注册表与具体实现：
+│   │   ├── wiki.go             #   wiki_search / wiki_fetch / wiki_graph / wiki_suggest
+│   │   ├── wiki_cache_budget.go  # 字节预算 LRU 候选缓存
+│   │   ├── wiki_resilience.go  #   熔断器与弹性机制
+│   │   ├── apply_patch.go      #   os.Root 限定的 SEARCH/REPLACE 与 Unified Diff（TOCTOU 防护）
+│   │   ├── execute.go          #   execute_code（需审批）
+│   │   ├── write.go            #   write_file（需审批）
+│   │   ├── read.go             #   read_file
+│   │   ├── find.go             #   find_files
+│   │   ├── rg.go               #   search_text（ripgrep）
+│   │   ├── http_fetch.go       #   http_fetch（URL 白名单）
+│   │   ├── web_search.go       #   web_search
+│   │   ├── web_browser.go      #   web_browser
+│   │   ├── git_diff.go         #   git_diff
+│   │   ├── sql_query.go        #   sql_query（只读 SQLite）
+│   │   ├── json_query.go       #   json_query
+│   │   ├── analyze_image.go    #   analyze_image（多模态）
+│   │   ├── retrieval.go        #   rag_search
+│   │   ├── use_skill.go        #   use_skill
+│   │   └── mcp.go              #   MCP 工具发现与代理
+│   ├── policy/                 # Workspace 边界、URL 白名单、风险等级、审批门控
+│   ├── answerpipeline/         # 并行答案审计：引用、事实时效性、数值一致性、不确定性、安全
+│   ├── plancritic/             # 结构化计划评审：完整性、步骤顺序、风险、可行性
+│   ├── llm/                    # LLM 提供商抽象（OpenAI · Gemini · Ollama · LiteLLM · ADK）
 │   ├── llmprovider/            # 各提供商专用客户端
-│   ├── memory/                 # 带向量搜索的长期记忆
-│   ├── store/                  # 持久化（SQLite / Postgres / Redis）
-│   ├── telemetry/              # OpenTelemetry 初始化
-│   ├── promptmanager/          # Langfuse Prompt 管理
-│   ├── evidencefilter/         # 证据相关性过滤
-│   ├── evidenceconflict/       # 证据冲突解决
+│   ├── memory/                 # 基于向量检索的长期记忆存储与冲突解决
+│   ├── store/                  # SQLite / Postgres（pgvector）/ Redis / 内存后端
+│   ├── brain/                  # LLM 编译知识库（Claim、Evidence、快照、撤回账本）
+│   ├── braineval/              # Brain 知识库离线评测辅助
+│   ├── approvalcrypto/         # AES-GCM 持久化审批加密，支持密钥轮换
+│   ├── wiki/                   # 本地 BM25 + 图谱 Wiki 检索；MCP 远程模式
+│   ├── wikieval/               # Wiki 检索评测指标（Recall@K、NDCG、No-Answer FP）
+│   ├── review/                 # 基于 git diff 的代码变更分析与 LLM 代码评审
+│   ├── testgen/                # LLM 驱动的 Go 测试代码生成
+│   ├── canarygate/             # DAG/Legacy 金丝雀灰度分桶与门禁
+│   ├── diagnostics/            # 运行时健康与依赖项诊断
+│   ├── telemetry/              # OpenTelemetry SDK 初始化（OTLP / 标准输出）
+│   ├── promptmanager/          # Langfuse Prompt 获取（三层降级）
+│   ├── evidencefilter/         # 基于 LLM 的证据相关性过滤
+│   ├── evidenceconflict/       # 证据冲突检测与解决
 │   ├── sourcecredibility/      # 来源可信度评分
 │   ├── promptguard/            # Prompt 注入检测
+│   ├── sanitize/               # LLM 观测结果敏感信息脱敏
 │   ├── vision/                 # 多模态图像分析
 │   ├── skills/                 # 技能发现与加载
-│   ├── config/                 # 可热重载配置
-│   ├── logger/                 # 结构化 JSON 日志
+│   ├── config/                 # 可热重载配置（Viper + fsnotify）
+│   ├── logger/                 # 结构化 JSON 日志（每日轮转）
 │   ├── metrics/                # 本地指标采集器
-│   ├── types/                  # 共享类型（Task、StepTrace、Evidence 等）
-│   └── workspace/              # 工作区管理
+│   ├── types/                  # 共享类型（Task、StepTrace、Evidence、TerminationKind 等）
+│   └── workspace/              # 工作区管理与路径校验
+├── evals/                      # 评测数据集（YAML / JSONL）
+│   ├── multiagent_runtime.yaml #   DAG vs Legacy 对比评测用例
+│   ├── multiagent_rag.yaml     #   RAG 检索评测用例
+│   ├── plan_critic.yaml        #   计划评审质量评测用例
+│   └── brain/dataset.yaml      #   Brain 知识库评测数据集
+├── deploy/
+│   ├── systemd/                # systemd unit、环境变量模板、操作检查表
+│   ├── litellm/                # LiteLLM 网关 Docker Compose 配置
+│   ├── opentelemetry/          # OTel Collector、Prometheus、Tempo、Jaeger 配置
+│   ├── ha/README.md            # 双实例 HA 部署与金丝雀操作手册
+│   └── e2e/                    # 端到端集成测试配置
+├── skills/                     # 内置技能（code-review、local-rag-file-search）
+├── docs/                       # 设计笔记、实施计划、缺陷分析报告
 ├── config.yaml                 # 主配置文件（支持热重载）
+├── config.wiki.yaml            # 独立 Wiki/Brain 配置
 ├── teams.yaml                  # Multi-Agent 团队与工作流配置
 ├── teams_zh.yml                # teams.yaml 中文注释版
-├── skills/                     # 内置技能（code-review 等）
 ├── Sample/agent-api.http       # JetBrains HTTP 请求示例
-├── records/                    # 设计笔记与变更日志
+├── records/                    # 设计变更日志
 └── go.mod
 ```
+
 
 ---
 
@@ -541,12 +640,32 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 
 ---
 
+
 ## 🗺️ 路线图
 
-- [ ] DAG 图引擎正式发布（当前通过 `AI_AGENT_MULTIAGENT_RUNTIME=dag` 灰度开启）
-- [ ] 任务管理与 Trace 可视化 Web UI
-- [ ] 更多内置技能（测试生成、代码审查、数据分析）
-- [ ] 自定义工具注册插件系统
+### ✅ 近期已发布（v1.0.1）
+
+- [x] **Brain 知识库** — LLM 编译 Claim/Evidence 知识库；跨平台安全快照读取、撤回账本及 `brain-compile` CLI
+- [x] **持久化审批加密** — AES-GCM v1/v2 载荷加密，支持版本化密钥轮换（`internal/approvalcrypto`）
+- [x] **Wiki BM25 绝对置信度下限** — `minDirectoryBM25RelevanceScore = 0.25`，消除无答案误召回；`wiki-eval` 强制执行零误召回容忍
+- [x] **Wiki 候选缓存字节预算** — 64 MiB 全局软上限，按任务 LRU 淘汰；新增 `candidate_cache_bytes` / `candidate_cache_evicted_bytes` 指标
+- [x] **`apply_patch` TOCTOU 防御** — `os.Root` 限定原子重命名，跨平台（含 Windows）防止工作区逃逸
+- [x] **可调整大小信号量状态机** — Waiter 状态机消除 Context 取消时的容量泄漏；`Resize()` 传播热重载配置变更
+- [x] **结构化 `TerminationKind`** — 取代 `len(FinalAnswer) > 20` 启发式判断；停机回滚、客户端取消、超时三者精确区分且互不干扰
+- [x] **PostgreSQL 连接池上限** — `SetMaxOpenConns(50)` / `SetMaxIdleConns(10)` / `SetConnMaxLifetime(30m)`，热重载拒绝变更
+- [x] **DAG 批次并发有界控制** — 每批最多 5 个 Worker；结果顺序保持不变
+- [x] **暂停任务扫描优雅停机** — `BackgroundRunner` 接口；扫描退出后才关闭 Store
+- [x] **核心文件模块化拆分** — `coordinator.go`、`handler.go`、`engine.go` 拆分为职责单一子文件；规模缩减至 ≤600 / ≤250 / ≤120 行
+- [x] **代码评审与测试生成** — `internal/review`（git diff 变更分析）与 `internal/testgen`（LLM 驱动测试脚手架）
+- [x] **Windows 交叉编译** — Brain 撤回账本与 snapshot 跨平台抽象；发布矩阵新增 `windows/amd64`
+
+### 🔜 待上线
+
+- [ ] **DAG 运行时全量放量** — HA Canary 验收通过后移除 Legacy 回退路径；当前保持 `AI_AGENT_MULTIAGENT_RUNTIME=dag`（0% Canary）
+- [ ] **Web UI** — 任务管理、Trace 可视化与审批操作台
+- [ ] **插件系统** — 用户自定义工具注册，无需 fork 二进制
+- [ ] **更多内置技能** — 数据分析、SQL Agent、图表生成
+
 
 ### DAG/Legacy 发布评估
 
