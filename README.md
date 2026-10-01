@@ -106,49 +106,147 @@ readiness loss; an empty CURRENT alone is an expected pre-publication state.
 | `internal/promptguard` | Prompt injection detection |
 | `internal/vision` | Image analysis via multimodal LLM |
 | `internal/skills` | File-based skill discovery (`skills/<name>/SKILL.md`) |
+| `internal/wiki` | Local-directory BM25 + graph Wiki retrieval; MCP remote mode; byte-budget candidate cache |
+| `internal/wikieval` | Offline Wiki retrieval quality evaluation (Recall@K, NDCG, No-Answer FP) |
+| `internal/brain` | LLM-compiled claim/evidence knowledge base; snapshot, retraction, and cross-platform safe-read |
+| `internal/approvalcrypto` | AES-GCM durable approval payload encryption with versioned key rotation |
+| `internal/review` | Git diff–based code change summarisation and LLM code review |
+| `internal/testgen` | LLM-driven Go test generation from code reviews |
+| `internal/sanitize` | Secret scrubbing from LLM observations before storage |
+| `internal/canarygate` | DAG/Legacy canary rollout bucketing and gating |
+| `internal/diagnostics` | Runtime health and dependency diagnostics endpoint |
 
 ---
 
 ## 📂 Project Layout
 
 ```text
-├── cmd/server/main.go          # Entry point — DB init, OTel, HTTP server
+├── cmd/
+│   ├── server/                 # Production server entry point (main.go, build.go, runtime.go)
+│   ├── brain-compile/          # CLI: inspect / verify / publish / rollback Brain snapshots
+│   ├── brain-eval/             # Brain knowledge-base offline evaluation
+│   ├── wiki-eval/              # Wiki retrieval quality gate (Recall@K, NDCG, No-Answer FP)
+│   ├── multiagent-eval/        # DAG vs Legacy runtime comparative evaluation
+│   ├── llm-eval/               # LLM provider latency / correctness evaluation
+│   ├── critic-eval/            # Plan-critic quality evaluation
+│   ├── rag-eval-stub/          # Local loopback RAG fixture for deterministic eval
+│   └── canary-gate/            # Canary rollout gate CLI
 ├── internal/
-│   ├── api/                    # REST handlers, SSE, middleware
-│   ├── orchestrator/           # Task run loop (Eino / legacy / ADK / multiagent)
-│   ├── multiagent/             # Dual-workflow coordinator (Research + Reviewed)
-│   ├── planner/                # LLM / Mock / Fallback planners
+│   ├── api/                    # Gin routes split by concern:
+│   │   ├── handler.go          #   router wiring & shared deps
+│   │   ├── task_handler.go     #   task create / run / run-all
+│   │   ├── task_execution.go   #   run-loop helpers
+│   │   ├── task_lifecycle.go   #   cancel / delete / status
+│   │   ├── task_approval_handler.go  # approve / reject
+│   │   ├── session.go          #   session CRUD & archive
+│   │   ├── memory_handler.go   #   memory CRUD
+│   │   ├── metrics_handler.go  #   /api/metrics
+│   │   ├── team_handler.go     #   /api/teams
+│   │   ├── config_handler.go   #   hot-reload endpoint
+│   │   ├── semaphore.go        #   resizable concurrency semaphore
+│   │   ├── sse.go              #   SSE event stream
+│   │   ├── middleware.go       #   access log, auth, recovery, tracing
+│   │   ├── jwt.go              #   JWT / JWKS / introspection auth
+│   │   ├── audit.go            #   request audit logging
+│   │   └── wiki.go             #   wiki health handler
+│   ├── orchestrator/           # Task run loop split by concern:
+│   │   ├── engine.go           #   Engine definition & package state
+│   │   ├── engine_lifecycle.go #   start / stop / graceful drain
+│   │   ├── engine_approvals.go #   approval bus & durable recovery
+│   │   ├── engine_gates.go     #   answer quality gates
+│   │   └── engine_legacy_steps.go  # legacy step execution
+│   ├── multiagent/             # Coordinator split by concern:
+│   │   ├── coordinator.go      #   main orchestration flow
+│   │   ├── dag_scheduler.go    #   batch decomposition & bounded scheduling
+│   │   ├── agent_dispatch.go   #   role routing
+│   │   ├── coordinator_audit.go  # audit & validation
+│   │   ├── coordinator_plan.go #   planning helpers
+│   │   ├── coordinator_retrieval.go  # JIT retrieval
+│   │   ├── planner_agent.go    #   Planner role
+│   │   ├── critic_agent.go     #   Critic (plan review) role
+│   │   ├── researcher_agent.go #   Researcher / Executor role
+│   │   ├── writer_agent.go     #   Writer role
+│   │   ├── verifier_agent.go   #   Verifier (dual-call) role
+│   │   ├── research_workflow_runtime.go   # Research workflow
+│   │   ├── reviewed_workflow_runtime.go   # Reviewed workflow
+│   │   ├── adaptive_workflow_runtime.go   # Adaptive routing
+│   │   ├── runtime_canary.go   #   DAG / Legacy canary bucketing
+│   │   ├── teams.go            #   team registry & config
+│   │   └── team_lifecycle_audit.go  # team lifecycle audit log
+│   ├── planner/                # LLM / Mock / Fallback planners; JIT retrieval router
 │   ├── executor/               # Single-agent action dispatcher
-│   ├── tools/                  # Tool registry and implementations
-│   ├── policy/                 # Security policy, approval gate
-│   ├── answerpipeline/         # Answer quality audits
-│   ├── plancritic/             # Plan review (Critic)
-│   ├── llm/                    # LLM provider abstraction
+│   ├── tools/                  # Tool registry and implementations:
+│   │   ├── wiki.go             #   wiki_search / wiki_fetch / wiki_graph / wiki_suggest
+│   │   ├── wiki_cache_budget.go  # byte-budget LRU candidate cache
+│   │   ├── wiki_resilience.go  #   circuit breaker & resilience
+│   │   ├── apply_patch.go      #   os.Root–confined SEARCH/REPLACE & unified diff
+│   │   ├── execute.go          #   execute_code (approval-gated)
+│   │   ├── write.go            #   write_file (approval-gated)
+│   │   ├── read.go             #   read_file
+│   │   ├── find.go             #   find_files
+│   │   ├── rg.go               #   search_text (ripgrep)
+│   │   ├── http_fetch.go       #   http_fetch (URL allowlist)
+│   │   ├── web_search.go       #   web_search
+│   │   ├── web_browser.go      #   web_browser
+│   │   ├── git_diff.go         #   git_diff
+│   │   ├── sql_query.go        #   sql_query (read-only SQLite)
+│   │   ├── json_query.go       #   json_query
+│   │   ├── analyze_image.go    #   analyze_image (multimodal)
+│   │   ├── retrieval.go        #   rag_search
+│   │   ├── use_skill.go        #   use_skill
+│   │   └── mcp.go              #   MCP tool discovery & proxy
+│   ├── policy/                 # Workspace boundary, URL allowlist, risk levels, approval gate
+│   ├── answerpipeline/         # Parallel answer audits: citation, fact freshness, numeric, uncertainty, safety
+│   ├── plancritic/             # Structured plan review: completeness, ordering, risk, feasibility
+│   ├── llm/                    # Provider abstraction (OpenAI · Gemini · Ollama · LiteLLM · ADK)
 │   ├── llmprovider/            # Provider-specific clients
-│   ├── memory/                 # Long-term memory with vector search
-│   ├── store/                  # Persistence (SQLite / Postgres / Redis)
-│   ├── telemetry/              # OpenTelemetry initialisation
-│   ├── promptmanager/          # Langfuse prompt management
-│   ├── evidencefilter/         # Evidence relevance filter
-│   ├── evidenceconflict/       # Evidence conflict resolver
-│   ├── sourcecredibility/      # Source credibility scorer
-│   ├── promptguard/            # Prompt injection detector
+│   ├── memory/                 # Long-term memory with embedding-based retrieval & conflict resolution
+│   ├── store/                  # SQLite / Postgres (pgvector) / Redis / in-memory backends
+│   ├── brain/                  # LLM-compiled knowledge base (claims, evidence, snapshot, retraction)
+│   ├── braineval/              # Brain knowledge-base offline evaluation helpers
+│   ├── approvalcrypto/         # AES-GCM durable approval encryption with key rotation
+│   ├── wiki/                   # Local BM25 + graph Wiki retrieval; MCP remote mode
+│   ├── wikieval/               # Wiki retrieval eval metrics (Recall@K, NDCG, No-Answer FP)
+│   ├── review/                 # Git diff–based code change analysis and LLM code review
+│   ├── testgen/                # LLM-driven Go test generation
+│   ├── canarygate/             # DAG/Legacy canary rollout bucketing and gating
+│   ├── diagnostics/            # Runtime health and dependency diagnostics
+│   ├── telemetry/              # OpenTelemetry SDK init (OTLP / stdout)
+│   ├── promptmanager/          # Langfuse prompt fetching (3-tier fallback)
+│   ├── evidencefilter/         # LLM-based evidence relevance filtering
+│   ├── evidenceconflict/       # Evidence conflict detection and resolution
+│   ├── sourcecredibility/      # Source credibility scoring
+│   ├── promptguard/            # Prompt injection detection
+│   ├── sanitize/               # Secret scrubbing from LLM observations
 │   ├── vision/                 # Multimodal image analysis
 │   ├── skills/                 # Skill discovery and loading
-│   ├── config/                 # Hot-reloadable config
-│   ├── logger/                 # Structured JSON logger
+│   ├── config/                 # Hot-reloadable config (Viper + fsnotify)
+│   ├── logger/                 # Structured JSON logger with daily rotation
 │   ├── metrics/                # Local metrics collector
-│   ├── types/                  # Shared types (Task, StepTrace, Evidence, …)
-│   └── workspace/              # Workspace management
+│   ├── types/                  # Shared types (Task, StepTrace, Evidence, TerminationKind, …)
+│   └── workspace/              # Workspace management and path validation
+├── evals/                      # Evaluation datasets (YAML / JSONL)
+│   ├── multiagent_runtime.yaml #   DAG vs Legacy comparative eval cases
+│   ├── multiagent_rag.yaml     #   RAG retrieval eval cases
+│   ├── plan_critic.yaml        #   Plan critic quality eval cases
+│   └── brain/dataset.yaml      #   Brain knowledge-base eval dataset
+├── deploy/
+│   ├── systemd/                # systemd unit, environment template, operating checklist
+│   ├── litellm/                # LiteLLM gateway Docker Compose config
+│   ├── opentelemetry/          # OTel Collector, Prometheus, Tempo, Jaeger configs
+│   ├── ha/README.md            # Dual-instance HA deployment & canary runbook
+│   └── e2e/                    # End-to-end integration config
+├── skills/                     # Built-in skills (code-review, local-rag-file-search)
+├── docs/                       # Design notes, implementation plans, bug reports
 ├── config.yaml                 # Main configuration (hot-reloadable)
 ├── config.wiki.yaml            # Standalone Wiki/Brain configuration
 ├── teams.yaml                  # Multi-agent team and workflow configuration
 ├── teams_zh.yml                # teams.yaml — Chinese-annotated version
-├── skills/                     # Built-in skills (code-review, …)
 ├── Sample/agent-api.http       # JetBrains HTTP request examples
-├── records/                    # Design notes and changelogs
+├── records/                    # Design changelogs
 └── go.mod
 ```
+
 
 ---
 
@@ -666,12 +764,32 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 
 ---
 
+
 ## 🗺️ Roadmap
 
-- [ ] DAG-based graph runtime (full rollout, currently behind `AI_AGENT_MULTIAGENT_RUNTIME=dag`)
-- [ ] Web UI for task management and trace visualisation
-- [ ] Additional built-in skills (test generation, code review, data analysis)
-- [ ] Plugin system for custom tool registration
+### ✅ Recently shipped (v1.0.1)
+
+- [x] **Brain knowledge base** — LLM-compiled claim/evidence store with cross-platform safe snapshot read, retraction ledger, and `brain-compile` CLI
+- [x] **Durable approval encryption** — AES-GCM v1/v2 payload encryption with versioned key rotation (`internal/approvalcrypto`)
+- [x] **Wiki BM25 absolute confidence floor** — `minDirectoryBM25RelevanceScore = 0.25` eliminates no-answer false-positives; `wiki-eval` enforces zero FP tolerance
+- [x] **Wiki candidate cache byte budget** — 64 MiB global soft cap with LRU-by-task eviction and `candidate_cache_bytes` / `candidate_cache_evicted_bytes` metrics
+- [x] **`apply_patch` TOCTOU defence** — `os.Root`-confined atomic rename prevents workspace escape on all platforms including Windows
+- [x] **Resizable semaphore state machine** — waiter state machine eliminates capacity leak on context cancel; `Resize()` propagates hot-reload config changes
+- [x] **Structured `TerminationKind`** — replaces `len(FinalAnswer) > 20` heuristic; shutdown rollback/client cancel/timeout are precise and non-destructive
+- [x] **PostgreSQL connection pool bounds** — `SetMaxOpenConns(50)` / `SetMaxIdleConns(10)` / `SetConnMaxLifetime(30m)` with hot-reload rejection
+- [x] **DAG batch concurrency cap** — at most 5 concurrent workers per batch; result order preserved
+- [x] **Paused-task scan graceful shutdown** — `BackgroundRunner` interface; scan drains before store is closed
+- [x] **Core file modularisation** — `coordinator.go`, `handler.go`, `engine.go` split into focused sub-files; sizes reduced to ≤600 / ≤250 / ≤120 lines
+- [x] **Code review & test generation** — `internal/review` (git-diff change analysis) and `internal/testgen` (LLM-driven Go test scaffolding)
+- [x] **Windows cross-compilation** — Brain retraction and snapshot platform abstractions; release matrix includes `windows/amd64`
+
+### 🔜 Upcoming
+
+- [ ] **DAG runtime full rollout** — remove Legacy fallback after HA canary validation; currently at `AI_AGENT_MULTIAGENT_RUNTIME=dag` (0% canary)
+- [ ] **Web UI** — task management, trace visualisation, and approval dashboard
+- [ ] **Plugin system** — user-defined tool registration without forking the binary
+- [ ] **Additional built-in skills** — data analysis, SQL agent, diagram generation
+
 
 ### DAG/Legacy release evaluation
 
