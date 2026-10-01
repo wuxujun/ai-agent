@@ -517,6 +517,8 @@ wiki:
   # Task-local candidate IDs are released at task completion. These limits are
   # a bounded fallback for abandoned or interrupted tasks; 0 uses the built-in default.
   # Env: AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS / AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS
+  # Soft retained-memory budget in bytes (64 MiB); 0 uses default. Hot-reloadable.
+  candidate_cache_max_bytes: 67108864
   candidate_cache_max_tasks: 1024
   candidate_cache_ttl_seconds: 1800
   # Consecutive backend failures before temporarily rejecting Wiki calls.

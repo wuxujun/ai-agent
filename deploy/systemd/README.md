@@ -50,3 +50,7 @@ To stop assigning new DAG tasks, set
 runtime stored in their `multiagent_runtime_selection` Trace. Do not set
 `AI_AGENT_MULTIAGENT_RUNTIME=dag` during a percentage rollout because it is an
 explicit 100% DAG override.
+
+For the two-node fault exercise and the subsequent 20% → 50% → 100% rollout,
+follow the [HA acceptance runbook](../ha/README.md). The runbook does not change
+this repository's rollout percentage or certify production readiness.

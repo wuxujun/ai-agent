@@ -17,31 +17,35 @@ import (
 // WikiMetricsSnapshot is the process-local view exposed by /api/metrics. The
 // same events are also emitted through OpenTelemetry below.
 type WikiMetricsSnapshot struct {
-	BackendCalls            int64   `json:"backend_calls"`
-	BackendErrors           int64   `json:"backend_errors"`
-	BackendAverageLatencyMS float64 `json:"backend_average_latency_ms"`
-	BackendP95LatencyMS     float64 `json:"backend_p95_latency_ms"`
-	CircuitOpened           int64   `json:"circuit_opened"`
-	CircuitRejected         int64   `json:"circuit_rejected"`
-	ReadinessFailures       int64   `json:"readiness_failures"`
-	CandidateCacheTasks     int64   `json:"candidate_cache_tasks"`
-	CandidateCacheReleased  int64   `json:"candidate_cache_released"`
-	CandidateCacheExpired   int64   `json:"candidate_cache_expired"`
-	CandidateCacheEvicted   int64   `json:"candidate_cache_evicted"`
+	CandidateCacheBytes        int64   `json:"candidate_cache_bytes"`
+	CandidateCacheEvictedBytes int64   `json:"candidate_cache_evicted_bytes"`
+	BackendCalls               int64   `json:"backend_calls"`
+	BackendErrors              int64   `json:"backend_errors"`
+	BackendAverageLatencyMS    float64 `json:"backend_average_latency_ms"`
+	BackendP95LatencyMS        float64 `json:"backend_p95_latency_ms"`
+	CircuitOpened              int64   `json:"circuit_opened"`
+	CircuitRejected            int64   `json:"circuit_rejected"`
+	ReadinessFailures          int64   `json:"readiness_failures"`
+	CandidateCacheTasks        int64   `json:"candidate_cache_tasks"`
+	CandidateCacheReleased     int64   `json:"candidate_cache_released"`
+	CandidateCacheExpired      int64   `json:"candidate_cache_expired"`
+	CandidateCacheEvicted      int64   `json:"candidate_cache_evicted"`
 }
 
 var wikiLocalMetrics struct {
-	backendCalls           atomic.Int64
-	backendErrors          atomic.Int64
-	backendLatencyNS       atomic.Int64
-	latencyBuckets         [9]atomic.Int64
-	circuitOpened          atomic.Int64
-	circuitRejected        atomic.Int64
-	readinessFailures      atomic.Int64
-	candidateCacheTasks    atomic.Int64
-	candidateCacheReleased atomic.Int64
-	candidateCacheExpired  atomic.Int64
-	candidateCacheEvicted  atomic.Int64
+	candidateCacheBytes        atomic.Int64
+	candidateCacheEvictedBytes atomic.Int64
+	backendCalls               atomic.Int64
+	backendErrors              atomic.Int64
+	backendLatencyNS           atomic.Int64
+	latencyBuckets             [9]atomic.Int64
+	circuitOpened              atomic.Int64
+	circuitRejected            atomic.Int64
+	readinessFailures          atomic.Int64
+	candidateCacheTasks        atomic.Int64
+	candidateCacheReleased     atomic.Int64
+	candidateCacheExpired      atomic.Int64
+	candidateCacheEvicted      atomic.Int64
 }
 
 // CurrentWikiMetrics returns a race-safe process-local Wiki metrics snapshot.
@@ -52,7 +56,9 @@ func CurrentWikiMetrics() WikiMetricsSnapshot {
 		average = float64(wikiLocalMetrics.backendLatencyNS.Load()) / float64(time.Millisecond) / float64(calls)
 	}
 	return WikiMetricsSnapshot{
-		BackendCalls: calls, BackendErrors: wikiLocalMetrics.backendErrors.Load(),
+		CandidateCacheBytes:        wikiLocalMetrics.candidateCacheBytes.Load(),
+		CandidateCacheEvictedBytes: wikiLocalMetrics.candidateCacheEvictedBytes.Load(),
+		BackendCalls:               calls, BackendErrors: wikiLocalMetrics.backendErrors.Load(),
 		BackendAverageLatencyMS: average, BackendP95LatencyMS: wikiLatencyP95MS(calls), CircuitOpened: wikiLocalMetrics.circuitOpened.Load(),
 		CircuitRejected:        wikiLocalMetrics.circuitRejected.Load(),
 		ReadinessFailures:      wikiLocalMetrics.readinessFailures.Load(),
@@ -64,15 +70,17 @@ func CurrentWikiMetrics() WikiMetricsSnapshot {
 }
 
 var (
-	wikiMeter                     = otel.Meter("ai-agent/wiki")
-	wikiBackendCalls, _           = wikiMeter.Int64Counter("agent.wiki.backend.calls")
-	wikiBackendErrors, _          = wikiMeter.Int64Counter("agent.wiki.backend.errors")
-	wikiBackendLatency, _         = wikiMeter.Float64Histogram("agent.wiki.backend.latency_ms")
-	wikiCircuitOpened, _          = wikiMeter.Int64Counter("agent.wiki.circuit.opened")
-	wikiCircuitRejected, _        = wikiMeter.Int64Counter("agent.wiki.circuit.rejected")
-	wikiReadinessFailures, _      = wikiMeter.Int64Counter("agent.wiki.readiness.failures")
-	wikiCandidateCacheTasks, _    = wikiMeter.Int64UpDownCounter("agent.wiki.candidate_cache.tasks")
-	wikiCandidateCacheRemovals, _ = wikiMeter.Int64Counter("agent.wiki.candidate_cache.removals")
+	wikiMeter                         = otel.Meter("ai-agent/wiki")
+	wikiCandidateCacheBytes, _        = wikiMeter.Int64UpDownCounter("agent.wiki.candidate_cache.bytes")
+	wikiCandidateCacheEvictedBytes, _ = wikiMeter.Int64Counter("agent.wiki.candidate_cache.evicted_bytes")
+	wikiBackendCalls, _               = wikiMeter.Int64Counter("agent.wiki.backend.calls")
+	wikiBackendErrors, _              = wikiMeter.Int64Counter("agent.wiki.backend.errors")
+	wikiBackendLatency, _             = wikiMeter.Float64Histogram("agent.wiki.backend.latency_ms")
+	wikiCircuitOpened, _              = wikiMeter.Int64Counter("agent.wiki.circuit.opened")
+	wikiCircuitRejected, _            = wikiMeter.Int64Counter("agent.wiki.circuit.rejected")
+	wikiReadinessFailures, _          = wikiMeter.Int64Counter("agent.wiki.readiness.failures")
+	wikiCandidateCacheTasks, _        = wikiMeter.Int64UpDownCounter("agent.wiki.candidate_cache.tasks")
+	wikiCandidateCacheRemovals, _     = wikiMeter.Int64Counter("agent.wiki.candidate_cache.removals")
 )
 
 var wikiCacheOwners = struct {
@@ -131,7 +139,7 @@ func observeWikiCacheRemoval(reason string) {
 		wikiLocalMetrics.candidateCacheReleased.Add(1)
 	case "expired":
 		wikiLocalMetrics.candidateCacheExpired.Add(1)
-	case "capacity":
+	case "capacity", "bytes":
 		wikiLocalMetrics.candidateCacheEvicted.Add(1)
 	}
 	wikiCandidateCacheTasks.Add(context.Background(), -1)
@@ -259,4 +267,14 @@ func wikiCircuitSettings() (int, time.Duration) {
 		return 0, 0
 	}
 	return wiki.CircuitBreakerFailureThreshold, time.Duration(wiki.CircuitBreakerCooldownSeconds) * time.Second
+}
+
+func observeWikiCacheBytes(delta int64) {
+	wikiLocalMetrics.candidateCacheBytes.Add(delta)
+	wikiCandidateCacheBytes.Add(context.Background(), delta)
+}
+
+func observeWikiCacheEvictedBytes(size int64) {
+	wikiLocalMetrics.candidateCacheEvictedBytes.Add(size)
+	wikiCandidateCacheEvictedBytes.Add(context.Background(), size)
 }

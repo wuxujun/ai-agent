@@ -180,6 +180,7 @@ type wikiCandidate struct {
 }
 
 type wikiTaskCache struct {
+	sizeBytes    int64
 	candidates   map[string]wikiCandidate
 	corpora      map[string]map[string]wikiCandidate
 	fetched      map[string]bool
@@ -189,11 +190,13 @@ type wikiTaskCache struct {
 }
 
 type wikiCache struct {
-	mu       sync.Mutex
-	tasks    map[string]*wikiTaskCache
-	now      func() time.Time
-	maxTasks int
-	ttl      time.Duration
+	currentSizeBytes int64
+	byteLimit        func() int64
+	mu               sync.Mutex
+	tasks            map[string]*wikiTaskCache
+	now              func() time.Time
+	maxTasks         int
+	ttl              time.Duration
 }
 
 var brainCacheHitObserver func(context.Context, string)
@@ -214,17 +217,16 @@ func newWikiCache() *wikiCache {
 	if ttlSeconds <= 0 {
 		ttlSeconds = 1800
 	}
-	return &wikiCache{tasks: make(map[string]*wikiTaskCache), now: time.Now, maxTasks: maxTasks, ttl: time.Duration(ttlSeconds) * time.Second}
+	return &wikiCache{byteLimit: wikiCacheByteLimit, tasks: make(map[string]*wikiTaskCache), now: time.Now, maxTasks: maxTasks, ttl: time.Duration(ttlSeconds) * time.Second}
 }
 
 func (c *wikiCache) prune(now time.Time) {
 	for taskKey, task := range c.tasks {
 		if now.Sub(task.updatedAt) > c.ttl {
-			delete(c.tasks, taskKey)
-			unregisterWikiCacheOwner(taskKey, c)
-			observeWikiCacheRemoval("expired")
+			c.removeTask(taskKey, "expired")
 		}
 	}
+	c.enforceByteBudget()
 }
 
 func (c *wikiCache) task(key string, create bool) *wikiTaskCache {
@@ -232,51 +234,73 @@ func (c *wikiCache) task(key string, create bool) *wikiTaskCache {
 	c.prune(now)
 	task := c.tasks[key]
 	if task == nil && create {
+		if wikiTaskSize(key, &wikiTaskCache{}) > c.byteLimit() {
+			return nil
+		}
 		if len(c.tasks) >= c.maxTasks {
-			oldestKey := ""
-			var oldest time.Time
-			for candidateKey, candidateTask := range c.tasks {
-				if oldestKey == "" || candidateTask.updatedAt.Before(oldest) || candidateTask.updatedAt.Equal(oldest) && candidateKey < oldestKey {
-					oldestKey, oldest = candidateKey, candidateTask.updatedAt
-				}
-			}
-			if oldestKey != "" {
-				delete(c.tasks, oldestKey)
-				unregisterWikiCacheOwner(oldestKey, c)
-				observeWikiCacheRemoval("capacity")
+			if oldestKey, ok := c.oldestTask(); ok {
+				c.removeTask(oldestKey, "capacity")
 			}
 		}
+		key = strings.Clone(key)
 		task = &wikiTaskCache{candidates: make(map[string]wikiCandidate), corpora: make(map[string]map[string]wikiCandidate), fetched: make(map[string]bool)}
 		c.tasks[key] = task
 		registerWikiCacheOwner(key, c)
 		observeWikiCacheTaskAdded()
+		c.resizeTask(key, task)
 	}
 	if task != nil {
 		task.updatedAt = now
 	}
-	return task
+	c.enforceByteBudget()
+	return c.tasks[key]
 }
 
-func (c *wikiCache) replace(taskKey, corpus string, candidates []wikiCandidate) {
+func (c *wikiCache) replace(taskKey, corpus string, candidates []wikiCandidate) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := c.task(taskKey, true)
+	task := c.task(taskKey, false)
 	corpus = strings.ToLower(strings.TrimSpace(corpus))
 	if corpus == "" {
 		corpus = "wiki"
 	}
 	partition := make(map[string]wikiCandidate, len(candidates))
-	task.fetched = make(map[string]bool)
 	for _, candidate := range candidates {
 		partition[candidate.ID] = candidate
 	}
-	task.corpora[corpus] = partition
+	proposed := &wikiTaskCache{corpora: make(map[string]map[string]wikiCandidate)}
+	if task != nil {
+		for name, group := range task.corpora {
+			proposed.corpora[name] = group
+		}
+	}
+	proposed.corpora[corpus] = partition
+	// Check before allocating owned strings or evicting for task capacity.
+	// An oversized search cannot displace unrelated healthy tasks.
+	if wikiTaskSize(taskKey, proposed) > c.byteLimit() {
+		c.removeTask(taskKey, "bytes")
+		return false
+	}
+	task = c.task(taskKey, true)
+	if task == nil {
+		return false
+	}
+	owned := make(map[string]wikiCandidate, len(partition))
+	for _, candidate := range partition {
+		candidate = cloneWikiCandidate(candidate)
+		owned[candidate.ID] = candidate
+	}
+	task.fetched = make(map[string]bool)
+	task.corpora[strings.Clone(corpus)] = owned
 	task.candidates = make(map[string]wikiCandidate)
 	for _, group := range task.corpora {
 		for id, candidate := range group {
 			task.candidates[id] = candidate
 		}
 	}
+	c.resizeTask(taskKey, task)
+	c.enforceByteBudget()
+	return c.tasks[taskKey] != nil
 }
 
 func (c *wikiCache) selectCandidates(taskKey string, ids []string) ([]wikiCandidate, error) {
@@ -314,7 +338,9 @@ func (c *wikiCache) markFetched(taskKey string, ids []string) {
 		return
 	}
 	for _, id := range ids {
-		task.fetched[id] = true
+		if candidate, ok := task.candidates[id]; ok {
+			task.fetched[candidate.ID] = true
+		}
 	}
 }
 
@@ -322,6 +348,9 @@ func (c *wikiCache) reserveGraph(taskKey string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	task := c.task(taskKey, true)
+	if task == nil {
+		return errors.New("wiki candidate cache byte budget exceeded")
+	}
 	if task.graphCalls >= 1 {
 		return errors.New("wiki_graph permits at most one call per task")
 	}
@@ -345,6 +374,9 @@ func (c *wikiCache) reserveSuggest(taskKey string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	task := c.task(taskKey, true)
+	if task == nil {
+		return errors.New("wiki candidate cache byte budget exceeded")
+	}
 	if task.suggestCalls >= 1 {
 		return errors.New("wiki_suggest permits at most one call per task")
 	}
@@ -370,9 +402,7 @@ func (c *wikiCache) release(taskKey string) bool {
 	if _, ok := c.tasks[taskKey]; !ok {
 		return false
 	}
-	delete(c.tasks, taskKey)
-	unregisterWikiCacheOwner(taskKey, c)
-	observeWikiCacheRemoval("terminal")
+	c.removeTask(taskKey, "terminal")
 	return true
 }
 
@@ -488,7 +518,9 @@ func (t *wikiSearchTool) Execute(ctx context.Context, _ string, params map[strin
 			}(),
 		})
 	}
-	t.cache.replace(taskKey, corpus, candidates)
+	if !t.cache.replace(taskKey, corpus, candidates) {
+		return nil, errors.New("wiki candidate cache byte budget exceeded; narrow the search")
+	}
 	public := append([]wikiCandidate(nil), candidates...)
 	encoded, err := json.Marshal(map[string]any{"count": len(public), "results": public})
 	if err != nil {

@@ -173,6 +173,7 @@ type Config struct {
 		SearchTopK                     int    `mapstructure:"search_top_k"`
 		FetchMaxItems                  int    `mapstructure:"fetch_max_items"`
 		FetchMaxBytes                  int    `mapstructure:"fetch_max_bytes"`
+		CandidateCacheMaxBytes         int64  `mapstructure:"candidate_cache_max_bytes"`
 		CandidateCacheMaxTasks         int    `mapstructure:"candidate_cache_max_tasks"`
 		CandidateCacheTTLSeconds       int    `mapstructure:"candidate_cache_ttl_seconds"`
 		CircuitBreakerFailureThreshold int    `mapstructure:"circuit_breaker_failure_threshold"`
@@ -626,6 +627,7 @@ func setupViper() {
 	viper.SetDefault("wiki.search_top_k", 8)
 	viper.SetDefault("wiki.fetch_max_items", 3)
 	viper.SetDefault("wiki.fetch_max_bytes", 12000)
+	viper.SetDefault("wiki.candidate_cache_max_bytes", 64<<20)
 	viper.SetDefault("wiki.candidate_cache_max_tasks", 1024)
 	viper.SetDefault("wiki.candidate_cache_ttl_seconds", 1800)
 	viper.SetDefault("wiki.circuit_breaker_failure_threshold", 3)
@@ -689,6 +691,7 @@ func setupViper() {
 	_ = viper.BindEnv("wiki.local_search_mode", "AI_AGENT_WIKI_LOCAL_SEARCH_MODE")
 	_ = viper.BindEnv("wiki.local_refresh_interval_seconds", "AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS")
 	_ = viper.BindEnv("wiki.local_graph_max_nodes", "AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES")
+	_ = viper.BindEnv("wiki.candidate_cache_max_bytes", "AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_BYTES")
 	_ = viper.BindEnv("wiki.candidate_cache_max_tasks", "AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS")
 	_ = viper.BindEnv("wiki.candidate_cache_ttl_seconds", "AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS")
 	_ = viper.BindEnv("search.url", "AI_AGENT_SEARCH_URL")
@@ -999,6 +1002,7 @@ func validateRestartRequiredReload(old, new *Config) error {
 	oldWiki.SearchTopK = newWiki.SearchTopK
 	oldWiki.FetchMaxItems = newWiki.FetchMaxItems
 	oldWiki.FetchMaxBytes = newWiki.FetchMaxBytes
+	oldWiki.CandidateCacheMaxBytes = newWiki.CandidateCacheMaxBytes
 	oldWiki.CandidateCacheMaxTasks = newWiki.CandidateCacheMaxTasks
 	oldWiki.CandidateCacheTTLSeconds = newWiki.CandidateCacheTTLSeconds
 	oldWiki.CircuitBreakerFailureThreshold = newWiki.CircuitBreakerFailureThreshold
@@ -1772,8 +1776,8 @@ func (c *Config) Validate() error {
 	if c.Wiki.TimeoutSeconds < 0 || c.Wiki.SearchTopK < 0 || c.Wiki.FetchMaxItems < 0 || c.Wiki.FetchMaxBytes < 0 || c.Wiki.CircuitBreakerFailureThreshold < 0 || c.Wiki.CircuitBreakerCooldownSeconds < 0 {
 		return fmt.Errorf("wiki timeout and retrieval limits must be >= 0")
 	}
-	if c.Wiki.CandidateCacheMaxTasks < 0 || c.Wiki.CandidateCacheTTLSeconds < 0 {
-		return fmt.Errorf("wiki candidate cache max tasks and TTL must be >= 0")
+	if c.Wiki.CandidateCacheMaxBytes < 0 || c.Wiki.CandidateCacheMaxTasks < 0 || c.Wiki.CandidateCacheTTLSeconds < 0 {
+		return fmt.Errorf("wiki candidate cache max bytes, max tasks and TTL must be >= 0")
 	}
 	if c.Wiki.SearchTopK > 10 {
 		return fmt.Errorf("wiki.search_top_k must not exceed 10")

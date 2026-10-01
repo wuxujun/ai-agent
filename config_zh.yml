@@ -514,6 +514,8 @@ wiki:
   fetch_max_bytes: 12000
   # 任务完成时会主动释放候选 ID；以下限制用于兜底清理被中断或遗留的任务；0 使用内置默认值。
   # 环境变量：AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS / AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS
+  # 缓存估算字节预算（64 MiB）；0 使用默认值，支持热重载。
+  candidate_cache_max_bytes: 67108864
   candidate_cache_max_tasks: 1024
   candidate_cache_ttl_seconds: 1800
   # 连续后端失败达到该阈值后临时拒绝 Wiki 调用；任一值为 0 时禁用熔断。

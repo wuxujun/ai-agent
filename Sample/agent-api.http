@@ -58,3 +58,12 @@ X-API-Key: {{apiKey}}
 # the same step. SQL storage retains every event in array order independently.
 GET {{baseUrl}}/api/tasks/atomic-create-example
 X-API-Key: {{apiKey}}
+
+### Wiki candidate cache memory metrics (administrator credentials required)
+# wiki.candidate_cache_bytes is estimated retained cache memory, not process RSS.
+# wiki.candidate_cache_evicted_bytes is cumulative bytes removed by task-count
+# or byte-budget eviction. Both values are process-local and reset on restart.
+# wiki.candidate_cache_max_bytes is hot-reloadable; 0 uses the 64 MiB default.
+# Lower limits are enforced on the next cache operation.
+GET {{baseUrl}}/api/metrics
+X-API-Key: {{apiKey}}
