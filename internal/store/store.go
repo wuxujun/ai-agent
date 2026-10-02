@@ -80,6 +80,52 @@ type ListFilter struct {
 	Offset int
 }
 
+// TaskSummaryFilter selects a stable page in descending creation order.
+// BeforeCreatedAt and BeforeID form an exclusive cursor when both are set.
+type TaskSummaryFilter struct {
+	TenantID        string
+	SessionID       string
+	Status          types.TaskStatus
+	BeforeCreatedAt time.Time
+	BeforeID        string
+	Limit           int
+}
+
+// TaskSummary contains only the fields needed by the task list.
+type TaskSummary struct {
+	ID                  string           `json:"id"`
+	TenantID            string           `json:"tenant_id"`
+	SessionID           string           `json:"session_id,omitempty"`
+	Goal                string           `json:"goal"`
+	Status              types.TaskStatus `json:"status"`
+	Mode                string           `json:"mode,omitempty"`
+	Team                string           `json:"team,omitempty"`
+	MaxSteps            int              `json:"max_steps"`
+	StepCount           int              `json:"step_count"`
+	LLMCalls            int              `json:"llm_calls"`
+	LLMEstimatedCostUSD float64          `json:"llm_estimated_cost_usd"`
+	CreatedAt           time.Time        `json:"created_at"`
+	UpdatedAt           time.Time        `json:"updated_at"`
+}
+
+type TaskSummaryStore interface {
+	ListTaskSummaries(ctx context.Context, filter TaskSummaryFilter) ([]TaskSummary, error)
+	GetTaskWithoutTrace(ctx context.Context, id string) (*types.Task, error)
+}
+
+// TaskTraceEvent.Sequence is the physical, 1-based event position. StepTrace.Step
+// is a logical execution step and may be repeated by multiple agents.
+type TaskTraceEvent struct {
+	Sequence   int64           `json:"sequence"`
+	EventID    string          `json:"event_id"`
+	RecordedAt *time.Time      `json:"recorded_at,omitempty"`
+	Trace      types.StepTrace `json:"trace"`
+}
+
+type TaskTraceStore interface {
+	ListTaskTraces(ctx context.Context, id string, afterSequence int64, limit int) ([]TaskTraceEvent, error)
+}
+
 type ListMemoryFilter struct {
 	TenantID  string
 	SessionID string
@@ -171,6 +217,22 @@ type DurableApprovalStore interface {
 	TransitionApproval(ctx context.Context, id, tenantID string, expectedVersion int64, from, to types.DurableApprovalStatus, resolutionPayload []byte) (bool, error)
 	AcquireApprovalLease(ctx context.Context, id, owner string, ttl time.Duration) (bool, error)
 	ReleaseApprovalLease(ctx context.Context, id, owner string) error
+}
+
+// ApprovalListFilter selects a tenant-scoped page in descending creation order.
+// BeforeCreatedAt and BeforeID form an exclusive cursor when both are set.
+type ApprovalListFilter struct {
+	TenantID        string
+	Status          types.DurableApprovalStatus
+	BeforeCreatedAt time.Time
+	BeforeID        string
+	Limit           int
+}
+
+// ApprovalListStore supports recoverable approval inboxes across instances.
+// TenantID is mandatory; implementations must never return another tenant's rows.
+type ApprovalListStore interface {
+	ListApprovals(ctx context.Context, filter ApprovalListFilter) ([]*types.DurableApproval, error)
 }
 
 // ApprovalCleanupStore removes only terminal approval records older than a

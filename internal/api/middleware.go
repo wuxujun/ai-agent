@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
 	"errors"
@@ -14,9 +15,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/store"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -24,6 +27,7 @@ import (
 type Principal struct {
 	TenantID string
 	Admin    bool
+	ActorID  string
 }
 
 const principalKey = "authenticated_principal"
@@ -180,14 +184,14 @@ func AuthMiddleware() gin.HandlerFunc {
 		xAPIKey := strings.TrimSpace(c.GetHeader("X-API-Key"))
 		bearerToken := bearerCredential(c.GetHeader("Authorization"))
 		if gin.Mode() == gin.TestMode && xAPIKey == "" && bearerToken == "" && !hasConfiguredAPIKey(cfg) {
-			principal := Principal{TenantID: "default", Admin: true}
+			principal := Principal{TenantID: "default", Admin: true, ActorID: "test-default"}
 			setPrincipal(c, principal)
 			c.Next()
 			return
 		}
 		if apiKeyEnabled && !bearerEnabled && !hasConfiguredAPIKey(cfg) {
 			if gin.Mode() == gin.TestMode {
-				principal := Principal{TenantID: "default", Admin: true}
+				principal := Principal{TenantID: "default", Admin: true, ActorID: "test-default"}
 				setPrincipal(c, principal)
 				c.Next()
 				return
@@ -221,7 +225,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			if err == nil {
 				tenant, known := cfg.API.Tenants[tenantID]
 				if known || !requireKnownTenant {
-					setPrincipal(c, Principal{TenantID: tenantID, Admin: known && tenant.Admin})
+					setPrincipal(c, Principal{TenantID: tenantID, Admin: known && tenant.Admin, ActorID: bearerActorID(cfg, authMode, bearerToken, tenantID)})
 					c.Next()
 					return
 				}
@@ -280,14 +284,35 @@ func bearerCredential(header string) string {
 
 func matchStaticAPIKey(cfg *config.Config, candidate string) (Principal, bool) {
 	if constantTimeKeyMatch(candidate, cfg.API.APIKey) {
-		return Principal{TenantID: "default", Admin: true}, true
+		return Principal{TenantID: "default", Admin: true, ActorID: "api-key:default"}, true
 	}
 	for tenantID, tenant := range cfg.API.Tenants {
 		if constantTimeKeyMatch(candidate, tenant.APIKey) {
-			return Principal{TenantID: tenantID, Admin: tenant.Admin}, true
+			return Principal{TenantID: tenantID, Admin: tenant.Admin, ActorID: "api-key:" + tenantID}, true
 		}
 	}
 	return Principal{}, false
+}
+
+func bearerActorID(cfg *config.Config, authMode, token, tenantID string) string {
+	validationMode := authMode
+	if authMode == "hybrid" {
+		validationMode = strings.ToLower(strings.TrimSpace(cfg.API.Auth.Bearer.ValidationMode))
+	}
+	if validationMode == "jwt" || validationMode == "jwks" || (validationMode == "" && authMode == "hybrid") {
+		claims := jwt.MapClaims{}
+		if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err == nil {
+			if subject, ok := claims["sub"].(string); ok && strings.TrimSpace(subject) != "" {
+				// The token was already verified above. Hash the signed subject so
+				// audit records can correlate decisions without exposing an email.
+				digest := sha256.Sum256([]byte(tenantID + "\x00" + subject))
+				return fmt.Sprintf("jwt-sub:%x", digest[:12])
+			}
+		}
+	}
+	// The current introspection contract exposes a tenant identifier but no
+	// stable person claim. Keep this explicit until the provider supplies one.
+	return "tenant:" + tenantID
 }
 
 func setPrincipal(c *gin.Context, principal Principal) {
@@ -322,7 +347,13 @@ func TaskTenantMiddleware(st store.Store) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		task, err := st.GetTask(c.Request.Context(), taskID)
+		var task *types.Task
+		var err error
+		if reader, ok := st.(store.TaskSummaryStore); ok {
+			task, err = reader.GetTaskWithoutTrace(c.Request.Context(), taskID)
+		} else {
+			task, err = st.GetTask(c.Request.Context(), taskID)
+		}
 		if err != nil {
 			if err == sql.ErrNoRows {
 				c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})

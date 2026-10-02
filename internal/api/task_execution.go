@@ -15,7 +15,15 @@ import (
 	"github.com/wuxujun/ai-agent/internal/orchestrator"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
+	"go.opentelemetry.io/otel/trace"
 )
+
+func setExecutionTraceID(ctx context.Context, task *types.Task) {
+	task.ExecutionTraceID = ""
+	if span := trace.SpanContextFromContext(ctx); span.IsValid() {
+		task.ExecutionTraceID = span.TraceID().String()
+	}
+}
 
 func (h *Handler) runTaskStep(c *gin.Context) {
 	// 60s allows for LLM planner calls (P99 ≈ 30s) plus tool execution and DB write.
@@ -90,6 +98,7 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		return
 	}
 	task = freshTask
+	setExecutionTraceID(ctx, task)
 
 	stream := c.Query("stream") == "true"
 	if stream {
@@ -306,6 +315,7 @@ func (h *Handler) runAll(c *gin.Context) {
 
 	task.Status = types.StatusRunning
 	task.TerminationKind = types.TerminationNone
+	setExecutionTraceID(bgCtx, task)
 
 	// Snapshot the fields used in the response BEFORE handing the task pointer
 	// to the goroutine. The goroutine may mutate task.Status (via engine /

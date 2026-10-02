@@ -175,6 +175,7 @@ curl -sS \
 关键响应字段包括：
 
 - `status`、`final_answer`、`error_code`、`error_message`、`trace`；
+- `execution_trace_id`（可选）：最近一次执行请求的 OTel Trace ID，仅在请求携带有效 Span 上下文时存在；
 - `team`、`team_selection_source`、`team_config_digest`；
 - `step_count`、`tool_budget`、`token_budget`；
 - `llm_calls`、`llm_estimated_cost_usd`；
@@ -207,6 +208,34 @@ curl -sS \
 | `offset` | 分页偏移 |
 
 普通租户只能看到自己的 Task；管理员查询遵循服务端管理员策略。
+
+控制台可使用摘要视图和稳定游标分页，原有 `GET /api/tasks` 的结构与排序保持不变：
+
+```http
+GET /api/tasks?view=summary&status=running&session_id=session-demo-001&limit=20
+GET /api/tasks?view=summary&status=running&session_id=session-demo-001&limit=20&cursor=<next_cursor>
+```
+
+摘要仅包含任务 ID、租户/Session、目标、状态、模式/Team、步骤数、LLM 调用与预估成本、创建及更新时间，不包含 Trace、Memory、最终答案或审计正文。按 `created_at DESC, id DESC` 排序；`count` 是本页数量，`has_more` 表示还有下一页。`next_cursor` 只适用于同一租户、状态和 Session 筛选，不能与 `offset` 混用。`limit` 默认为 20，范围为 1–100。
+
+任务详情可用 `GET /api/tasks/:id?view=summary` 读取不含 Trace/Memory 的元数据及 `allowed_actions`。动作值为 `run_all`、`cancel`、`re_audit`、`delete` 中后端当前允许显示的操作；`run_all` 会覆盖可恢复的 Multi-Agent 部分完成任务。动作列表是页面提示，执行时仍由服务端再次校验状态、权限及并发条件。
+
+长 Trace 使用独立分页接口：
+
+```http
+GET /api/tasks/:id/trace?limit=100
+GET /api/tasks/:id/trace?limit=100&cursor=<next_cursor>
+```
+
+响应包含 `events`、本页 `count`、`has_more`、`next_cursor`。每条事件包含 `sequence`、`event_id`、可选的 `recorded_at` 和原始 `trace`。例如：
+
+```json
+{"sequence":1,"event_id":"task-demo-001:1","recorded_at":"2026-10-02T12:00:00Z","trace":{"step":1,"action":"search"}}
+```
+
+`sequence` 是持久化顺序号，`event_id` 由 Task ID 和该顺序号组成；`trace.step` 是可重复的逻辑步骤。`recorded_at` 表示事件首次写入 Store 的时间，并非动作实际发生时间；旧数据没有可靠时间时省略该字段。完整 Trace 快照覆盖同一顺序号时保留原时间。若任务重排或截断 Trace，顺序号和事件 ID 可对应到不同内容，不应将其视为内容哈希。游标绑定 Task ID；`limit` 默认为 100，范围为 1–200。任务正在执行时，新事件会追加，跨页读取不是事务性快照；刷新当前页可对账。普通租户读取别人的 Task 时统一返回 `404`。
+
+SQLite/PostgreSQL 直接按索引读取摘要与 Trace 页。Redis 在保存完整 Task 的同时，原子更新摘要索引、详情元数据及逐条 Trace 列表；摘要按创建时间游标读取，Trace 按事件序号读取，正常分页不再反序列化完整 Task。首次摘要查询会迁移旧 Redis 任务的读取索引，耗时与旧任务数量和 Trace 总量相关；直接访问尚未迁移的旧任务时，详情与 Trace 暂时回退到完整 Task 读取。Redis 每次保存完整 Trace 快照仍要同步重建分页列表，超长且频繁更新的任务会增加写入成本。部署时应先让所有 Redis 写入实例升级到包含读取索引的版本，再启用新摘要查询，避免旧版本写入造成索引过期。
 
 ## 6. 独立订阅 SSE
 
@@ -253,6 +282,17 @@ curl -N \
 ## 7. 审批高风险操作
 
 当 Task 状态为 `awaiting_approval` 时，从 SSE 事件的 `approval.id` 获取审批 ID。
+浏览器刷新或跨实例切换后，也可以从下面的持久化查询接口重新获取审批 ID：
+
+```http
+GET /api/approvals?status=pending&limit=20
+GET /api/approvals/:approval_id
+GET /api/tasks/:id/approvals?status=pending
+```
+
+列表返回 `approvals`、本页 `count`、`has_more` 和可选 `next_cursor`。下一页将 `next_cursor` 作为 `cursor` 查询参数，游标仅可用于相同租户与状态筛选。默认状态为 `pending`，支持 `approved`、`rejected`、`expired` 和 `consumed`。任务下审批接口不传 `status` 时返回该任务的全部审批记录。
+
+审批读取响应仅包含审批 ID、任务 ID、状态、版本、动作、风险级别、工作区、脱敏参数摘要/预览、时间及可用的决策主体标识 `actor_id`；不会返回持久化的操作密文、决策密文或原始参数。普通租户只能读取自己的审批，不可见与不存在均返回 `404`。`approved/rejected` 表示决策已记录；`consumed` 表示恢复检查点已消费。JWT 的 `actor_id` 来自已验证 `sub` 的短哈希；当前 introspection 模式缺少独立主体声明时仅能标识租户，不能据此区分同租户的不同人员。
 
 批准：
 
@@ -405,3 +445,11 @@ POST /api/tasks/:id/run-all?stream=true
 - `team` 仅对 `multiagent` 有效，并受服务端 allowlist 和生命周期约束。
 - 高风险操作必须等待服务生成审批请求，客户端不能自行伪造执行结果。
 - 删除全部 Task 前应确认已经导出所需结果；该操作不可恢复。
+
+## 14. 浏览器工作台
+
+`GET /console` 提供任务、Trace 和审批工作台。工作台通过 `POST /console/session` 接收已有身份系统签发的 Bearer Token，验证后设置服务端加密的 `HttpOnly`、`SameSite=Strict` 会话 Cookie；生产访问始终设置 `Secure`，仅本机回环地址上的 HTTP 开发请求允许非 `Secure` Cookie。`GET /console/session` 返回租户和 CSRF Token；`DELETE /console/session` 注销。所有由 Cookie 发起的 `/api` 写请求需要 `X-Console-CSRF`，后端仍逐次执行原有 Bearer 鉴权。浏览器不把 API Key 或 Token 写入本地存储。
+
+启动工作台前，服务端必须通过环境变量 `AI_AGENT_CONSOLE_SESSION_KEY` 提供 32 字节密钥的标准 Base64 编码；没有该密钥时会话创建失败。所有实例须使用同一密钥。工作台会话最长 8 小时，底层 Bearer Token 如果更早失效，会立即拒绝后续请求。生产环境须通过 HTTPS 访问工作台。
+
+当前审批操作沿用原有租户级 API 授权；审批人角色与禁止创建者自批仍需绑定可信身份源后单独配置。不要将租户级凭证共享给无审批权限的人员。

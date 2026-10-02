@@ -14,6 +14,8 @@ var secretPatterns = []struct {
 	{regexp.MustCompile(`\bgh[psour]_[A-Za-z0-9]{20,}\b`), `[REDACTED GITHUB TOKEN]`},
 	{regexp.MustCompile(`(?m)^([+ -]?\s*["']?[A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD|MASTER_KEY)[A-Z0-9_]*["']?\s*[:=]\s*)\S+.*$`), `${1}[REDACTED]`},
 	{regexp.MustCompile(`(?im)^([+ -]?\s*["']?(?:api[_-]?key|secret|token|password|authorization)["']?\s*[:=]\s*)\S+.*$`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)(\b(?:api[_-]?key|secret|token|password|authorization)\b\s*[:=]\s*)[^\s,\]\}]+`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)(--(?:api[_-]?key|secret|token|password)(?:=|\s+))[^\s]+`), `${1}[REDACTED]`},
 }
 
 func Secrets(value string) string {

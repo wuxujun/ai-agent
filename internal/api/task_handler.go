@@ -261,6 +261,14 @@ func tenantAllowsMultiAgentTeam(tenant config.APITenantConfig, team string) bool
 }
 
 func (h *Handler) getTask(c *gin.Context) {
+	if c.Query("view") == "summary" {
+		h.getTaskSummary(c)
+		return
+	}
+	if view := c.Query("view"); view != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task view"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 	defer cancel()
 
@@ -357,6 +365,14 @@ func (h *Handler) deleteAllTasks(c *gin.Context) {
 // listTasks handles GET /api/tasks — supports pagination and status filtering.
 // Query params: status (optional), limit (default 50, max 500), offset (default 0)
 func (h *Handler) listTasks(c *gin.Context) {
+	if c.Query("view") == "summary" {
+		h.listTaskSummaries(c)
+		return
+	}
+	if view := c.Query("view"); view != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task view"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 

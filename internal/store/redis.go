@@ -26,12 +26,17 @@ type RedisStore struct {
 }
 
 const (
-	legacyTasksIndex          = "tasks:index"
-	tasksIndexV2              = "tasks:index:v2"
-	tasksIndexV2Marker        = "tasks:index:v4:migrated"
-	taskStatusIndexBase       = "tasks:status:v4:"
-	taskTenantIndexBase       = "tasks:tenant:"
-	taskTenantStatusIndexBase = "tasks:tenant_status:v4:"
+	legacyTasksIndex            = "tasks:index"
+	tasksIndexV2                = "tasks:index:v2"
+	tasksIndexV2Marker          = "tasks:index:v4:migrated"
+	taskStatusIndexBase         = "tasks:status:v4:"
+	taskTenantIndexBase         = "tasks:tenant:"
+	taskTenantStatusIndexBase   = "tasks:tenant_status:v4:"
+	taskSummaryIndex            = "tasks:summary:v1:all"
+	taskSummaryTenantBase       = "tasks:summary:v1:tenant:"
+	taskSummaryStatusBase       = "tasks:summary:v1:status:"
+	taskSummaryTenantStatusBase = "tasks:summary:v1:tenant_status:"
+	taskSummaryMigrationMarker  = "tasks:summary:v1:migrated"
 )
 
 var saveTaskScript = redis.NewScript(`
@@ -42,8 +47,10 @@ var saveTaskScript = redis.NewScript(`
 		return 0
 	end
 	local existing = redis.call('GET', KEYS[1])
+	local oldTraceCount = 0
 	if existing then
 		local ok, oldTask = pcall(cjson.decode, existing)
+		if ok and type(oldTask['trace']) == 'table' then oldTraceCount = #oldTask['trace'] end
 		if ok and oldTask["status"] then
 			redis.call('ZREM', ARGV[5] .. oldTask["status"], ARGV[2])
 			local oldTenant = oldTask["tenant_id"] or ""
@@ -53,12 +60,42 @@ var saveTaskScript = redis.NewScript(`
 	end
 	local newTask = cjson.decode(ARGV[1])
 	local tenant = newTask["tenant_id"] or ""
+	local oldSummaryRaw = redis.call('GET', KEYS[5])
+	if oldSummaryRaw then
+		local oldSummary = cjson.decode(oldSummaryRaw)
+		local oldMember = oldSummary['index_member']
+		if oldMember then
+			local oldSummaryTenant = oldSummary['tenant_id'] or ''
+			local oldSummaryStatus = oldSummary['status'] or ''
+			redis.call('ZREM', ARGV[15], oldMember)
+			redis.call('ZREM', ARGV[16] .. oldSummaryTenant, oldMember)
+			redis.call('ZREM', ARGV[17] .. oldSummaryStatus, oldMember)
+			redis.call('ZREM', ARGV[18] .. oldSummaryTenant .. ':' .. oldSummaryStatus, oldMember)
+		end
+	end
 	redis.call('SET', KEYS[1], ARGV[1])
 	redis.call('ZADD', KEYS[2], 0, ARGV[2])
 	redis.call('ZADD', KEYS[3], ARGV[4], ARGV[2])
 	redis.call('ZADD', ARGV[5] .. ARGV[3], 0, ARGV[2])
 	redis.call('ZADD', ARGV[6] .. tenant, ARGV[4], ARGV[2])
 	redis.call('ZADD', ARGV[7] .. tenant .. ":" .. ARGV[3], 0, ARGV[2])
+	redis.call('SET', KEYS[5], ARGV[11])
+	redis.call('SET', KEYS[6], ARGV[12])
+	local oldTimes = redis.call('LRANGE', KEYS[8], 0, -1)
+	redis.call('DEL', KEYS[7], KEYS[8])
+	local traces = cjson.decode(ARGV[13])
+	for i = 1, #traces do
+		redis.call('RPUSH', KEYS[7], cjson.encode(traces[i]))
+		if i <= oldTraceCount then
+			redis.call('RPUSH', KEYS[8], oldTimes[i] or '')
+		else
+			redis.call('RPUSH', KEYS[8], ARGV[19])
+		end
+	end
+	redis.call('ZADD', ARGV[15], 0, ARGV[14])
+	redis.call('ZADD', ARGV[16] .. tenant, 0, ARGV[14])
+	redis.call('ZADD', ARGV[17] .. ARGV[3], 0, ARGV[14])
+	redis.call('ZADD', ARGV[18] .. tenant .. ':' .. ARGV[3], 0, ARGV[14])
 	return 1
 `)
 
@@ -76,7 +113,20 @@ var deleteTaskScript = redis.NewScript(`
 		redis.call('ZREM', ARGV[4] .. tenant .. ":" .. status, ARGV[1])
 		redis.call('ZREM', ARGV[6] .. tenant, ARGV[5])
 	end
-	redis.call('DEL', KEYS[1], KEYS[4], KEYS[5])
+	local summaryRaw = redis.call('GET', KEYS[7])
+	if summaryRaw then
+		local summary = cjson.decode(summaryRaw)
+		local member = summary['index_member']
+		if member then
+			local tenant = summary['tenant_id'] or ''
+			local status = summary['status'] or ''
+			redis.call('ZREM', ARGV[7], member)
+			redis.call('ZREM', ARGV[8] .. tenant, member)
+			redis.call('ZREM', ARGV[9] .. status, member)
+			redis.call('ZREM', ARGV[10] .. tenant .. ':' .. status, member)
+		end
+	end
+	redis.call('DEL', KEYS[1], KEYS[4], KEYS[5], KEYS[7], KEYS[8], KEYS[9], KEYS[10])
 	redis.call('ZREM', KEYS[2], ARGV[1])
 	redis.call('ZREM', KEYS[3], ARGV[1])
 	redis.call('ZREM', KEYS[6], ARGV[5])
@@ -281,6 +331,10 @@ func (r *RedisStore) saveFullTask(ctx context.Context, task *types.Task, createO
 		span.SetStatus(codes.Error, "serialize task failed")
 		return fmt.Errorf("failed to serialize task: %w", err)
 	}
+	summaryData, metadataData, traceData, member, err := encodeRedisTaskReadModel(&persistable)
+	if err != nil {
+		return fmt.Errorf("failed to serialize task read model: %w", err)
+	}
 
 	insertOnly := 0
 	if createOnly {
@@ -289,7 +343,8 @@ func (r *RedisStore) saveFullTask(ctx context.Context, task *types.Task, createO
 	saved, err := saveTaskScript.Run(
 		ctx,
 		r.client,
-		[]string{r.taskKey(task.ID), tasksIndexV2, legacyTasksIndex, "task:lease:" + task.ID},
+		[]string{r.taskKey(task.ID), tasksIndexV2, legacyTasksIndex, "task:lease:" + task.ID,
+			r.taskSummaryKey(task.ID), r.taskMetadataKey(task.ID), r.taskTraceKey(task.ID), r.taskTraceTimeKey(task.ID)},
 		data,
 		task.ID,
 		string(task.Status),
@@ -300,6 +355,15 @@ func (r *RedisStore) saveFullTask(ctx context.Context, task *types.Task, createO
 		insertOnly,
 		guarded,
 		lease.owner,
+		summaryData,
+		metadataData,
+		traceData,
+		member,
+		taskSummaryIndex,
+		taskSummaryTenantBase,
+		taskSummaryStatusBase,
+		taskSummaryTenantStatusBase,
+		time.Now().UTC().Format(time.RFC3339Nano),
 	).Int64()
 	if err != nil {
 		span.RecordError(err)
@@ -711,7 +775,9 @@ func (r *RedisStore) DeleteTask(ctx context.Context, id string) (bool, error) {
 		r.memoryKey(memoryID),
 		"task:lease:" + id,
 		"memories:index",
-	}, id, taskStatusIndexBase, taskTenantIndexBase, taskTenantStatusIndexBase, memoryID, "memories:tenant:").Int64()
+		r.taskSummaryKey(id), r.taskMetadataKey(id), r.taskTraceKey(id), r.taskTraceTimeKey(id),
+	}, id, taskStatusIndexBase, taskTenantIndexBase, taskTenantStatusIndexBase, memoryID, "memories:tenant:",
+		taskSummaryIndex, taskSummaryTenantBase, taskSummaryStatusBase, taskSummaryTenantStatusBase).Int64()
 	if err != nil {
 		return false, err
 	}
@@ -982,7 +1048,7 @@ var transitionScript = redis.NewScript(`
 
 	local task = cjson.decode(val)
 	local matched = false
-	for i = 8, #ARGV do
+	for i = 10, #ARGV do
 		if task["status"] == ARGV[i] then
 			matched = true
 			break
@@ -1002,6 +1068,27 @@ var transitionScript = redis.NewScript(`
 	local tenantPrefix = ARGV[5] .. (task["tenant_id"] or "") .. ":"
 	redis.call('ZREM', tenantPrefix .. oldStatus, task["id"])
 	redis.call('ZADD', tenantPrefix .. toStatus, 0, task["id"])
+	local summaryRaw = redis.call('GET', KEYS[3])
+	if summaryRaw then
+		local summary = cjson.decode(summaryRaw)
+		summary['status'] = toStatus
+		redis.call('SET', KEYS[3], cjson.encode(summary))
+		local member = summary['index_member']
+		if member then
+			local tenant = summary['tenant_id'] or ''
+			redis.call('ZREM', ARGV[8] .. oldStatus, member)
+			redis.call('ZADD', ARGV[8] .. toStatus, 0, member)
+			redis.call('ZREM', ARGV[9] .. tenant .. ':' .. oldStatus, member)
+			redis.call('ZADD', ARGV[9] .. tenant .. ':' .. toStatus, 0, member)
+		end
+	end
+	local metadataRaw = redis.call('GET', KEYS[4])
+	if metadataRaw then
+		local metadata = cjson.decode(metadataRaw)
+		metadata['status'] = toStatus
+		if ARGV[6] == '1' then metadata['termination_kind'] = ARGV[7] end
+		redis.call('SET', KEYS[4], cjson.encode(metadata))
+	end
 	return 1
 `)
 
@@ -1045,7 +1132,7 @@ func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, fro
 		}
 		guard, owner = "1", scope.owner
 	}
-	args := make([]any, 0, len(from)+7)
+	args := make([]any, 0, len(from)+9)
 	args = append(args, string(to))
 	args = append(args, taskStatusIndexBase, guard, owner, taskTenantStatusIndexBase)
 	if len(kind) == 1 {
@@ -1054,11 +1141,13 @@ func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, fro
 		args = append(args, "0")
 	}
 	args = append(args, string(terminationKind))
+	args = append(args, taskSummaryStatusBase, taskSummaryTenantStatusBase)
 	for _, f := range from {
 		args = append(args, string(f))
 	}
 
-	res, err := transitionScript.Run(ctx, r.client, []string{r.taskKey(id), "task:lease:" + id}, args...).Int64()
+	res, err := transitionScript.Run(ctx, r.client, []string{r.taskKey(id), "task:lease:" + id,
+		r.taskSummaryKey(id), r.taskMetadataKey(id)}, args...).Int64()
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "redis transition script failed")

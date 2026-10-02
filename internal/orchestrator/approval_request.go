@@ -10,6 +10,7 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/plancritic"
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"github.com/wuxujun/ai-agent/internal/sanitize"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -33,7 +34,7 @@ func (e *Engine) BuildApprovalRequest(task *types.Task, action string, params ma
 		Workspace:        task.Workspace,
 		Parameters:       safeApprovalParameters(params),
 		ParameterSummary: approvalParameterSummary(params),
-		Preview:          preview,
+		Preview:          truncateForApproval(sanitize.Secrets(preview), approvalPreviewLimit),
 	}
 	return req
 }
@@ -62,10 +63,14 @@ func safeApprovalParameters(params map[string]any) map[string]any {
 	if len(params) == 0 {
 		return nil
 	}
-
-	safe := make(map[string]any, len(params))
-	for key, value := range params {
-		safe[key] = safeApprovalValue(key, value)
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	safe := make(map[string]any, min(len(keys), 32))
+	for _, key := range keys[:min(len(keys), 32)] {
+		safe[key] = safeApprovalValue(key, params[key])
 	}
 	return safe
 }
@@ -82,13 +87,17 @@ func approvalParameterSummary(params map[string]any) []string {
 	sort.Strings(keys)
 
 	summary := make([]string, 0, len(keys))
-	for _, key := range keys {
-		summary = append(summary, fmt.Sprintf("%s=%v", key, safeApprovalValue(key, params[key])))
+	for _, key := range keys[:min(len(keys), 32)] {
+		summary = append(summary, truncateForApproval(fmt.Sprintf("%s=%v", key, safeApprovalValue(key, params[key])), 240))
 	}
 	return summary
 }
 
 func safeApprovalValue(key string, value any) any {
+	return safeApprovalValueDepth(key, value, 0)
+}
+
+func safeApprovalValueDepth(key string, value any, depth int) any {
 	lowerKey := strings.ToLower(key)
 	if strings.Contains(lowerKey, "secret") ||
 		strings.Contains(lowerKey, "token") ||
@@ -97,15 +106,37 @@ func safeApprovalValue(key string, value any) any {
 		lowerKey == "key" {
 		return "[redacted]"
 	}
-
-	s, ok := value.(string)
-	if !ok {
-		return value
+	if depth >= 4 {
+		return "[truncated]"
 	}
-	if key == "content" {
-		return fmt.Sprintf("<%d chars>", len(s))
+	switch item := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(item))
+		for nestedKey := range item {
+			keys = append(keys, nestedKey)
+		}
+		sort.Strings(keys)
+		safe := make(map[string]any, min(len(keys), 32))
+		for _, nestedKey := range keys[:min(len(keys), 32)] {
+			safe[nestedKey] = safeApprovalValueDepth(nestedKey, item[nestedKey], depth+1)
+		}
+		return safe
+	case []any:
+		safe := make([]any, 0, min(len(item), 20))
+		for _, nested := range item[:min(len(item), 20)] {
+			safe = append(safe, safeApprovalValueDepth("", nested, depth+1))
+		}
+		return safe
+	case string:
+		if key == "content" {
+			return fmt.Sprintf("<%d chars>", len(item))
+		}
+		return truncateForApproval(sanitize.Secrets(item), 240)
+	case nil, bool, float64, float32, int, int64, int32, uint, uint64, uint32, json.Number:
+		return item
+	default:
+		return truncateForApproval(sanitize.Secrets(fmt.Sprint(item)), 240)
 	}
-	return truncateForApproval(s, 240)
 }
 
 func buildApprovalPreview(workspace, action string, params map[string]any) string {

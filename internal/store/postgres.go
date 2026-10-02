@@ -132,7 +132,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 	final_answer TEXT NOT NULL,
 	termination_kind TEXT NOT NULL DEFAULT '',
 	error_code TEXT NOT NULL DEFAULT '',
-	error_message TEXT NOT NULL DEFAULT ''
+	error_message TEXT NOT NULL DEFAULT '',
+	execution_trace_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS traces (
@@ -149,6 +150,7 @@ CREATE TABLE IF NOT EXISTS traces (
 		prompt_tokens INT NOT NULL DEFAULT 0,
 		completion_tokens INT NOT NULL DEFAULT 0,
 		total_tokens INT NOT NULL DEFAULT 0,
+		recorded_at TIMESTAMPTZ,
 		FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
@@ -188,6 +190,8 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_task_tenant_status
 	ON approvals(task_id, tenant_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_approvals_tenant_status_created
+	ON approvals(tenant_id, status, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	tenant_id TEXT NOT NULL,
@@ -212,6 +216,7 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	// the first task read/write.
 	statements := []postgresMigrationStatement{
 		{name: "add trace execution step", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS execution_step INT`},
+		{name: "add trace recorded at", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ`},
 		{name: "add task token budget", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget INT NOT NULL DEFAULT 0`},
 		{name: "add task tenant", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`},
 		{name: "add task session", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`},
@@ -237,6 +242,7 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 		{name: "add task termination kind", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS termination_kind TEXT NOT NULL DEFAULT ''`},
 		{name: "add task error code", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT ''`},
 		{name: "add task error message", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT ''`},
+		{name: "add task execution trace id", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_trace_id TEXT NOT NULL DEFAULT ''`},
 		{name: "add memory tenant", query: `ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`},
 		{name: "add memory session", query: `ALTER TABLE memories ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`},
 		{name: "add trace agent role", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS agent_role TEXT NOT NULL DEFAULT ''`},
@@ -247,6 +253,8 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 		{name: "create trace step index", query: `CREATE UNIQUE INDEX IF NOT EXISTS idx_traces_task_id_step ON traces(task_id, step)`},
 		{name: "create session tenant index", query: `CREATE INDEX IF NOT EXISTS idx_sessions_tenant_updated ON sessions(tenant_id, updated_at DESC)`},
 		{name: "create task session index", query: `CREATE INDEX IF NOT EXISTS idx_tasks_session_sequence ON tasks(tenant_id, session_id, sequence_no)`},
+		{name: "create task summary index", query: `CREATE INDEX IF NOT EXISTS idx_tasks_tenant_created ON tasks(tenant_id, created_at DESC, id DESC)`},
+		{name: "create task status summary index", query: `CREATE INDEX IF NOT EXISTS idx_tasks_tenant_status_created ON tasks(tenant_id, status, created_at DESC, id DESC)`},
 		{name: "create memory session index", query: `CREATE INDEX IF NOT EXISTS idx_memories_session_timestamp ON memories(tenant_id, session_id, timestamp DESC)`},
 	}
 	for _, statement := range statements {
@@ -335,8 +343,8 @@ func (p *PostgresStore) SaveTask(ctx context.Context, task *types.Task) error {
 	}
 
 	_, err = p.db.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
 ON CONFLICT(id) DO UPDATE SET
 goal=EXCLUDED.goal,
 tenant_id=EXCLUDED.tenant_id,
@@ -369,10 +377,11 @@ answer_audit_json=EXCLUDED.answer_audit_json,
 final_answer=EXCLUDED.final_answer,
 termination_kind=EXCLUDED.termination_kind,
 error_code=EXCLUDED.error_code,
-error_message=EXCLUDED.error_message
+error_message=EXCLUDED.error_message,
+execution_trace_id=EXCLUDED.execution_trace_id
 `,
 		postgresText(task.ID), postgresText(task.TenantID), postgresText(task.SessionID), task.SequenceNo, task.CreatedAt, task.UpdatedAt, postgresText(task.Goal), postgresText(string(task.Status)), postgresText(task.Mode), postgresText(task.RequestedTeam), postgresText(task.TeamSelectionSource), postgresText(task.Team), postgresText(task.TeamConfigDigest), postgresText(task.BrainProjectID), postgresText(task.BrainSnapshotID), postgresText(task.BrainConfigDigest), task.MaxSteps, task.StepCount,
-		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(string(task.TerminationKind)), postgresText(task.ErrorCode), postgresText(task.ErrorMessage),
+		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(string(task.TerminationKind)), postgresText(task.ErrorCode), postgresText(task.ErrorMessage), postgresText(task.ExecutionTraceID),
 	)
 	return err
 }
@@ -446,8 +455,8 @@ func (p *PostgresStore) saveFullTask(ctx context.Context, task *types.Task, crea
 	}
 
 	query := `
-INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
 `
 	if createOnly {
 		query += "ON CONFLICT(id) DO NOTHING"
@@ -484,11 +493,12 @@ answer_audit_json=EXCLUDED.answer_audit_json,
 final_answer=EXCLUDED.final_answer,
 termination_kind=EXCLUDED.termination_kind,
 error_code=EXCLUDED.error_code,
-error_message=EXCLUDED.error_message`
+error_message=EXCLUDED.error_message,
+execution_trace_id=EXCLUDED.execution_trace_id`
 	}
 	result, err := tx.ExecContext(ctx, query,
 		postgresText(task.ID), postgresText(task.TenantID), postgresText(task.SessionID), task.SequenceNo, task.CreatedAt, task.UpdatedAt, postgresText(task.Goal), postgresText(string(task.Status)), postgresText(task.Mode), postgresText(task.RequestedTeam), postgresText(task.TeamSelectionSource), postgresText(task.Team), postgresText(task.TeamConfigDigest), postgresText(task.BrainProjectID), postgresText(task.BrainSnapshotID), postgresText(task.BrainConfigDigest), task.MaxSteps, task.StepCount,
-		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(string(task.TerminationKind)), postgresText(task.ErrorCode), postgresText(task.ErrorMessage),
+		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(string(task.TerminationKind)), postgresText(task.ErrorCode), postgresText(task.ErrorMessage), postgresText(task.ExecutionTraceID),
 	)
 	if err != nil {
 		span.RecordError(err)
@@ -554,13 +564,21 @@ error_message=EXCLUDED.error_message`
 
 // GetTask retrieves a task and its traces. Returns sql.ErrNoRows if not found.
 func (p *PostgresStore) GetTask(ctx context.Context, id string) (*types.Task, error) {
+	return p.getTask(ctx, id, true)
+}
+
+func (p *PostgresStore) GetTaskWithoutTrace(ctx context.Context, id string) (*types.Task, error) {
+	return p.getTask(ctx, id, false)
+}
+
+func (p *PostgresStore) getTask(ctx context.Context, id string, includeTrace bool) (*types.Task, error) {
 	ctx, span := tracer.Start(ctx, "store.postgres.get_task")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("agent.task.id", id))
 
 	row := p.db.QueryRowContext(ctx, `
-SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message
+SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id
 FROM tasks WHERE id = $1
 `, id)
 
@@ -571,7 +589,7 @@ FROM tasks WHERE id = $1
 
 	err := row.Scan(
 		&task.ID, &task.TenantID, &task.SessionID, &task.SequenceNo, &task.CreatedAt, &task.UpdatedAt, &task.Goal, &task.Status, &task.Mode, &task.RequestedTeam, &task.TeamSelectionSource, &task.Team, &task.TeamConfigDigest, &task.BrainProjectID, &task.BrainSnapshotID, &task.BrainConfigDigest, &task.MaxSteps, &task.StepCount,
-		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer, &task.TerminationKind, &task.ErrorCode, &task.ErrorMessage,
+		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer, &task.TerminationKind, &task.ErrorCode, &task.ErrorMessage, &task.ExecutionTraceID,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -594,6 +612,9 @@ FROM tasks WHERE id = $1
 		if err := json.Unmarshal([]byte(auditJSON), &task.AnswerAudit); err != nil {
 			return nil, err
 		}
+	}
+	if !includeTrace {
+		return &task, nil
 	}
 
 	rows, err := p.db.QueryContext(ctx, `
@@ -657,7 +678,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.T
 		orderBy = "sequence_no ASC, id ASC"
 	}
 	query := fmt.Sprintf(`
-	SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message
+	SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id
 FROM tasks
 %s
 ORDER BY %s
@@ -678,7 +699,7 @@ LIMIT $%d OFFSET $%d
 		var auditJSON string
 		if err := rows.Scan(
 			&t.ID, &t.TenantID, &t.SessionID, &t.SequenceNo, &t.CreatedAt, &t.UpdatedAt, &t.Goal, &t.Status, &t.Mode, &t.RequestedTeam, &t.TeamSelectionSource, &t.Team, &t.TeamConfigDigest, &t.BrainProjectID, &t.BrainSnapshotID, &t.BrainConfigDigest, &t.MaxSteps, &t.StepCount,
-			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer, &t.TerminationKind, &t.ErrorCode, &t.ErrorMessage,
+			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer, &t.TerminationKind, &t.ErrorCode, &t.ErrorMessage, &t.ExecutionTraceID,
 		); err != nil {
 			return nil, err
 		}

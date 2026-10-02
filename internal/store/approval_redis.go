@@ -18,10 +18,27 @@ func approvalTaskIndex(tenantID, taskID string) string {
 	return "approvals:task:" + tenantID + ":" + taskID
 }
 
+func approvalTenantIndex(tenantID string) string { return "approvals:tenant:" + tenantID }
+func approvalTenantStatusIndex(tenantID string, status types.DurableApprovalStatus) string {
+	return "approvals:tenant-status:" + tenantID + ":" + string(status)
+}
+func approvalTenantIndexMarker(tenantID string) string {
+	return "approvals:tenant-indexed:v2:" + tenantID
+}
+
 var createApprovalScript = redis.NewScript(`
 	if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 	redis.call('SET', KEYS[1], ARGV[1])
 	redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
+	redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3])
+	redis.call('ZADD', KEYS[4], ARGV[2], ARGV[3])
+	return 1
+`)
+
+var backfillApprovalTenantScript = redis.NewScript(`
+	if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+	redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
+	redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3])
 	return 1
 `)
 
@@ -34,6 +51,7 @@ func (r *RedisStore) CreateApproval(ctx context.Context, approval *types.Durable
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = now
 	}
+	record.CreatedAt = record.CreatedAt.UTC().Truncate(time.Microsecond)
 	record.UpdatedAt = now
 	if record.Version == 0 {
 		record.Version = 1
@@ -43,8 +61,8 @@ func (r *RedisStore) CreateApproval(ctx context.Context, approval *types.Durable
 		return fmt.Errorf("marshal approval: %w", err)
 	}
 	created, err := createApprovalScript.Run(ctx, r.client,
-		[]string{r.approvalKey(record.ID), approvalTaskIndex(record.TenantID, record.TaskID)},
-		encoded, record.CreatedAt.UnixMilli(), record.ID).Int64()
+		[]string{r.approvalKey(record.ID), approvalTaskIndex(record.TenantID, record.TaskID), approvalTenantIndex(record.TenantID), approvalTenantStatusIndex(record.TenantID, record.Status)},
+		encoded, record.CreatedAt.UnixMicro(), record.ID).Int64()
 	if err != nil {
 		return err
 	}
@@ -107,6 +125,110 @@ func (r *RedisStore) ListTaskApprovals(ctx context.Context, taskID, tenantID str
 	return result, nil
 }
 
+// Existing Redis databases predate the tenant index. A tenant's first inbox
+// read reconstructs it from durable records; concurrent creators also update
+// the index atomically, so repeating this migration is harmless.
+func (r *RedisStore) ensureApprovalTenantIndex(ctx context.Context, tenantID string) error {
+	indexed, err := r.client.Exists(ctx, approvalTenantIndexMarker(tenantID)).Result()
+	if err != nil || indexed != 0 {
+		return err
+	}
+	var cursor uint64
+	for {
+		keys, next, err := r.client.Scan(ctx, cursor, "approval:*", 200).Result()
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			raw, err := r.client.Get(ctx, key).Bytes()
+			if err == redis.Nil {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			var approval types.DurableApproval
+			if err := json.Unmarshal(raw, &approval); err != nil {
+				return fmt.Errorf("decode approval tenant index: %w", err)
+			}
+			if approval.TenantID == tenantID {
+				if err := backfillApprovalTenantScript.Run(ctx, r.client,
+					[]string{key, approvalTenantIndex(tenantID), approvalTenantStatusIndex(tenantID, approval.Status)},
+					raw, approval.CreatedAt.UnixMicro(), approval.ID).Err(); err != nil {
+					return err
+				}
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			return r.client.Set(ctx, approvalTenantIndexMarker(tenantID), "1", 0).Err()
+		}
+	}
+}
+
+func (r *RedisStore) ListApprovals(ctx context.Context, filter ApprovalListFilter) ([]*types.DurableApproval, error) {
+	if filter.TenantID == "" {
+		return nil, fmt.Errorf("approval tenant is required")
+	}
+	if err := r.ensureApprovalTenantIndex(ctx, filter.TenantID); err != nil {
+		return nil, err
+	}
+	index := approvalTenantIndex(filter.TenantID)
+	if filter.Status != "" {
+		index = approvalTenantStatusIndex(filter.TenantID, filter.Status)
+	}
+	limit := resolveLimit(filter.Limit, 50, 200)
+	result := make([]*types.DurableApproval, 0, limit)
+	for start := int64(0); len(result) < limit; start += 100 {
+		ids, err := r.client.ZRevRange(ctx, index, start, start+99).Result()
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		keys := make([]string, 0, len(ids))
+		for _, id := range ids {
+			keys = append(keys, r.approvalKey(id))
+		}
+		values, err := r.client.MGet(ctx, keys...).Result()
+		if err != nil {
+			return nil, err
+		}
+		for _, value := range values {
+			if value == nil {
+				continue
+			}
+			var approval types.DurableApproval
+			if err := json.Unmarshal([]byte(value.(string)), &approval); err != nil {
+				return nil, fmt.Errorf("decode approval inbox: %w", err)
+			}
+			if approval.TenantID != filter.TenantID || (filter.Status != "" && approval.Status != filter.Status) {
+				continue
+			}
+			if !filter.BeforeCreatedAt.IsZero() && filter.BeforeID != "" &&
+				(approval.CreatedAt.After(filter.BeforeCreatedAt) ||
+					(approval.CreatedAt.Equal(filter.BeforeCreatedAt) && approval.ID >= filter.BeforeID)) {
+				continue
+			}
+			result = append(result, &approval)
+		}
+		if len(ids) < 100 {
+			break
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
 func (r *RedisStore) updateApproval(ctx context.Context, id string, mutate func(*types.DurableApproval) (bool, error)) (bool, error) {
 	key := r.approvalKey(id)
 	var changed bool
@@ -122,6 +244,7 @@ func (r *RedisStore) updateApproval(ctx context.Context, id string, mutate func(
 		if err := json.Unmarshal(raw, &approval); err != nil {
 			return err
 		}
+		previousStatus := approval.Status
 		changed, err = mutate(&approval)
 		if err != nil || !changed {
 			return err
@@ -132,6 +255,10 @@ func (r *RedisStore) updateApproval(ctx context.Context, id string, mutate func(
 		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Set(ctx, key, encoded, 0)
+			if approval.Status != previousStatus {
+				pipe.ZRem(ctx, approvalTenantStatusIndex(approval.TenantID, previousStatus), approval.ID)
+				pipe.ZAdd(ctx, approvalTenantStatusIndex(approval.TenantID, approval.Status), redis.Z{Score: float64(approval.CreatedAt.UnixMicro()), Member: approval.ID})
+			}
 			return nil
 		})
 		return err
@@ -223,6 +350,8 @@ func (r *RedisStore) DeleteTerminalApprovalsBefore(ctx context.Context, cutoff t
 				_, txErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 					pipe.Del(ctx, key)
 					pipe.ZRem(ctx, approvalTaskIndex(approval.TenantID, approval.TaskID), approval.ID)
+					pipe.ZRem(ctx, approvalTenantIndex(approval.TenantID), approval.ID)
+					pipe.ZRem(ctx, approvalTenantStatusIndex(approval.TenantID, approval.Status), approval.ID)
 					return nil
 				})
 				removed = txErr == nil

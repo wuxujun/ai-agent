@@ -12,3 +12,13 @@ func TestSecrets(t *testing.T) {
 		t.Fatalf("secret was not redacted: %s", result)
 	}
 }
+
+func TestSecretsRedactsInlineApprovalValues(t *testing.T) {
+	input := "options=map[api_key: deep-secret] --token=cli-secret --password more-secret"
+	result := Secrets(input)
+	for _, secret := range []string{"deep-secret", "cli-secret", "more-secret"} {
+		if strings.Contains(result, secret) {
+			t.Fatalf("inline secret %q was not redacted: %s", secret, result)
+		}
+	}
+}

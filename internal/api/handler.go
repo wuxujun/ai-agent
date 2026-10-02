@@ -111,8 +111,14 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	r.Use(ErrorMiddleware())
 	r.Use(SpanAttributesMiddleware())
 	r.Use(RequestBodyLimitMiddleware())
+	r.GET("/console", serveConsoleIndex)
+	r.GET("/assets/console/:name", serveConsoleAsset)
+	r.GET("/console/session", getConsoleSession)
+	r.POST("/console/session", createConsoleSession)
+	r.DELETE("/console/session", deleteConsoleSession)
 
 	api := r.Group("/api")
+	api.Use(ConsoleSessionMiddleware())
 	api.Use(AuthMiddleware())
 	tasks := api.Group("/tasks")
 	tasks.Use(TaskTenantMiddleware(st))
@@ -123,12 +129,19 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.POST("/:id/run-all", h.runAll)
 		tasks.POST("/:id/re-audit", h.reauditTask)
 		tasks.GET("/:id", h.getTask)
+		tasks.GET("/:id/trace", h.listTaskTrace)
 		tasks.GET("", h.listTasks)
 		tasks.GET("/:id/stream", h.streamTask)
+		tasks.GET("/:id/approvals", h.listTaskApprovalRecords)
 		tasks.POST("/:id/approve", h.approveTask)
 		tasks.POST("/:id/reject", h.rejectTask)
 		tasks.DELETE("/:id/cancel", h.cancelTask)
 		tasks.DELETE("/:id", h.deleteTask)
+	}
+	approvals := api.Group("/approvals")
+	{
+		approvals.GET("", h.listApprovalRecords)
+		approvals.GET("/:id", h.getApprovalRecord)
 	}
 	audits := api.Group("/audits")
 	{

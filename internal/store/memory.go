@@ -19,6 +19,7 @@ import (
 type MemoryStore struct {
 	mu          sync.RWMutex
 	tasks       map[string]*types.Task
+	traceTimes  map[string][]time.Time
 	sessions    map[string]*types.Session
 	memories    map[string]*types.Memory
 	leases      map[string]memoryLease
@@ -36,6 +37,7 @@ type memoryLease struct {
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		tasks:       make(map[string]*types.Task),
+		traceTimes:  make(map[string][]time.Time),
 		sessions:    make(map[string]*types.Session),
 		memories:    make(map[string]*types.Memory),
 		leases:      make(map[string]memoryLease),
@@ -127,6 +129,13 @@ func (m *MemoryStore) saveFullTask(ctx context.Context, task *types.Task, create
 	}
 	task.UpdatedAt = time.Now().UTC()
 	cloned.UpdatedAt = task.UpdatedAt
+	previousTimes := m.traceTimes[task.ID]
+	traceTimes := make([]time.Time, len(task.Trace))
+	copy(traceTimes, previousTimes)
+	for i := len(previousTimes); i < len(traceTimes); i++ {
+		traceTimes[i] = task.UpdatedAt
+	}
+	m.traceTimes[task.ID] = traceTimes
 	m.tasks[task.ID] = cloned
 	if session := m.sessions[task.SessionID]; session != nil {
 		session.UpdatedAt = task.UpdatedAt
@@ -243,6 +252,7 @@ func (m *MemoryStore) DeleteTask(_ context.Context, id string) (bool, error) {
 		return false, nil
 	}
 	delete(m.tasks, id)
+	delete(m.traceTimes, id)
 	for memoryID, mem := range m.memories {
 		if mem.TaskID == id {
 			delete(m.memories, memoryID)
@@ -263,6 +273,7 @@ func (m *MemoryStore) DeleteAllTasks(_ context.Context) (int64, error) {
 		}
 	}
 	m.tasks = make(map[string]*types.Task)
+	m.traceTimes = make(map[string][]time.Time)
 	m.leases = make(map[string]memoryLease)
 	m.indexing = make(map[string]bool)
 	return count, nil
@@ -627,6 +638,7 @@ func (m *MemoryStore) CreateApproval(ctx context.Context, approval *types.Durabl
 	if cloned.CreatedAt.IsZero() {
 		cloned.CreatedAt = now
 	}
+	cloned.CreatedAt = cloned.CreatedAt.UTC().Truncate(time.Microsecond)
 	cloned.UpdatedAt = now
 	if cloned.Version == 0 {
 		cloned.Version = 1
@@ -674,6 +686,39 @@ func (m *MemoryStore) ListTaskApprovals(ctx context.Context, taskID, tenantID st
 		}
 		return result[i].CreatedAt.Before(result[j].CreatedAt)
 	})
+	return result, nil
+}
+
+func (m *MemoryStore) ListApprovals(ctx context.Context, filter ApprovalListFilter) ([]*types.DurableApproval, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if filter.TenantID == "" {
+		return nil, fmt.Errorf("approval tenant is required")
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]*types.DurableApproval, 0)
+	for _, approval := range m.approvals {
+		if approval.TenantID != filter.TenantID || (filter.Status != "" && approval.Status != filter.Status) {
+			continue
+		}
+		if !filter.BeforeCreatedAt.IsZero() && filter.BeforeID != "" &&
+			(approval.CreatedAt.After(filter.BeforeCreatedAt) ||
+				(approval.CreatedAt.Equal(filter.BeforeCreatedAt) && approval.ID >= filter.BeforeID)) {
+			continue
+		}
+		result = append(result, types.CloneDurableApproval(approval))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	if len(result) > resolveLimit(filter.Limit, 50, 200) {
+		result = result[:resolveLimit(filter.Limit, 50, 200)]
+	}
 	return result, nil
 }
 

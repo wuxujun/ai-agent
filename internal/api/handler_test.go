@@ -26,6 +26,7 @@ import (
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"github.com/wuxujun/ai-agent/internal/wiki"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type mockPlanner struct {
@@ -1718,6 +1719,9 @@ func TestRunAllPreservesLLMRuntimeWithoutRequestCancellation(t *testing.T) {
 	}
 
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	requestCtx = trace.ContextWithSpanContext(requestCtx, trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1, 2, 3}, SpanID: trace.SpanID{4, 5, 6}, TraceFlags: trace.FlagsSampled,
+	}))
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequestWithContext(requestCtx, http.MethodPost, "/api/tasks/task-runtime-context/run-all", nil)
 	r.ServeHTTP(w, req)
@@ -1742,6 +1746,9 @@ func TestRunAllPreservesLLMRuntimeWithoutRequestCancellation(t *testing.T) {
 	want := waitForTaskStatus(t, st, task.ID, types.StatusCompleted)
 	if want.FinalAnswer != "Mock final answer" {
 		t.Fatalf("FinalAnswer = %q, want mock answer", want.FinalAnswer)
+	}
+	if want.ExecutionTraceID != "01020300000000000000000000000000" {
+		t.Fatalf("ExecutionTraceID = %q", want.ExecutionTraceID)
 	}
 }
 

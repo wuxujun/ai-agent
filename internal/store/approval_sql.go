@@ -42,6 +42,7 @@ func (b approvalSQLBackend) create(ctx context.Context, approval *types.DurableA
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = now
 	}
+	record.CreatedAt = record.CreatedAt.UTC().Truncate(time.Microsecond)
 	record.UpdatedAt = now
 	if record.Version == 0 {
 		record.Version = 1
@@ -103,6 +104,38 @@ func (b approvalSQLBackend) list(ctx context.Context, taskID, tenantID string, s
 		args = append(args, status)
 	}
 	query += ` ORDER BY created_at, id`
+	rows, err := b.db.QueryContext(ctx, b.bind(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*types.DurableApproval, 0)
+	for rows.Next() {
+		approval, scanErr := scanDurableApproval(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, approval)
+	}
+	return result, rows.Err()
+}
+
+func (b approvalSQLBackend) listTenant(ctx context.Context, filter ApprovalListFilter) ([]*types.DurableApproval, error) {
+	if filter.TenantID == "" {
+		return nil, fmt.Errorf("approval tenant is required")
+	}
+	query := `SELECT ` + approvalSelectColumns + ` FROM approvals WHERE tenant_id = ?`
+	args := []any{filter.TenantID}
+	if filter.Status != "" {
+		query += ` AND status = ?`
+		args = append(args, filter.Status)
+	}
+	if !filter.BeforeCreatedAt.IsZero() && filter.BeforeID != "" {
+		query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, filter.BeforeCreatedAt, filter.BeforeCreatedAt, filter.BeforeID)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, resolveLimit(filter.Limit, 50, 200))
 	rows, err := b.db.QueryContext(ctx, b.bind(query), args...)
 	if err != nil {
 		return nil, err
@@ -207,6 +240,12 @@ func (s *SQLiteStore) ListTaskApprovals(ctx context.Context, task, tenant string
 }
 func (p *PostgresStore) ListTaskApprovals(ctx context.Context, task, tenant string, status types.DurableApprovalStatus) ([]*types.DurableApproval, error) {
 	return p.approvalBackend().list(ctx, task, tenant, status)
+}
+func (s *SQLiteStore) ListApprovals(ctx context.Context, filter ApprovalListFilter) ([]*types.DurableApproval, error) {
+	return s.approvalBackend().listTenant(ctx, filter)
+}
+func (p *PostgresStore) ListApprovals(ctx context.Context, filter ApprovalListFilter) ([]*types.DurableApproval, error) {
+	return p.approvalBackend().listTenant(ctx, filter)
 }
 func (s *SQLiteStore) TransitionApproval(ctx context.Context, id, tenant string, version int64, from, to types.DurableApprovalStatus, payload []byte) (bool, error) {
 	return s.approvalBackend().transition(ctx, id, tenant, version, from, to, payload)

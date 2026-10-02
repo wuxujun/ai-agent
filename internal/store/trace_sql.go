@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -24,14 +25,14 @@ func saveTraceSnapshotSQL(ctx context.Context, tx *sql.Tx, id string, traces []t
 	if _, err := tx.ExecContext(ctx, "DELETE FROM traces WHERE task_id = "+mark(1)+" AND (step < 1 OR step > "+mark(2)+")", id, len(traces)); err != nil {
 		return err
 	}
-	columns := []string{"execution_step", "goal", "action", "query", "observation", "evidence_json", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens"}
+	columns := []string{"execution_step", "goal", "action", "query", "observation", "evidence_json", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens", "recorded_at"}
 	placeholders := make([]string, len(columns)+2)
 	for i := range placeholders {
 		placeholders[i] = mark(i + 1)
 	}
-	updates := make([]string, len(columns))
-	changed := make([]string, len(columns))
-	for i, column := range columns {
+	updates := make([]string, len(columns)-1)
+	changed := make([]string, len(columns)-1)
+	for i, column := range columns[:len(columns)-1] {
 		updates[i] = column + " = excluded." + column
 		changed[i] = "traces." + column + " <> excluded." + column
 	}
@@ -41,7 +42,7 @@ func saveTraceSnapshotSQL(ctx context.Context, tx *sql.Tx, id string, traces []t
 		if err != nil {
 			return err
 		}
-		args := []any{id, i + 1, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(evidence), string(tr.AgentRole), tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens}
+		args := []any{id, i + 1, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(evidence), string(tr.AgentRole), tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, time.Now().UTC()}
 		if postgres {
 			for i, value := range args {
 				if text, ok := value.(string); ok {

@@ -37,6 +37,18 @@ func TestBuildApprovalRequestForExecuteCodeRedactsAndPreviewsCommand(t *testing.
 	}
 }
 
+func TestBuildApprovalRequestRedactsNestedParametersAndPreview(t *testing.T) {
+	req := (&Engine{}).BuildApprovalRequest(&types.Task{ID: "nested", Workspace: "workspace/demo"}, "execute_code", map[string]any{
+		"command": "curl", "args": "Authorization: Bearer secret-value-123456",
+		"options": map[string]any{"password": "nested-secret", "headers": []any{map[string]any{"api_key": "deep-secret"}}},
+	})
+	if strings.Contains(req.Preview, "secret-value-123456") ||
+		strings.Contains(strings.Join(req.ParameterSummary, " "), "nested-secret") ||
+		strings.Contains(strings.Join(req.ParameterSummary, " "), "deep-secret") {
+		t.Fatalf("approval request leaked sensitive value: preview=%q summary=%v", req.Preview, req.ParameterSummary)
+	}
+}
+
 func TestBuildApprovalRequestForWriteFileIncludesDiffPreview(t *testing.T) {
 	tmpDir, err := os.MkdirTemp(".", "approval_preview")
 	if err != nil {

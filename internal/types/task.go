@@ -100,6 +100,7 @@ type ApprovalResult struct {
 	Approved   bool           `json:"approved"`
 	Message    string         `json:"message,omitempty"`
 	Parameters map[string]any `json:"parameters,omitempty"`
+	ActorID    string         `json:"actor_id,omitempty"`
 }
 
 type Task struct {
@@ -109,6 +110,7 @@ type Task struct {
 	SequenceNo          int64      `json:"sequence_no,omitempty"`
 	CreatedAt           time.Time  `json:"created_at,omitempty"`
 	UpdatedAt           time.Time  `json:"updated_at,omitempty"`
+	ExecutionTraceID    string     `json:"execution_trace_id,omitempty"`
 	Goal                string     `json:"goal"`
 	Status              TaskStatus `json:"status"`
 	Mode                string     `json:"mode,omitempty"`

@@ -1,5 +1,6 @@
 @baseUrl = http://127.0.0.1:8088
 @apiKey = replace-with-tenant-api-key
+@approvalId = replace-with-approval-id
 
 # All request bodies are limited to 10 MiB, including chunked requests.
 # Oversized requests return 413 before a handler performs any operation:
@@ -57,6 +58,36 @@ X-API-Key: {{apiKey}}
 # trace[].step remains the logical execution step; several audit events may share
 # the same step. SQL storage retains every event in array order independently.
 GET {{baseUrl}}/api/tasks/atomic-create-example
+X-API-Key: {{apiKey}}
+
+### List compact task summaries in creation order
+# count is the page size. Pass next_cursor back as cursor with the same filters.
+GET {{baseUrl}}/api/tasks?view=summary&limit=20
+X-API-Key: {{apiKey}}
+
+### Read task metadata and server-computed allowed_actions without Trace/Memory
+GET {{baseUrl}}/api/tasks/atomic-create-example?view=summary
+X-API-Key: {{apiKey}}
+
+### Page through the ordered task trace
+# events[].sequence is unique per task; events[].trace.step may repeat.
+# events[].event_id is task ID + sequence; recorded_at is first persistence time
+# and is omitted for historical events without a known timestamp.
+GET {{baseUrl}}/api/tasks/atomic-create-example/trace?limit=100
+X-API-Key: {{apiKey}}
+
+### List recoverable pending approvals
+# count is the page size, not a global total. Use next_cursor as cursor for
+# the next page; approval payload ciphertext and raw parameters are excluded.
+GET {{baseUrl}}/api/approvals?status=pending&limit=20
+X-API-Key: {{apiKey}}
+
+### Read approvals for a task after a browser refresh
+GET {{baseUrl}}/api/tasks/atomic-create-example/approvals?status=pending
+X-API-Key: {{apiKey}}
+
+### Read one approval's safe preview and current status
+GET {{baseUrl}}/api/approvals/{{approvalId}}
 X-API-Key: {{apiKey}}
 
 ### Wiki candidate cache memory metrics (administrator credentials required)

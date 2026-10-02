@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AI Agent 工作台</title>
+  <link rel="stylesheet" href="/assets/console/style.css">
+  <script src="/assets/console/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#/tasks" aria-label="AI Agent 工作台首页"><span class="brand-mark">A</span><span>AI Agent <small>工作台</small></span></a>
+    <nav id="nav" aria-label="主导航" hidden>
+      <a href="#/tasks" data-nav="tasks">任务</a>
+      <a href="#/approvals" data-nav="approvals">审批待办</a>
+    </nav>
+    <div id="account" class="account"></div>
+  </header>
+  <main id="view" tabindex="-1"></main>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

@@ -44,6 +44,7 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 		Approved:   approved,
 		Message:    body.Message,
 		Parameters: body.Parameters,
+		ActorID:    principalFromGin(c).ActorID,
 	}
 
 	if body.ApprovalID != "" {
