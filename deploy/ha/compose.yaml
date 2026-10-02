@@ -3,6 +3,8 @@ name: ai-agent-ha-test
 services:
   postgres:
     image: pgvector/pgvector:0.8.2-pg17-bookworm
+    # Two default 50-connection pools plus PostgreSQL reserves and other clients.
+    command: ["postgres", "-c", "max_connections=150"]
     environment:
       POSTGRES_DB: ai_agent_ha
       POSTGRES_USER: ai_agent_ha

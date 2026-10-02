@@ -16,7 +16,7 @@
 
 先使用离线 LLM stub 或明确批准的测试 Provider，并配置租户预算、任务超时和固定的只读测试语料。两节点都由 Prometheus 采集；确认 runtime/event 指标覆盖率完整，监控中保留实例区分。
 
-连接预算按所有实例合计：默认每实例最多 50 条 PostgreSQL 连接，两实例最多 100 条，另为迁移、监控及其他客户端留出容量。部署前确认目标库的配额足够。
+连接预算按所有实例合计：默认每实例最多 50 条 PostgreSQL 连接，两实例最多 100 条，另为迁移、监控及其他客户端留出容量，并扣除 PostgreSQL 保留连接。专用 Compose 夹具设置 `max_connections=150`；这是测试夹具容量，不自动修改目标数据库配额。部署前按目标环境的实际客户端核对容量。
 
 ## 手动构建与发布脚本
 
@@ -48,12 +48,14 @@ ssh operator@node-b 'sudo bash /tmp/ai-agent-ha-bundle/deploy-node.sh --bundle /
 在拥有专用数据库凭据的测试环境设置 `AI_AGENT_RUN_EXTERNAL_INTEGRATION=true`、`TEST_POSTGRES_DSN`、`TEST_REDIS_URL` 后执行：
 
 ```bash
-go test -race ./internal/store ./internal/api \
-  -run 'Test(ExternalStoresTaskCreation|ExternalStoresTaskLeaseGuard|ExternalStoresPersistPausedTaskAcrossClients|ExternalPostgresDurableApprovalCASAcrossClients|ExternalPostgresDurableApprovalRecoveryContract|PostgresPoolExternal)$' \
+go test -race -v -p=1 ./internal/store ./internal/api \
+  -run '^Test(ExternalStoresTaskCreation|ExternalStoresTaskLeaseGuard|ExternalStoresPersistPausedTaskAcrossClients|ExternalPostgresDurableApprovalCASAcrossClients|ExternalPostgresDurableApprovalRecoveryContract|PostgresPoolExternal|PostgresPoolHAExternal)$' \
   -count=1 -timeout=5m
 ```
 
-检查输出，要求所有列出的用例实际执行，不能将缺少环境变量导致的 SKIP 当作通过。测试数据必须与业务数据隔离。
+检查输出，要求所有七项列出的用例实际执行，不能将缺少环境变量导致的 SKIP 当作通过。测试数据必须与业务数据隔离。`-p=1` 串行运行会初始化同一数据库 schema 的包。
+
+`TestPostgresPoolHAExternal` 会扣除 `superuser_reserved_connections` 和可用版本上的 `reserved_connections`，核验两个连接池加 10 个额外客户端的配额，并同时持有这些真实连接，最后检查连接归还。默认配置会保持 50 + 50 + 10 = 110 条连接；旧的 100 条夹具会被拒绝。该测试只在明确选择 HA 契约时执行；若目标环境需要更多额外客户端，仍须按实际负载扩大配额。它不验证进程/节点故障恢复。
 
 启动两个节点，分别验证 `/ping`、`/ready`；使用授权凭据检查 `/api/metrics`。用 [HTTP 样例](../../Sample/agent-api.http) 先完成一条创建、运行、查询链路，记录任务 ID，并确认另一节点能读取相同任务。先验证观测链路，再开始负载。
 
@@ -117,7 +119,7 @@ docker compose -f deploy/ha/compose.yaml config --quiet
 docker compose -f deploy/ha/compose.yaml up -d --wait
 ```
 
-数据库为 `ai_agent_ha`、用户为 `ai_agent_ha`，仅监听本机 15432；Redis 仅监听本机 16379。两服务使用专用持久卷。单机容器不证明双物理/虚拟节点 HA。演练结束可用 `docker compose -f deploy/ha/compose.yaml stop` 停止服务，不自动删除数据卷。
+数据库为 `ai_agent_ha`、用户为 `ai_agent_ha`，仅监听本机 15432，`max_connections=150`；Redis 仅监听本机 16379。两服务使用专用持久卷。已有夹具从旧配置更新时，`up -d --wait` 会应用新的 PostgreSQL 启动参数并重建对应容器，持久卷保留；更新后用 `SHOW max_connections` 核验实际值。单机容器不证明双物理/虚拟节点 HA。演练结束可用 `docker compose -f deploy/ha/compose.yaml stop` 停止服务，不自动删除数据卷。
 
 ## 至少一小时的连续任务窗口
 

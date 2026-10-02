@@ -1,0 +1,79 @@
+{
+  "run": "/private/tmp/ai-agent-stage33-capacity-r8_qzce9",
+  "source": "/private/tmp/ai-agent-stage33-capacity-r8_qzce9/source",
+  "base_commit": "e7e1319d04303a3a83551c63f3a273d440a93b0d",
+  "project": "ai-agent-stage33-capacity-r8_qzce9",
+  "overlays": {
+    "internal/store/ha_pool_external_test.go": "a88d10d7447a8b54a441d2bd509045eeec40c7100c7f5f94dbc32088973d046e",
+    "deploy/ha/compose.yaml": "c5d484a90b97bcd783ff68d3b9a2016d905a1ce504cc94e4361e5cdee01806bb"
+  },
+  "source_clean": false,
+  "source_scope": "clean base commit plus only the two recorded HA overlays",
+  "started_utc": "2026-10-02T08:22:45.885982+00:00",
+  "full_ha_acceptance": false,
+  "original_capacity": {
+    "exit_code": 1,
+    "passed": [],
+    "failed": [
+      "TestPostgresPoolHAExternal"
+    ],
+    "skipped": [],
+    "passing_packages": [],
+    "log_sha256": "bdaf9d3670ce8ed4d08285226db48f48b64caa320a0f2b5088cd2be94320651c",
+    "expected_capacity_rejection": true
+  },
+  "postgres_settings": "17.10 (Debian 17.10-1.pgdg12+1)\n150\n3\n0\n",
+  "updated_capacity": {
+    "exit_code": 0,
+    "passed": [
+      "TestExternalStoresTaskCreation/postgres/duplicate_preserves_entire_task",
+      "TestExternalStoresTaskCreation/postgres/concurrent_creation_has_one_winner",
+      "TestExternalStoresTaskCreation/postgres/canceled_creation_does_not_persist",
+      "TestExternalStoresTaskCreation/postgres",
+      "TestExternalStoresTaskCreation/redis/duplicate_preserves_entire_task",
+      "TestExternalStoresTaskCreation/redis/concurrent_creation_has_one_winner",
+      "TestExternalStoresTaskCreation/redis/canceled_creation_does_not_persist",
+      "TestExternalStoresTaskCreation/redis",
+      "TestExternalStoresTaskCreation",
+      "TestExternalStoresTaskLeaseGuard/postgres/scoped_save_requires_matching_live_lease",
+      "TestExternalStoresTaskLeaseGuard/postgres/renew_never_reacquires_expired_or_replaced_lease",
+      "TestExternalStoresTaskLeaseGuard/postgres",
+      "TestExternalStoresTaskLeaseGuard/redis/scoped_save_requires_matching_live_lease",
+      "TestExternalStoresTaskLeaseGuard/redis/renew_never_reacquires_expired_or_replaced_lease",
+      "TestExternalStoresTaskLeaseGuard/redis",
+      "TestExternalStoresTaskLeaseGuard",
+      "TestExternalStoresPersistPausedTaskAcrossClients/postgres",
+      "TestExternalStoresPersistPausedTaskAcrossClients/redis",
+      "TestExternalStoresPersistPausedTaskAcrossClients",
+      "TestExternalPostgresDurableApprovalCASAcrossClients",
+      "TestPostgresPoolHAExternal",
+      "TestPostgresPoolExternal",
+      "TestExternalPostgresDurableApprovalRecoveryContract/replacement",
+      "TestExternalPostgresDurableApprovalRecoveryContract/unchanged",
+      "TestExternalPostgresDurableApprovalRecoveryContract/empty_replacement",
+      "TestExternalPostgresDurableApprovalRecoveryContract/consumed_checkpoint_after_restart",
+      "TestExternalPostgresDurableApprovalRecoveryContract/lost_lease_before_commit",
+      "TestExternalPostgresDurableApprovalRecoveryContract"
+    ],
+    "failed": [],
+    "skipped": [],
+    "passing_packages": [
+      "github.com/wuxujun/ai-agent/internal/store",
+      "github.com/wuxujun/ai-agent/internal/api"
+    ],
+    "log_sha256": "f09abc4c66027a2b5ffe0447ccab097d4978b016505846c4557633066f322ddb",
+    "missing": [],
+    "all_expected_executed": true,
+    "simultaneous_connections_verified": true
+  },
+  "full_suite": {
+    "exit_code": 0,
+    "passing_packages": 49,
+    "failures": [],
+    "log_sha256": "143813ca61b26396b5bd3def6905a9661e67893222167a2c37466319263f8dc3"
+  },
+  "vet_passed": true,
+  "fixture_stopped": true,
+  "ended_utc": "2026-10-02T08:24:09.485851+00:00",
+  "exit_code": 0
+}

@@ -1,0 +1,157 @@
+{
+  "source_commit": "e7e1319d04303a3a83551c63f3a273d440a93b0d",
+  "source_clean": true,
+  "scope": "two Linux containers on one Docker Desktop host",
+  "full_ha_acceptance": false,
+  "dag_canary_percent": 0,
+  "runtime": "legacy",
+  "project": "ai-agent-stage33-smoke-o80g71f4",
+  "started_utc": "2026-10-02T13:34:02.606167+00:00",
+  "binary_sha256": {
+    "server-linux-arm64": "0fe1e5d656cbce04c844cdc431d719b8672b84a621208829f5d3f1dfa0503546",
+    "stub-linux-arm64": "7acc4e8d20801d292b61fb6d3593815e52388226a8b15e7bbe5939d3ba51ff04",
+    "ha-soak": "bd7a70aeb67e6cb0d78c77104b85741cac2e149c47e32d95bb718b7b2b4f64dd",
+    "ha-soak-linux-arm64": "83308a830291d14443f41a00fe8c70360118808895e9b5386b8ab4df7dcfe3a2",
+    "probe-linux-arm64": "77a52a99ee4f184f5b9d1125ca59d26191006c106ac14b7ca32b94534a556fc3"
+  },
+  "fixture_hashes": {
+    "stub.go": "917d745911e1eb1a168693d1fdbe669d120e9430cf87a276b96b807deba80c2b",
+    "probe.go": "625649a8b85fe78e5af25bd4c3e3d7b59758344fefef482e0acd97326f313307",
+    "compose.yaml": "855b1a4bdf596d155dbb61f92634687b999305c2d5464041fd2c60db1883e5cd",
+    "run-smoke.py": "8249000cbd0dba5f959a8ce017aae00443fa28fd6d3a1a30cc46ba71fb353ace"
+  },
+  "controller_proxy_disabled": true,
+  "nodes": [
+    {
+      "node": "a",
+      "ping_status": 200,
+      "ready_status": 200,
+      "ready": true,
+      "llm_verified": false,
+      "llm_readiness_mode": "gateway",
+      "all_llm_gateways_verified": true,
+      "unauthenticated_metrics_status": 401,
+      "authorized_metrics_status": 200,
+      "platform": "Linux aarch64",
+      "server_sha256": "0fe1e5d656cbce04c844cdc431d719b8672b84a621208829f5d3f1dfa0503546"
+    },
+    {
+      "node": "b",
+      "ping_status": 200,
+      "ready_status": 200,
+      "ready": true,
+      "llm_verified": false,
+      "llm_readiness_mode": "gateway",
+      "all_llm_gateways_verified": true,
+      "unauthenticated_metrics_status": 401,
+      "authorized_metrics_status": 200,
+      "platform": "Linux aarch64",
+      "server_sha256": "0fe1e5d656cbce04c844cdc431d719b8672b84a621208829f5d3f1dfa0503546"
+    }
+  ],
+  "agent_containers": [
+    {
+      "ID": "f804a6209481",
+      "Name": "ai-agent-stage33-smoke-o80g71f4-agent-a-1",
+      "Service": "agent-a",
+      "State": "running",
+      "Health": "healthy"
+    },
+    {
+      "ID": "9b18370312a4",
+      "Name": "ai-agent-stage33-smoke-o80g71f4-agent-b-1",
+      "Service": "agent-b",
+      "State": "running",
+      "Health": "healthy"
+    }
+  ],
+  "smoke_wrapper_exit_code": 0,
+  "smoke_report": {
+    "started_at": "2026-10-02T13:34:16.207263378Z",
+    "ended_at": "2026-10-02T13:36:16.210027378Z",
+    "scheduled": 12,
+    "passed": 12,
+    "failed": 0,
+    "by_node": [
+      6,
+      6
+    ],
+    "runtime_samples": {
+      "unknown": 12
+    },
+    "p95_latency_ms": 529,
+    "window_complete": false,
+    "load_checks_passed": false,
+    "full_ha_acceptance": false,
+    "pending": [
+      "independent Linux node identity and shared PostgreSQL/Redis verification",
+      "approval CAS and duplicate side-effect checks",
+      "lease loss and crash recovery fault injection",
+      "live SSE during faults",
+      "Prometheus canary gate and manual trace review"
+    ]
+  },
+  "workspace_readme_unchanged": true,
+  "results_sha256": "0db55ac321fd749cf48d740209228c61c9a8567f8fb1198f1890d2cf7ccd13b3",
+  "report_sha256": "3bdb1fadb10edce4154e1dfc811664b967f2009ddc35546d5c7118317a26f3fc",
+  "stub_stats": {
+    "embedding_calls": 1,
+    "generation_calls": 24,
+    "offline_fixture": true
+  },
+  "tenant_checks": [
+    {
+      "task_id": "ha-soak-440460ce-eede-4938-9356-c67adc5997ac",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-3e2de810-0ff4-4733-bcfe-fcab92e3797b",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-a7ac170e-d13c-4991-b39c-03fd17f0d777",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-0ec9e824-fa1a-4b61-9cf2-753b9a02d012",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-776266e7-f9d8-4c28-bc45-533d0c6135a5",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-179a1bac-d570-45d8-93b5-e9c4ecd37922",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-146b697b-3285-44a8-b443-131894853731",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-124c6f6f-6bb6-4564-93ca-4caa625fea42",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-f20a6fad-7fe9-4025-a201-11f67027ce5c",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-0e55ed6e-0e7b-4b12-90ce-3d80e310da87",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-c21f97e5-7003-473b-9ada-4595e04bef13",
+      "tenant_id": "ha_smoke"
+    },
+    {
+      "task_id": "ha-soak-50707959-25cd-4006-b042-0cb5357075bc",
+      "tenant_id": "ha_smoke"
+    }
+  ],
+  "fixture_stopped": true,
+  "ended_utc": "2026-10-02T13:36:22.622373+00:00",
+  "exit_code": 0,
+  "runtime_trace_note": "At 0% canary the base release emits no runtime-selection trace; all 12 samples remain unknown, without inferring runtime from configuration.",
+  "verification_scope": "cross-process smoke only; no independent nodes, no one-hour soak, no task fault/recovery acceptance, no Prometheus canary gate"
+}
