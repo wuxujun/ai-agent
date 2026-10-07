@@ -235,6 +235,21 @@ type ApprovalListStore interface {
 	ListApprovals(ctx context.Context, filter ApprovalListFilter) ([]*types.DurableApproval, error)
 }
 
+// ApprovalStats contains tenant-scoped counts across the complete durable
+// approval set, independent of inbox pagination.
+type ApprovalStats struct {
+	Pending         int64      `json:"pending"`
+	Approved        int64      `json:"approved"`
+	Rejected        int64      `json:"rejected"`
+	Expired         int64      `json:"expired"`
+	Consumed        int64      `json:"consumed"`
+	OldestPendingAt *time.Time `json:"oldest_pending_at,omitempty"`
+}
+
+type ApprovalStatsStore interface {
+	GetApprovalStats(ctx context.Context, tenantID string) (ApprovalStats, error)
+}
+
 // ApprovalCleanupStore removes only terminal approval records older than a
 // cutoff. Implementations must preserve pending and recoverable checkpoints.
 type ApprovalCleanupStore interface {

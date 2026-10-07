@@ -63,6 +63,10 @@ func TestExternalRedisApprovalInbox(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	stats, err := second.GetApprovalStats(t.Context(), tenantID)
+	if err != nil || stats.Pending != 2 || stats.Approved != 1 || stats.OldestPendingAt == nil || !stats.OldestPendingAt.Equal(createdAt) {
+		t.Fatalf("initial Redis stats = %+v, %v", stats, err)
+	}
 	firstPage, err := second.ListApprovals(t.Context(), ApprovalListFilter{TenantID: tenantID, Status: types.ApprovalPending, Limit: 1})
 	if err != nil || len(firstPage) != 1 || firstPage[0].ID != ids[1] {
 		t.Fatalf("first pending page = %+v, %v", firstPage, err)
@@ -82,10 +86,18 @@ func TestExternalRedisApprovalInbox(t *testing.T) {
 	if err != nil || len(pending) != 1 || pending[0].ID != ids[0] {
 		t.Fatalf("pending after transition = %+v, %v", pending, err)
 	}
+	stats, err = second.GetApprovalStats(t.Context(), tenantID)
+	if err != nil || stats.Pending != 1 || stats.Approved != 2 {
+		t.Fatalf("Redis stats after transition = %+v, %v", stats, err)
+	}
 	// Simulate a pre-index deployment and verify lazy reconstruction.
 	if err := first.client.Del(t.Context(), approvalTenantIndexMarker(tenantID), approvalTenantIndex(tenantID),
 		approvalTenantStatusIndex(tenantID, types.ApprovalPending), approvalTenantStatusIndex(tenantID, types.ApprovalApproved)).Err(); err != nil {
 		t.Fatal(err)
+	}
+	stats, err = second.GetApprovalStats(t.Context(), tenantID)
+	if err != nil || stats.Pending != 1 || stats.Approved != 2 {
+		t.Fatalf("Redis stats after index rebuild = %+v, %v", stats, err)
 	}
 	approved, err := second.ListApprovals(t.Context(), ApprovalListFilter{TenantID: tenantID, Status: types.ApprovalApproved})
 	if err != nil || len(approved) != 2 {

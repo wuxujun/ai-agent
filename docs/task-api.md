@@ -220,6 +220,16 @@ GET /api/tasks?view=summary&status=running&session_id=session-demo-001&limit=20&
 
 任务详情可用 `GET /api/tasks/:id?view=summary` 读取不含 Trace/Memory 的元数据及 `allowed_actions`。动作值为 `run_all`、`cancel`、`re_audit`、`delete` 中后端当前允许显示的操作；`run_all` 会覆盖可恢复的 Multi-Agent 部分完成任务。动作列表是页面提示，执行时仍由服务端再次校验状态、权限及并发条件。
 
+配置 `api.trace_view_url_template`（或环境变量 `AI_AGENT_API_TRACE_VIEW_URL_TEMPLATE`）并提供有效的任务 `execution_trace_id` 后，摘要详情额外返回 `otel_trace_url`。模板需包含且仅包含一个 `{trace_id}`，使用绝对 HTTPS URL；仅本机追踪界面可使用 HTTP。服务端验证模板并在租户授权后的任务详情中生成链接；未配置或任务没有有效 Trace ID 时省略。该设置可热重载，非法候选配置会被拒绝并保留原配置。链接指向部署方指定的追踪系统，其访问权限仍由该系统控制；不要在模板 URL 中放入密钥。
+
+Multi-Agent DAG 任务可读取已持久化的工作流关系图：
+
+```http
+GET /api/tasks/:id/workflow
+```
+
+有有效运行检查点时返回 `{"available":true,"graph":{"workflow":"planner_researcher_writer","graph_digest":"…","levels":[[{"id":"plan","role":"planner","condition":"always","state":"succeeded"}],[{"id":"research","role":"researcher","depends_on":["plan"],"condition":"always","state":"running"}],[{"id":"write","role":"writer","depends_on":["research"],"condition":"always","state":"pending"}]]}}`；`levels` 是拓扑阶段，节点按真实工作流依赖排列。状态为 `pending`、`running`、`succeeded`、`skipped` 或 `failed`。服务端核验检查点版本、内置图摘要、依赖和状态；不返回检查点的执行结果或错误正文。无检查点、旧版工作流或元数据不匹配时返回 `{"available":false}`，页面继续展示顺序 Trace。此图描述工作流节点依赖，不表示每条 Trace 记录之间的因果关系。接口沿用 Task 租户授权；跨租户读取返回 `404`。
+
 长 Trace 使用独立分页接口：
 
 ```http
@@ -286,11 +296,18 @@ curl -N \
 
 ```http
 GET /api/approvals?status=pending&limit=20
+GET /api/approvals/stats
 GET /api/approvals/:approval_id
 GET /api/tasks/:id/approvals?status=pending
 ```
 
 列表返回 `approvals`、本页 `count`、`has_more` 和可选 `next_cursor`。下一页将 `next_cursor` 作为 `cursor` 查询参数，游标仅可用于相同租户与状态筛选。默认状态为 `pending`，支持 `approved`、`rejected`、`expired` 和 `consumed`。任务下审批接口不传 `status` 时返回该任务的全部审批记录。
+
+`GET /api/approvals/stats` 返回当前租户**全量持久化审批**的 `pending`、`approved`、`rejected`、`expired`、`consumed` 数量，以及可选的 `oldest_pending_at`。它不受列表分页或状态筛选影响；审批并发变化时，统计和随后读取的列表可能来自不同时间点。响应不包含审批正文或其他租户的数据。例如：
+
+```json
+{"pending":2,"approved":1,"rejected":0,"expired":0,"consumed":3,"oldest_pending_at":"2026-10-02T12:00:00Z"}
+```
 
 审批读取响应仅包含审批 ID、任务 ID、状态、版本、动作、风险级别、工作区、脱敏参数摘要/预览、时间及可用的决策主体标识 `actor_id`；不会返回持久化的操作密文、决策密文或原始参数。普通租户只能读取自己的审批，不可见与不存在均返回 `404`。`approved/rejected` 表示决策已记录；`consumed` 表示恢复检查点已消费。JWT 的 `actor_id` 来自已验证 `sub` 的短哈希；当前 introspection 模式缺少独立主体声明时仅能标识租户，不能据此区分同租户的不同人员。
 

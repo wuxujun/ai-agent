@@ -152,6 +152,23 @@ func (h *Handler) listApprovalRecords(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"approvals": items, "count": len(items), "has_more": hasMore, "next_cursor": nextCursor})
 }
 
+func (h *Handler) getApprovalStats(c *gin.Context) {
+	reader, ok := h.store.(store.ApprovalStatsStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "approval statistics are not supported by this store"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	stats, err := reader.GetApprovalStats(ctx, principalFromGin(c).TenantID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, stats)
+}
+
 func (h *Handler) getApprovalRecord(c *gin.Context) {
 	approvalStore, ok := h.store.(store.DurableApprovalStore)
 	if !ok {

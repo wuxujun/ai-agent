@@ -66,7 +66,15 @@ GET {{baseUrl}}/api/tasks?view=summary&limit=20
 X-API-Key: {{apiKey}}
 
 ### Read task metadata and server-computed allowed_actions without Trace/Memory
+# When api.trace_view_url_template is configured and execution_trace_id exists,
+# this response also includes otel_trace_url for the authenticated task.
 GET {{baseUrl}}/api/tasks/atomic-create-example?view=summary
+X-API-Key: {{apiKey}}
+
+### Read the verified Multi-Agent DAG topology and current node states
+# Returns available:false for legacy tasks or tasks without a valid checkpoint.
+# Checkpoint results and errors are not included in this response.
+GET {{baseUrl}}/api/tasks/atomic-create-example/workflow
 X-API-Key: {{apiKey}}
 
 ### Page through the ordered task trace
@@ -80,6 +88,10 @@ X-API-Key: {{apiKey}}
 # count is the page size, not a global total. Use next_cursor as cursor for
 # the next page; approval payload ciphertext and raw parameters are excluded.
 GET {{baseUrl}}/api/approvals?status=pending&limit=20
+X-API-Key: {{apiKey}}
+
+### Count all durable approvals for the current tenant, across inbox pages
+GET {{baseUrl}}/api/approvals/stats
 X-API-Key: {{apiKey}}
 
 ### Read approvals for a task after a browser refresh

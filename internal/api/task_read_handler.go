@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -150,7 +151,8 @@ func (h *Handler) getTaskSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, struct {
 		*types.Task
 		AllowedActions []string `json:"allowed_actions"`
-	}{task, actions})
+		OTelTraceURL   string   `json:"otel_trace_url,omitempty"`
+	}{task, actions, config.TraceViewURL(config.Get().API.TraceViewURLTemplate, task.ExecutionTraceID)})
 }
 
 func (h *Handler) listTaskTrace(c *gin.Context) {

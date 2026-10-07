@@ -106,6 +106,39 @@ func TestTaskReadAPI_SummaryTracePaginationAndTenantIsolation(t *testing.T) {
 	}
 }
 
+func TestTaskReadAPI_TraceViewURLRespectsTenantScope(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.APIKey = ""
+		cfg.API.TraceViewURLTemplate = "https://viewer.example/trace/{trace_id}"
+		cfg.API.Tenants = map[string]config.APITenantConfig{
+			"tenant-a": {APIKey: "trace-link-a"},
+			"tenant-b": {APIKey: "trace-link-b"},
+		}
+	}))
+	st := store.NewMemoryStore()
+	router := setupTestRouter(t, st, nil)
+	const traceID = "0123456789abcdef0123456789abcdef"
+	if err := st.CreateTask(t.Context(), &types.Task{ID: "linked-task", TenantID: "tenant-a", Goal: "trace link", Status: types.StatusCompleted, ExecutionTraceID: traceID}); err != nil {
+		t.Fatal(err)
+	}
+	request := func(key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/tasks/linked-task?view=summary", nil)
+		req.Header.Set("X-API-Key", key)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		return response
+	}
+	owned := request("trace-link-a")
+	if owned.Code != http.StatusOK || !strings.Contains(owned.Body.String(), `"otel_trace_url":"https://viewer.example/trace/`+traceID+`"`) {
+		t.Fatalf("owned trace link = %d %s", owned.Code, owned.Body.String())
+	}
+	foreign := request("trace-link-b")
+	if foreign.Code != http.StatusNotFound || strings.Contains(foreign.Body.String(), traceID) {
+		t.Fatalf("foreign trace link = %d %s", foreign.Code, foreign.Body.String())
+	}
+}
+
 func TestTaskReadAPI_ResumablePartialTaskAction(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.API.Auth.Mode = "api_key"

@@ -14,6 +14,11 @@ api:
   # Env override: AI_AGENT_API_KEY
   api_key: ""
 
+  # Optional HTTPS URL for opening a task's OTel trace in your viewer.
+  # Include {trace_id} exactly once; HTTP is allowed only for loopback viewers.
+  # Env override: AI_AGENT_API_TRACE_VIEW_URL_TEMPLATE
+  # trace_view_url_template: "https://viewer.example/trace/{trace_id}"
+
   # Authentication mode: api_key, jwt, introspection, or hybrid.
   # hybrid accepts existing static keys and one configured Bearer strategy.
   auth:

@@ -66,6 +66,26 @@ func TestListApprovals_TenantCursorAndStatus(t *testing.T) {
 			if rows, err := lister.ListApprovals(context.Background(), ApprovalListFilter{Status: types.ApprovalPending}); err == nil || rows != nil {
 				t.Fatalf("missing tenant = %+v, %v", rows, err)
 			}
+			statsStore := st.(ApprovalStatsStore)
+			stats, err := statsStore.GetApprovalStats(t.Context(), "tenant-a")
+			if err != nil || stats.Pending != 2 || stats.Approved != 1 || stats.OldestPendingAt == nil || !stats.OldestPendingAt.Equal(created) {
+				t.Fatalf("tenant-a stats = %+v, %v", stats, err)
+			}
+			foreign, err := statsStore.GetApprovalStats(t.Context(), "tenant-b")
+			if err != nil || foreign.Pending != 1 || foreign.Approved != 0 {
+				t.Fatalf("tenant-b stats = %+v, %v", foreign, err)
+			}
+			if _, err := statsStore.GetApprovalStats(t.Context(), ""); err == nil {
+				t.Fatal("missing tenant accepted by approval statistics")
+			}
+			changed, err := approvalStore.TransitionApproval(t.Context(), "a-1", "tenant-a", 1, types.ApprovalPending, types.ApprovalRejected, nil)
+			if err != nil || !changed {
+				t.Fatalf("approval transition = %v, %v", changed, err)
+			}
+			stats, err = statsStore.GetApprovalStats(t.Context(), "tenant-a")
+			if err != nil || stats.Pending != 1 || stats.Rejected != 1 || stats.Approved != 1 || stats.OldestPendingAt == nil {
+				t.Fatalf("stats after transition = %+v, %v", stats, err)
+			}
 		})
 	}
 }

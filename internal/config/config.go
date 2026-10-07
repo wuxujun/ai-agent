@@ -21,10 +21,11 @@ import (
 // environment variables. Fields are grouped by subsystem.
 type Config struct {
 	API struct {
-		Addr    string                     `mapstructure:"addr"`
-		APIKey  string                     `mapstructure:"api_key"`
-		Auth    APIAuthConfig              `mapstructure:"auth"`
-		Tenants map[string]APITenantConfig `mapstructure:"tenants"`
+		Addr                 string                     `mapstructure:"addr"`
+		APIKey               string                     `mapstructure:"api_key"`
+		TraceViewURLTemplate string                     `mapstructure:"trace_view_url_template"`
+		Auth                 APIAuthConfig              `mapstructure:"auth"`
+		Tenants              map[string]APITenantConfig `mapstructure:"tenants"`
 	} `mapstructure:"api"`
 
 	Store struct {
@@ -601,6 +602,7 @@ func setupViper() {
 	viper.SetDefault("telemetry.endpoint", "127.0.0.1:4318")
 	viper.SetDefault("telemetry.environment", "dev")
 	viper.SetDefault("telemetry.exporter", "otlp")
+	viper.SetDefault("api.trace_view_url_template", "")
 	viper.SetDefault("tool.timeout_seconds", 120)
 	viper.SetDefault("skill.root", "skills")
 	viper.SetDefault("rag.authorization", "")
@@ -1259,6 +1261,9 @@ func diffConfigs(old, new *Config) []string {
 	addIf("telemetry.endpoint", old.Telemetry.Endpoint, new.Telemetry.Endpoint)
 	addIf("telemetry.environment", old.Telemetry.Environment, new.Telemetry.Environment)
 	addIf("telemetry.exporter", old.Telemetry.Exporter, new.Telemetry.Exporter)
+	if old.API.TraceViewURLTemplate != new.API.TraceViewURLTemplate {
+		changes = append(changes, "api.trace_view_url_template changed")
+	}
 	if old.Langfuse.Enabled != new.Langfuse.Enabled {
 		changes = append(changes, fmt.Sprintf("langfuse.enabled: %t → %t", old.Langfuse.Enabled, new.Langfuse.Enabled))
 	}
@@ -1573,6 +1578,9 @@ func isBrainProjectSlug(value string) bool {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	if err := validateTraceViewURLTemplate(c.API.TraceViewURLTemplate); err != nil {
+		return err
+	}
 	if _, err := c.Store.Postgres.Normalized(); err != nil {
 		return err
 	}

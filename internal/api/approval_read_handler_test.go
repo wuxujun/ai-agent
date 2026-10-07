@@ -77,6 +77,16 @@ func TestApprovalReadAPI_TenantPaginationAndSafeProjection(t *testing.T) {
 	if current := request("/api/tasks/tenant-a-task/approvals?status=pending", "tenant-a-approval-key"); current.Code != http.StatusOK || strings.Contains(current.Body.String(), "ciphertext-secret") {
 		t.Fatalf("task approvals = %d %s", current.Code, current.Body.String())
 	}
+	statsResponse := request("/api/approvals/stats", "tenant-a-approval-key")
+	var stats store.ApprovalStats
+	if err := json.Unmarshal(statsResponse.Body.Bytes(), &stats); err != nil || statsResponse.Code != http.StatusOK ||
+		stats.Pending != 2 || stats.Approved != 0 || stats.OldestPendingAt == nil || strings.Contains(statsResponse.Body.String(), "secret") {
+		t.Fatalf("tenant-a stats = %d %s, %v", statsResponse.Code, statsResponse.Body.String(), err)
+	}
+	otherStats := request("/api/approvals/stats", "tenant-b-approval-key")
+	if err := json.Unmarshal(otherStats.Body.Bytes(), &stats); err != nil || otherStats.Code != http.StatusOK || stats.Pending != 1 {
+		t.Fatalf("tenant-b stats = %d %s, %v", otherStats.Code, otherStats.Body.String(), err)
+	}
 }
 
 func TestApprovalReadAPI_EncryptedDecisionActor(t *testing.T) {

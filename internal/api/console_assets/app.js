@@ -10,6 +10,7 @@
     taskStatus: "", taskSession: "", taskCursor: "", taskHistory: [], taskPage: 1,
     traceCursor: "", traceHistory: [], tracePage: 1,
     traceSearch: "", traceErrors: false, traceRole: "", currentTaskID: "",
+    traceExpanded: new Set(), traceInnerScroll: new Map(), taskDetailRequest: 0, taskDetailLoading: false,
     approvalStatus: "pending", approvalCursor: "", approvalHistory: [],
   };
 
@@ -303,71 +304,232 @@
   }
 
   function traceSection(page, taskID) {
+    const collapsedHeight = 180;
+    const expandedHeight = 520;
     const card = section(`执行 Trace · 第 ${state.tracePage} 页`);
     const events = page.events || [];
-    if (!events.length) card.append(empty("暂无执行记录", "任务运行后，持久化的步骤将显示在这里。"));
     const filter = el("div", "toolbar");
     const search = el("input"); search.placeholder = "筛选动作或角色"; search.setAttribute("aria-label", "筛选 Trace");
+    search.dataset.traceControl = "search";
     search.value = state.traceSearch;
     const role = el("select"); role.setAttribute("aria-label", "按角色筛选当前页");
+    role.dataset.traceControl = "role";
     for (const [value, label] of [["", "全部角色"], ["single", "单 Agent"], ["planner", "Planner"], ["critic", "Critic"], ["executor", "Executor"], ["verifier", "Verifier"], ["researcher", "Researcher"], ["writer", "Writer"]]) {
       const option = el("option", "", label); option.value = value; role.append(option);
     }
     role.value = state.traceRole;
     const errors = el("input"); errors.type = "checkbox"; errors.id = "trace-errors";
+    errors.dataset.traceControl = "errors";
     errors.checked = state.traceErrors;
     const errorLabel = el("label", "small", "仅错误"); errorLabel.htmlFor = "trace-errors";
     append(filter, search, role, errors, errorLabel); card.append(filter);
-    const list = el("ol", "trace-list"); card.append(list);
-    card.append(el("p", "small subtle", "筛选范围：当前页。每页最多 100 条，按持久化顺序显示。"));
-    function paint() {
-      list.replaceChildren();
-      const term = search.value.trim().toLowerCase();
-      const matches = events.filter(({ trace: entry }) =>
-        (!errors.checked || entry.error) && (!role.value || (entry.agent_role || "single") === role.value) &&
-        (!term || `${entry.action || ""} ${entry.agent_role || ""} ${entry.step ?? ""}`.toLowerCase().includes(term)));
-      for (const { trace: entry, sequence, event_id: eventID, recorded_at: recordedAt } of matches) {
-        const item = el("li", `trace-item${entry.error ? " error" : ""}`);
-        const head = el("div", "trace-head");
-        append(head, el("span", "mono small subtle", `#${sequence} · Step ${entry.step ?? "—"}`),
-          el("strong", "", entry.action || "事件"));
-        if (recordedAt) head.append(el("span", "small subtle", `首次记录 ${formatTime(recordedAt)}`));
-        if (entry.agent_role) head.append(el("span", "badge", entry.agent_role));
-        if (entry.error) head.append(el("span", "badge failed", "错误"));
-        item.append(head);
-        const overview = entry.error || entry.observation || entry.goal || entry.query || "无文本记录";
-        item.append(el("p", "text-block", overview.length > 300 ? `${overview.slice(0, 300)}…` : overview));
-        const details = el("details"); details.append(el("summary", "", "事件元数据与完整记录"));
+    const viewport = el("div", "trace-viewport");
+    viewport.tabIndex = 0;
+    viewport.setAttribute("role", "region");
+    viewport.setAttribute("aria-label", "当前页 Trace 记录，滚动查看更多");
+    viewport.dataset.taskId = taskID;
+    viewport.dataset.cursor = state.traceCursor;
+    const list = el("ol", "trace-list");
+    viewport.append(list);
+    const noMatches = empty("没有匹配记录", "调整筛选条件后重试。");
+    noMatches.hidden = true;
+    card.append(viewport, noMatches);
+    const count = el("p", "small subtle");
+    count.setAttribute("aria-live", "polite");
+    card.append(count);
+    let matches = [];
+    let shownStart = -1;
+    let shownEnd = -1;
+    let scheduled = false;
+    const expanded = state.traceExpanded;
+    const innerScroll = state.traceInnerScroll;
+    const keyOf = event => String(event.event_id || event.sequence);
+    const heightOf = index => expanded.has(keyOf(matches[index])) ? expandedHeight : collapsedHeight;
+
+    function traceItem(event, index) {
+      const { trace: entry, sequence, event_id: eventID, recorded_at: recordedAt } = event;
+      const key = keyOf(event);
+      const isExpanded = expanded.has(key);
+      const item = el("li", `trace-item${entry.error ? " error" : ""}${isExpanded ? " expanded" : ""}`);
+      item.dataset.traceKey = key;
+      item.style.height = `${isExpanded ? expandedHeight : collapsedHeight}px`;
+      item.setAttribute("aria-posinset", String(index + 1));
+      item.setAttribute("aria-setsize", String(matches.length));
+      const content = el("div", "trace-content");
+      const head = el("div", "trace-head");
+      append(head, el("span", "mono small subtle", `#${sequence} · Step ${entry.step ?? "—"}`),
+        el("strong", "", entry.action || "事件"));
+      if (recordedAt) head.append(el("span", "small subtle", `首次记录 ${formatTime(recordedAt)}`));
+      if (entry.agent_role) head.append(el("span", "badge", entry.agent_role));
+      if (entry.error) head.append(el("span", "badge failed", "错误"));
+      content.append(head);
+      const overview = entry.error || entry.observation || entry.goal || entry.query || "无文本记录";
+      content.append(el("p", "text-block", overview.length > 300 ? `${overview.slice(0, 300)}…` : overview));
+      const details = el("details");
+      details.open = isExpanded;
+      details.append(el("summary", "", "事件元数据与完整记录"));
+      content.addEventListener("scroll", () => {
+        if (details.open) innerScroll.set(key, content.scrollTop);
+      });
+      function fillDetails() {
+        if (details.dataset.loaded) return;
+        details.dataset.loaded = "true";
         if (eventID) details.append(el("p", "mono small subtle", `事件 ID：${eventID}`));
+        if (entry.action) details.append(el("pre", "", `Action: ${entry.action}`));
         if (overview.length > 300) details.append(el("pre", "", overview));
         if (entry.query) details.append(el("pre", "", `Query: ${entry.query}`));
         for (const evidence of entry.evidence || []) {
           details.append(el("pre", "", `${evidence.path || ""}\n${evidence.query || ""}\n${(evidence.lines || []).join("\n")}`));
         }
         if (entry.token_usage?.total_tokens) details.append(el("p", "small subtle", `Token: ${entry.token_usage.total_tokens}`));
-        item.append(details);
-        list.append(item);
       }
-      if (!matches.length) list.append(empty("没有匹配记录", "调整筛选条件后重试。"));
+      if (isExpanded) fillDetails();
+      details.addEventListener("toggle", () => {
+        if (!item.isConnected || expanded.has(key) === details.open) return;
+        if (details.open) { fillDetails(); expanded.add(key); }
+        else { expanded.delete(key); innerScroll.delete(key); }
+        item.classList.toggle("expanded", details.open);
+        item.style.height = `${details.open ? expandedHeight : collapsedHeight}px`;
+        renderWindow();
+      });
+      content.append(details);
+      item.append(content);
+      return item;
+    }
+
+    function renderWindow(force = false) {
+      if (!matches.length) return;
+      const scrollTop = viewport.scrollTop;
+      const viewportHeight = viewport.clientHeight || Math.min(window.innerHeight * 0.68, 680);
+      const before = Math.max(0, scrollTop - collapsedHeight * 2);
+      const after = scrollTop + viewportHeight + collapsedHeight * 2;
+      let start = 0;
+      let top = 0;
+      while (start < matches.length && top + heightOf(start) <= before) {
+        top += heightOf(start);
+        start++;
+      }
+      let end = start;
+      let bottom = top;
+      while (end < matches.length && bottom < after) {
+        bottom += heightOf(end);
+        end++;
+      }
+      let total = bottom;
+      for (let index = end; index < matches.length; index++) total += heightOf(index);
+      list.style.paddingTop = `${top}px`;
+      list.style.paddingBottom = `${total - bottom}px`;
+      if (!force && shownStart === start && shownEnd === end) return;
+      const focused = document.activeElement;
+      const oldRow = focused?.closest?.(".trace-item");
+      const focusedKey = oldRow && list.contains(oldRow) ? oldRow.dataset.traceKey : null;
+      const rows = [];
+      for (let index = start; index < end; index++) rows.push(traceItem(matches[index], index));
+      list.replaceChildren(...rows);
+      for (const row of rows) {
+        if (row.classList.contains("expanded")) {
+          row.querySelector(".trace-content").scrollTop = innerScroll.get(row.dataset.traceKey) || 0;
+        }
+      }
+      shownStart = start;
+      shownEnd = end;
+      if (focusedKey) {
+        const replacement = rows.find(row => row.dataset.traceKey === focusedKey);
+        (replacement?.querySelector("summary") || viewport).focus({ preventScroll: true });
+      }
+    }
+
+    viewport.addEventListener("scroll", () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => { scheduled = false; renderWindow(); });
+    });
+    function paint(resetScroll = true) {
+      const term = search.value.trim().toLowerCase();
+      matches = events.filter(({ trace: entry }) =>
+        (!errors.checked || entry.error) && (!role.value || (entry.agent_role || "single") === role.value) &&
+        (!term || `${entry.action || ""} ${entry.agent_role || ""} ${entry.step ?? ""}`.toLowerCase().includes(term)));
+      if (resetScroll) viewport.scrollTop = 0;
+      shownStart = -1; shownEnd = -1;
+      viewport.hidden = matches.length === 0;
+      noMatches.hidden = matches.length !== 0;
+      noMatches.querySelector("h3").textContent = events.length ? "没有匹配记录" : "暂无执行记录";
+      noMatches.querySelector("p").textContent = events.length ? "调整筛选条件后重试。" : "任务运行后，持久化的步骤将显示在这里。";
+      count.textContent = `筛选范围：当前页。显示 ${matches.length} / ${events.length} 条；滚动列表仅渲染可见记录。`;
+      if (matches.length) renderWindow(true);
+      else list.replaceChildren();
     }
     search.addEventListener("input", () => { state.traceSearch = search.value; paint(); });
     role.addEventListener("change", () => { state.traceRole = role.value; paint(); });
     errors.addEventListener("change", () => { state.traceErrors = errors.checked; paint(); });
     paint();
     const pager = el("div", "pagination");
-    const previous = button("上一页", "", () => { state.traceCursor = state.traceHistory.pop() || ""; state.tracePage--; renderTaskDetail(state.renderID, taskID, true); });
+    const previous = button("上一页", "", () => { state.traceCursor = state.traceHistory.pop() || ""; state.tracePage--; state.traceExpanded = new Set(); state.traceInnerScroll = new Map(); renderTaskDetail(state.renderID, taskID, true); });
     previous.disabled = state.traceHistory.length === 0;
-    const next = button("下一页", "", () => { state.traceHistory.push(state.traceCursor); state.traceCursor = page.next_cursor; state.tracePage++; renderTaskDetail(state.renderID, taskID, true); });
+    const next = button("下一页", "", () => { state.traceHistory.push(state.traceCursor); state.traceCursor = page.next_cursor; state.tracePage++; state.traceExpanded = new Set(); state.traceInnerScroll = new Map(); renderTaskDetail(state.renderID, taskID, true); });
     next.disabled = !page.has_more;
     append(pager, previous, el("span", "small subtle", `本页 ${events.length} 条`), next); card.append(pager);
+    return {
+      card,
+      restoreScroll(scrollTop, focus) {
+        viewport.scrollTop = scrollTop;
+        renderWindow(true);
+        let target = null;
+        if (focus?.key) {
+          const row = [...list.children].find(item => item.dataset.traceKey === focus.key);
+          target = row?.querySelector("summary");
+        } else if (focus?.control) {
+          target = card.querySelector(`[data-trace-control="${focus.control}"]`);
+        } else if (focus?.viewport) target = viewport;
+        if (target) {
+          target.focus({ preventScroll: true });
+          if (focus.control === "search" && focus.selectionStart !== null) {
+            target.setSelectionRange(focus.selectionStart, focus.selectionEnd);
+          }
+        }
+      },
+    };
+  }
+
+  function workflowSection(response) {
+    if (!response?.available || !response.graph?.levels?.length) return null;
+    const graph = response.graph;
+    const card = section("DAG 工作流");
+    const workflowNames = {
+      planner_researcher_writer: "研究与写作",
+      planner_critic_executor_verifier: "审阅与执行",
+    };
+    card.append(el("p", "small subtle", `${workflowNames[graph.workflow] || graph.workflow} · 节点状态来自持久化检查点。箭头表示工作流依赖。`));
+    const levels = el("ol", "workflow-levels");
+    for (const [index, nodes] of graph.levels.entries()) {
+      const level = el("li", "workflow-level");
+      level.append(el("span", "small subtle", `阶段 ${index + 1}`));
+      const nodeList = el("ul", "workflow-nodes");
+      for (const node of nodes) {
+        const item = el("li", `workflow-node ${node.state || "pending"}`);
+        append(item, el("strong", "mono", node.id),
+          append(el("div", "workflow-node-meta"), el("span", "badge", node.role), statusBadge(node.state || "pending")));
+        if (node.depends_on?.length) item.append(el("p", "workflow-deps mono", `← ${node.depends_on.join(" + ")}`));
+        if (node.condition && node.condition !== "always") {
+          const condition = node.condition === "approved" ? "上游节点批准后执行" : node.condition;
+          item.append(el("p", "small subtle", condition));
+        }
+        nodeList.append(item);
+      }
+      append(level, nodeList); levels.append(level);
+    }
+    card.append(levels, el("p", "small subtle", `图摘要：${graph.graph_digest}。Trace 事件仍按下方持久化顺序阅读。`));
     return card;
   }
 
   async function renderTaskDetail(id, taskID, keepStream = false) {
+    const requestID = ++state.taskDetailRequest;
+    state.taskDetailLoading = true;
     if (state.currentTaskID !== taskID) {
       state.currentTaskID = taskID;
       state.traceCursor = ""; state.traceHistory = []; state.tracePage = 1;
       state.traceSearch = ""; state.traceErrors = false; state.traceRole = "";
+      state.traceExpanded = new Set(); state.traceInnerScroll = new Map();
     }
     try {
       const traceParams = new URLSearchParams({ limit: "100" });
@@ -378,7 +540,11 @@
         api(`/api/tasks/${encodeURIComponent(taskID)}/approvals`).catch(() => ({ approvals: [] })),
         api(`/api/tasks/${encodeURIComponent(taskID)}/trace?${traceParams}`),
       ]);
-      if (id !== state.renderID || requestedTraceCursor !== state.traceCursor) return;
+      if (id !== state.renderID || requestID !== state.taskDetailRequest || requestedTraceCursor !== state.traceCursor) return;
+      const workflow = task.mode === "multiagent"
+        ? await api(`/api/tasks/${encodeURIComponent(taskID)}/workflow`).catch(() => null)
+        : null;
+      if (id !== state.renderID || requestID !== state.taskDetailRequest || requestedTraceCursor !== state.traceCursor) return;
       const active = ["created", "running", "awaiting_approval", "paused"].includes(task.status);
       const actions = [];
       const doAction = async (method, path, confirmation) => {
@@ -404,6 +570,11 @@
       }
       const details = section("任务概览");
       addKV(details, [["模式", task.mode], ["Team", task.team], ["工作区", task.workspace], ["Session", task.session_id], ["OTel Trace ID", task.execution_trace_id], ["创建时间", formatTime(task.created_at)], ["更新时间", formatTime(task.updated_at)]]);
+      if (task.otel_trace_url) {
+        const outbound = link("在追踪系统中打开", task.otel_trace_url);
+        outbound.target = "_blank"; outbound.rel = "noopener noreferrer";
+        details.append(append(el("p", "small"), outbound));
+      }
       const approvalCard = section("审批记录");
       const approvals = approvalsResponse.approvals || [];
       if (!approvals.length) approvalCard.append(el("p", "subtle", "此任务暂无审批记录。"));
@@ -421,11 +592,30 @@
       }
       const left = el("div");
       if (task.error_code || task.error_message) left.append(el("div", "error-banner", `${task.error_code || "执行错误"}: ${task.error_message || ""}`));
-      left.append(traceSection(tracePage, taskID));
+      const graph = workflowSection(workflow);
+      if (graph) left.append(graph);
+      const previousViewport = view.querySelector(".trace-viewport");
+      const previousScroll = previousViewport?.dataset.taskId === taskID && previousViewport?.dataset.cursor === state.traceCursor
+        ? previousViewport.scrollTop : 0;
+      const focused = document.activeElement;
+      const previousFocus = previousViewport?.dataset.taskId === taskID && previousViewport?.dataset.cursor === state.traceCursor
+        ? { key: focused?.closest?.(".trace-item")?.dataset.traceKey,
+          control: focused?.dataset?.traceControl,
+          viewport: focused === previousViewport,
+          selectionStart: focused?.dataset?.traceControl === "search" ? focused.selectionStart : null,
+          selectionEnd: focused?.dataset?.traceControl === "search" ? focused.selectionEnd : null }
+        : null;
+      const trace = traceSection(tracePage, taskID);
+      left.append(trace.card);
       view.replaceChildren(crumb, head, statusLine, stats, append(el("div", "grid"), left, right));
+      trace.restoreScroll(previousScroll, previousFocus);
       if (active && !state.stream) startTaskLive(id, taskID);
       if (!active) stopLive();
-    } catch (error) { if (id === state.renderID) view.replaceChildren(empty("任务加载失败", error.message)); }
+    } catch (error) {
+      if (id === state.renderID && requestID === state.taskDetailRequest) view.replaceChildren(empty("任务加载失败", error.message));
+    } finally {
+      if (requestID === state.taskDetailRequest) state.taskDetailLoading = false;
+    }
   }
 
   function startTaskLive(id, taskID) {
@@ -433,12 +623,12 @@
     const stream = new EventSource(`/api/tasks/${encodeURIComponent(taskID)}/stream`);
     state.stream = stream;
     stream.addEventListener("message", () => {
-      if (id !== state.renderID || state.refreshPending) return;
+      if (id !== state.renderID || state.refreshPending || state.taskDetailLoading) return;
       state.refreshPending = true;
       setTimeout(async () => { state.refreshPending = false; if (id === state.renderID) await renderTaskDetail(id, taskID, true); }, 300);
     });
     stream.addEventListener("error", () => { if (id === state.renderID) flash("实时连接中断，正在从持久化任务恢复状态。", true); });
-    state.timer = setInterval(() => { if (id === state.renderID && !document.hidden) renderTaskDetail(id, taskID, true); }, 8000);
+    state.timer = setInterval(() => { if (id === state.renderID && !document.hidden && !state.taskDetailLoading) renderTaskDetail(id, taskID, true); }, 8000);
   }
 
   async function renderApprovalsList(id) {
@@ -454,8 +644,25 @@
     const params = new URLSearchParams({ status: state.approvalStatus, limit: "20" });
     if (state.approvalCursor) params.set("cursor", state.approvalCursor);
     try {
-      const page = await api(`/api/approvals?${params}`);
+      const [page, stats] = await Promise.all([
+        api(`/api/approvals?${params}`),
+        api("/api/approvals/stats").catch(() => null),
+      ]);
       if (id !== state.renderID) return;
+      if (stats) {
+        const summary = el("div", "stats approval-stats");
+        for (const [label, value] of [["待处理", stats.pending], ["已批准", stats.approved],
+          ["已拒绝", stats.rejected], ["已过期", stats.expired], ["已消费", stats.consumed]]) {
+          append(summary, append(el("div", "stat"), el("span", "label", label), el("strong", "", value ?? 0)));
+        }
+        view.insertBefore(summary, toolbar);
+        if (stats.oldest_pending_at) {
+          const oldest = el("p", "small subtle", `最早待办创建于 ${formatTime(stats.oldest_pending_at)}`);
+          view.insertBefore(oldest, toolbar);
+        }
+      } else {
+        view.insertBefore(el("p", "small subtle", "审批统计暂不可用。"), toolbar);
+      }
       const card = el("section", "card");
       if (!(page.approvals || []).length) card.append(empty("暂无审批记录", "当前筛选状态没有可展示的审批。"));
       else {
@@ -542,12 +749,6 @@
     if (parts[0] === "tasks" && parts.length === 1) await renderTasksList(id);
     else if (parts[0] === "tasks" && parts[1] === "new") await renderNewTask(id);
     else if (parts[0] === "tasks" && parts[1]) {
-      if (state.currentTaskID !== parts[1]) {
-        state.traceShown = 100;
-        state.traceSearch = "";
-        state.traceErrors = false;
-        state.currentTaskID = parts[1];
-      }
       await renderTaskDetail(id, parts[1]);
     }
     else if (parts[0] === "approvals" && parts.length === 1) await renderApprovalsList(id);

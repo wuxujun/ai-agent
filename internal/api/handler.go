@@ -130,6 +130,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.POST("/:id/re-audit", h.reauditTask)
 		tasks.GET("/:id", h.getTask)
 		tasks.GET("/:id/trace", h.listTaskTrace)
+		tasks.GET("/:id/workflow", h.getTaskWorkflow)
 		tasks.GET("", h.listTasks)
 		tasks.GET("/:id/stream", h.streamTask)
 		tasks.GET("/:id/approvals", h.listTaskApprovalRecords)
@@ -141,6 +142,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	approvals := api.Group("/approvals")
 	{
 		approvals.GET("", h.listApprovalRecords)
+		approvals.GET("/stats", h.getApprovalStats)
 		approvals.GET("/:id", h.getApprovalRecord)
 	}
 	audits := api.Group("/audits")
