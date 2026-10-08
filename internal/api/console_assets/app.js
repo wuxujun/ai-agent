@@ -323,6 +323,8 @@
     errors.checked = state.traceErrors;
     const errorLabel = el("label", "small", "仅错误"); errorLabel.htmlFor = "trace-errors";
     append(filter, search, role, errors, errorLabel); card.append(filter);
+    const latency = el("div", "trace-latency");
+    card.append(latency);
     const viewport = el("div", "trace-viewport");
     viewport.tabIndex = 0;
     viewport.setAttribute("role", "region");
@@ -346,6 +348,41 @@
     const keyOf = event => String(event.event_id || event.sequence);
     const heightOf = index => expanded.has(keyOf(matches[index])) ? expandedHeight : collapsedHeight;
 
+    function paintLatency() {
+      const groups = new Map();
+      let measured = 0;
+      for (const { trace } of matches) {
+        const duration = trace.duration_ms;
+        if (!Number.isFinite(duration) || duration < 0) continue;
+        measured++;
+        const action = trace.action || "未知动作";
+        const group = groups.get(action) || { action, count: 0, max: 0 };
+        group.count++;
+        group.max = Math.max(group.max, duration);
+        groups.set(action, group);
+      }
+      latency.replaceChildren();
+      if (!measured) {
+        latency.append(el("p", "small subtle", "当前页筛选结果暂无动作耗时数据。"));
+        return;
+      }
+      const slowest = [...groups.values()].sort((a, b) => b.max - a.max || a.action.localeCompare(b.action));
+      const label = ms => ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms} ms`;
+      latency.append(el("p", "small subtle", `当前页筛选结果：${measured} / ${matches.length} 条有耗时；最长 ${label(slowest[0].max)}。并行动作的耗时可能重叠。`));
+      const bars = el("ol", "trace-latency-list");
+      for (const group of slowest.slice(0, 5)) {
+        const row = el("li", "trace-latency-row");
+        const heading = el("div", "trace-latency-heading");
+        append(heading, el("span", "mono", group.action), el("span", "small subtle", `${group.count} 次 · 最长 ${label(group.max)}`));
+        const track = el("div", "trace-latency-track");
+        track.setAttribute("aria-hidden", "true");
+        const fill = el("div", "trace-latency-fill");
+        fill.style.width = `${slowest[0].max === 0 ? 0 : Math.max(2, group.max / slowest[0].max * 100)}%`;
+        track.append(fill); row.append(heading, track); bars.append(row);
+      }
+      latency.append(bars);
+    }
+
     function traceItem(event, index) {
       const { trace: entry, sequence, event_id: eventID, recorded_at: recordedAt } = event;
       const key = keyOf(event);
@@ -359,6 +396,8 @@
       const head = el("div", "trace-head");
       append(head, el("span", "mono small subtle", `#${sequence} · Step ${entry.step ?? "—"}`),
         el("strong", "", entry.action || "事件"));
+      if (entry.occurred_at) head.append(el("span", "small subtle", `执行开始 ${formatTime(entry.occurred_at)}`));
+      if (Number.isFinite(entry.duration_ms) && entry.duration_ms >= 0) head.append(el("span", "small subtle", `耗时 ${entry.duration_ms} ms`));
       if (recordedAt) head.append(el("span", "small subtle", `首次记录 ${formatTime(recordedAt)}`));
       if (entry.agent_role) head.append(el("span", "badge", entry.agent_role));
       if (entry.error) head.append(el("span", "badge failed", "错误"));
@@ -375,6 +414,9 @@
         if (details.dataset.loaded) return;
         details.dataset.loaded = "true";
         if (eventID) details.append(el("p", "mono small subtle", `事件 ID：${eventID}`));
+        if (entry.occurred_at) details.append(el("p", "small subtle", `执行开始：${formatTime(entry.occurred_at)}`));
+        if (Number.isFinite(entry.duration_ms) && entry.duration_ms >= 0) details.append(el("p", "small subtle", `执行耗时：${entry.duration_ms} ms`));
+        if (recordedAt) details.append(el("p", "small subtle", `首次持久化：${formatTime(recordedAt)}`));
         if (entry.action) details.append(el("pre", "", `Action: ${entry.action}`));
         if (overview.length > 300) details.append(el("pre", "", overview));
         if (entry.query) details.append(el("pre", "", `Query: ${entry.query}`));
@@ -456,6 +498,7 @@
       noMatches.querySelector("h3").textContent = events.length ? "没有匹配记录" : "暂无执行记录";
       noMatches.querySelector("p").textContent = events.length ? "调整筛选条件后重试。" : "任务运行后，持久化的步骤将显示在这里。";
       count.textContent = `筛选范围：当前页。显示 ${matches.length} / ${events.length} 条；滚动列表仅渲染可见记录。`;
+      paintLatency();
       if (matches.length) renderWindow(true);
       else list.replaceChildren();
     }

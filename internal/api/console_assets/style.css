@@ -86,6 +86,14 @@ tbody tr:hover { background: #f8fbff; }
 .badge.succeeded { background: #dff5e9; color: #167147; }
 .badge.skipped { background: #edf0f3; color: #627285; }
 .trace-viewport { max-height: min(68vh, 680px); overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; }
+.trace-latency { margin: -5px 0 17px; padding: 12px 14px; border: 1px solid #e0e9f2; border-radius: 9px; background: #f8fbff; }
+.trace-latency > p { margin: 0; }
+.trace-latency-list { display: grid; gap: 8px; list-style: none; margin: 12px 0 0; padding: 0; }
+.trace-latency-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; font-size: 12px; }
+.trace-latency-heading .mono { min-width: 0; overflow-wrap: anywhere; }
+.trace-latency-heading .subtle { flex: none; }
+.trace-latency-track { height: 6px; border-radius: 999px; background: #e2ebf5; overflow: hidden; }
+.trace-latency-fill { height: 100%; border-radius: inherit; background: #4287c5; }
 .trace-list { list-style: none; padding: 0 0 0 12px; margin: 0; border-left: 2px solid #dce8f4; }
 .trace-item { position: relative; padding: 0 0 0 25px; }
 .trace-item::before { content: ""; position: absolute; left: -18px; top: 4px; width: 10px; height: 10px; border: 3px solid white; border-radius: 50%; background: #548ed0; box-shadow: 0 0 0 1px #b7cde4; }

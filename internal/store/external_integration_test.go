@@ -375,7 +375,7 @@ VALUES ('legacy-task', 0, 'legacy goal', 'read_file', '', 'initial source', 'nul
 	}
 	defer st.Close()
 	assertPostgresColumns(t, st.db, "tasks", "tenant_id", "session_id", "sequence_no", "created_at", "updated_at", "execution_mode", "requested_team", "team_selection_source", "team_name", "team_config_digest", "brain_project_id", "brain_snapshot_id", "brain_config_digest", "token_budget", "llm_call_budget", "memories_json", "answer_audit_json")
-	assertPostgresColumns(t, st.db, "traces", "execution_step", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens")
+	assertPostgresColumns(t, st.db, "traces", "execution_step", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens", "occurred_at", "duration_ms")
 	assertPostgresColumns(t, st.db, "memories", "tenant_id", "session_id")
 	var createdAt, updatedAt sql.NullTime
 	if err := st.db.QueryRowContext(t.Context(), `SELECT created_at, updated_at FROM tasks WHERE id = 'legacy-task'`).Scan(&createdAt, &updatedAt); err != nil {

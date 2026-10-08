@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS traces (
 		prompt_tokens INT NOT NULL DEFAULT 0,
 		completion_tokens INT NOT NULL DEFAULT 0,
 		total_tokens INT NOT NULL DEFAULT 0,
+		occurred_at TIMESTAMPTZ,
+		duration_ms BIGINT,
 		recorded_at TIMESTAMPTZ,
 		FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
@@ -216,6 +218,8 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 	// the first task read/write.
 	statements := []postgresMigrationStatement{
 		{name: "add trace execution step", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS execution_step INT`},
+		{name: "add trace occurred at", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ`},
+		{name: "add trace duration", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS duration_ms BIGINT`},
 		{name: "add trace recorded at", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ`},
 		{name: "add task token budget", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget INT NOT NULL DEFAULT 0`},
 		{name: "add task tenant", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`},
@@ -619,7 +623,7 @@ FROM tasks WHERE id = $1
 
 	rows, err := p.db.QueryContext(ctx, `
 	SELECT COALESCE(execution_step, step), goal, action, query, observation, evidence_json, agent_role,
-	       error_text, prompt_tokens, completion_tokens, total_tokens
+	       error_text, prompt_tokens, completion_tokens, total_tokens, occurred_at, duration_ms
 FROM traces
 WHERE task_id = $1
 ORDER BY step ASC, id ASC
@@ -632,11 +636,22 @@ ORDER BY step ASC, id ASC
 	for rows.Next() {
 		var tr types.StepTrace
 		var evidenceJSON, agentRole string
+		var occurredAt sql.NullTime
+		var durationMS sql.NullInt64
 		if err := rows.Scan(
 			&tr.Step, &tr.Goal, &tr.Action, &tr.Query, &tr.Observation, &evidenceJSON, &agentRole,
 			&tr.Error, &tr.TokenUsage.PromptTokens, &tr.TokenUsage.CompletionTokens, &tr.TokenUsage.TotalTokens,
+			&occurredAt, &durationMS,
 		); err != nil {
 			return nil, err
+		}
+		if occurredAt.Valid {
+			at := occurredAt.Time.UTC()
+			tr.OccurredAt = &at
+		}
+		if durationMS.Valid {
+			duration := durationMS.Int64
+			tr.DurationMS = &duration
 		}
 		if err := json.Unmarshal([]byte(evidenceJSON), &tr.Evidence); err != nil {
 			return nil, err

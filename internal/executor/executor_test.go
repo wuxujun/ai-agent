@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/executor"
 	"github.com/wuxujun/ai-agent/internal/planner"
@@ -130,7 +131,9 @@ func TestExecutorPartialFailureIsNonFatal(t *testing.T) {
 		},
 	}
 
+	started := time.Now()
 	traces, err := execInst.Execute(ctx, task, dec)
+	finished := time.Now()
 	if err != nil {
 		t.Fatalf("partial failure must not return a fatal error, got: %v", err)
 	}
@@ -148,6 +151,12 @@ func TestExecutorPartialFailureIsNonFatal(t *testing.T) {
 	}
 	if !strings.Contains(traces[1].Observation, "successfully wrote") {
 		t.Errorf("expected sibling success observation, got %q", traces[1].Observation)
+	}
+	for i, trace := range traces {
+		if trace.OccurredAt == nil || trace.OccurredAt.Before(started) || trace.OccurredAt.After(finished) ||
+			trace.DurationMS == nil || *trace.DurationMS < 0 {
+			t.Fatalf("trace[%d] missing actual execution timing: %+v", i, trace)
+		}
 	}
 }
 

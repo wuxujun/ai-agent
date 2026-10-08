@@ -81,6 +81,8 @@ X-API-Key: {{apiKey}}
 # events[].sequence is unique per task; events[].trace.step may repeat.
 # events[].event_id is task ID + sequence; recorded_at is first persistence time
 # and is omitted for historical events without a known timestamp.
+# trace.occurred_at / trace.duration_ms are present for newly measured tool actions;
+# they describe execution start and elapsed milliseconds, not persistence time.
 GET {{baseUrl}}/api/tasks/atomic-create-example/trace?limit=100
 X-API-Key: {{apiKey}}
 

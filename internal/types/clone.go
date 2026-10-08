@@ -11,6 +11,14 @@ func CloneTask(task *Task) *Task {
 	cloned.Trace = make([]StepTrace, len(task.Trace))
 	for i, trace := range task.Trace {
 		cloned.Trace[i] = trace
+		if trace.OccurredAt != nil {
+			at := *trace.OccurredAt
+			cloned.Trace[i].OccurredAt = &at
+		}
+		if trace.DurationMS != nil {
+			duration := *trace.DurationMS
+			cloned.Trace[i].DurationMS = &duration
+		}
 		cloned.Trace[i].Evidence = make([]Evidence, len(trace.Evidence))
 		for j, evidence := range trace.Evidence {
 			cloned.Trace[i].Evidence[j] = evidence

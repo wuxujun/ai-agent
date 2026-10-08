@@ -237,13 +237,13 @@ GET /api/tasks/:id/trace?limit=100
 GET /api/tasks/:id/trace?limit=100&cursor=<next_cursor>
 ```
 
-响应包含 `events`、本页 `count`、`has_more`、`next_cursor`。每条事件包含 `sequence`、`event_id`、可选的 `recorded_at` 和原始 `trace`。例如：
+响应包含 `events`、本页 `count`、`has_more`、`next_cursor`。每条事件包含 `sequence`、`event_id`、可选的 `recorded_at` 和原始 `trace`。新产生的普通执行器及 Multi-Agent 工具动作 Trace 可在 `trace` 内包含 `occurred_at` 与 `duration_ms`。例如：
 
 ```json
-{"sequence":1,"event_id":"task-demo-001:1","recorded_at":"2026-10-02T12:00:00Z","trace":{"step":1,"action":"search"}}
+{"sequence":1,"event_id":"task-demo-001:1","recorded_at":"2026-10-07T12:00:02Z","trace":{"step":1,"action":"search_text","occurred_at":"2026-10-07T12:00:00Z","duration_ms":1250}}
 ```
 
-`sequence` 是持久化顺序号，`event_id` 由 Task ID 和该顺序号组成；`trace.step` 是可重复的逻辑步骤。`recorded_at` 表示事件首次写入 Store 的时间，并非动作实际发生时间；旧数据没有可靠时间时省略该字段。完整 Trace 快照覆盖同一顺序号时保留原时间。若任务重排或截断 Trace，顺序号和事件 ID 可对应到不同内容，不应将其视为内容哈希。游标绑定 Task ID；`limit` 默认为 100，范围为 1–200。任务正在执行时，新事件会追加，跨页读取不是事务性快照；刷新当前页可对账。普通租户读取别人的 Task 时统一返回 `404`。
+`sequence` 是持久化顺序号，`event_id` 由 Task ID 和该顺序号组成；`trace.step` 是可重复的逻辑步骤。`trace.occurred_at` 是被计时动作的实际开始时间，`trace.duration_ms` 是该动作执行耗时，向下取整到毫秒（`0` 表示不足 1 ms）；两者由执行路径测量，不含后续持久化等待。历史 Trace、审批/审计等没有计时来源的事件可省略两字段。`recorded_at` 表示事件首次写入 Store 的时间，并非动作实际发生时间；旧数据没有可靠时间时省略该字段。完整 Trace 快照覆盖同一顺序号时保留原时间。若任务重排或截断 Trace，顺序号和事件 ID 可对应到不同内容，不应将其视为内容哈希。游标绑定 Task ID；`limit` 默认为 100，范围为 1–200。任务正在执行时，新事件会追加，跨页读取不是事务性快照；刷新当前页可对账。普通租户读取别人的 Task 时统一返回 `404`。
 
 SQLite/PostgreSQL 直接按索引读取摘要与 Trace 页。Redis 在保存完整 Task 的同时，原子更新摘要索引、详情元数据及逐条 Trace 列表；摘要按创建时间游标读取，Trace 按事件序号读取，正常分页不再反序列化完整 Task。首次摘要查询会迁移旧 Redis 任务的读取索引，耗时与旧任务数量和 Trace 总量相关；直接访问尚未迁移的旧任务时，详情与 Trace 暂时回退到完整 Task 读取。Redis 每次保存完整 Trace 快照仍要同步重建分页列表，超长且频繁更新的任务会增加写入成本。部署时应先让所有 Redis 写入实例升级到包含读取索引的版本，再启用新摘要查询，避免旧版本写入造成索引过期。
 

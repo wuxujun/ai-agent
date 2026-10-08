@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -41,6 +42,7 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 	// sibling successes are preserved for the next planning turn.
 	traces := make([]types.StepTrace, len(d.Actions))
 	execute := func(idx int, actionCall planner.ActionCall) {
+		startedAt := time.Now()
 		tCtx, tSpan := tracer.Start(ctx, "executor.execute_action")
 		defer tSpan.End()
 		tSpan.SetAttributes(attribute.String("action", actionCall.Action))
@@ -53,6 +55,10 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 			Goal:   task.Goal,
 			Action: actionCall.Action,
 		}
+		defer func() {
+			tr.SetExecutionTiming(startedAt, time.Since(startedAt))
+			traces[idx] = tr
+		}()
 
 		tool, ok := tools.Get(actionCall.Action)
 		if !ok {
@@ -61,7 +67,6 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 			tSpan.SetStatus(codes.Error, "unsupported action")
 			tr.Error = err.Error()
 			tr.Observation = "error: " + err.Error()
-			traces[idx] = tr
 			return
 		}
 
@@ -71,7 +76,6 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 			tSpan.SetStatus(codes.Error, actionCall.Action+" failed")
 			tr.Error = err.Error()
 			tr.Observation = "error: " + err.Error()
-			traces[idx] = tr
 			return
 		}
 
@@ -79,7 +83,6 @@ func (e *DefaultExecutor) Execute(ctx context.Context, task *types.Task, d *plan
 		tr.Observation = res.Observation
 		tr.Evidence = res.Evidence
 		tr.TokenUsage = res.TokenUsage
-		traces[idx] = tr
 	}
 
 	for start := 0; start < len(d.Actions); {

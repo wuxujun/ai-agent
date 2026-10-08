@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS traces (
 		prompt_tokens INTEGER NOT NULL DEFAULT 0,
 		completion_tokens INTEGER NOT NULL DEFAULT 0,
 		total_tokens INTEGER NOT NULL DEFAULT 0,
+		occurred_at DATETIME,
+		duration_ms INTEGER,
 		recorded_at DATETIME,
 		FOREIGN KEY(task_id) REFERENCES tasks(id)
 );
@@ -189,6 +191,8 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 		{table: "traces", column: "prompt_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "traces", column: "completion_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "traces", column: "total_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "traces", column: "occurred_at", definition: "DATETIME"},
+		{table: "traces", column: "duration_ms", definition: "INTEGER"},
 		{table: "traces", column: "recorded_at", definition: "DATETIME"},
 		{table: "tasks", column: "token_budget", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "tasks", column: "tenant_id", definition: "TEXT NOT NULL DEFAULT ''"},
@@ -640,7 +644,7 @@ FROM tasks WHERE id = ?
 
 	rows, err := s.db.QueryContext(ctx, `
 	SELECT COALESCE(execution_step, step), goal, action, query, observation, evidence_json, agent_role,
-	       error_text, prompt_tokens, completion_tokens, total_tokens
+	       error_text, prompt_tokens, completion_tokens, total_tokens, occurred_at, duration_ms
 FROM traces
 WHERE task_id = ?
 ORDER BY step ASC, id ASC
@@ -654,11 +658,22 @@ ORDER BY step ASC, id ASC
 		var tr types.StepTrace
 		var evidenceJSON string
 		var agentRole string
+		var occurredAt sql.NullTime
+		var durationMS sql.NullInt64
 		if err := rows.Scan(
 			&tr.Step, &tr.Goal, &tr.Action, &tr.Query, &tr.Observation, &evidenceJSON, &agentRole,
 			&tr.Error, &tr.TokenUsage.PromptTokens, &tr.TokenUsage.CompletionTokens, &tr.TokenUsage.TotalTokens,
+			&occurredAt, &durationMS,
 		); err != nil {
 			return nil, err
+		}
+		if occurredAt.Valid {
+			at := occurredAt.Time.UTC()
+			tr.OccurredAt = &at
+		}
+		if durationMS.Valid {
+			duration := durationMS.Int64
+			tr.DurationMS = &duration
 		}
 		if err := json.Unmarshal([]byte(evidenceJSON), &tr.Evidence); err != nil {
 			return nil, err

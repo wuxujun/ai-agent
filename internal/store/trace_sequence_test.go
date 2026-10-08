@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -24,6 +25,19 @@ func runTraceSequenceContract(t *testing.T, st Store) {
 	ctx := context.Background()
 	if err := st.SaveFullTask(ctx, task); err != nil {
 		t.Fatal(err)
+	}
+	// A newly measured action can fill previously absent timing without
+	// changing any other field in the trace row.
+	startedAt := time.Now().UTC().Truncate(time.Microsecond)
+	durationMS := int64(17)
+	task.Trace[0].OccurredAt = &startedAt
+	task.Trace[0].DurationMS = &durationMS
+	if err := st.SaveFullTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	measured, err := st.GetTask(ctx, task.ID)
+	if err != nil || !reflect.DeepEqual(measured.Trace, task.Trace) {
+		t.Fatalf("timing-only update: %+v %v", measured, err)
 	}
 	// Execution, V2 audits, multiagent checkpoint and recovery feedback may share
 	// an execution step. Their array order is the independent event sequence.

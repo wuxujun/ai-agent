@@ -77,6 +77,14 @@ func (m *MemoryStore) ListTaskTraces(ctx context.Context, id string, afterSequen
 	items := make([]TaskTraceEvent, 0, limit)
 	for i := afterSequence; i < int64(len(task.Trace)) && len(items) < limit; i++ {
 		trace := task.Trace[i]
+		if trace.OccurredAt != nil {
+			at := *trace.OccurredAt
+			trace.OccurredAt = &at
+		}
+		if trace.DurationMS != nil {
+			duration := *trace.DurationMS
+			trace.DurationMS = &duration
+		}
 		if trace.Evidence != nil {
 			trace.Evidence = append([]types.Evidence(nil), trace.Evidence...)
 			for j := range trace.Evidence {
@@ -171,7 +179,7 @@ func listSQLTaskTraces(ctx context.Context, db *sql.DB, id string, afterSequence
 		taskMarker, stepMarker, limitMarker = "$1", "$2", "$3"
 	}
 	query := `SELECT step, COALESCE(execution_step, step), goal, action, query, observation,
-		evidence_json, agent_role, error_text, prompt_tokens, completion_tokens, total_tokens, recorded_at
+		evidence_json, agent_role, error_text, prompt_tokens, completion_tokens, total_tokens, occurred_at, duration_ms, recorded_at
 		FROM traces WHERE task_id = ` + taskMarker + ` AND step > ` + stepMarker +
 		` ORDER BY step ASC LIMIT ` + limitMarker
 	rows, err := db.QueryContext(ctx, query, id, afterSequence, limit)
@@ -183,18 +191,28 @@ func listSQLTaskTraces(ctx context.Context, db *sql.DB, id string, afterSequence
 	for rows.Next() {
 		var item TaskTraceEvent
 		var evidenceJSON, agentRole string
+		var occurredAt sql.NullTime
+		var durationMS sql.NullInt64
 		var recordedAt sql.NullTime
 		tr := &item.Trace
 		if err := rows.Scan(&item.Sequence, &tr.Step, &tr.Goal, &tr.Action, &tr.Query,
 			&tr.Observation, &evidenceJSON, &agentRole, &tr.Error,
 			&tr.TokenUsage.PromptTokens, &tr.TokenUsage.CompletionTokens, &tr.TokenUsage.TotalTokens,
-			&recordedAt); err != nil {
+			&occurredAt, &durationMS, &recordedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(evidenceJSON), &tr.Evidence); err != nil {
 			return nil, err
 		}
 		tr.AgentRole = types.AgentRole(agentRole)
+		if occurredAt.Valid {
+			at := occurredAt.Time.UTC()
+			tr.OccurredAt = &at
+		}
+		if durationMS.Valid {
+			duration := durationMS.Int64
+			tr.DurationMS = &duration
+		}
 		if recordedAt.Valid {
 			at := recordedAt.Time.UTC()
 			item.RecordedAt = &at

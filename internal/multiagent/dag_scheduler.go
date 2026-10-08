@@ -297,7 +297,8 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 				start := time.Now()
 				var ev *StepEvidence
 				err := ctx.Err()
-				if err == nil {
+				executed := err == nil
+				if executed {
 					ev, err = c.executeWorkflowStep(ctx, task.Workspace, s)
 				}
 				elapsed := time.Since(start)
@@ -327,6 +328,9 @@ func (c *Coordinator) runBatchParallel(ctx context.Context, task *types.Task, ba
 					Evidence:    trEvidence,
 					TokenUsage:  tokenUsage,
 					AgentRole:   agentRole,
+				}
+				if executed {
+					tr.SetExecutionTiming(start, elapsed)
 				}
 
 				results[idx] = result{
@@ -472,7 +476,7 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 			tokenUsage = ev.TokenUsage
 		}
 
-		task.Trace = append(task.Trace, types.StepTrace{
+		trace := types.StepTrace{
 			Step:        task.StepCount,
 			Goal:        task.Goal,
 			Action:      step.Action,
@@ -481,7 +485,9 @@ func (c *Coordinator) runBatchSerial(ctx context.Context, task *types.Task, batc
 			Evidence:    trEvidence,
 			TokenUsage:  tokenUsage,
 			AgentRole:   agentRole,
-		})
+		}
+		trace.SetExecutionTiming(start, elapsed)
+		task.Trace = append(task.Trace, trace)
 		task.StepCount++
 		if audit != nil {
 			audit.Step = task.StepCount

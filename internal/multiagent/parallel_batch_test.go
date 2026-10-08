@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -54,7 +55,9 @@ func TestRunBatchParallel_MergesInOrderAndUpdatesBudget(t *testing.T) {
 		{ID: "s3", Action: "find_files"},
 	}
 
+	started := time.Now()
 	evidence, anyFailed := c.runBatchParallel(context.Background(), task, batch)
+	finished := time.Now()
 
 	if !anyFailed {
 		t.Error("expected anyFailed=true because one step failed")
@@ -90,6 +93,29 @@ func TestRunBatchParallel_MergesInOrderAndUpdatesBudget(t *testing.T) {
 		}
 		if tr.AgentRole != RoleResearcher {
 			t.Errorf("trace[%d] expected researcher role, got %q", i, tr.AgentRole)
+		}
+		if tr.OccurredAt == nil || tr.OccurredAt.Before(started) || tr.OccurredAt.After(finished) ||
+			tr.DurationMS == nil || *tr.DurationMS < 0 {
+			t.Errorf("trace[%d] missing actual execution timing: %+v", i, tr)
+		}
+	}
+}
+
+func TestRunBatchSerial_RecordsActionTiming(t *testing.T) {
+	researcher := &parallelMockResearcher{}
+	coordinator := &Coordinator{Researcher: researcher}
+	task := &types.Task{ID: "serial-timing", Goal: "read", MaxSteps: 2, ToolBudget: 2}
+	steps := []ResearchStep{{ID: "success", Action: "read_file"}, {ID: "fatal", Action: "read_file"}}
+	started := time.Now()
+	_, failed, err := coordinator.runBatchSerial(withWorkflow(context.Background(), WorkflowResearch), task, steps)
+	finished := time.Now()
+	if err != nil || !failed || len(task.Trace) != 2 {
+		t.Fatalf("serial result = failed %t, err %v, traces %+v", failed, err, task.Trace)
+	}
+	for i, trace := range task.Trace {
+		if trace.OccurredAt == nil || trace.OccurredAt.Before(started) || trace.OccurredAt.After(finished) ||
+			trace.DurationMS == nil || *trace.DurationMS < 0 {
+			t.Fatalf("serial trace[%d] missing actual timing: %+v", i, trace)
 		}
 	}
 }

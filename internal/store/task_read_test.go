@@ -26,6 +26,8 @@ func TestTaskReadPages_StableOrderAndIndependentTraceSequence(t *testing.T) {
 			st := backend.open(t)
 			t.Cleanup(func() { _ = st.Close() })
 			created := time.Now().UTC().Truncate(time.Microsecond)
+			occurred := created.Add(-2 * time.Second)
+			duration := int64(37)
 			for _, fixture := range []struct {
 				id, tenant, session string
 				at                  time.Time
@@ -38,7 +40,7 @@ func TestTaskReadPages_StableOrderAndIndependentTraceSequence(t *testing.T) {
 				task := &types.Task{ID: fixture.id, TenantID: fixture.tenant, SessionID: fixture.session,
 					CreatedAt: fixture.at, Goal: "long goal", Status: types.StatusRunning,
 					ExecutionTraceID: "0123456789abcdef0123456789abcdef",
-					Trace:            []types.StepTrace{{Step: 1, Action: "first"}, {Step: 1, Action: "second"}, {Step: 2, Action: "third"}}}
+					Trace:            []types.StepTrace{{Step: 1, Action: "first", OccurredAt: &occurred, DurationMS: &duration}, {Step: 1, Action: "second"}, {Step: 2, Action: "third"}}}
 				if err := st.(TaskCreationStore).CreateTask(t.Context(), task); err != nil {
 					t.Fatal(err)
 				}
@@ -70,6 +72,16 @@ func TestTaskReadPages_StableOrderAndIndependentTraceSequence(t *testing.T) {
 			if page1[0].RecordedAt == nil || page1[1].RecordedAt == nil {
 				t.Fatalf("new trace events have no persisted timestamp: %+v", page1)
 			}
+			if page1[0].Trace.OccurredAt == nil || !page1[0].Trace.OccurredAt.Equal(occurred) ||
+				page1[0].Trace.DurationMS == nil || *page1[0].Trace.DurationMS != 37 ||
+				page1[1].Trace.OccurredAt != nil || page1[1].Trace.DurationMS != nil {
+				t.Fatalf("measured timing not preserved: %+v", page1)
+			}
+			*page1[0].Trace.DurationMS = 99
+			reloaded, err := traces.ListTaskTraces(t.Context(), "a-1", 0, 1)
+			if err != nil || len(reloaded) != 1 || reloaded[0].Trace.DurationMS == nil || *reloaded[0].Trace.DurationMS != 37 {
+				t.Fatalf("trace timing shared with store: %+v, %v", reloaded, err)
+			}
 			page2, err := traces.ListTaskTraces(t.Context(), "a-1", page1[1].Sequence, 2)
 			if err != nil || len(page2) != 1 || page2[0].Sequence != 3 || page2[0].Trace.Action != "third" {
 				t.Fatalf("trace page2 = %+v, %v", page2, err)
@@ -77,6 +89,10 @@ func TestTaskReadPages_StableOrderAndIndependentTraceSequence(t *testing.T) {
 			full, err := st.GetTask(t.Context(), "a-1")
 			if err != nil {
 				t.Fatal(err)
+			}
+			if full.Trace[0].OccurredAt == nil || !full.Trace[0].OccurredAt.Equal(occurred) ||
+				full.Trace[0].DurationMS == nil || *full.Trace[0].DurationMS != 37 {
+				t.Fatalf("full task lost action timing: %+v", full.Trace[0])
 			}
 			full.Trace[0].Observation = "updated snapshot"
 			full.Trace = append(full.Trace, types.StepTrace{Step: 2, Action: "fourth"})
@@ -105,8 +121,9 @@ func TestSQLiteLegacyTraceHasNoRecordedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, err := st.ListTaskTraces(t.Context(), "legacy-trace-time", 0, 2)
-	if err != nil || len(page) != 1 || page[0].RecordedAt != nil {
-		t.Fatalf("legacy recorded_at = %+v, %v", page, err)
+	if err != nil || len(page) != 1 || page[0].RecordedAt != nil ||
+		page[0].Trace.OccurredAt != nil || page[0].Trace.DurationMS != nil {
+		t.Fatalf("legacy trace timing = %+v, %v", page, err)
 	}
 }
 

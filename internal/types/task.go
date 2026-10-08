@@ -45,6 +45,20 @@ type StepTrace struct {
 	// Empty for single-agent (legacy/eino/adk) modes; set in multi-agent mode.
 	AgentRole  AgentRole  `json:"agent_role,omitempty"`
 	TokenUsage TokenUsage `json:"token_usage,omitempty"`
+	// OccurredAt is the actual start of a measured action. DurationMS is its
+	// elapsed execution time; both are absent when the source did not measure it.
+	OccurredAt *time.Time `json:"occurred_at,omitempty"`
+	DurationMS *int64     `json:"duration_ms,omitempty"`
+}
+
+func (trace *StepTrace) SetExecutionTiming(startedAt time.Time, elapsed time.Duration) {
+	if trace == nil || startedAt.IsZero() || elapsed < 0 {
+		return
+	}
+	start := startedAt.UTC()
+	durationMS := elapsed.Milliseconds()
+	trace.OccurredAt = &start
+	trace.DurationMS = &durationMS
 }
 
 type TaskStatus string
