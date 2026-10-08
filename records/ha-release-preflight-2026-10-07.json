@@ -1,0 +1,384 @@
+{
+  "source_commit": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+  "source_clean": true,
+  "source_directory": "/private/tmp/ai-agent-stage33-release-_p4df5aj/source",
+  "run_directory": "/private/tmp/ai-agent-stage33-release-_p4df5aj",
+  "started_utc": "2026-10-08T05:25:05.640023+00:00",
+  "ended_utc": "2026-10-08T06:39:17.221444+00:00",
+  "validation_scope": "release preflight on isolated clean committed source; no target deployment or HA acceptance",
+  "preflight_passed": true,
+  "full_ha_acceptance": false,
+  "runtime": "legacy",
+  "dag_canary_percent": 0,
+  "toolchain": {
+    "version": "go version go1.26.8 darwin/arm64",
+    "directory": "/private/tmp/ai-agent-native-go-modcache/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64",
+    "module": "golang.org/toolchain",
+    "module_version": "v0.0.1-go1.26.8.darwin-arm64",
+    "module_sum": "h1:dFjGhY6f8DTsY8/rLchUTDRRfjJP4pCrGCwxvHFT2Fg=",
+    "go_mod_sum": "h1:8wlg68NqwW7eMnI1aABk/C2pDYXj8mrMY4TyRfiLeS0=",
+    "system_installation_modified": false
+  },
+  "checks": {
+    "full-suite-native": {
+      "command": "go test -p=4 ./... -count=1 -timeout=5m",
+      "exit_code": 0,
+      "started_utc": "2026-10-08T06:20:16.440128+00:00",
+      "ended_utc": "2026-10-08T06:21:01.545310+00:00",
+      "log": "/private/tmp/ai-agent-stage33-release-_p4df5aj/full-suite-native.log",
+      "log_sha256": "4f475d21227c05036c412e34d099b5cfe3b444dc3f3066c5f454ca7ba49639ff",
+      "passing_packages": 49,
+      "failed_package_lines": [],
+      "loopback_sandbox_denial": false,
+      "external_integration_enabled": false,
+      "go_version": "go version go1.26.8 darwin/arm64"
+    },
+    "race-native": {
+      "command": "go test -race -p=4 ./internal/api ./internal/store ./internal/orchestrator ./internal/multiagent ./internal/config ./internal/executor ./internal/types ./internal/hasoak ./cmd/server ./cmd/ha-soak -count=1 -timeout=5m",
+      "exit_code": 0,
+      "started_utc": "2026-10-08T06:37:25.981609+00:00",
+      "ended_utc": "2026-10-08T06:38:02.528843+00:00",
+      "log": "/private/tmp/ai-agent-stage33-release-_p4df5aj/race-native.log",
+      "log_sha256": "1457a89dc18eb63f984da108c9bbb9935323e732e9b3dca97b711bdee59c63a2",
+      "passing_packages": 9,
+      "failed_package_lines": [],
+      "loopback_sandbox_denial": false,
+      "external_integration_enabled": false,
+      "go_version": "go version go1.26.8 darwin/arm64"
+    },
+    "vet": {
+      "command": "go vet ./...",
+      "exit_code": 0,
+      "started_utc": "2026-10-08T05:25:33.812108+00:00",
+      "ended_utc": "2026-10-08T05:25:59.957054+00:00",
+      "log": "/private/tmp/ai-agent-stage33-release-_p4df5aj/vet.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "passing_packages": 0,
+      "failed_package_lines": [],
+      "loopback_sandbox_denial": false,
+      "external_integration_enabled": false
+    },
+    "build-amd64": {
+      "command": "bash deploy/ha/build-bundle.sh --output /private/tmp/ai-agent-stage33-release-_p4df5aj/bundle-linux-amd64 --arch amd64",
+      "exit_code": 0,
+      "started_utc": "2026-10-08T06:38:02.554413+00:00",
+      "ended_utc": "2026-10-08T06:38:20.274277+00:00",
+      "log": "/private/tmp/ai-agent-stage33-release-_p4df5aj/build-amd64.log",
+      "log_sha256": "80ed15c8138691f60748740dfcbf8539e7adeb57165fa5549fc631fea67bbd3b",
+      "passing_packages": 0,
+      "failed_package_lines": [],
+      "loopback_sandbox_denial": false,
+      "external_integration_enabled": false,
+      "go_version": "go version go1.26.8 darwin/arm64"
+    },
+    "build-arm64": {
+      "command": "bash deploy/ha/build-bundle.sh --output /private/tmp/ai-agent-stage33-release-_p4df5aj/bundle-linux-arm64 --arch arm64",
+      "exit_code": 0,
+      "started_utc": "2026-10-08T06:38:02.554442+00:00",
+      "ended_utc": "2026-10-08T06:38:20.049047+00:00",
+      "log": "/private/tmp/ai-agent-stage33-release-_p4df5aj/build-arm64.log",
+      "log_sha256": "61397bf765da69c9eec6c6d3642680f052cfcf5c07de1b322a2c2450bdbf0ff6",
+      "passing_packages": 0,
+      "failed_package_lines": [],
+      "loopback_sandbox_denial": false,
+      "external_integration_enabled": false,
+      "go_version": "go version go1.26.8 darwin/arm64"
+    }
+  },
+  "bundles": [
+    {
+      "directory": "/private/tmp/ai-agent-stage33-release-_p4df5aj/bundle-linux-amd64",
+      "manifest": {
+        "git_commit": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+        "git_dirty": "false",
+        "goos": "linux",
+        "goarch": "amd64",
+        "go_version": "go version go1.26.8 darwin/arm64",
+        "created_utc": "2026-10-08T06:38:20Z"
+      },
+      "sha256sums_sha256": "74b243228ebf63c7129b17b3189fb1a7187b00739f303c59c57789b9e0fe9739",
+      "verified_files": 12,
+      "entries": [
+        {
+          "path": "ai-agent.service",
+          "sha256": "e4b3ade041054a3907328948b45e58d46dfdefb2d0148c09d4e3372cdf7999fc",
+          "bytes": 957
+        },
+        {
+          "path": "canary-gate",
+          "sha256": "79c6d656f08830aec3efafd997e70c98b053111b14679480ca991a4d1a7c7013",
+          "bytes": 6537378
+        },
+        {
+          "path": "config.yaml",
+          "sha256": "00f16fe32ad87cd1d2730aae4ad8ca660084c5d4da363eb23052c56d9dbbb981",
+          "bytes": 25247
+        },
+        {
+          "path": "deploy-node.sh",
+          "sha256": "6ceb49d32e2a4198a4ec3e4a36d96ab222613c7f89b8b97ad6d5236a22a8d675",
+          "bytes": 6503
+        },
+        {
+          "path": "ha-soak",
+          "sha256": "15d64f0cc8de3c58db97ec9d39976f6f6866372aa8453e0fbfe127259b95bb47",
+          "bytes": 18100386
+        },
+        {
+          "path": "manifest.txt",
+          "sha256": "f583d8abf198582c5254e43b9fd41461e36cb84ec78ef1d83cabca097037aadd",
+          "bytes": 169
+        },
+        {
+          "path": "server",
+          "sha256": "1a51cdce4899b9997fee89f20ee88bf4a7be538f5b91358321c1c40f9751e528",
+          "bytes": 88219810
+        },
+        {
+          "path": "skills/code-review/SKILL.md",
+          "sha256": "fd5849a7706fee597a3214a43915a0aaaa3cb3e5a7736da71aab4ae16683acb3",
+          "bytes": 1407
+        },
+        {
+          "path": "skills/local-rag-file-search/SKILL.md",
+          "sha256": "b2dd9dfc4c28a8a082193bade9cf4bb7c56b00c67a7b18de8e6d360334966141",
+          "bytes": 5625
+        },
+        {
+          "path": "teams.yaml",
+          "sha256": "ffbe1c04ef7d14fabae64f655e2abb362fa0074434727783f6c34db8df4c102e",
+          "bytes": 30151
+        },
+        {
+          "path": "test-gate.sh",
+          "sha256": "2ae21579803709ae73bbf35a546fb317d7e91b57594e6ef0d2853b8e29ac3060",
+          "bytes": 1160
+        },
+        {
+          "path": "test-load.sh",
+          "sha256": "23b319b850ec82c38045e3946e9d6911096340c433fb283c02313e80fa08fd43",
+          "bytes": 3538
+        }
+      ],
+      "binaries": [
+        {
+          "name": "server",
+          "sha256": "1a51cdce4899b9997fee89f20ee88bf4a7be538f5b91358321c1c40f9751e528",
+          "file": "ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, Go BuildID=MWRsKoMhGRWGJAn-y3RF/stJLiWCWAZY8ZQEIhynp/ijtdUTphWaNi8xXm2Nh8/mCmNgfX5SmW49HM7zexB, BuildID[sha1]=cd5dfbdf3ed52f89150c5661bacd65b5632c6cc5, stripped",
+          "vcs_revision": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+          "vcs_modified": false,
+          "goos": "linux",
+          "goarch": "amd64",
+          "cgo_enabled": false
+        },
+        {
+          "name": "ha-soak",
+          "sha256": "15d64f0cc8de3c58db97ec9d39976f6f6866372aa8453e0fbfe127259b95bb47",
+          "file": "ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, Go BuildID=fggYYYPkuP3CsMSKOEI6/GPvv2HAgT1OGGETVBOKy/ixtyP5bRw8mcD6mIEmTH/zIOBUc8o7QE-nCuXueJh, BuildID[sha1]=c0fdde5afd258e919a110793c5eb55108a5afbcd, stripped",
+          "vcs_revision": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+          "vcs_modified": false,
+          "goos": "linux",
+          "goarch": "amd64",
+          "cgo_enabled": false
+        },
+        {
+          "name": "canary-gate",
+          "sha256": "79c6d656f08830aec3efafd997e70c98b053111b14679480ca991a4d1a7c7013",
+          "file": "ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, Go BuildID=5rFvvhg4FxykK9w7uGi9/MFkEDOIYUY0pGOe2qUks/3S-WOoRPyaZRg1JP8q67/e28Qn3xDwKmTGrfkmHZR, BuildID[sha1]=aedaa9fd5dce06af1c6f87d75649cd3334caeab0, stripped",
+          "vcs_revision": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+          "vcs_modified": false,
+          "goos": "linux",
+          "goarch": "amd64",
+          "cgo_enabled": false
+        }
+      ]
+    },
+    {
+      "directory": "/private/tmp/ai-agent-stage33-release-_p4df5aj/bundle-linux-arm64",
+      "manifest": {
+        "git_commit": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+        "git_dirty": "false",
+        "goos": "linux",
+        "goarch": "arm64",
+        "go_version": "go version go1.26.8 darwin/arm64",
+        "created_utc": "2026-10-08T06:38:19Z"
+      },
+      "sha256sums_sha256": "f93b2700a7781485320e9d63979e5bb88b767348ced8ddacd16ac59e66ac10ac",
+      "verified_files": 12,
+      "entries": [
+        {
+          "path": "ai-agent.service",
+          "sha256": "e4b3ade041054a3907328948b45e58d46dfdefb2d0148c09d4e3372cdf7999fc",
+          "bytes": 957
+        },
+        {
+          "path": "canary-gate",
+          "sha256": "84037867ee82f3bc9311c564a4fc47ba2cfd3a4b47e392995ab2ecb2079006ec",
+          "bytes": 6029474
+        },
+        {
+          "path": "config.yaml",
+          "sha256": "00f16fe32ad87cd1d2730aae4ad8ca660084c5d4da363eb23052c56d9dbbb981",
+          "bytes": 25247
+        },
+        {
+          "path": "deploy-node.sh",
+          "sha256": "6ceb49d32e2a4198a4ec3e4a36d96ab222613c7f89b8b97ad6d5236a22a8d675",
+          "bytes": 6503
+        },
+        {
+          "path": "ha-soak",
+          "sha256": "727f00869990b09bd91263dbb45e33d2dcf81872d5681f7d1a3a193af3625518",
+          "bytes": 16908450
+        },
+        {
+          "path": "manifest.txt",
+          "sha256": "1a8b116b83f84154ca26761653a4f096ef33df1917988a7de84d95af63a218ba",
+          "bytes": 169
+        },
+        {
+          "path": "server",
+          "sha256": "e5c0f4e31e54e40c27b0c7da2ea5ba11f0acbc53ba4f2b6bfae4897e45394fd0",
+          "bytes": 81461410
+        },
+        {
+          "path": "skills/code-review/SKILL.md",
+          "sha256": "fd5849a7706fee597a3214a43915a0aaaa3cb3e5a7736da71aab4ae16683acb3",
+          "bytes": 1407
+        },
+        {
+          "path": "skills/local-rag-file-search/SKILL.md",
+          "sha256": "b2dd9dfc4c28a8a082193bade9cf4bb7c56b00c67a7b18de8e6d360334966141",
+          "bytes": 5625
+        },
+        {
+          "path": "teams.yaml",
+          "sha256": "ffbe1c04ef7d14fabae64f655e2abb362fa0074434727783f6c34db8df4c102e",
+          "bytes": 30151
+        },
+        {
+          "path": "test-gate.sh",
+          "sha256": "2ae21579803709ae73bbf35a546fb317d7e91b57594e6ef0d2853b8e29ac3060",
+          "bytes": 1160
+        },
+        {
+          "path": "test-load.sh",
+          "sha256": "23b319b850ec82c38045e3946e9d6911096340c433fb283c02313e80fa08fd43",
+          "bytes": 3538
+        }
+      ],
+      "binaries": [
+        {
+          "name": "server",
+          "sha256": "e5c0f4e31e54e40c27b0c7da2ea5ba11f0acbc53ba4f2b6bfae4897e45394fd0",
+          "file": "ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, Go BuildID=2McUGEvsG4xtMjwXFCsI/QxeswvBv3U3nB10uZVkB/17IvmtWk-YYyQ5MJ6uQk/nO6YfJc9LmyLOsVqiHps, BuildID[sha1]=9ec27291308fb7d70140c0bb555016f97a728a10, stripped",
+          "vcs_revision": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+          "vcs_modified": false,
+          "goos": "linux",
+          "goarch": "arm64",
+          "cgo_enabled": false
+        },
+        {
+          "name": "ha-soak",
+          "sha256": "727f00869990b09bd91263dbb45e33d2dcf81872d5681f7d1a3a193af3625518",
+          "file": "ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, Go BuildID=UR9J9tu5ZGeX9tlMxSzu/Gq2ns5bgBwWCIsgTo8G_/MvwKPfyyFppP2CXiOLYd/G64Wd4Dk8ebDdNrH5afI, BuildID[sha1]=f6ab5996176a6b04a29ab26217b9351388fb3013, stripped",
+          "vcs_revision": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+          "vcs_modified": false,
+          "goos": "linux",
+          "goarch": "arm64",
+          "cgo_enabled": false
+        },
+        {
+          "name": "canary-gate",
+          "sha256": "84037867ee82f3bc9311c564a4fc47ba2cfd3a4b47e392995ab2ecb2079006ec",
+          "file": "ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, Go BuildID=Kq5riNAAa7kzbAeZx3Dg/zK3cmGsaft-O0ZwAYnWT/ShLFmv-1PsNUUFJowaub/3TMSIgctZ4Hw0LZuujaB, BuildID[sha1]=044910dde336fea473136ed126530fba84f006d6, stripped",
+          "vcs_revision": "cc7d199920086b8f96b5e776bcb27ddbffa44de4",
+          "vcs_modified": false,
+          "goos": "linux",
+          "goarch": "arm64",
+          "cgo_enabled": false
+        }
+      ]
+    }
+  ],
+  "additional_checks": [
+    {
+      "command": "bash -n deploy/ha/build-bundle.sh deploy/ha/deploy-node.sh deploy/ha/test-load.sh deploy/ha/test-gate.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "node --check internal/api/console_assets/app.js",
+      "exit_code": 0
+    },
+    {
+      "command": "HA_POSTGRES_PASSWORD=non-secret-validation-placeholder docker compose -f deploy/ha/compose.yaml config --quiet",
+      "exit_code": 0,
+      "services_started": false
+    }
+  ],
+  "initial_attempts": {
+    "sandbox": {
+      "command": "go test -p=4 ./... -count=1 -timeout=5m",
+      "exit_code": 1,
+      "started_utc": "2026-10-08T05:25:33.812285+00:00",
+      "ended_utc": "2026-10-08T05:26:34.954813+00:00",
+      "log": "/private/tmp/ai-agent-stage33-release-_p4df5aj/full-suite-sandbox.log",
+      "log_sha256": "1240cc2a03ad70ac5dcd8a739a1aa164653b3e4af0858df1533875a244528b9c",
+      "passing_packages": 40,
+      "failed_package_lines": [
+        "FAIL\tgithub.com/wuxujun/ai-agent/cmd/server\t2.608s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/api\t4.228s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/canarygate\t1.073s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/hasoak\t1.581s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/llm\t1.630s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/memory\t1.768s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/multiagent\t2.116s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/promptmanager\t0.924s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/tools\t2.309s",
+        "FAIL"
+      ],
+      "loopback_sandbox_denial": true,
+      "external_integration_enabled": false
+    },
+    "rosetta": {
+      "command": "go test -p=4 ./... -count=1 -timeout=5m",
+      "exit_code": 1,
+      "started_utc": "2026-10-08T05:28:04.810377+00:00",
+      "ended_utc": "2026-10-08T05:40:27.401485+00:00",
+      "log": "/private/tmp/ai-agent-stage33-release-_p4df5aj/full-suite.log",
+      "log_sha256": "c1a82884e3bf2b1a6a583424191c8965f273fec8ddb232ac10f09ca7d0c86b94",
+      "passing_packages": 42,
+      "failed_package_lines": [
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/canarygate\t360.013s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/llm\t360.002s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/llmprovider\t360.001s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/logger\t360.001s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/review\t360.002s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/sanitize\t360.002s",
+        "FAIL\tgithub.com/wuxujun/ai-agent/internal/skills\t360.002s",
+        "FAIL"
+      ],
+      "loopback_sandbox_denial": false,
+      "external_integration_enabled": false
+    },
+    "sample": {
+      "file": "/private/tmp/ai-agent-stage33-release-_p4df5aj/canarygate-process-sample.txt",
+      "sha256": "ad2bbcaad1ee108cf2f78ae0d48c0e0fa7358cfd5eff490096d2db55206f78bd",
+      "observation": "one-second canarygate.test sample showed only Rosetta Runtime Routines on the main thread and no Go frames; seven package processes were ultimately killed by the Go outer timeout",
+      "diagnosis": "startup/emulation issue inferred from the sample and successful same-version native arm64 rerun"
+    }
+  },
+  "external_contracts_rerun": false,
+  "target_nodes_deployed": false,
+  "faults_injected": false,
+  "one_hour_online_soak_run": false,
+  "pending": [
+    "target-node architecture and access",
+    "shared PostgreSQL/Redis/workspace and secret injection",
+    "seven external contracts on target storage",
+    "two-node deployment and smoke",
+    "one-hour online soak",
+    "approval/cancellation/lease-loss/crash recovery acceptance",
+    "Prometheus coverage and canary gates"
+  ]
+}
