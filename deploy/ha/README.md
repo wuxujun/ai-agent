@@ -2,6 +2,8 @@
 
 本文件是阶段 3.3 的执行手册，不是验收报告。当前未完成 Linux 双节点部署、真实 PostgreSQL/Redis 故障演练或连续一小时压测；仓库 `config.yaml` 的灰度比例保持不变。文件拆分、单元测试和单进程双 Handler 契约不能替代这些验证。
 
+使用 Freestyle VM 准备专用环境时，见[阶段 3.3 Freestyle VM 实施方案](../../docs/阶段3.3-Freestyle-VM实施方案.md)及 [freestyle 脚本目录](freestyle/)。该方案提供四角色环境、宿主机反亲和、共享 NFS 与后台验收入口，默认只生成计划，不代表已部署或通过验收。
+
 ## 环境与发布物
 
 在两个专用 Linux 测试节点 A/B 部署同一 Git 提交、同一 Go 构建产物，记录二进制 SHA256、配置版本、`teams.yaml` 摘要。使用现有 [systemd 单元](../systemd/ai-agent.service)。不要把演练请求或故障注入发送到生产实例。
