@@ -1,6 +1,6 @@
 # 双实例与 DAG 灰度演练
 
-本文件是阶段 3.3 的执行手册，不是验收报告。当前未完成 Linux 双节点部署、真实 PostgreSQL/Redis 故障演练或连续一小时压测；仓库 `config.yaml` 的灰度比例保持不变。文件拆分、单元测试和单进程双 Handler 契约不能替代这些验证。
+本文件是阶段 3.3 的执行手册，不是验收报告。Freestyle 专用 Linux 双节点已完成同包部署、目标存储七项契约及 smoke，实际结果见[实施记录](../../records/ha-freestyle-start-2026-10-09.md)。独立审批、失租、崩溃恢复和 DAG 灰度仍未完成；仓库 `config.yaml` 的灰度比例保持不变。文件拆分、单元测试和单进程双 Handler 契约不能替代这些验证。
 
 使用 Freestyle VM 准备专用环境时，见[阶段 3.3 Freestyle VM 实施方案](../../docs/阶段3.3-Freestyle-VM实施方案.md)及 [freestyle 脚本目录](freestyle/)。该方案提供四角色环境、宿主机反亲和、共享 NFS 与后台验收入口，默认只生成计划，不代表已部署或通过验收。
 

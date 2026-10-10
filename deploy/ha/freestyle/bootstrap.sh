@@ -60,14 +60,11 @@ else
 fi
 
 if [[ "$role" == storage ]]; then
-  apt-get install -y -qq nfs-kernel-server
   install -d -o ai-agent -g ai-agent -m 0750 /srv/ai-agent-ha/workspace /srv/ai-agent-ha/workspace/ha-fixture
   printf '%s\n' 'Isolated AI Agent HA test fixture. The shared README is read-only test input.' > /srv/ai-agent-ha/workspace/ha-fixture/README.md
   chown ai-agent:ai-agent /srv/ai-agent-ha/workspace/ha-fixture/README.md
   chmod 0440 /srv/ai-agent-ha/workspace/ha-fixture/README.md
-  install -m 0644 "$assets/exports" /etc/exports.d/ai-agent-ha.exports
-  exportfs -ra
-  systemctl enable --now nfs-server
+  bash "$kit/prepare-nfs.sh" --assets "$assets" --apply
   install -m 0600 "$assets/storage.env" "$root/storage.env"
   install -m 0600 "$assets/compose.yaml" "$root/compose.yaml"
   # Docker's redis user needs file read access; parent directory stays root-only.
@@ -101,14 +98,10 @@ EOF
     install -m 0600 "$assets/ai-agent.env" /etc/ai-agent/ai-agent.env
     install -o root -g ai-agent -m 0640 "$assets/ha-config.json" /etc/ai-agent/ha-config.json
     install -o root -g ai-agent -m 0640 "$assets/teams.yaml" /opt/ai-agent-ha/runtime/teams.yaml
+    bash "$kit/prepare-telemetry.sh" --assets "$assets" --apply
     ln -s /opt/ai-agent/skills /opt/ai-agent-ha/runtime/skills
     install -d -m 0755 /etc/systemd/system/ai-agent.service.d
-    cat > /etc/systemd/system/ai-agent.service.d/ha-fixture.conf <<'EOF'
-[Unit]
-RequiresMountsFor=/opt/ai-agent/workspace
-[Service]
-WorkingDirectory=/opt/ai-agent-ha/runtime
-EOF
+    install -m 0644 "$assets/ha-fixture.conf" /etc/systemd/system/ai-agent.service.d/ha-fixture.conf
   else
     apt-get install -y -qq build-essential git
     install -m 0755 "$kit/control-worker.sh" /opt/ai-agent-ha/bin/control-worker.sh
@@ -140,7 +133,7 @@ EOF
     systemctl daemon-reload
     systemctl enable --now ai-agent-ha-stub.service
     docker compose -f "$root/compose.yaml" config --quiet
-    docker compose -f "$root/compose.yaml" run --rm --no-deps --entrypoint promtool prometheus check config /etc/prometheus/prometheus.yml
+    docker compose -f "$root/compose.yaml" run --rm -T --no-deps --entrypoint promtool prometheus check config /etc/prometheus/prometheus.yml </dev/null
     docker compose -f "$root/compose.yaml" up -d --wait
   fi
 fi

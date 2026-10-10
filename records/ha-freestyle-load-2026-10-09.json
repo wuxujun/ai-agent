@@ -1,0 +1,478 @@
+{
+  "schema": 1,
+  "source_commit": "9aeb24b54df2db6888222502d4125fafc9a9df6e",
+  "raw_evidence_private": true,
+  "run_directory": "/private/tmp/ai-agent-ha-freestyle-20261009.105jkxi_",
+  "full_ha_acceptance": false,
+  "completed_runs": [
+    {
+      "mode": "contracts",
+      "run": "contracts-001",
+      "exportedAt": "2026-10-10T04:02:21.003Z",
+      "files": [
+        {
+          "guestPath": "status.json",
+          "localFile": "status.json",
+          "bytes": 169,
+          "sha256": "d209f7312f6118ad154c64ca045e3621ab456d2c98544823fe4cd00f4003d4e5"
+        },
+        {
+          "guestPath": "contracts-summary.json",
+          "localFile": "contracts-summary.json",
+          "bytes": 477,
+          "sha256": "386b762ab68d4fa7651235a894f34e6109b8b8551e034165fc6e43f50a7e2dc3"
+        },
+        {
+          "guestPath": "contracts.jsonl",
+          "localFile": "contracts.jsonl",
+          "bytes": 31861,
+          "sha256": "116728f2aad52fdde854b458a7fc4d8dd44592f39163f35a704ca4ad27da27fc"
+        },
+        {
+          "guestPath": "compiler.log",
+          "localFile": "compiler.log",
+          "bytes": 5729,
+          "sha256": "ea9472ff399b6c3161cd7f007de960470c5530c291d1f22ff15f859a2cda0af8"
+        }
+      ],
+      "full_ha_acceptance": false,
+      "status": {
+        "started_utc": "2026-10-10T03:27:29Z",
+        "finished_utc": "2026-10-10T03:31:58.282293+00:00",
+        "exit_code": 0,
+        "mode": "contracts",
+        "full_ha_acceptance": false
+      },
+      "summary": {
+        "passed": true,
+        "required_top_level": 7,
+        "observed_top_level": [
+          "TestExternalPostgresDurableApprovalCASAcrossClients",
+          "TestExternalPostgresDurableApprovalRecoveryContract",
+          "TestExternalStoresPersistPausedTaskAcrossClients",
+          "TestExternalStoresTaskCreation",
+          "TestExternalStoresTaskLeaseGuard",
+          "TestPostgresPoolExternal",
+          "TestPostgresPoolHAExternal"
+        ],
+        "missing": [],
+        "failed": [],
+        "skipped": [],
+        "full_ha_acceptance": false,
+        "passing_tests_including_subtests": 28
+      }
+    },
+    {
+      "mode": "smoke",
+      "run": "smoke-001",
+      "exportedAt": "2026-10-10T04:56:41.578Z",
+      "files": [
+        {
+          "guestPath": "status.json",
+          "localFile": "status.json",
+          "bytes": 165,
+          "sha256": "58f5f6f7f24f5d3a56bdf9d241caacb83450947529d1131346eb9dbcbdd7ce96"
+        },
+        {
+          "guestPath": "load/report.json",
+          "localFile": "load-report.json",
+          "bytes": 534,
+          "sha256": "420d5f66c423badd770c0736abbc38c83c3c7468ab59789d08260c72a7387b65"
+        },
+        {
+          "guestPath": "load/results.jsonl",
+          "localFile": "load-results.jsonl",
+          "bytes": 2533,
+          "sha256": "3d48ade39e4aa0398a0feafcc358d106487366c68496364cc914792b922c8da6"
+        },
+        {
+          "guestPath": "runner.log",
+          "localFile": "runner.log",
+          "bytes": 155,
+          "sha256": "09b845b651f4dcc508f5a97f41b802a189f605bd30319711c20404f93836dcd1"
+        }
+      ],
+      "full_ha_acceptance": false,
+      "status": {
+        "started_utc": "2026-10-10T04:08:10Z",
+        "finished_utc": "2026-10-10T04:10:10.322371+00:00",
+        "exit_code": 1,
+        "mode": "smoke",
+        "full_ha_acceptance": false
+      },
+      "summary": {
+        "started_at": "2026-10-10T04:08:10.212089146Z",
+        "ended_at": "2026-10-10T04:10:10.222454669Z",
+        "scheduled": 12,
+        "passed": 0,
+        "failed": 12,
+        "by_node": [
+          6,
+          6
+        ],
+        "runtime_samples": {
+          "unknown": 12
+        },
+        "p95_latency_ms": 15,
+        "window_complete": false,
+        "load_checks_passed": false,
+        "full_ha_acceptance": false
+      },
+      "failure_class": "create_http_500; workspace outside application root"
+    },
+    {
+      "mode": "smoke",
+      "run": "smoke-002",
+      "exportedAt": "2026-10-10T05:02:49.422Z",
+      "files": [
+        {
+          "guestPath": "status.json",
+          "localFile": "status.json",
+          "bytes": 165,
+          "sha256": "e4367bf75887f7ed0c0ef599287227450406d164aac2490d4b8cc5d6610a8635"
+        },
+        {
+          "guestPath": "load/report.json",
+          "localFile": "load-report.json",
+          "bytes": 534,
+          "sha256": "3da6812b1ace64ebc71a09c07c56e9309ecf003d308c7934b8dbd33523f5d80f"
+        },
+        {
+          "guestPath": "load/results.jsonl",
+          "localFile": "load-results.jsonl",
+          "bytes": 3682,
+          "sha256": "1d9bf8b04282242e6e5c0baed8e11c92e0737586ef4796568467620a1f0f47a5"
+        },
+        {
+          "guestPath": "runner.log",
+          "localFile": "runner.log",
+          "bytes": 155,
+          "sha256": "09b845b651f4dcc508f5a97f41b802a189f605bd30319711c20404f93836dcd1"
+        }
+      ],
+      "full_ha_acceptance": false,
+      "status": {
+        "started_utc": "2026-10-10T04:59:32Z",
+        "finished_utc": "2026-10-10T05:01:32.876705+00:00",
+        "exit_code": 1,
+        "mode": "smoke",
+        "full_ha_acceptance": false
+      },
+      "summary": {
+        "started_at": "2026-10-10T04:59:32.805144216Z",
+        "ended_at": "2026-10-10T05:01:32.81572442Z",
+        "scheduled": 12,
+        "passed": 0,
+        "failed": 12,
+        "by_node": [
+          6,
+          6
+        ],
+        "runtime_samples": {
+          "unknown": 12
+        },
+        "p95_latency_ms": 565,
+        "window_complete": false,
+        "load_checks_passed": false,
+        "full_ha_acceptance": false
+      },
+      "failure_class": "task_not_completed; authenticated stub rejected missing mapped token"
+    },
+    {
+      "mode": "smoke",
+      "run": "smoke-003",
+      "exportedAt": "2026-10-10T05:06:36.396Z",
+      "files": [
+        {
+          "guestPath": "status.json",
+          "localFile": "status.json",
+          "bytes": 165,
+          "sha256": "52a7ccfb0ecc3c7ad55df9f263f3013f1da3d7b23c574352880690fb9bda6494"
+        },
+        {
+          "guestPath": "load/report.json",
+          "localFile": "load-report.json",
+          "bytes": 535,
+          "sha256": "f27508b3077e409225e27a674d3ecafd792e575a77ae0bc779d7e62a8362c1ec"
+        },
+        {
+          "guestPath": "load/results.jsonl",
+          "localFile": "load-results.jsonl",
+          "bytes": 3335,
+          "sha256": "ab4c0afa401c5c50e10693985503d17be68b9aa94af6d89e67244559eb580f68"
+        },
+        {
+          "guestPath": "runner.log",
+          "localFile": "runner.log",
+          "bytes": 166,
+          "sha256": "6450ac387bc9d0f1302f1320a6f6acef7f0e8dcfc9f236284f26a75693d68dd6"
+        }
+      ],
+      "full_ha_acceptance": false,
+      "status": {
+        "started_utc": "2026-10-10T05:03:51Z",
+        "finished_utc": "2026-10-10T05:05:52.045768+00:00",
+        "exit_code": 0,
+        "mode": "smoke",
+        "full_ha_acceptance": false
+      },
+      "summary": {
+        "started_at": "2026-10-10T05:03:51.976534408Z",
+        "ended_at": "2026-10-10T05:05:51.986420499Z",
+        "scheduled": 12,
+        "passed": 12,
+        "failed": 0,
+        "by_node": [
+          6,
+          6
+        ],
+        "runtime_samples": {
+          "unknown": 12
+        },
+        "p95_latency_ms": 570,
+        "window_complete": false,
+        "load_checks_passed": false,
+        "full_ha_acceptance": false
+      }
+    }
+  ],
+  "one_hour_soak": {
+    "run": "soak-001",
+    "status": "stopped-by-user",
+    "expected_duration_seconds": 3600,
+    "actual_duration_seconds": 1900.144707,
+    "interval_seconds": 30,
+    "max_tasks": 150,
+    "concurrency": 2,
+    "fixture": "fixed read_file only, authenticated offline stub",
+    "final_report_verified": true,
+    "worker_status": {
+      "started_utc": "2026-10-10T05:06:06Z",
+      "finished_utc": "2026-10-10T05:37:46.287138+00:00",
+      "exit_code": 143,
+      "mode": "soak",
+      "full_ha_acceptance": false
+    },
+    "summary": {
+      "started_at": "2026-10-10T05:06:06.102400592Z",
+      "ended_at": "2026-10-10T05:37:46.247107809Z",
+      "scheduled": 64,
+      "passed": 64,
+      "failed": 0,
+      "by_node": [
+        32,
+        32
+      ],
+      "runtime_samples": {
+        "unknown": 64
+      },
+      "p95_latency_ms": 570,
+      "window_complete": false,
+      "load_checks_passed": false,
+      "full_ha_acceptance": false
+    },
+    "stop_reason": "user requested stopping if no task anomalies",
+    "intentional_termination_exit_code": 143,
+    "window_complete": false,
+    "full_ha_acceptance": false,
+    "evidence_files": [
+      {
+        "path": "status.json",
+        "bytes": 166,
+        "sha256": "60acac62eb057f3d3f1ec65f5f67e10d0a3c915137f75f8a4733f86e3e6d0243"
+      },
+      {
+        "path": "load/report.json",
+        "bytes": 537,
+        "sha256": "4a5499c487ca0a2fd22eff990faa68eb4f5268f15cc7346f0ff773ecba634aac"
+      },
+      {
+        "path": "load/results.jsonl",
+        "bytes": 17785,
+        "sha256": "28a616dc01d0160eae1a9d8a8f736c43a135feca990796f6087de49ce964c4a1"
+      },
+      {
+        "path": "runner.log",
+        "bytes": 113,
+        "sha256": "d6b4e9c63913e313d6026e2ec4ea367e7656f262981e08f210da7336c8432a12"
+      },
+      {
+        "path": "post-window-gate.json",
+        "bytes": 856,
+        "sha256": "3812d5f0eae2be10e1ae9b00334356f71cf0d3b9072daf9414580bf70c4ddb49"
+      }
+    ],
+    "exported_at": "2026-10-10T05:38:29.794Z"
+  },
+  "database_connection_observation": {
+    "run": "soak-001",
+    "started_at": "2026-10-10T05:12:09.730Z",
+    "finished_at": "2026-10-10T05:38:14.013Z",
+    "sample_interval_seconds": 30,
+    "covers_full_load_window": false,
+    "observer_connection_excluded": true,
+    "peak_is_sampled_not_absolute": true,
+    "samples": 50,
+    "errors": 0,
+    "observed_peaks": {
+      "all_clients": 4,
+      "node_a": 2,
+      "node_b": 2
+    },
+    "last_sample": {
+      "observed_at": "2026-10-10T05:37:44.784488Z",
+      "max_connections": 150,
+      "all_clients": 4,
+      "node_a": 2,
+      "node_b": 2
+    },
+    "stop_reason": "load-finished",
+    "full_ha_acceptance": false
+  },
+  "post_window_gate": {
+    "decision": "HOLD",
+    "window": "1h",
+    "manual_review_passed": false,
+    "reasons": [
+      "DAG successes 0 < required 20",
+      "comparable DAG and Legacy P95 latency samples are unavailable",
+      "approval and Replan behavior requires manual review"
+    ],
+    "run": "soak-001",
+    "runtime": "legacy",
+    "dag_canary_percent": 0,
+    "full_ha_acceptance": false
+  },
+  "post_window_metrics": [
+    {
+      "query": "up",
+      "values": [
+        {
+          "labels": {
+            "ha_node": "node-b"
+          },
+          "timestamp": 1791610705.946,
+          "value": "1"
+        },
+        {
+          "labels": {
+            "ha_node": "node-a"
+          },
+          "timestamp": 1791610705.946,
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "query": "sum by (ha_node,runtime) (agent_multiagent_runtime_calls_total)",
+      "values": [
+        {
+          "labels": {
+            "ha_node": "node-a",
+            "runtime": "legacy"
+          },
+          "timestamp": 1791610705.948,
+          "value": "39"
+        },
+        {
+          "labels": {
+            "ha_node": "node-b",
+            "runtime": "legacy"
+          },
+          "timestamp": 1791610705.948,
+          "value": "38"
+        }
+      ]
+    },
+    {
+      "query": "sum by (ha_node,runtime,event) (agent_multiagent_runtime_events_total)",
+      "values": [
+        {
+          "labels": {
+            "event": "observed",
+            "ha_node": "node-a",
+            "runtime": "legacy"
+          },
+          "timestamp": 1791610705.95,
+          "value": "39"
+        },
+        {
+          "labels": {
+            "event": "observed",
+            "ha_node": "node-b",
+            "runtime": "legacy"
+          },
+          "timestamp": 1791610705.95,
+          "value": "38"
+        }
+      ]
+    }
+  ],
+  "resource_shutdown": {
+    "all_paused": true,
+    "budgets_unchanged": true,
+    "verified_at": "2026-10-10T05:44:29.378Z",
+    "verification_method": "VM inventory; immediate, 10-second and 30-second post-pause checks",
+    "nodes": [
+      {
+        "role": "control",
+        "id": "vm-012e6b2fb5e04048b70d1699b390de78",
+        "slug": "ai-agent-ha-20261009-105jkxi-control",
+        "state": "paused",
+        "totalRunSeconds": 11251,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "node-a",
+        "id": "vm-e0571e9b56e64dd9a6eb473e42682477",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-a",
+        "state": "paused",
+        "totalRunSeconds": 11251,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "node-b",
+        "id": "vm-a34ef8114e914d7996fd312bd5453a61",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-b",
+        "state": "paused",
+        "totalRunSeconds": 11252,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "storage",
+        "id": "vm-d6747a490b8b420b8c61b23a0e082813",
+        "slug": "ai-agent-ha-20261009-105jkxi-storage",
+        "state": "paused",
+        "totalRunSeconds": 11253,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      }
+    ],
+    "reported_cluster_cpu_hours": 50.007777777777775,
+    "reported_remaining_cluster_cpu_cap_hours": 45.992222222222225,
+    "account_remaining_cpu_hours": null,
+    "paid_budget_usd": 0,
+    "retained_disks": true,
+    "control_prometheus_and_stub_stopped": true,
+    "node_agent_services_stopped": true,
+    "initial_pause_verification_anomaly": {
+      "watcher_finished_at": "2026-10-10T05:38:29.794Z",
+      "watcher_pause_responses": "four paused",
+      "later_vm_record_states": "four running",
+      "cause": "not established; network wake-up suspected, no controlled reproduction performed",
+      "corrective_action": "stop Control Prometheus and offline stub, then pause Control, A, B, Storage and verify via inventory",
+      "corrected_at": "2026-10-10T05:44:29.385Z"
+    },
+    "private_evidence_sha256": "df4d2614d43c3471654ea37e882f06cf2072c30577282afdf7ced1e0bd26f9d7",
+    "last_verified_at": "2026-10-10T05:46:14.412Z",
+    "final_inventory_sha256": "e25819f2deffff264bf8e3226619aa093dcec9fe73c387795a1f61c515ada0e6"
+  },
+  "updated_utc": "2026-10-10T05:46:38.781467+00:00"
+}

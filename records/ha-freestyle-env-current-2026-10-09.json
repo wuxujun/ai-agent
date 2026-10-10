@@ -1,0 +1,29 @@
+{
+  "checked_utc": "2026-10-10T05:12:48.499611+00:00",
+  "scope": "repository including hidden and worktree directories; dependencies, Git internals and runtime output excluded",
+  "values_logged": false,
+  "files_modified": false,
+  "actual_env_files": [
+    {
+      "path": ".env",
+      "mode": "0600",
+      "git_ignored": true,
+      "git_tracked": false,
+      "freestyle_key_present": true
+    },
+    {
+      "path": "deploy/litellm/.env",
+      "mode": "0644",
+      "git_ignored": true,
+      "git_tracked": false,
+      "freestyle_key_present": false
+    },
+    {
+      "path": "deploy/opentelemetry/.env",
+      "mode": "0644",
+      "git_ignored": true,
+      "git_tracked": false,
+      "freestyle_key_present": false
+    }
+  ]
+}

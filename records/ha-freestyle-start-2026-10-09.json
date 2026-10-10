@@ -1,0 +1,564 @@
+{
+  "schema": 1,
+  "started_utc": "2026-10-09T13:19:54.051526+00:00",
+  "prepared_utc": "2026-10-09T13:25:43.137330+00:00",
+  "source_commit": "9aeb24b54df2db6888222502d4125fafc9a9df6e",
+  "source_clean": true,
+  "run_directory": "/private/tmp/ai-agent-ha-freestyle-20261009.105jkxi_",
+  "prefix": "ai-agent-ha-20261009-105jkxi",
+  "cidr": "10.77.34.0/24",
+  "network_conflict_check": "fresh-empty-inventory-before-creation-and-29-rules-verified",
+  "readonly_preflight": {
+    "checked_at": "2026-10-09T14:11:32.488Z",
+    "authentication": "accepted",
+    "credential_file": ".env",
+    "credential_file_mode": "0600",
+    "credential_tracked": false,
+    "queries_succeeded": [
+      "vms",
+      "vpcs",
+      "firewall",
+      "identities"
+    ],
+    "vm_count": 0,
+    "vpc_count": 0,
+    "firewall_rule_count": 0,
+    "identity_count": 0,
+    "account_reference": "unknown",
+    "account_plan": "unknown",
+    "remaining_free_allowance": "unknown",
+    "dashboard_review": "unavailable; subsequent user Free-plan confirmation recorded separately",
+    "private_evidence_file": "readonly-preflight-002.json",
+    "evidence_sha256": "970ca730b5373427b85ddb5f163a300aaeb3c7810e531a394958e6c4c7741a12"
+  },
+  "sdk": {
+    "version": "0.2.16",
+    "node_version": "22.22.0",
+    "package_lock_sha256": "9ad2d59bf1f70d2e52fb69a3c3563ec3cecf477ded4f86294616465c077e5a24",
+    "install_scripts_enabled": false
+  },
+  "checks": {
+    "full_suite": {
+      "command": "go test -p=4 ./... -count=1 -timeout=5m",
+      "exit_code": 0,
+      "passing_packages": 49,
+      "log_sha256": "4a8747c1eaf3265e549c32d95eea79f97e5bc450a44ac5e8f1071498122f668e"
+    },
+    "node_script_tests": {
+      "exit_code": 0,
+      "passed": 4
+    },
+    "python_script_tests": {
+      "exit_code": 0,
+      "passed": 4
+    },
+    "shell_syntax": {
+      "exit_code": 0,
+      "scripts": 5
+    },
+    "storage_compose_config": {
+      "exit_code": 0
+    },
+    "control_compose_config": {
+      "exit_code": 0
+    }
+  },
+  "bundles": [
+    {
+      "arch": "amd64",
+      "verified_files": 12,
+      "manifest": {
+        "git_commit": "9aeb24b54df2db6888222502d4125fafc9a9df6e",
+        "git_dirty": "false",
+        "goos": "linux",
+        "goarch": "amd64",
+        "go_version": "go version go1.26.8 darwin/arm64",
+        "created_utc": "2026-10-09T13:23:32Z"
+      },
+      "binaries": [
+        {
+          "name": "server",
+          "sha256": "7b06e2b0df0c08fbff8ad8db6eacb447510d6abaea6b23ae5bf20f983e86ed7c"
+        },
+        {
+          "name": "ha-soak",
+          "sha256": "5a11b0135c9d9e5fe05fe7c86baa1170403617a030baa302db6a3ef37f8d7a58"
+        },
+        {
+          "name": "canary-gate",
+          "sha256": "ffd40540efb13a4742d8538aeed18eaed4d58edaab942eab6af17415e9d7a2cd"
+        }
+      ],
+      "sha256sums_sha256": "e4482087967eb73f6af6c9b998d16ec131fdf6d54639f23f63d68ddce32f1f77"
+    },
+    {
+      "arch": "arm64",
+      "verified_files": 12,
+      "manifest": {
+        "git_commit": "9aeb24b54df2db6888222502d4125fafc9a9df6e",
+        "git_dirty": "false",
+        "goos": "linux",
+        "goarch": "arm64",
+        "go_version": "go version go1.26.8 darwin/arm64",
+        "created_utc": "2026-10-09T13:23:31Z"
+      },
+      "binaries": [
+        {
+          "name": "server",
+          "sha256": "dc7521f9c7744488951d05d7725540953c4b2d3e8f568cff6f509f206080dea0"
+        },
+        {
+          "name": "ha-soak",
+          "sha256": "afa8623ceeb4b1c83723218e5793046ed624dbc487f805b36cd018f837b6c5ba"
+        },
+        {
+          "name": "canary-gate",
+          "sha256": "f2c31af50a2f8546439e7057397702f70c3be33c8c31e2d11c41fd44ebc37483"
+        }
+      ],
+      "sha256sums_sha256": "885c4668a198594ef9e96988fef68280a3a968a8cbeca5386cf6013ba8c0dd72"
+    }
+  ],
+  "script_sha256": {
+    "deploy/ha/freestyle/verify-contracts.py": "a7b6563081ffdaf07aeb5a7a803cabe99d8d8c5b6bae955ffc5e20f1c3adc680",
+    "deploy/ha/freestyle/render.py": "6dff223d30ad7645f0c132ddf939694cefef5676c060fbe4a7abe2e61b254dab",
+    "deploy/ha/freestyle/provision.mjs": "0341619f0b910363312e490ba722f325ac26642b82d99926890036ed26e22764",
+    "deploy/ha/freestyle/offline_stub.py": "0037b23ba101778cfa6adf48a5f474161c396dbb64c7e52e412f5613cedbde24",
+    "deploy/ha/freestyle/provision.test.mjs": "89dcfdb6b9eb44fba19ff54fee964d649dc8f06b49585451003d3a3472dbacf2",
+    "deploy/ha/freestyle/deploy-agent.sh": "5b5cef27da1cba22a722f858d507abff7d00352dd3f2e65770abc00de87b6976",
+    "deploy/ha/freestyle/acceptance.template.json": "24559e80895ddd5012b215e9e59279a914c78266fcab4497b0ae147280e0f4cf",
+    "deploy/ha/freestyle/topology.example.json": "e7ec48f58c459dcfb66678c0dd25a8824f4a6d65bd8a2e531ac40355ece520b7",
+    "deploy/ha/freestyle/bootstrap.sh": "313dd542ef47270d5292d72e8cb74dc253f37efd60ff03d19cd218b64deea5a5",
+    "deploy/ha/freestyle/package.json": "b9e4cd065a3cc05a1436c839fcae796841ed4cdddc76b9fdb2348639a868868d",
+    "deploy/ha/freestyle/fault-node.sh": "24a85da745d90b62019d896ce7879c70d13dd3be963ca3aa113eb68b4f74e373",
+    "deploy/ha/freestyle/control-worker.sh": "9c6dfa7fe520052b1b5ebea4639b685b92540b08a3ca0119e345915ef364273e",
+    "deploy/ha/freestyle/test_fixtures.py": "4d39488f016c6492403b6403a0981641d861ad526805ac9cfd63aef21b2e2d64",
+    "deploy/ha/freestyle/run-control.sh": "97c4ea555eccddbc8db0634599b36d8fae95b98e621180fb6ebd0130575506ed",
+    "deploy/ha/freestyle/workspace-probe.py": "47fa5f2be56823c07bad1c1b5b723fc4af605f148657a247e01565c2b3ee0cb8"
+  },
+  "private_assets": {
+    "roles": 4,
+    "secrets_file_mode": "0600",
+    "assets_directory_mode": "0700",
+    "secrets_committed": false,
+    "final_baseline_assets": "assets-final-baseline",
+    "generated_deployed_semantic_config_match": true,
+    "generated_config_sha256": "c0ddd348e17aa87722b391ce889c950cc70145a5b8a6ce257e8770d984d770b0",
+    "raw_config_matches_deployed": false,
+    "raw_config_difference": "JSON field order from incremental repairs; decoded configuration objects verified equal on both nodes"
+  },
+  "runtime": "legacy",
+  "dag_canary_percent": 0,
+  "cloud_resources_created": true,
+  "target_storage_contracts_run": true,
+  "online_smoke_run": true,
+  "one_hour_soak_run": true,
+  "faults_injected": false,
+  "full_ha_acceptance": false,
+  "pending": [
+    "new complete one-hour soak window; stopped soak-001 cannot be counted as complete",
+    "database peak sampling across the full observation window",
+    "harden generic observe-load shutdown: quiesce Control monitoring and verify delayed inventory states before declaring paused",
+    "reviewed approval/Replan fixture and independent fault acceptance",
+    "20/50/100 percent full observation windows and gates"
+  ],
+  "preparation_issues": [
+    "isolated shell selected Node 16; script tests retried with absolute Node 22 path and passed",
+    "npm sandbox network denied; authorized retry installed exact pinned SDK",
+    "render invoked from detached kit hit repository path guard; retried from fixed source layout without changing guard",
+    "Go stat-cache writes outside sandbox were denied; both build commands still exited zero and all resulting bundles and VCS fields were verified",
+    "Storage kernel lacks nfsd; private Ganesha/VFS with root_squash verified",
+    "AppleDouble metadata made original source archive unsuitable for clean Git checks; new archive and new directory used; old directory retained",
+    "Read-only fixture working directory prevented default relative log path; absolute writable path fixed without weakening systemd protections",
+    "Prometheus cannot scrape JSON /api/metrics; native OTLP metrics restored through local collectors and both targets up=1",
+    "smoke-001: workspace escaped application root under the dedicated fixture working directory; restored /opt/ai-agent and read-only Team bind without changing policy",
+    "smoke-002: Viper did not unmarshal the environment key without a seeded llm.api_key; added empty field, retained authenticated stub and secret environment injection",
+    "Docker Compose temporary container consumed streamed bash stdin; added -T and /dev/null input, verified actual completion separately"
+  ],
+  "account_confirmation": {
+    "source": "user-confirmation",
+    "plan": "free",
+    "monthly_cpu_allowance_hours": 200,
+    "remaining_allowance": "unknown",
+    "quota_policy": "stop-on-platform-limit",
+    "paid_budget_usd": 0
+  },
+  "cloud_resources": {
+    "vpc": {
+      "id": "vpc-abbd653c673743c59089b2e28b751a22",
+      "slug": "ai-agent-ha-20261009-105jkxi-vpc",
+      "cidr": "10.77.34.0/24"
+    },
+    "nodes": {
+      "node-a": {
+        "id": "vm-e0571e9b56e64dd9a6eb473e42682477",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-a",
+        "ipv4": "10.77.34.11",
+        "placement": {
+          "antiAffinity": [
+            {
+              "selector": {
+                "matchLabels": {
+                  "ha_cluster": "ai-agent-ha-20261009-105jkxi",
+                  "ha_role": "agent"
+                }
+              },
+              "topology": "node"
+            }
+          ]
+        },
+        "snapshotId": "sh-5779fd551557471792701bdf9bc3214c",
+        "resources": {
+          "cpu": 4,
+          "memory": 8192,
+          "storage": 32768
+        },
+        "effectiveLifecycle": {
+          "idleTimeoutSeconds": null,
+          "ttlSeconds": null,
+          "maxRunSeconds": 21600,
+          "maxRunTotalSeconds": 21600,
+          "autoDeleteSeconds": 2592000
+        }
+      },
+      "node-b": {
+        "id": "vm-a34ef8114e914d7996fd312bd5453a61",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-b",
+        "ipv4": "10.77.34.12",
+        "placement": {
+          "antiAffinity": [
+            {
+              "selector": {
+                "matchLabels": {
+                  "ha_cluster": "ai-agent-ha-20261009-105jkxi",
+                  "ha_role": "agent"
+                }
+              },
+              "topology": "node"
+            }
+          ]
+        },
+        "snapshotId": "sh-5779fd551557471792701bdf9bc3214c",
+        "resources": {
+          "cpu": 4,
+          "memory": 8192,
+          "storage": 32768
+        },
+        "effectiveLifecycle": {
+          "idleTimeoutSeconds": null,
+          "ttlSeconds": null,
+          "maxRunSeconds": 21600,
+          "maxRunTotalSeconds": 21600,
+          "autoDeleteSeconds": 2592000
+        }
+      },
+      "storage": {
+        "id": "vm-d6747a490b8b420b8c61b23a0e082813",
+        "slug": "ai-agent-ha-20261009-105jkxi-storage",
+        "ipv4": "10.77.34.20",
+        "placement": null,
+        "snapshotId": "sh-5779fd551557471792701bdf9bc3214c",
+        "resources": {
+          "cpu": 4,
+          "memory": 8192,
+          "storage": 32768
+        },
+        "effectiveLifecycle": {
+          "idleTimeoutSeconds": null,
+          "ttlSeconds": null,
+          "maxRunSeconds": 21600,
+          "maxRunTotalSeconds": 21600,
+          "autoDeleteSeconds": 2592000
+        }
+      },
+      "control": {
+        "id": "vm-012e6b2fb5e04048b70d1699b390de78",
+        "slug": "ai-agent-ha-20261009-105jkxi-control",
+        "ipv4": "10.77.34.30",
+        "placement": null,
+        "snapshotId": "sh-5779fd551557471792701bdf9bc3214c",
+        "resources": {
+          "cpu": 4,
+          "memory": 8192,
+          "storage": 32768
+        },
+        "effectiveLifecycle": {
+          "idleTimeoutSeconds": null,
+          "ttlSeconds": null,
+          "maxRunSeconds": 21600,
+          "maxRunTotalSeconds": 21600,
+          "autoDeleteSeconds": 2592000
+        }
+      }
+    },
+    "inter_vm_rules": 15,
+    "total_firewall_rules": 31,
+    "public_inbound_rules": 0
+  },
+  "guest_bootstrap": {
+    "node-a": {
+      "complete": true,
+      "architecture": "amd64",
+      "uid_gid": 21088
+    },
+    "node-b": {
+      "complete": true,
+      "architecture": "amd64",
+      "uid_gid": 21088
+    },
+    "storage": {
+      "complete": true,
+      "architecture": "amd64",
+      "uid_gid": 21088,
+      "nfs_backend": "ganesha"
+    },
+    "control": {
+      "complete": true,
+      "architecture": "amd64",
+      "uid_gid": 21088
+    }
+  },
+  "updated_utc": "2026-10-10T05:46:38.781051+00:00",
+  "target_storage_contracts": {
+    "run": "contracts-001",
+    "source_commit": "9aeb24b54df2db6888222502d4125fafc9a9df6e",
+    "source_path": "/srv/ha-source-clean",
+    "race_detector": true,
+    "passed": true,
+    "required_top_level": 7,
+    "missing": [],
+    "failed": [],
+    "skipped": [],
+    "started_utc": "2026-10-10T03:27:29Z",
+    "finished_utc": "2026-10-10T03:31:58.282293+00:00",
+    "exit_code": 0
+  },
+  "shared_workspace": {
+    "nfs_backend": "ganesha",
+    "bidirectional_sha256_match": true,
+    "node_a_remount_read": true,
+    "node_b_remount_read": true,
+    "root_write_denied_on_both_nodes": true,
+    "cold_boot_remount": "pending"
+  },
+  "agent_deployment": {
+    "both_healthy": false,
+    "same_server_sha256": true,
+    "server_sha256": "7b06e2b0df0c08fbff8ad8db6eacb447510d6abaea6b23ae5bf20f983e86ed7c",
+    "initial_config_sha256": "bff9317e266123cc2ea6b2a3cc7523af21e8092f06de67944cde18ac84fb4ebe",
+    "monitoring_repair": "passed before shutdown; both targets up=1 at final export; Control monitoring stopped for pause",
+    "current_config_sha256": "a94ab1039b55c6d74b7fd8182b0a4fb46009fc7bae87b3465926b725c9e4cb63",
+    "service_namespace_teams_sha256": "fc7fd580ffcbf5fe1b69a0e754833c24b7055bda4992f106e0ad6aefbed8c3fc",
+    "working_directory": "/opt/ai-agent",
+    "health_before_shutdown": true,
+    "current_service_state": "stopped before VM pause; health must be rechecked after authorized resume"
+  },
+  "latest_operator_checks": {
+    "node_tests_passed": 12,
+    "python_tests_passed": 6,
+    "full_go_passing_packages": 49,
+    "full_go_exit_code": 0,
+    "shell_scripts_syntax_passed": 7
+  },
+  "latest_operator_script_sha256": {
+    "deploy/ha/freestyle/acceptance.template.json": "24559e80895ddd5012b215e9e59279a914c78266fcab4497b0ae147280e0f4cf",
+    "deploy/ha/freestyle/account-review.template.json": "c99db1317c6de75963ef6b9d8636058bc660bd7d4e0241872353c720fcd8fe03",
+    "deploy/ha/freestyle/bootstrap.sh": "8bf514f56a8f7adbab52e967a3b9ad224a714dd1e8b3e53c28dbed69d4783b17",
+    "deploy/ha/freestyle/control-worker.sh": "9c6dfa7fe520052b1b5ebea4639b685b92540b08a3ca0119e345915ef364273e",
+    "deploy/ha/freestyle/deploy-agent.sh": "5b5cef27da1cba22a722f858d507abff7d00352dd3f2e65770abc00de87b6976",
+    "deploy/ha/freestyle/fault-node.sh": "24a85da745d90b62019d896ce7879c70d13dd3be963ca3aa113eb68b4f74e373",
+    "deploy/ha/freestyle/observe-load.mjs": "68eeff391d111b2db5ed0184e4619109fda80f217e81927fa90f6b9c58f9e152",
+    "deploy/ha/freestyle/observe-load.test.mjs": "a742883fa396920015e24c045d964bc76dde491bb6600b476437f52e33020e0c",
+    "deploy/ha/freestyle/offline_stub.py": "0037b23ba101778cfa6adf48a5f474161c396dbb64c7e52e412f5613cedbde24",
+    "deploy/ha/freestyle/package.json": "df9d9cc2052ba23d3df653b3051b183555867a59764387ca89ab084706c12123",
+    "deploy/ha/freestyle/prepare-nfs.sh": "7472afb9103277d76722e5db0c62a195f4bfaf2bd012c4f09b49604f10a7058f",
+    "deploy/ha/freestyle/prepare-telemetry.sh": "0aefcc05d4a71d43442a5666881ad83d6ba1b2b695ddbb1c57afafae3e61e864",
+    "deploy/ha/freestyle/provision.mjs": "0f08353359adfdef821090852b54a8c6101bd818c82e308b8373d3cb974f7eb1",
+    "deploy/ha/freestyle/provision.test.mjs": "2276cefd3c4b43536d14813910f1cd0f4785bb6ece6e3095e8a072b8e9280a1d",
+    "deploy/ha/freestyle/render.py": "f8773c26ef34a5d2813b445dcf65313edd07495a492215cf3da5ebd53b706b07",
+    "deploy/ha/freestyle/run-control.sh": "97c4ea555eccddbc8db0634599b36d8fae95b98e621180fb6ebd0130575506ed",
+    "deploy/ha/freestyle/test_fixtures.py": "0be9b5e3c122343ed7e19ad8c4b2ec3a246e6e48c05aa3e8bd1514b644633623",
+    "deploy/ha/freestyle/topology.example.json": "b745b9a0cefd3f8acd1260a6fafeab0f3f4d348b69684ca801bfafdb6777ff16",
+    "deploy/ha/freestyle/verify-contracts.py": "a7b6563081ffdaf07aeb5a7a803cabe99d8d8c5b6bae955ffc5e20f1c3adc680",
+    "deploy/ha/freestyle/verify-listener.py": "fdf0657c300f7bd68154b73225d7bbf0e55d479df182d217d5492857747d2651",
+    "deploy/ha/freestyle/workspace-probe.py": "47fa5f2be56823c07bad1c1b5b723fc4af605f148657a247e01565c2b3ee0cb8"
+  },
+  "one_hour_soak_complete": false,
+  "online_smoke": {
+    "run": "smoke-003",
+    "passed": true,
+    "scheduled": 12,
+    "passed_tasks": 12,
+    "failed_tasks": 0,
+    "by_node": [
+      6,
+      6
+    ],
+    "p95_latency_ms": 570,
+    "runtime_samples": {
+      "unknown": 12
+    },
+    "window_complete": false,
+    "full_ha_acceptance": false
+  },
+  "one_hour_soak": {
+    "run": "soak-001",
+    "status": "stopped-by-user",
+    "expected_duration_seconds": 3600,
+    "actual_duration_seconds": 1900.144707,
+    "interval_seconds": 30,
+    "max_tasks": 150,
+    "concurrency": 2,
+    "fixture": "fixed read_file only, authenticated offline stub",
+    "final_report_verified": true,
+    "worker_status": {
+      "started_utc": "2026-10-10T05:06:06Z",
+      "finished_utc": "2026-10-10T05:37:46.287138+00:00",
+      "exit_code": 143,
+      "mode": "soak",
+      "full_ha_acceptance": false
+    },
+    "summary": {
+      "started_at": "2026-10-10T05:06:06.102400592Z",
+      "ended_at": "2026-10-10T05:37:46.247107809Z",
+      "scheduled": 64,
+      "passed": 64,
+      "failed": 0,
+      "by_node": [
+        32,
+        32
+      ],
+      "runtime_samples": {
+        "unknown": 64
+      },
+      "p95_latency_ms": 570,
+      "window_complete": false,
+      "load_checks_passed": false,
+      "full_ha_acceptance": false
+    },
+    "stop_reason": "user requested stopping if no task anomalies",
+    "intentional_termination_exit_code": 143,
+    "window_complete": false,
+    "full_ha_acceptance": false,
+    "evidence_files": [
+      {
+        "path": "status.json",
+        "bytes": 166,
+        "sha256": "60acac62eb057f3d3f1ec65f5f67e10d0a3c915137f75f8a4733f86e3e6d0243"
+      },
+      {
+        "path": "load/report.json",
+        "bytes": 537,
+        "sha256": "4a5499c487ca0a2fd22eff990faa68eb4f5268f15cc7346f0ff773ecba634aac"
+      },
+      {
+        "path": "load/results.jsonl",
+        "bytes": 17785,
+        "sha256": "28a616dc01d0160eae1a9d8a8f736c43a135feca990796f6087de49ce964c4a1"
+      },
+      {
+        "path": "runner.log",
+        "bytes": 113,
+        "sha256": "d6b4e9c63913e313d6026e2ec4ea367e7656f262981e08f210da7336c8432a12"
+      },
+      {
+        "path": "post-window-gate.json",
+        "bytes": 856,
+        "sha256": "3812d5f0eae2be10e1ae9b00334356f71cf0d3b9072daf9414580bf70c4ddb49"
+      }
+    ],
+    "exported_at": "2026-10-10T05:38:29.794Z"
+  },
+  "execution_status": "stopped-by-user",
+  "resource_shutdown": {
+    "all_paused": true,
+    "budgets_unchanged": true,
+    "verified_at": "2026-10-10T05:44:29.378Z",
+    "verification_method": "VM inventory; immediate, 10-second and 30-second post-pause checks",
+    "nodes": [
+      {
+        "role": "control",
+        "id": "vm-012e6b2fb5e04048b70d1699b390de78",
+        "slug": "ai-agent-ha-20261009-105jkxi-control",
+        "state": "paused",
+        "totalRunSeconds": 11251,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "node-a",
+        "id": "vm-e0571e9b56e64dd9a6eb473e42682477",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-a",
+        "state": "paused",
+        "totalRunSeconds": 11251,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "node-b",
+        "id": "vm-a34ef8114e914d7996fd312bd5453a61",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-b",
+        "state": "paused",
+        "totalRunSeconds": 11252,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "storage",
+        "id": "vm-d6747a490b8b420b8c61b23a0e082813",
+        "slug": "ai-agent-ha-20261009-105jkxi-storage",
+        "state": "paused",
+        "totalRunSeconds": 11253,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      }
+    ],
+    "reported_cluster_cpu_hours": 50.007777777777775,
+    "reported_remaining_cluster_cpu_cap_hours": 45.992222222222225,
+    "account_remaining_cpu_hours": null,
+    "paid_budget_usd": 0,
+    "retained_disks": true,
+    "control_prometheus_and_stub_stopped": true,
+    "node_agent_services_stopped": true,
+    "initial_pause_verification_anomaly": {
+      "watcher_finished_at": "2026-10-10T05:38:29.794Z",
+      "watcher_pause_responses": "four paused",
+      "later_vm_record_states": "four running",
+      "cause": "not established; network wake-up suspected, no controlled reproduction performed",
+      "corrective_action": "stop Control Prometheus and offline stub, then pause Control, A, B, Storage and verify via inventory",
+      "corrected_at": "2026-10-10T05:44:29.385Z"
+    },
+    "private_evidence_sha256": "df4d2614d43c3471654ea37e882f06cf2072c30577282afdf7ced1e0bd26f9d7",
+    "last_verified_at": "2026-10-10T05:46:14.412Z",
+    "final_inventory_sha256": "e25819f2deffff264bf8e3226619aa093dcec9fe73c387795a1f61c515ada0e6"
+  },
+  "database_connection_observation": {
+    "run": "soak-001",
+    "started_at": "2026-10-10T05:12:09.730Z",
+    "finished_at": "2026-10-10T05:38:14.013Z",
+    "sample_interval_seconds": 30,
+    "covers_full_load_window": false,
+    "observer_connection_excluded": true,
+    "peak_is_sampled_not_absolute": true,
+    "samples": 50,
+    "errors": 0,
+    "observed_peaks": {
+      "all_clients": 4,
+      "node_a": 2,
+      "node_b": 2
+    },
+    "last_sample": {
+      "observed_at": "2026-10-10T05:37:44.784488Z",
+      "max_connections": 150,
+      "all_clients": 4,
+      "node_a": 2,
+      "node_b": 2
+    },
+    "stop_reason": "load-finished",
+    "full_ha_acceptance": false
+  }
+}

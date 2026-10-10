@@ -2,6 +2,6 @@
   "name": "ai-agent-ha-freestyle",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --test provision.test.mjs" },
+  "scripts": { "test": "node --test provision.test.mjs observe-load.test.mjs" },
   "dependencies": { "freestyle": "0.2.16" }
 }

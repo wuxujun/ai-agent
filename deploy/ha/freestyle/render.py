@@ -86,14 +86,37 @@ def render(cfg, secret, output):
             "store": {"type": "postgres", "vector_search": "in_process", "postgres": {"max_open_conns": 50, "max_idle_conns": 10}},
             "orchestrator": {"mode": "multiagent", "max_concurrent_tasks": 4},
             "multiagent": {"team": "software", "runtime": "legacy", "dag_canary_percent": 0},
-            "llm": {"provider": "litellm", "model": "ha-offline", "base_url": base, "readiness_mode": "config_only",
+            "llm": {"provider": "litellm", "api_key": "", "model": "ha-offline", "base_url": base, "readiness_mode": "config_only",
                 "max_calls_per_task": 12, "max_estimated_cost_usd_per_task": 0.05,
                 "gateway": {"provider": "litellm", "model": "ha-offline", "base_url": base,
                     "input_cost_per_million_usd": 0.01, "output_cost_per_million_usd": 0.01},
                 "scenes": {"embedding": {"provider": "litellm", "model": "ha-embedding", "base_url": f"http://{control}:18080/v1/embeddings"}}},
+            "log": {"level": "info", "console": True, "file_enabled": True, "access_enabled": True,
+                "directory": "/opt/ai-agent/logs", "retention_days": 30},
+            "telemetry": {"enabled": True, "endpoint": "127.0.0.1:4318", "exporter": "otlp", "environment": "ha-test"},
             "answer_pipeline": {"enabled": False}, "langfuse": {"enabled": False}, "brain": {"enabled": False},
         }
         write(dest / "ha-config.json", dump(config))
+        write(dest / "ha-fixture.conf", """[Unit]
+RequiresMountsFor=/opt/ai-agent/workspace
+[Service]
+WorkingDirectory=/opt/ai-agent
+BindReadOnlyPaths=/opt/ai-agent-ha/runtime/teams.yaml:/opt/ai-agent/teams.yaml
+""")
+        write(dest / "otel-collector.json", dump({
+            "receivers": {"otlp": {"protocols": {"http": {"endpoint": "0.0.0.0:4318"}}}},
+            "processors": {"batch": {}},
+            "exporters": {"prometheus": {"endpoint": "0.0.0.0:9464"}, "debug": {"verbosity": "basic"}},
+            "service": {"pipelines": {
+                "metrics": {"receivers": ["otlp"], "processors": ["batch"], "exporters": ["prometheus"]},
+                "traces": {"receivers": ["otlp"], "processors": ["batch"], "exporters": ["debug"]}}}}))
+        write(dest / "collector-compose.json", dump({"name": "ai-agent-ha-telemetry", "services": {
+            "otel-collector": {"image": "otel/opentelemetry-collector-contrib:0.162.0",
+                "command": ["--config=/etc/otelcol/config.json"], "restart": "unless-stopped",
+                "ports": ["127.0.0.1:4318:4318", f"{nodes[role]}:9464:9464"],
+                "volumes": ["/etc/ai-agent-ha/otel-collector.json:/etc/otelcol/config.json:ro"],
+                "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
+                "mem_limit": "512m", "cpus": 1}}}))
         write(dest / "teams.yaml", dump({"active_team": "software", "resume_config_policy": "require_match", "teams": {
             "software": {"lifecycle": "active", "runtime": "legacy", "workflow": "planner_researcher_writer",
                 "planner": {"name": "HA fixture planner", "tools": ["read_file"], "llm_scene": "multiagent_planner",
@@ -143,15 +166,39 @@ volumes:
 """)
     clients = " ".join(f"{nodes[r]}(rw,sync,root_squash,no_subtree_check,fsid=0)" for r in ("node-a", "node-b", "control"))
     write(dest / "exports", f"/srv/ai-agent-ha/workspace {clients}\n")
+    ganesha_clients = ", ".join(nodes[r] for r in ("node-a", "node-b", "control"))
+    write(dest / "ganesha.conf", f"""NFS_CORE_PARAM {{
+  Protocols = 4;
+  NFS_Port = 2049;
+  Bind_addr = {storage};
+  Enable_NLM = false;
+  Enable_UDP = false;
+}}
+EXPORT {{
+  Export_Id = 88;
+  Path = /srv/ai-agent-ha/workspace;
+  Pseudo = /;
+  Access_Type = None;
+  Protocols = 4;
+  Transports = TCP;
+  SecType = sys;
+  Squash = root_squash;
+  FSAL {{ Name = VFS; }}
+  CLIENT {{
+    Clients = {ganesha_clients};
+    Access_Type = RW;
+    Squash = root_squash;
+  }}
+}}
+""")
     dest = output / "control"
     write(dest / "control.env", env({"AI_AGENT_HA_API_KEY": secret["api_tenant_key"], "TEST_POSTGRES_DSN": dsn,
         "TEST_REDIS_URL": redis.rsplit("/", 1)[0] + "/15", "AI_AGENT_RUN_EXTERNAL_INTEGRATION": "true"}))
     write(dest / "stub.env", env({"HA_STUB_TOKEN": secret["stub_token"], "HA_STUB_ADDR": control}))
     write(dest / "metrics.key", secret["api_admin_key"])
     write(dest / "prometheus.json", dump({"global": {"scrape_interval": "15s"}, "scrape_configs": [{
-        "job_name": "ai-agent-ha", "metrics_path": "/api/metrics",
-        "http_headers": {"X-API-Key": {"files": ["/etc/prometheus/metrics.key"]}},
-        "static_configs": [{"targets": [f"{nodes[r]}:8088"], "labels": {"ha_node": r}} for r in ("node-a", "node-b")]}]}))
+        "job_name": "ai-agent-ha", "metrics_path": "/metrics",
+        "static_configs": [{"targets": [f"{nodes[r]}:9464"], "labels": {"ha_node": r}} for r in ("node-a", "node-b")]}]}))
     write(dest / "compose.yaml", """name: ai-agent-ha-monitor
 services:
   prometheus:

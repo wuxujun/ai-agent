@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "status": "baseline-stopped-by-user",
+  "full_ha_acceptance": false,
+  "release_commit": "9aeb24b54df2db6888222502d4125fafc9a9df6e",
+  "server_sha256": "7b06e2b0df0c08fbff8ad8db6eacb447510d6abaea6b23ae5bf20f983e86ed7c",
+  "operator_tool_version": "9aeb24b plus current operator changes; file hashes in start record",
+  "environment_config_version": "a94ab1039b55c6d74b7fd8182b0a4fb46009fc7bae87b3465926b725c9e4cb63",
+  "vm_ids": {
+    "node-a": "vm-e0571e9b56e64dd9a6eb473e42682477",
+    "node-b": "vm-a34ef8114e914d7996fd312bd5453a61",
+    "storage": "vm-d6747a490b8b420b8c61b23a0e082813",
+    "control": "vm-012e6b2fb5e04048b70d1699b390de78"
+  },
+  "checks": {
+    "host_anti_affinity": "passed",
+    "effective_lifecycle_and_quota": "runtime caps verified; actual Free confirmed by user; remaining monthly allowances unknown",
+    "private_network_and_auth": "passed",
+    "shared_workspace_bidirectional_and_remount": "passed",
+    "seven_external_contracts_no_skip": "passed",
+    "connection_capacity": "passed",
+    "same_release_and_smoke": "passed",
+    "one_hour_continuous_load": "incomplete: soak-001 stopped by user after 31m40s; 64/64 passed, exit 143 intentional; full hour not accepted",
+    "approval_accept_reject_and_concurrent_cas": "pending",
+    "cross_node_cancel": "pending",
+    "lease_loss_old_owner_fencing": "pending",
+    "sigterm_paused_recovery": "pending",
+    "crash_restart_approval_recovery": "pending",
+    "no_duplicate_side_effects": "pending",
+    "live_sse_during_fault_and_reconnect": "pending",
+    "prometheus_runtime_event_coverage": "before shutdown targets up=1 and Legacy observed metrics present; DAG successes and comparable P95 missing; manual approval/Replan review pending",
+    "20_percent_full_window_and_gate": "pending",
+    "50_percent_full_window_and_gate": "pending",
+    "100_percent_steady_state": "pending",
+    "rollback_to_zero": "pending",
+    "database_connection_peak": "50 samples, observed peak 4 (A 2/B 2); partial window, not absolute peak",
+    "resource_shutdown": "passed after correction: four paused with unchanged caps; initial paused response followed by running states recorded"
+  },
+  "faults": [],
+  "gates": [
+    {
+      "decision": "HOLD",
+      "window": "1h",
+      "manual_review_passed": false,
+      "reasons": [
+        "DAG successes 0 < required 20",
+        "comparable DAG and Legacy P95 latency samples are unavailable",
+        "approval and Replan behavior requires manual review"
+      ],
+      "run": "soak-001",
+      "runtime": "legacy",
+      "dag_canary_percent": 0,
+      "full_ha_acceptance": false
+    }
+  ],
+  "evidence_files": [
+    "ha-freestyle-start-2026-10-09.json",
+    "ha-freestyle-load-2026-10-09.json",
+    "ha-freestyle-env-current-2026-10-09.json"
+  ],
+  "manual_review": {
+    "reviewer": null,
+    "reviewed_utc": null,
+    "approval_and_replan_evidence": null,
+    "passed": false
+  },
+  "updated_utc": "2026-10-10T05:46:38.781693+00:00",
+  "scope": {
+    "application_ha": true,
+    "storage_services_redundancy": false,
+    "real_llm": false,
+    "fixture_tools": [
+      "read_file"
+    ],
+    "runtime": "legacy",
+    "dag_canary_percent": 0,
+    "paid_budget_usd": 0,
+    "monthly_cpu_total_vcpu_hours": 200,
+    "remaining_monthly_cpu_vcpu_hours": null,
+    "per_vm_cumulative_seconds": 21600,
+    "nfs_cold_boot_remount": "pending"
+  },
+  "resource_shutdown": {
+    "all_paused": true,
+    "budgets_unchanged": true,
+    "verified_at": "2026-10-10T05:44:29.378Z",
+    "verification_method": "VM inventory; immediate, 10-second and 30-second post-pause checks",
+    "nodes": [
+      {
+        "role": "control",
+        "id": "vm-012e6b2fb5e04048b70d1699b390de78",
+        "slug": "ai-agent-ha-20261009-105jkxi-control",
+        "state": "paused",
+        "totalRunSeconds": 11251,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "node-a",
+        "id": "vm-e0571e9b56e64dd9a6eb473e42682477",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-a",
+        "state": "paused",
+        "totalRunSeconds": 11251,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "node-b",
+        "id": "vm-a34ef8114e914d7996fd312bd5453a61",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-b",
+        "state": "paused",
+        "totalRunSeconds": 11252,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      },
+      {
+        "role": "storage",
+        "id": "vm-d6747a490b8b420b8c61b23a0e082813",
+        "slug": "ai-agent-ha-20261009-105jkxi-storage",
+        "state": "paused",
+        "totalRunSeconds": 11253,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "cpu": 4
+      }
+    ],
+    "reported_cluster_cpu_hours": 50.007777777777775,
+    "reported_remaining_cluster_cpu_cap_hours": 45.992222222222225,
+    "account_remaining_cpu_hours": null,
+    "paid_budget_usd": 0,
+    "retained_disks": true,
+    "control_prometheus_and_stub_stopped": true,
+    "node_agent_services_stopped": true,
+    "initial_pause_verification_anomaly": {
+      "watcher_finished_at": "2026-10-10T05:38:29.794Z",
+      "watcher_pause_responses": "four paused",
+      "later_vm_record_states": "four running",
+      "cause": "not established; network wake-up suspected, no controlled reproduction performed",
+      "corrective_action": "stop Control Prometheus and offline stub, then pause Control, A, B, Storage and verify via inventory",
+      "corrected_at": "2026-10-10T05:44:29.385Z"
+    },
+    "private_evidence_sha256": "df4d2614d43c3471654ea37e882f06cf2072c30577282afdf7ced1e0bd26f9d7",
+    "last_verified_at": "2026-10-10T05:46:14.412Z",
+    "final_inventory_sha256": "e25819f2deffff264bf8e3226619aa093dcec9fe73c387795a1f61c515ada0e6"
+  }
+}

@@ -2,6 +2,8 @@
   "prefix": "ai-agent-ha-20261008",
   "cidr": "10.77.33.0/24",
   "snapshot": "freestyle/ubuntu",
+  "spendingPolicy": { "mode": "free-only", "maxPaidSpendUsd": 0 },
+  "runtimeBudget": { "maxRunSeconds": 21600, "maxRunTotalSeconds": 21600 },
   "nodes": {
     "node-a": "10.77.33.11",
     "node-b": "10.77.33.12",
