@@ -409,70 +409,165 @@
     }
   ],
   "resource_shutdown": {
-    "all_paused": true,
+    "all_paused": false,
     "budgets_unchanged": true,
-    "verified_at": "2026-10-10T05:44:29.378Z",
-    "verification_method": "VM inventory; immediate, 10-second and 30-second post-pause checks",
+    "all_vms_deleted": true,
+    "verified_at": "2026-10-10T07:28:10.195Z",
+    "verification_method": "Freestyle inventory; zero matching VM IDs after deletion",
     "nodes": [
-      {
-        "role": "control",
-        "id": "vm-012e6b2fb5e04048b70d1699b390de78",
-        "slug": "ai-agent-ha-20261009-105jkxi-control",
-        "state": "paused",
-        "totalRunSeconds": 11251,
-        "maxRunSeconds": 21600,
-        "maxRunTotalSeconds": 21600,
-        "cpu": 4
-      },
       {
         "role": "node-a",
         "id": "vm-e0571e9b56e64dd9a6eb473e42682477",
         "slug": "ai-agent-ha-20261009-105jkxi-node-a",
-        "state": "paused",
+        "state_before_deletion": "paused",
+        "automaticRestart": true,
         "totalRunSeconds": 11251,
         "maxRunSeconds": 21600,
         "maxRunTotalSeconds": 21600,
-        "cpu": 4
+        "deleted": true
       },
       {
         "role": "node-b",
         "id": "vm-a34ef8114e914d7996fd312bd5453a61",
         "slug": "ai-agent-ha-20261009-105jkxi-node-b",
-        "state": "paused",
+        "state_before_deletion": "paused",
+        "automaticRestart": true,
         "totalRunSeconds": 11252,
         "maxRunSeconds": 21600,
         "maxRunTotalSeconds": 21600,
-        "cpu": 4
+        "deleted": true
+      },
+      {
+        "role": "control",
+        "id": "vm-012e6b2fb5e04048b70d1699b390de78",
+        "slug": "ai-agent-ha-20261009-105jkxi-control",
+        "state_before_deletion": "running",
+        "automaticRestart": true,
+        "totalRunSeconds": 12148,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "deleted": true
       },
       {
         "role": "storage",
         "id": "vm-d6747a490b8b420b8c61b23a0e082813",
         "slug": "ai-agent-ha-20261009-105jkxi-storage",
-        "state": "paused",
-        "totalRunSeconds": 11253,
+        "state_before_deletion": "running",
+        "automaticRestart": true,
+        "totalRunSeconds": 12153,
         "maxRunSeconds": 21600,
         "maxRunTotalSeconds": 21600,
-        "cpu": 4
+        "deleted": true
       }
     ],
-    "reported_cluster_cpu_hours": 50.007777777777775,
-    "reported_remaining_cluster_cpu_cap_hours": 45.992222222222225,
+    "delete_started_at": "2026-10-10T07:28:09.024Z",
+    "deleted_at": "2026-10-10T07:28:10.195Z",
+    "remaining_count": 0,
+    "deleted_vm_data": "permanently removed with VMs",
+    "vpc_and_network_rules": {
+      "exists": true,
+      "id": "vpc-abbd653c673743c59089b2e28b751a22",
+      "slug": "ai-agent-ha-20261009-105jkxi-vpc",
+      "cidr": "10.77.34.0/24",
+      "scoped_firewall_rules_remaining": 0,
+      "deleted": false,
+      "cleanup": "retained; not included in user request to delete VMs"
+    },
     "account_remaining_cpu_hours": null,
     "paid_budget_usd": 0,
-    "retained_disks": true,
     "control_prometheus_and_stub_stopped": true,
     "node_agent_services_stopped": true,
-    "initial_pause_verification_anomaly": {
-      "watcher_finished_at": "2026-10-10T05:38:29.794Z",
-      "watcher_pause_responses": "four paused",
-      "later_vm_record_states": "four running",
-      "cause": "not established; network wake-up suspected, no controlled reproduction performed",
-      "corrective_action": "stop Control Prometheus and offline stub, then pause Control, A, B, Storage and verify via inventory",
-      "corrected_at": "2026-10-10T05:44:29.385Z"
-    },
-    "private_evidence_sha256": "df4d2614d43c3471654ea37e882f06cf2072c30577282afdf7ced1e0bd26f9d7",
-    "last_verified_at": "2026-10-10T05:46:14.412Z",
-    "final_inventory_sha256": "e25819f2deffff264bf8e3226619aa093dcec9fe73c387795a1f61c515ada0e6"
+    "auto_restart_detected_on_all_vms": true,
+    "private_deletion_evidence_sha256": "c31f6ffa8ca2c694a2595dca68b1e487cb85862667eb43465e968b49adeaa98f",
+    "private_inventory_evidence_sha256": "f38fb38492aa19a3a9912d52a50e0e0ce65a9a2ee4a4bd4a2918ea2d348bd7c9",
+    "full_ha_acceptance": false
   },
-  "updated_utc": "2026-10-10T05:46:38.781467+00:00"
+  "updated_utc": "2026-10-10T14:03:15.382Z",
+  "resource_deletion": {
+    "all_paused": false,
+    "budgets_unchanged": true,
+    "all_vms_deleted": true,
+    "verified_at": "2026-10-10T07:28:10.195Z",
+    "verification_method": "Freestyle inventory; zero matching VM IDs after deletion",
+    "nodes": [
+      {
+        "role": "node-a",
+        "id": "vm-e0571e9b56e64dd9a6eb473e42682477",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-a",
+        "state_before_deletion": "paused",
+        "automaticRestart": true,
+        "totalRunSeconds": 11251,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "deleted": true
+      },
+      {
+        "role": "node-b",
+        "id": "vm-a34ef8114e914d7996fd312bd5453a61",
+        "slug": "ai-agent-ha-20261009-105jkxi-node-b",
+        "state_before_deletion": "paused",
+        "automaticRestart": true,
+        "totalRunSeconds": 11252,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "deleted": true
+      },
+      {
+        "role": "control",
+        "id": "vm-012e6b2fb5e04048b70d1699b390de78",
+        "slug": "ai-agent-ha-20261009-105jkxi-control",
+        "state_before_deletion": "running",
+        "automaticRestart": true,
+        "totalRunSeconds": 12148,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "deleted": true
+      },
+      {
+        "role": "storage",
+        "id": "vm-d6747a490b8b420b8c61b23a0e082813",
+        "slug": "ai-agent-ha-20261009-105jkxi-storage",
+        "state_before_deletion": "running",
+        "automaticRestart": true,
+        "totalRunSeconds": 12153,
+        "maxRunSeconds": 21600,
+        "maxRunTotalSeconds": 21600,
+        "deleted": true
+      }
+    ],
+    "delete_started_at": "2026-10-10T07:28:09.024Z",
+    "deleted_at": "2026-10-10T07:28:10.195Z",
+    "remaining_count": 0,
+    "deleted_vm_data": "permanently removed with VMs",
+    "vpc_and_network_rules": {
+      "exists": true,
+      "id": "vpc-abbd653c673743c59089b2e28b751a22",
+      "slug": "ai-agent-ha-20261009-105jkxi-vpc",
+      "cidr": "10.77.34.0/24",
+      "scoped_firewall_rules_remaining": 0,
+      "deleted": false,
+      "cleanup": "retained; not included in user request to delete VMs"
+    },
+    "account_remaining_cpu_hours": null,
+    "paid_budget_usd": 0,
+    "control_prometheus_and_stub_stopped": true,
+    "node_agent_services_stopped": true,
+    "auto_restart_detected_on_all_vms": true,
+    "private_deletion_evidence_sha256": "c31f6ffa8ca2c694a2595dca68b1e487cb85862667eb43465e968b49adeaa98f",
+    "private_inventory_evidence_sha256": "f38fb38492aa19a3a9912d52a50e0e0ce65a9a2ee4a4bd4a2918ea2d348bd7c9",
+    "full_ha_acceptance": false,
+    "network_checked_at": "2026-10-10T14:03:15.382Z",
+    "network_evidence_sha256": "f745cef90196496e391a42f47e9ba4ddba6e25d741ce4d44d043ada8ae5366f8"
+  },
+  "network_remnants": {
+    "exists": true,
+    "id": "vpc-abbd653c673743c59089b2e28b751a22",
+    "slug": "ai-agent-ha-20261009-105jkxi-vpc",
+    "cidr": "10.77.34.0/24",
+    "scoped_firewall_rules_remaining": 0,
+    "deleted": false,
+    "cleanup": "retained; not included in user request to delete VMs",
+    "verified_at": "2026-10-10T14:03:15.382Z",
+    "private_evidence_sha256": "f745cef90196496e391a42f47e9ba4ddba6e25d741ce4d44d043ada8ae5366f8"
+  }
 }

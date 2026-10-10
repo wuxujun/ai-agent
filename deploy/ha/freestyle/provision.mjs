@@ -63,7 +63,8 @@ export function plan(config) {
   return { ...config, vpcSlug: config.prefix + '-vpc', roles, rules,
     spendingPolicy: { mode: 'free-only', maxPaidSpendUsd: 0, allowPlanUpgrade: false },
     placement: { antiAffinity: [{ topology: 'node', selector: { matchLabels: { ha_cluster: config.prefix, ha_role: 'agent' } } }] },
-    lifecycle: { idleTimeoutSeconds: -1, ttlSeconds: -1, maxRunSeconds, maxRunTotalSeconds, autoDeleteSeconds: -1 },
+    lifecycle: { idleTimeoutSeconds: -1, ttlSeconds: -1, maxRunSeconds, maxRunTotalSeconds,
+      autoDeleteSeconds: -1, automaticRestart: false },
     budgetControl: { runtimeLimitConfigured: maxRunTotalSeconds !== null, fullDollarSpendCapEnforced: false },
     publicInbound: false, packageEgress: ['tcp/80', 'tcp/443', 'udp/53', 'tcp/53'], full_ha_acceptance: false };
 }
@@ -149,6 +150,7 @@ export async function provision(client, spec, checkpoint, options = {}) {
     for (const field of ['idleTimeoutSeconds', 'ttlSeconds']) {
       if (data[field] != null && data[field] !== -1) throw Error('Unexpected runtime/deletion limit');
     }
+    if (data.automaticRestart !== false) throw Error('Automatic restart not disabled');
     if (data.autoDeleteSeconds === 0) throw Error('VM is ephemeral');
   }
   for (const rule of spec.rules) {
