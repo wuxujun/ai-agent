@@ -16,7 +16,10 @@ import (
 
 type redisTaskSummary struct {
 	TaskSummary
-	IndexMember string `json:"index_member"`
+	IndexMember        string     `json:"index_member"`
+	TerminalSince      *time.Time `json:"terminal_since,omitempty"`
+	LastMaintenanceAt  *time.Time `json:"last_maintenance_at,omitempty"`
+	MaintenanceVersion int64      `json:"maintenance_version,omitempty,string"`
 }
 
 func (r *RedisStore) taskSummaryKey(id string) string   { return "task:summary:v1:" + id }
@@ -44,13 +47,17 @@ func encodeRedisTaskReadModel(task *types.Task) (summary, metadata, traces []byt
 		copyTask.CreatedAt = time.Unix(0, 0).UTC()
 	}
 	member = taskSummaryMember(copyTask.CreatedAt, copyTask.ID)
-	summary, err = json.Marshal(redisTaskSummary{TaskSummary: summaryOf(&copyTask), IndexMember: member})
+	summary, err = json.Marshal(redisTaskSummary{TaskSummary: summaryOf(&copyTask), IndexMember: member, TerminalSince: task.TerminalSince, LastMaintenanceAt: task.LastMaintenanceAt, MaintenanceVersion: task.MaintenanceVersion})
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
 	copyTask.Trace = nil
 	copyTask.Memories = nil
-	metadata, err = json.Marshal(&copyTask)
+	snapshot := StreamSnapshotFromTask(task)
+	metadata, err = json.Marshal(struct {
+		*types.Task
+		StreamStats redisStreamStats `json:"stream_stats"`
+	}{Task: &copyTask, StreamStats: redisStreamStats{Version: 1, TraceCount: snapshot.TraceCount, TokenUsage: snapshot.TokenUsage}})
 	if err != nil {
 		return nil, nil, nil, "", err
 	}

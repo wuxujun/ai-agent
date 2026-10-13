@@ -18,11 +18,12 @@ type taskLeaseScope struct {
 }
 
 var (
-	ErrTaskExists      = errors.New("task already exists")
-	ErrTaskLeaseBusy   = errors.New("task execution lease is held by another owner")
-	ErrTaskLeaseLost   = errors.New("task execution lease lost")
-	ErrSessionNotFound = errors.New("session not found")
-	ErrSessionArchived = errors.New("session is archived")
+	ErrTaskExists           = errors.New("task already exists")
+	ErrTaskCreatorImmutable = errors.New("task creator identity is immutable")
+	ErrTaskLeaseBusy        = errors.New("task execution lease is held by another owner")
+	ErrTaskLeaseLost        = errors.New("task execution lease lost")
+	ErrSessionNotFound      = errors.New("session not found")
+	ErrSessionArchived      = errors.New("session is archived")
 )
 
 // WithTaskLease requires SaveFullTask and TryTransitionTaskStatus to verify this live execution lease
@@ -193,6 +194,8 @@ type Store interface {
 // TaskCreationStore atomically inserts a complete task and its traces. A task ID
 // is globally unique: duplicates return ErrTaskExists without modifying the
 // original task or its indexes, even when the proposed tenant differs.
+// Subsequent writes retain CreatorActorID; Redis rejects a changed value with
+// ErrTaskCreatorImmutable. Legacy empty creators must not be backfilled by saves.
 // This optional contract keeps existing Store adapters compatible; callers that
 // require insert-only persistence must not fall back to SaveFullTask.
 type TaskCreationStore interface {

@@ -38,7 +38,7 @@ func runTaskCreationContract(t *testing.T, st Store) {
 	prefix := "create-contract-" + uuid.NewString()
 	newTask := func(id, tenant string) *types.Task {
 		return &types.Task{
-			ID: id, TenantID: tenant, SessionID: prefix + "-session", SequenceNo: 7,
+			ID: id, TenantID: tenant, CreatorActorID: "introspection-sub:0123456789abcdef01234567", SessionID: prefix + "-session", SequenceNo: 7,
 			Goal: tenant + " original goal", Status: types.StatusCreated, MaxSteps: 8,
 			BrainProjectID: "project", BrainSnapshotID: "snapshot", BrainConfigDigest: "digest",
 			Trace: []types.StepTrace{{Step: 1, Action: "reason", Observation: tenant}},
@@ -62,7 +62,7 @@ func runTaskCreationContract(t *testing.T, st Store) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if before.Goal != original.Goal || before.TenantID != original.TenantID || before.SessionID != original.SessionID || before.SequenceNo != 7 || before.BrainSnapshotID != "snapshot" || len(before.Trace) != 1 || before.Trace[0].Observation != original.TenantID {
+		if before.CreatorActorID != original.CreatorActorID || before.Goal != original.Goal || before.TenantID != original.TenantID || before.SessionID != original.SessionID || before.SequenceNo != 7 || before.BrainSnapshotID != "snapshot" || len(before.Trace) != 1 || before.Trace[0].Observation != original.TenantID {
 			t.Fatalf("task was not completely persisted: %+v", before)
 		}
 		for _, tenant := range []string{original.TenantID, prefix + "-tenant-b"} {
@@ -92,6 +92,49 @@ func runTaskCreationContract(t *testing.T, st Store) {
 		updated, err := st.GetTask(t.Context(), id)
 		if err != nil || updated.Goal != "legitimate update" {
 			t.Fatalf("update did not persist: task=%+v err=%v", updated, err)
+		}
+	})
+	t.Run("creator_cannot_be_rewritten", func(t *testing.T) {
+		for _, originalActor := range []string{"", "introspection-sub:0123456789abcdef01234567"} {
+			id := prefix + "-creator-" + originalActor
+			cleanupTask(id)
+			task := newTask(id, prefix)
+			task.CreatorActorID = originalActor
+			if err := creator.CreateTask(t.Context(), task); err != nil {
+				t.Fatal(err)
+			}
+			task.CreatorActorID = "jwt-sub:abcdef0123456789abcdef01"
+			if err := st.SaveFullTask(t.Context(), task); err != nil && !errors.Is(err, ErrTaskCreatorImmutable) {
+				t.Fatal(err)
+			}
+			got, err := st.GetTask(t.Context(), id)
+			if err != nil || got.CreatorActorID != originalActor {
+				t.Fatalf("creator rewritten: %+v %v", got, err)
+			}
+			metadata, err := st.(TaskSummaryStore).GetTaskWithoutTrace(t.Context(), id)
+			if err != nil || metadata.CreatorActorID != originalActor {
+				t.Fatalf("metadata creator rewritten: %+v %v", metadata, err)
+			}
+			got.Status = types.StatusPaused
+			if err := st.SaveFullTask(t.Context(), got); err != nil {
+				t.Fatal(err)
+			}
+			tasks, err := st.ListTasks(t.Context(), ListFilter{TenantID: prefix, Status: types.StatusPaused})
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, item := range tasks {
+				if item.ID == id {
+					found = true
+					if item.CreatorActorID != originalActor {
+						t.Fatal("list lost creator")
+					}
+				}
+			}
+			if !found {
+				t.Fatal("updated task missing from list")
+			}
 		}
 	})
 	t.Run("concurrent_creation_has_one_winner", func(t *testing.T) {

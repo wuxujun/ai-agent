@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-13",
+  "status": "workspace implementation; not committed or deployed",
+  "toolchain": "go1.26.8 darwin/amd64",
+  "acceptance": {
+    "actual_files": "PASS: real isolated tenant/task roots; sorted file inventory, size, SHA-256 and permissions matched independently selected baseline",
+    "read_only": "PASS: database, baseline and file bytes unchanged; directory entries unchanged",
+    "fail_closed": "PASS: missing and extra files, size/hash/mode mismatch, expired baseline, wrong task/tenant/payload, unknown fields and unsafe paths rejected",
+    "filesystem_boundary": "PASS: symlink files/directories, hard-linked files, public permissions and FIFO rejected; fixed roots do not share tenants",
+    "budget": "PASS: oversized evidence, declared file bytes and actual file size rejected",
+    "state_invalidation": "PASS: mutation during read rejected; mutation before evidence check or after check invalidated state and removed verified evidence",
+    "cancellation": "PASS: cancellation during actual file read propagated",
+    "cli": "PASS: operator baseline verified workspace category; decision blocked and exit 3 retained; filenames/body/path not reported; old database-only binding rejected",
+    "full_repository": "PASS: go test -p 1 ./... -timeout 90s",
+    "race": "PASS: go test -race ./internal/policy/restoreworkspace ./internal/store ./internal/api ./cmd/task-restore -timeout 90s",
+    "vet": "PASS: go vet ./internal/policy/restoreworkspace ./internal/store ./internal/api ./cmd/task-restore",
+    "linux_amd64": "COMPILE_PASS; runtime NOT_RUN",
+    "windows_amd64": "COMPILE_PASS; workspace scanning fails closed; runtime NOT_RUN",
+    "postgres_source": "NOT_RUN: dedicated source database not available in prior handoff; not revalidated this batch",
+    "documentation": "PASS: document links exist, no trailing whitespace, JSON parses",
+    "diff_check": "PASS: git diff --check"
+  },
+  "scope": {
+    "workspace_baseline_schema": "task-restore-workspace-files-v1",
+    "workspace_policy_version": "read-only-workspace-v1",
+    "baseline_provenance": "operator-selected; source completeness and signature verification not implemented",
+    "remaining_dependency_readers": "NOT_IMPLEMENTED",
+    "decision": "blocked",
+    "restore_ready": false,
+    "source_preserved": true,
+    "online_restore": "NOT_IMPLEMENTED",
+    "source_deletion": "NOT_AUTHORIZED",
+    "http_contract_changed": false,
+    "filesystem_snapshot_or_mount_namespace": false
+  }
+}

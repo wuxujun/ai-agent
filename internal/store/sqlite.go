@@ -106,7 +106,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 	termination_kind TEXT NOT NULL DEFAULT '',
 	error_code TEXT NOT NULL DEFAULT '',
 	error_message TEXT NOT NULL DEFAULT '',
-	execution_trace_id TEXT NOT NULL DEFAULT ''
+	execution_trace_id TEXT NOT NULL DEFAULT '',
+	creator_actor_id TEXT NOT NULL DEFAULT '',
+ terminal_since DATETIME,
+ last_maintenance_at DATETIME,
+ maintenance_version INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS traces (
@@ -219,6 +223,10 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 		{table: "tasks", column: "error_code", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "tasks", column: "error_message", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "tasks", column: "execution_trace_id", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "tasks", column: "creator_actor_id", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "tasks", column: "terminal_since", definition: "DATETIME"},
+		{table: "tasks", column: "last_maintenance_at", definition: "DATETIME"},
+		{table: "tasks", column: "maintenance_version", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "memories", column: "tenant_id", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "memories", column: "session_id", definition: "TEXT NOT NULL DEFAULT ''"},
 	}
@@ -367,9 +375,25 @@ func (s *SQLiteStore) SaveTask(ctx context.Context, task *types.Task) error {
 		return err
 	}
 
-	_, err = s.db.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := guardTaskLeaseSQL(ctx, tx, task.ID, false); err != nil {
+		return err
+	}
+	previous, err := readTaskLifecycleSQL(ctx, tx, task.ID, false)
+	if err != nil {
+		return err
+	}
+	life, err := nextTaskLifecycle(previous, task.Status, time.Now())
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id, creator_actor_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 goal=excluded.goal,
 tenant_id=excluded.tenant_id,
@@ -406,9 +430,22 @@ error_message=excluded.error_message,
 execution_trace_id=excluded.execution_trace_id
 `,
 		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, task.Status, task.Mode, task.RequestedTeam, task.TeamSelectionSource, task.Team, task.TeamConfigDigest, task.BrainProjectID, task.BrainSnapshotID, task.BrainConfigDigest, task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer, string(task.TerminationKind), task.ErrorCode, task.ErrorMessage, task.ExecutionTraceID,
+		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer, string(task.TerminationKind), task.ErrorCode, task.ErrorMessage, task.ExecutionTraceID, task.CreatorActorID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := writeTaskLifecycleSQL(ctx, tx, task.ID, life, false); err != nil {
+		return err
+	}
+	if err := guardTaskLeaseSQL(ctx, tx, task.ID, false); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	applyTaskLifecycle(task, life)
+	return nil
 }
 
 // ReplaceTraces persists the complete ordered event snapshot. Event positions
@@ -420,6 +457,20 @@ func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces [
 	}
 	defer tx.Rollback() //nolint:errcheck
 	if err := guardTaskLeaseSQL(ctx, tx, taskID, false); err != nil {
+		return err
+	}
+	previous, err := readTaskLifecycleSQL(ctx, tx, taskID, false)
+	if err != nil {
+		return err
+	}
+	if previous == nil {
+		return sql.ErrNoRows
+	}
+	life, err := nextTaskLifecycle(previous, previous.Status, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := writeTaskLifecycleSQL(ctx, tx, taskID, life, false); err != nil {
 		return err
 	}
 	if err := saveTraceSnapshotSQL(ctx, tx, taskID, traces, false); err != nil {
@@ -462,6 +513,14 @@ func (s *SQLiteStore) saveFullTask(ctx context.Context, task *types.Task, create
 		return err
 	}
 
+	previous, err := readTaskLifecycleSQL(ctx, tx, task.ID, false)
+	if err != nil {
+		return err
+	}
+	life, err := nextTaskLifecycle(previous, task.Status, time.Now())
+	if err != nil {
+		return err
+	}
 	// 1. Save Task in transaction
 	unresolved, err := json.Marshal(task.Unresolved)
 	if err != nil {
@@ -480,8 +539,8 @@ func (s *SQLiteStore) saveFullTask(ctx context.Context, task *types.Task, create
 	}
 
 	query := `
-INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id, creator_actor_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 	if createOnly {
 		query += "ON CONFLICT(id) DO NOTHING"
@@ -524,7 +583,7 @@ execution_trace_id=excluded.execution_trace_id
 	}
 	result, err := tx.ExecContext(ctx, query,
 		task.ID, task.TenantID, task.SessionID, task.SequenceNo, task.CreatedAt, task.UpdatedAt, task.Goal, task.Status, task.Mode, task.RequestedTeam, task.TeamSelectionSource, task.Team, task.TeamConfigDigest, task.BrainProjectID, task.BrainSnapshotID, task.BrainConfigDigest, task.MaxSteps, task.StepCount,
-		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer, string(task.TerminationKind), task.ErrorCode, task.ErrorMessage, task.ExecutionTraceID,
+		task.Workspace, task.Hypothesis, string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), task.FinalAnswer, string(task.TerminationKind), task.ErrorCode, task.ErrorMessage, task.ExecutionTraceID, task.CreatorActorID,
 	)
 	if err != nil {
 		span.RecordError(err)
@@ -542,6 +601,9 @@ execution_trace_id=excluded.execution_trace_id
 		}
 	}
 
+	if err := writeTaskLifecycleSQL(ctx, tx, task.ID, life, false); err != nil {
+		return err
+	}
 	if err := saveTraceSnapshotSQL(ctx, tx, task.ID, task.Trace, false); err != nil {
 		span.RecordError(err)
 		return err
@@ -556,6 +618,7 @@ execution_trace_id=excluded.execution_trace_id
 		return err
 	}
 
+	applyTaskLifecycle(task, life)
 	// 3. Asynchronously index memory if task is completed
 	if memory.ShouldIndexTask(task) {
 		memoryID := memory.TaskMemoryID(task)
@@ -597,13 +660,17 @@ func (s *SQLiteStore) GetTaskWithoutTrace(ctx context.Context, id string) (*type
 }
 
 func (s *SQLiteStore) getTask(ctx context.Context, id string, includeTrace bool) (*types.Task, error) {
+	return s.getTaskQuery(ctx, s.db, id, includeTrace)
+}
+
+func (s *SQLiteStore) getTaskQuery(ctx context.Context, db taskSQLReader, id string, includeTrace bool) (*types.Task, error) {
 	ctx, span := tracer.Start(ctx, "store.get_task")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("agent.task.id", id))
 
-	row := s.db.QueryRowContext(ctx, `
-SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id
+	row := db.QueryRowContext(ctx, `
+SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id, creator_actor_id,terminal_since,last_maintenance_at,maintenance_version
 FROM tasks WHERE id = ?
 `, id)
 
@@ -611,10 +678,11 @@ FROM tasks WHERE id = ?
 	var unresolvedJSON string
 	var memoriesJSON string
 	var auditJSON string
+	var terminalSince, lastMaintenance sql.NullTime
 
 	err := row.Scan(
 		&task.ID, &task.TenantID, &task.SessionID, &task.SequenceNo, &task.CreatedAt, &task.UpdatedAt, &task.Goal, &task.Status, &task.Mode, &task.RequestedTeam, &task.TeamSelectionSource, &task.Team, &task.TeamConfigDigest, &task.BrainProjectID, &task.BrainSnapshotID, &task.BrainConfigDigest, &task.MaxSteps, &task.StepCount,
-		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer, &task.TerminationKind, &task.ErrorCode, &task.ErrorMessage, &task.ExecutionTraceID,
+		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer, &task.TerminationKind, &task.ErrorCode, &task.ErrorMessage, &task.ExecutionTraceID, &task.CreatorActorID, &terminalSince, &lastMaintenance, &task.MaintenanceVersion,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -627,6 +695,14 @@ FROM tasks WHERE id = ?
 	}
 	span.SetAttributes(attribute.Bool("agent.store.found", true))
 
+	if terminalSince.Valid {
+		at := terminalSince.Time.UTC()
+		task.TerminalSince = &at
+	}
+	if lastMaintenance.Valid {
+		at := lastMaintenance.Time.UTC()
+		task.LastMaintenanceAt = &at
+	}
 	if err := json.Unmarshal([]byte(unresolvedJSON), &task.Unresolved); err != nil {
 		return nil, err
 	}
@@ -642,7 +718,7 @@ FROM tasks WHERE id = ?
 		return &task, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 	SELECT COALESCE(execution_step, step), goal, action, query, observation, evidence_json, agent_role,
 	       error_text, prompt_tokens, completion_tokens, total_tokens, occurred_at, duration_ms
 FROM traces
@@ -701,7 +777,7 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.Tas
 	// Build query dynamically so we only add a WHERE clause when needed.
 	// Using a fixed column list avoids SELECT * surprises on schema changes.
 	const base = `
-	SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id
+	SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id, creator_actor_id,terminal_since,last_maintenance_at,maintenance_version
 FROM tasks`
 
 	var (
@@ -745,11 +821,20 @@ FROM tasks`
 		var unresolvedJSON string
 		var memoriesJSON string
 		var auditJSON string
+		var terminalSince, lastMaintenance sql.NullTime
 		if err := rows.Scan(
 			&t.ID, &t.TenantID, &t.SessionID, &t.SequenceNo, &t.CreatedAt, &t.UpdatedAt, &t.Goal, &t.Status, &t.Mode, &t.RequestedTeam, &t.TeamSelectionSource, &t.Team, &t.TeamConfigDigest, &t.BrainProjectID, &t.BrainSnapshotID, &t.BrainConfigDigest, &t.MaxSteps, &t.StepCount,
-			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer, &t.TerminationKind, &t.ErrorCode, &t.ErrorMessage, &t.ExecutionTraceID,
+			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer, &t.TerminationKind, &t.ErrorCode, &t.ErrorMessage, &t.ExecutionTraceID, &t.CreatorActorID, &terminalSince, &lastMaintenance, &t.MaintenanceVersion,
 		); err != nil {
 			return nil, err
+		}
+		if terminalSince.Valid {
+			at := terminalSince.Time.UTC()
+			t.TerminalSince = &at
+		}
+		if lastMaintenance.Valid {
+			at := lastMaintenance.Time.UTC()
+			t.LastMaintenanceAt = &at
 		}
 		if err := json.Unmarshal([]byte(unresolvedJSON), &t.Unresolved); err != nil {
 			return nil, err
@@ -1154,6 +1239,10 @@ func (s *SQLiteStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 	if err := guardTaskLeaseSQL(ctx, tx, id, false); err != nil {
 		return false, err
 	}
+	previous, err := readTaskLifecycleSQL(ctx, tx, id, false)
+	if err != nil {
+		return false, err
+	}
 	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
@@ -1169,6 +1258,13 @@ func (s *SQLiteStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 			return false, sql.ErrNoRows
 		}
 		return false, nil
+	}
+	life, err := nextTaskLifecycle(previous, to, time.Now())
+	if err != nil {
+		return false, err
+	}
+	if err := writeTaskLifecycleSQL(ctx, tx, id, life, false); err != nil {
+		return false, err
 	}
 	if err := guardTaskLeaseSQL(ctx, tx, id, false); err != nil {
 		return false, err

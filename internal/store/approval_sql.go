@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -68,7 +69,7 @@ status, version, owner, lease_expires_at, created_at, updated_at, resolved_at`
 
 type rowScanner interface{ Scan(...any) error }
 
-func scanDurableApproval(row rowScanner) (*types.DurableApproval, error) {
+func scanDurableApproval(row rowScanner, exactNumbers ...bool) (*types.DurableApproval, error) {
 	var approval types.DurableApproval
 	var requestJSON []byte
 	var resolutionPayload []byte
@@ -79,8 +80,16 @@ func scanDurableApproval(row rowScanner) (*types.DurableApproval, error) {
 		&approval.CreatedAt, &approval.UpdatedAt, &resolvedAt); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(requestJSON, &approval.Request); err != nil {
-		return nil, fmt.Errorf("decode approval request: %w", err)
+	var decodeErr error
+	if len(exactNumbers) > 0 && exactNumbers[0] {
+		decoder := json.NewDecoder(bytes.NewReader(requestJSON))
+		decoder.UseNumber()
+		decodeErr = decoder.Decode(&approval.Request)
+	} else {
+		decodeErr = json.Unmarshal(requestJSON, &approval.Request)
+	}
+	if decodeErr != nil {
+		return nil, fmt.Errorf("decode approval request: %w", decodeErr)
 	}
 	approval.ResolutionPayload = append([]byte(nil), resolutionPayload...)
 	if leaseMillis > 0 {

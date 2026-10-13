@@ -1,0 +1,29 @@
+{
+  "verification": {
+    "task_id": "persistent-restore-07578637-7d58-4a47-afd1-02b1b9ade95b",
+    "tenant_id": "persistent-restore-07578637-7d58-4a47-afd1-02b1b9ade95b-tenant",
+    "verified": true,
+    "target": "persistent_isolated_sqlite",
+    "source_preserved": true,
+    "restore_ready": false,
+    "payload_sha256": "e35cd4d45d8290408e55712c127883e988abd96cbff6caaa270be3919de7e45e",
+    "trace_count": 2,
+    "approval_count": 1,
+    "memory_count": 1,
+    "source_backend": "redis",
+    "reopened": true
+  },
+  "acceptance": {
+    "redis_version": "7.2.6",
+    "redis_source_snapshot_and_all_application_key_dumps_unchanged": true,
+    "redis_source_fixture_rdb": "/private/tmp/ai-agent-persistent-restore-A8Ngr5/source-fixture.rdb",
+    "memory_source": "PASS",
+    "sqlite_source": "PASS",
+    "redis_source": "PASS",
+    "postgres_source": "NOT_RUN: dedicated TEST_POSTGRES_DSN missing",
+    "full_repository": "PASS: go test -p 1 ./... -timeout 90s",
+    "race": "PASS: go test -race ./internal/store ./internal/api ./cmd/task-restore -timeout 90s",
+    "vet": "PASS: go vet ./internal/store ./internal/api ./cmd/task-restore",
+    "scope": "persisted isolated import/readback; no online execution or source deletion"
+  }
+}

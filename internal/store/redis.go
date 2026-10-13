@@ -39,7 +39,53 @@ const (
 	taskSummaryMigrationMarker  = "tasks:summary:v1:migrated"
 )
 
-var saveTaskScript = redis.NewScript(`
+// Patch only top-level metadata. Re-encoding a whole task with Redis cjson
+// converts empty nested arrays to objects and rounds large integer fields.
+const taskJSONPatchLua = `
+ local function patch_task_json(raw, fields)
+  local parts={}
+  local start=2
+  local depth=1
+  local quoted=false
+  local escaped=false
+  local function keep_segment(segment)
+   local key=string.match(segment, '^%s*"([%w_]+)"%s*:')
+   if not key or fields[key]==nil then parts[#parts+1]=segment end
+  end
+  for i=2,#raw-1 do
+   local c=string.sub(raw,i,i)
+   if quoted then
+    if escaped then escaped=false
+    elseif c=='\\' then escaped=true
+    elseif c=='"' then quoted=false end
+   elseif c=='"' then quoted=true
+   elseif c=='{' or c=='[' then depth=depth+1
+   elseif c=='}' or c==']' then depth=depth-1
+   elseif c==',' and depth==1 then keep_segment(string.sub(raw,start,i-1));start=i+1 end
+  end
+  if start<#raw then keep_segment(string.sub(raw,start,#raw-1)) end
+  local encoded=cjson.encode(fields)
+  parts[#parts+1]=string.sub(encoded,2,-2)
+  return '{'..table.concat(parts,',')..'}'
+ end
+`
+
+var saveTaskScript = redis.NewScript(taskJSONPatchLua + `
+ local function terminal(status) return status=='completed' or status=='partial' or status=='failed' end
+ local function advance_lifecycle(target,old,now)
+  local version=old and tonumber(old.maintenance_version or '0') or 0
+  if not version or version<0 or version>=9007199254740991 or version~=math.floor(version) then return false end
+  if version>0 and old.last_maintenance_at and old.last_maintenance_at>now then now=old.last_maintenance_at end
+  target.maintenance_version=string.format('%.0f',version+1)
+  target.last_maintenance_at=now
+  target.terminal_since=nil
+  if terminal(target.status) then
+   if not old or old.status~=target.status then target.terminal_since=now
+   elseif version>0 then target.terminal_since=old.terminal_since end
+  end
+  return true
+ end
+
 	if ARGV[9] == '1' and redis.call('GET', KEYS[4]) ~= ARGV[10] then
 		return -1
 	end
@@ -48,8 +94,16 @@ var saveTaskScript = redis.NewScript(`
 	end
 	local existing = redis.call('GET', KEYS[1])
 	local oldTraceCount = 0
+ local lifecycleOld = nil
+	local newTask = cjson.decode(ARGV[1])
 	if existing then
 		local ok, oldTask = pcall(cjson.decode, existing)
+		if not ok then return redis.error_reply('invalid stored task JSON') end
+ lifecycleOld=oldTask
+		if (oldTask['creator_actor_id'] or '') ~= (newTask['creator_actor_id'] or '') then
+			return -2
+		end
+		if not advance_lifecycle(newTask,lifecycleOld,ARGV[20]) then return -3 end
 		if ok and type(oldTask['trace']) == 'table' then oldTraceCount = #oldTask['trace'] end
 		if ok and oldTask["status"] then
 			redis.call('ZREM', ARGV[5] .. oldTask["status"], ARGV[2])
@@ -58,7 +112,6 @@ var saveTaskScript = redis.NewScript(`
 			redis.call('ZREM', ARGV[7] .. oldTenant .. ":" .. oldTask["status"], ARGV[2])
 		end
 	end
-	local newTask = cjson.decode(ARGV[1])
 	local tenant = newTask["tenant_id"] or ""
 	local oldSummaryRaw = redis.call('GET', KEYS[5])
 	if oldSummaryRaw then
@@ -73,14 +126,17 @@ var saveTaskScript = redis.NewScript(`
 			redis.call('ZREM', ARGV[18] .. oldSummaryTenant .. ':' .. oldSummaryStatus, oldMember)
 		end
 	end
-	redis.call('SET', KEYS[1], ARGV[1])
+	if not existing and not advance_lifecycle(newTask,nil,ARGV[20]) then return -3 end
+ local fields={terminal_since=newTask.terminal_since or cjson.null,last_maintenance_at=newTask.last_maintenance_at,maintenance_version=newTask.maintenance_version}
+ local newRaw=patch_task_json(ARGV[1],fields)
+ redis.call('SET', KEYS[1], newRaw)
 	redis.call('ZADD', KEYS[2], 0, ARGV[2])
 	redis.call('ZADD', KEYS[3], ARGV[4], ARGV[2])
 	redis.call('ZADD', ARGV[5] .. ARGV[3], 0, ARGV[2])
 	redis.call('ZADD', ARGV[6] .. tenant, ARGV[4], ARGV[2])
 	redis.call('ZADD', ARGV[7] .. tenant .. ":" .. ARGV[3], 0, ARGV[2])
-	redis.call('SET', KEYS[5], ARGV[11])
-	redis.call('SET', KEYS[6], ARGV[12])
+	redis.call('SET', KEYS[5], patch_task_json(ARGV[11],fields))
+	redis.call('SET', KEYS[6], patch_task_json(ARGV[12],fields))
 	local oldTimes = redis.call('LRANGE', KEYS[8], 0, -1)
 	redis.call('DEL', KEYS[7], KEYS[8])
 	local traces = cjson.decode(ARGV[13])
@@ -96,7 +152,7 @@ var saveTaskScript = redis.NewScript(`
 	redis.call('ZADD', ARGV[16] .. tenant, 0, ARGV[14])
 	redis.call('ZADD', ARGV[17] .. ARGV[3], 0, ARGV[14])
 	redis.call('ZADD', ARGV[18] .. tenant .. ':' .. ARGV[3], 0, ARGV[14])
-	return 1
+	return cjson.encode({status=newTask.status,terminal_since=newTask.terminal_since,last_maintenance_at=newTask.last_maintenance_at,maintenance_version=newTask.maintenance_version})
 `)
 
 var deleteTaskScript = redis.NewScript(`
@@ -324,6 +380,9 @@ func (r *RedisStore) saveFullTask(ctx context.Context, task *types.Task, createO
 	// shape matches the SQL backends. The caller's task struct is left intact.
 	persistable := *task
 	persistable.Memories = memoriesForPersistence(task.Memories)
+	persistable.TerminalSince = nil
+	persistable.LastMaintenanceAt = nil
+	persistable.MaintenanceVersion = 0
 
 	data, err := json.Marshal(&persistable)
 	if err != nil {
@@ -340,7 +399,7 @@ func (r *RedisStore) saveFullTask(ctx context.Context, task *types.Task, createO
 	if createOnly {
 		insertOnly = 1
 	}
-	saved, err := saveTaskScript.Run(
+	savedResult, err := saveTaskScript.Run(
 		ctx,
 		r.client,
 		[]string{r.taskKey(task.ID), tasksIndexV2, legacyTasksIndex, "task:lease:" + task.ID,
@@ -364,19 +423,36 @@ func (r *RedisStore) saveFullTask(ctx context.Context, task *types.Task, createO
 		taskSummaryStatusBase,
 		taskSummaryTenantStatusBase,
 		time.Now().UTC().Format(time.RFC3339Nano),
-	).Int64()
+		time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z"),
+	).Result()
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "redis task save script failed")
 		return fmt.Errorf("failed to save task to redis: %w", err)
 	}
+	saved, integerResult := savedResult.(int64)
+	if saved == -3 {
+		return ErrMaintenanceVersionExhausted
+	}
+	if saved == -2 {
+		return ErrTaskCreatorImmutable
+	}
 	if saved == -1 {
 		return ErrTaskLeaseLost
 	}
-	if saved == 0 {
+	if integerResult && saved == 0 {
 		return ErrTaskExists
 	}
 
+	rawLife, ok := savedResult.(string)
+	if !ok {
+		return fmt.Errorf("invalid task lifecycle response")
+	}
+	var life taskLifecycle
+	if err := json.Unmarshal([]byte(rawLife), &life); err != nil {
+		return err
+	}
+	applyTaskLifecycle(task, life)
 	if memory.ShouldIndexTask(task) {
 		memoryID := memory.TaskMemoryID(task)
 		if !r.memoryIndexGate.tryStart(memoryID) {
@@ -1035,7 +1111,22 @@ func (r *RedisStore) QueryMemories(ctx context.Context, query string, embedding 
 	return res, nil
 }
 
-var transitionScript = redis.NewScript(`
+var transitionScript = redis.NewScript(taskJSONPatchLua + `
+ local function terminal(status) return status=='completed' or status=='partial' or status=='failed' end
+ local function advance_lifecycle(target,old,now)
+  local version=old and tonumber(old.maintenance_version or '0') or 0
+  if not version or version<0 or version>=9007199254740991 or version~=math.floor(version) then return false end
+  if version>0 and old.last_maintenance_at and old.last_maintenance_at>now then now=old.last_maintenance_at end
+  target.maintenance_version=string.format('%.0f',version+1)
+  target.last_maintenance_at=now
+  target.terminal_since=nil
+  if terminal(target.status) then
+   if not old or old.status~=target.status then target.terminal_since=now
+   elseif version>0 then target.terminal_since=old.terminal_since end
+  end
+  return true
+ end
+
 	if ARGV[3] == '1' and redis.call('GET', KEYS[2]) ~= ARGV[4] then return -2 end
 	local taskKey = KEYS[1]
 	local toStatus = ARGV[1]
@@ -1048,7 +1139,7 @@ var transitionScript = redis.NewScript(`
 
 	local task = cjson.decode(val)
 	local matched = false
-	for i = 10, #ARGV do
+	for i = 11, #ARGV do
 		if task["status"] == ARGV[i] then
 			matched = true
 			break
@@ -1060,9 +1151,13 @@ var transitionScript = redis.NewScript(`
 	end
 
 	local oldStatus = task["status"]
+ local oldLife={status=task.status,terminal_since=task.terminal_since,last_maintenance_at=task.last_maintenance_at,maintenance_version=task.maintenance_version}
 	task["status"] = toStatus
+ if not advance_lifecycle(task,oldLife,ARGV[10]) then return -3 end
 	if ARGV[6] == '1' then task["termination_kind"] = ARGV[7] end
-	redis.call('SET', taskKey, cjson.encode(task))
+	local changes={status=toStatus,terminal_since=task.terminal_since or cjson.null,last_maintenance_at=task.last_maintenance_at,maintenance_version=task.maintenance_version}
+ if ARGV[6]=='1' then changes.termination_kind=ARGV[7] end
+ redis.call('SET', taskKey, patch_task_json(val,changes))
 	redis.call('ZREM', statusPrefix .. oldStatus, task["id"])
 	redis.call('ZADD', statusPrefix .. toStatus, 0, task["id"])
 	local tenantPrefix = ARGV[5] .. (task["tenant_id"] or "") .. ":"
@@ -1072,7 +1167,8 @@ var transitionScript = redis.NewScript(`
 	if summaryRaw then
 		local summary = cjson.decode(summaryRaw)
 		summary['status'] = toStatus
-		redis.call('SET', KEYS[3], cjson.encode(summary))
+ summary.terminal_since=task.terminal_since;summary.last_maintenance_at=task.last_maintenance_at;summary.maintenance_version=task.maintenance_version
+		redis.call('SET', KEYS[3], patch_task_json(summaryRaw,changes))
 		local member = summary['index_member']
 		if member then
 			local tenant = summary['tenant_id'] or ''
@@ -1086,8 +1182,9 @@ var transitionScript = redis.NewScript(`
 	if metadataRaw then
 		local metadata = cjson.decode(metadataRaw)
 		metadata['status'] = toStatus
+ metadata.terminal_since=task.terminal_since;metadata.last_maintenance_at=task.last_maintenance_at;metadata.maintenance_version=task.maintenance_version
 		if ARGV[6] == '1' then metadata['termination_kind'] = ARGV[7] end
-		redis.call('SET', KEYS[4], cjson.encode(metadata))
+		redis.call('SET', KEYS[4], patch_task_json(metadataRaw,changes))
 	end
 	return 1
 `)
@@ -1141,7 +1238,7 @@ func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, fro
 		args = append(args, "0")
 	}
 	args = append(args, string(terminationKind))
-	args = append(args, taskSummaryStatusBase, taskSummaryTenantStatusBase)
+	args = append(args, taskSummaryStatusBase, taskSummaryTenantStatusBase, time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z"))
 	for _, f := range from {
 		args = append(args, string(f))
 	}
@@ -1154,6 +1251,9 @@ func (r *RedisStore) TryTransitionTaskStatus(ctx context.Context, id string, fro
 		return false, err
 	}
 
+	if res == -3 {
+		return false, ErrMaintenanceVersionExhausted
+	}
 	if res == -2 {
 		return false, ErrTaskLeaseLost
 	}

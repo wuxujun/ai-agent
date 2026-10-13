@@ -118,8 +118,12 @@ type ApprovalResult struct {
 }
 
 type Task struct {
+	TerminalSince       *time.Time `json:"terminal_since,omitempty"`
+	LastMaintenanceAt   *time.Time `json:"last_maintenance_at,omitempty"`
+	MaintenanceVersion  int64      `json:"maintenance_version,omitempty,string"`
 	ID                  string     `json:"id"`
 	TenantID            string     `json:"tenant_id"`
+	CreatorActorID      string     `json:"creator_actor_id,omitempty"` // Authenticated creator; immutable after first persistence.
 	SessionID           string     `json:"session_id,omitempty"`
 	SequenceNo          int64      `json:"sequence_no,omitempty"`
 	CreatedAt           time.Time  `json:"created_at,omitempty"`

@@ -7,6 +7,14 @@ func CloneTask(task *Task) *Task {
 		return nil
 	}
 	cloned := *task
+	if task.TerminalSince != nil {
+		at := *task.TerminalSince
+		cloned.TerminalSince = &at
+	}
+	if task.LastMaintenanceAt != nil {
+		at := *task.LastMaintenanceAt
+		cloned.LastMaintenanceAt = &at
+	}
 	cloned.Unresolved = append([]string(nil), task.Unresolved...)
 	cloned.Trace = make([]StepTrace, len(task.Trace))
 	for i, trace := range task.Trace {

@@ -25,6 +25,9 @@ func saveTraceSnapshotSQL(ctx context.Context, tx *sql.Tx, id string, traces []t
 	if _, err := tx.ExecContext(ctx, "DELETE FROM traces WHERE task_id = "+mark(1)+" AND (step < 1 OR step > "+mark(2)+")", id, len(traces)); err != nil {
 		return err
 	}
+	if len(traces) == 0 {
+		return nil
+	}
 	columns := []string{"execution_step", "goal", "action", "query", "observation", "evidence_json", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens", "occurred_at", "duration_ms", "recorded_at"}
 	placeholders := make([]string, len(columns)+2)
 	for i := range placeholders {
@@ -41,6 +44,13 @@ func saveTraceSnapshotSQL(ctx context.Context, tx *sql.Tx, id string, traces []t
 		}
 	}
 	query := "INSERT INTO traces (task_id, step, " + strings.Join(columns, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ") ON CONFLICT(task_id, step) DO UPDATE SET " + strings.Join(updates, ", ") + " WHERE traces.execution_step IS NULL OR " + strings.Join(changed, " OR ")
+	// Prepare once inside this transaction; never cache across transactions or
+	// connections. Keep the existing per-row upsert and recorded_at semantics.
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
 	for i, tr := range traces {
 		evidence, err := json.Marshal(tr.Evidence)
 		if err != nil {
@@ -61,7 +71,7 @@ func saveTraceSnapshotSQL(ctx context.Context, tx *sql.Tx, id string, traces []t
 				}
 			}
 		}
-		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		if _, err := stmt.ExecContext(ctx, args...); err != nil {
 			return err
 		}
 	}

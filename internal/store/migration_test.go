@@ -35,16 +35,25 @@ func TestSQLiteMigrationUpgradesLegacySchema(t *testing.T) {
 	}
 	defer store.Close()
 
-	assertSQLiteColumns(t, store.db, "tasks", "tenant_id", "session_id", "sequence_no", "created_at", "updated_at", "execution_mode", "requested_team", "team_selection_source", "team_name", "team_config_digest", "brain_project_id", "brain_snapshot_id", "brain_config_digest", "token_budget", "llm_call_budget", "llm_cost_budget_usd", "llm_calls", "llm_estimated_cost_usd", "memories_json", "answer_audit_json", "termination_kind", "error_code", "error_message")
+	assertSQLiteColumns(t, store.db, "tasks", "tenant_id", "creator_actor_id", "terminal_since", "last_maintenance_at", "maintenance_version", "session_id", "sequence_no", "created_at", "updated_at", "execution_mode", "requested_team", "team_selection_source", "team_name", "team_config_digest", "brain_project_id", "brain_snapshot_id", "brain_config_digest", "token_budget", "llm_call_budget", "llm_cost_budget_usd", "llm_calls", "llm_estimated_cost_usd", "memories_json", "answer_audit_json", "termination_kind", "error_code", "error_message")
 	assertSQLiteColumns(t, store.db, "traces", "agent_role", "error_text", "prompt_tokens", "completion_tokens", "total_tokens", "occurred_at", "duration_ms")
 	assertSQLiteColumns(t, store.db, "memories", "tenant_id", "session_id")
 
+	var terminal, maintenance sql.NullTime
+	var version int64
+	if err := store.db.QueryRow(`SELECT terminal_since,last_maintenance_at,maintenance_version FROM tasks WHERE id='legacy-task'`).Scan(&terminal, &maintenance, &version); err != nil || terminal.Valid || maintenance.Valid || version != 0 {
+		t.Fatalf("legacy lifecycle backfilled: %v %v %d %v", terminal, maintenance, version, err)
+	}
 	var createdAt, updatedAt sql.NullTime
 	if err := store.db.QueryRow(`SELECT created_at, updated_at FROM tasks WHERE id = 'legacy-task'`).Scan(&createdAt, &updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	if !createdAt.Valid || !updatedAt.Valid {
 		t.Fatalf("legacy timestamps were not backfilled: created=%v updated=%v", createdAt, updatedAt)
+	}
+	var creator string
+	if err := store.db.QueryRow(`SELECT creator_actor_id FROM tasks WHERE id = 'legacy-task'`).Scan(&creator); err != nil || creator != "" {
+		t.Fatalf("legacy creator should remain unknown: %q %v", creator, err)
 	}
 	var projectID, snapshotID, configDigest string
 	if err := store.db.QueryRow(`SELECT brain_project_id, brain_snapshot_id, brain_config_digest FROM tasks WHERE id = 'legacy-task'`).Scan(&projectID, &snapshotID, &configDigest); err != nil {

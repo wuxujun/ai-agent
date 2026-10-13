@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-12",
+  "status": "workspace implementation; not committed or deployed",
+  "toolchain": "go1.26.8 darwin/amd64",
+  "acceptance": {
+    "large_transaction_before_commit_forced_kill": "PASS: real ImportJoint, 8-page cache, database hash changed, valid hot rollback journal header, read-only reopen rejected",
+    "hot_journal_evidence": "PASS: database and journal bytes unchanged after rejected read-only reopen",
+    "large_transaction_after_commit_forced_kill": "PASS: reopened and verified complete joint records; database bytes unchanged",
+    "physical_file_damage": "PASS: empty, truncated, corrupt header and corrupt last page rejected; bytes unchanged",
+    "postgres_source": "NOT_RUN: dedicated TEST_POSTGRES_DSN missing; explicit external integration test SKIP",
+    "full_repository": "PASS: go test -p 1 ./... -timeout 90s",
+    "race": "PASS: go test -race ./internal/store ./internal/api ./cmd/task-restore -timeout 90s",
+    "vet": "PASS: go vet ./internal/store ./internal/api ./cmd/task-restore",
+    "diff_check": "PASS: git diff --check",
+    "documentation": "PASS: local links exist and report JSON parses"
+  },
+  "policy": {
+    "hot_journal": "reject read-only; preserve evidence; no writable repair",
+    "restore_ready": false,
+    "source_preserved": true,
+    "full_restore_admission": "design only; evaluator and online restore not implemented",
+    "power_loss_guarantee": false,
+    "source_deletion_authorized": false
+  }
+}

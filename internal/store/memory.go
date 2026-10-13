@@ -100,6 +100,9 @@ func (m *MemoryStore) CreateTask(ctx context.Context, task *types.Task) error {
 }
 
 func (m *MemoryStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	if err := m.guardTaskLeaseLocked(ctx, task.ID); err != nil {
 		m.mu.Unlock()
@@ -121,7 +124,17 @@ func (m *MemoryStore) saveFullTask(ctx context.Context, task *types.Task, create
 	_, alreadyIndexed := m.memories[memory.TaskMemoryID(task)]
 	alreadyIndexing := m.indexing[task.ID]
 
+	life, err := nextTaskLifecycle(lifecycleOf(m.tasks[task.ID]), task.Status, time.Now())
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
 	cloned := types.CloneTask(task)
+	applyTaskLifecycle(cloned, life)
+	applyTaskLifecycle(task, life)
+	if previous := m.tasks[task.ID]; previous != nil {
+		cloned.CreatorActorID = previous.CreatorActorID
+	}
 
 	if task.CreatedAt.IsZero() {
 		task.CreatedAt = time.Now().UTC()
@@ -544,6 +557,9 @@ func memoryRelevanceScore(query string, queryEmbedding []float32, mem *types.Mem
 // TryTransitionTaskStatus atomically attempts to transition a task's status from one of the allowed 'from' statuses to a target status.
 // It returns (true, nil) if the transition succeeded, or (false, nil) if the status did not match.
 func (m *MemoryStore) TryTransitionTaskStatus(ctx context.Context, id string, from []types.TaskStatus, to types.TaskStatus, kind ...types.TerminationKind) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if len(kind) > 1 {
 		return false, fmt.Errorf("at most one termination kind may be supplied")
 	}
@@ -571,6 +587,11 @@ func (m *MemoryStore) TryTransitionTaskStatus(ctx context.Context, id string, fr
 		return false, nil
 	}
 
+	life, err := nextTaskLifecycle(lifecycleOf(task), to, time.Now())
+	if err != nil {
+		return false, err
+	}
+	applyTaskLifecycle(task, life)
 	task.Status = to
 	if len(kind) == 1 {
 		task.TerminationKind = kind[0]

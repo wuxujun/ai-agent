@@ -133,7 +133,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 	termination_kind TEXT NOT NULL DEFAULT '',
 	error_code TEXT NOT NULL DEFAULT '',
 	error_message TEXT NOT NULL DEFAULT '',
-	execution_trace_id TEXT NOT NULL DEFAULT ''
+	execution_trace_id TEXT NOT NULL DEFAULT '',
+	creator_actor_id TEXT NOT NULL DEFAULT '',
+ terminal_since TIMESTAMPTZ,
+ last_maintenance_at TIMESTAMPTZ,
+ maintenance_version BIGINT NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS traces (
@@ -247,6 +251,10 @@ CREATE TABLE IF NOT EXISTS tenant_llm_usage (
 		{name: "add task error code", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT ''`},
 		{name: "add task error message", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT ''`},
 		{name: "add task execution trace id", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_trace_id TEXT NOT NULL DEFAULT ''`},
+		{name: "add task creator actor id", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS creator_actor_id TEXT NOT NULL DEFAULT ''`},
+		{name: "add terminal time", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS terminal_since TIMESTAMPTZ`},
+		{name: "add maintenance time", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_maintenance_at TIMESTAMPTZ`},
+		{name: "add maintenance version", query: `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS maintenance_version BIGINT NOT NULL DEFAULT 0`},
 		{name: "add memory tenant", query: `ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`},
 		{name: "add memory session", query: `ALTER TABLE memories ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`},
 		{name: "add trace agent role", query: `ALTER TABLE traces ADD COLUMN IF NOT EXISTS agent_role TEXT NOT NULL DEFAULT ''`},
@@ -346,9 +354,25 @@ func (p *PostgresStore) SaveTask(ctx context.Context, task *types.Task) error {
 		return err
 	}
 
-	_, err = p.db.ExecContext(ctx, `
-INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := guardTaskLeaseSQL(ctx, tx, task.ID, true); err != nil {
+		return err
+	}
+	previous, err := readTaskLifecycleSQL(ctx, tx, task.ID, true)
+	if err != nil {
+		return err
+	}
+	life, err := nextTaskLifecycle(previous, task.Status, time.Now())
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id, creator_actor_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
 ON CONFLICT(id) DO UPDATE SET
 goal=EXCLUDED.goal,
 tenant_id=EXCLUDED.tenant_id,
@@ -385,9 +409,22 @@ error_message=EXCLUDED.error_message,
 execution_trace_id=EXCLUDED.execution_trace_id
 `,
 		postgresText(task.ID), postgresText(task.TenantID), postgresText(task.SessionID), task.SequenceNo, task.CreatedAt, task.UpdatedAt, postgresText(task.Goal), postgresText(string(task.Status)), postgresText(task.Mode), postgresText(task.RequestedTeam), postgresText(task.TeamSelectionSource), postgresText(task.Team), postgresText(task.TeamConfigDigest), postgresText(task.BrainProjectID), postgresText(task.BrainSnapshotID), postgresText(task.BrainConfigDigest), task.MaxSteps, task.StepCount,
-		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(string(task.TerminationKind)), postgresText(task.ErrorCode), postgresText(task.ErrorMessage), postgresText(task.ExecutionTraceID),
+		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(string(task.TerminationKind)), postgresText(task.ErrorCode), postgresText(task.ErrorMessage), postgresText(task.ExecutionTraceID), postgresText(task.CreatorActorID),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := writeTaskLifecycleSQL(ctx, tx, task.ID, life, true); err != nil {
+		return err
+	}
+	if err := guardTaskLeaseSQL(ctx, tx, task.ID, true); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	applyTaskLifecycle(task, life)
+	return nil
 }
 
 // ReplaceTraces persists the complete ordered event snapshot. Event positions
@@ -399,6 +436,20 @@ func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces
 	}
 	defer tx.Rollback() //nolint:errcheck
 	if err := guardTaskLeaseSQL(ctx, tx, taskID, true); err != nil {
+		return err
+	}
+	previous, err := readTaskLifecycleSQL(ctx, tx, taskID, true)
+	if err != nil {
+		return err
+	}
+	if previous == nil {
+		return sql.ErrNoRows
+	}
+	life, err := nextTaskLifecycle(previous, previous.Status, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := writeTaskLifecycleSQL(ctx, tx, taskID, life, true); err != nil {
 		return err
 	}
 	if err := saveTraceSnapshotSQL(ctx, tx, taskID, traces, true); err != nil {
@@ -441,6 +492,14 @@ func (p *PostgresStore) saveFullTask(ctx context.Context, task *types.Task, crea
 		return err
 	}
 
+	previous, err := readTaskLifecycleSQL(ctx, tx, task.ID, true)
+	if err != nil {
+		return err
+	}
+	life, err := nextTaskLifecycle(previous, task.Status, time.Now())
+	if err != nil {
+		return err
+	}
 	// 1. Save Task in transaction
 	unresolved, err := json.Marshal(task.Unresolved)
 	if err != nil {
@@ -459,8 +518,8 @@ func (p *PostgresStore) saveFullTask(ctx context.Context, task *types.Task, crea
 	}
 
 	query := `
-INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+INSERT INTO tasks (id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id, creator_actor_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
 `
 	if createOnly {
 		query += "ON CONFLICT(id) DO NOTHING"
@@ -502,7 +561,7 @@ execution_trace_id=EXCLUDED.execution_trace_id`
 	}
 	result, err := tx.ExecContext(ctx, query,
 		postgresText(task.ID), postgresText(task.TenantID), postgresText(task.SessionID), task.SequenceNo, task.CreatedAt, task.UpdatedAt, postgresText(task.Goal), postgresText(string(task.Status)), postgresText(task.Mode), postgresText(task.RequestedTeam), postgresText(task.TeamSelectionSource), postgresText(task.Team), postgresText(task.TeamConfigDigest), postgresText(task.BrainProjectID), postgresText(task.BrainSnapshotID), postgresText(task.BrainConfigDigest), task.MaxSteps, task.StepCount,
-		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(string(task.TerminationKind)), postgresText(task.ErrorCode), postgresText(task.ErrorMessage), postgresText(task.ExecutionTraceID),
+		postgresText(task.Workspace), postgresText(task.Hypothesis), string(unresolved), task.ToolBudget, task.TokenBudget, task.LLMCallBudget, task.LLMCostBudgetUSD, task.LLMCalls, task.LLMEstimatedCostUSD, string(memoriesJSON), string(auditJSON), postgresText(task.FinalAnswer), postgresText(string(task.TerminationKind)), postgresText(task.ErrorCode), postgresText(task.ErrorMessage), postgresText(task.ExecutionTraceID), postgresText(task.CreatorActorID),
 	)
 	if err != nil {
 		span.RecordError(err)
@@ -520,6 +579,9 @@ execution_trace_id=EXCLUDED.execution_trace_id`
 		}
 	}
 
+	if err := writeTaskLifecycleSQL(ctx, tx, task.ID, life, true); err != nil {
+		return err
+	}
 	if err := saveTraceSnapshotSQL(ctx, tx, task.ID, task.Trace, true); err != nil {
 		span.RecordError(err)
 		return err
@@ -534,6 +596,7 @@ execution_trace_id=EXCLUDED.execution_trace_id`
 		return err
 	}
 
+	applyTaskLifecycle(task, life)
 	// 3. Asynchronously index memory if task is completed
 	if memory.ShouldIndexTask(task) {
 		memoryID := memory.TaskMemoryID(task)
@@ -576,13 +639,17 @@ func (p *PostgresStore) GetTaskWithoutTrace(ctx context.Context, id string) (*ty
 }
 
 func (p *PostgresStore) getTask(ctx context.Context, id string, includeTrace bool) (*types.Task, error) {
+	return p.getTaskQuery(ctx, p.db, id, includeTrace)
+}
+
+func (p *PostgresStore) getTaskQuery(ctx context.Context, db taskSQLReader, id string, includeTrace bool) (*types.Task, error) {
 	ctx, span := tracer.Start(ctx, "store.postgres.get_task")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("agent.task.id", id))
 
-	row := p.db.QueryRowContext(ctx, `
-SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id
+	row := db.QueryRowContext(ctx, `
+SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id, creator_actor_id,terminal_since,last_maintenance_at,maintenance_version
 FROM tasks WHERE id = $1
 `, id)
 
@@ -590,10 +657,11 @@ FROM tasks WHERE id = $1
 	var unresolvedJSON string
 	var memoriesJSON string
 	var auditJSON string
+	var terminalSince, lastMaintenance sql.NullTime
 
 	err := row.Scan(
 		&task.ID, &task.TenantID, &task.SessionID, &task.SequenceNo, &task.CreatedAt, &task.UpdatedAt, &task.Goal, &task.Status, &task.Mode, &task.RequestedTeam, &task.TeamSelectionSource, &task.Team, &task.TeamConfigDigest, &task.BrainProjectID, &task.BrainSnapshotID, &task.BrainConfigDigest, &task.MaxSteps, &task.StepCount,
-		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer, &task.TerminationKind, &task.ErrorCode, &task.ErrorMessage, &task.ExecutionTraceID,
+		&task.Workspace, &task.Hypothesis, &unresolvedJSON, &task.ToolBudget, &task.TokenBudget, &task.LLMCallBudget, &task.LLMCostBudgetUSD, &task.LLMCalls, &task.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &task.FinalAnswer, &task.TerminationKind, &task.ErrorCode, &task.ErrorMessage, &task.ExecutionTraceID, &task.CreatorActorID, &terminalSince, &lastMaintenance, &task.MaintenanceVersion,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -606,6 +674,14 @@ FROM tasks WHERE id = $1
 	}
 	span.SetAttributes(attribute.Bool("agent.store.found", true))
 
+	if terminalSince.Valid {
+		at := terminalSince.Time.UTC()
+		task.TerminalSince = &at
+	}
+	if lastMaintenance.Valid {
+		at := lastMaintenance.Time.UTC()
+		task.LastMaintenanceAt = &at
+	}
 	if err := json.Unmarshal([]byte(unresolvedJSON), &task.Unresolved); err != nil {
 		return nil, err
 	}
@@ -621,7 +697,7 @@ FROM tasks WHERE id = $1
 		return &task, nil
 	}
 
-	rows, err := p.db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 	SELECT COALESCE(execution_step, step), goal, action, query, observation, evidence_json, agent_role,
 	       error_text, prompt_tokens, completion_tokens, total_tokens, occurred_at, duration_ms
 FROM traces
@@ -693,7 +769,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, f ListFilter) ([]*types.T
 		orderBy = "sequence_no ASC, id ASC"
 	}
 	query := fmt.Sprintf(`
-	SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id
+	SELECT id, tenant_id, session_id, sequence_no, created_at, updated_at, goal, status, execution_mode, requested_team, team_selection_source, team_name, team_config_digest, brain_project_id, brain_snapshot_id, brain_config_digest, max_steps, step_count, workspace, hypothesis, unresolved_json, tool_budget, token_budget, llm_call_budget, llm_cost_budget_usd, llm_calls, llm_estimated_cost_usd, memories_json, answer_audit_json, final_answer, termination_kind, error_code, error_message, execution_trace_id, creator_actor_id,terminal_since,last_maintenance_at,maintenance_version
 FROM tasks
 %s
 ORDER BY %s
@@ -712,11 +788,20 @@ LIMIT $%d OFFSET $%d
 		var unresolvedJSON string
 		var memoriesJSON string
 		var auditJSON string
+		var terminalSince, lastMaintenance sql.NullTime
 		if err := rows.Scan(
 			&t.ID, &t.TenantID, &t.SessionID, &t.SequenceNo, &t.CreatedAt, &t.UpdatedAt, &t.Goal, &t.Status, &t.Mode, &t.RequestedTeam, &t.TeamSelectionSource, &t.Team, &t.TeamConfigDigest, &t.BrainProjectID, &t.BrainSnapshotID, &t.BrainConfigDigest, &t.MaxSteps, &t.StepCount,
-			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer, &t.TerminationKind, &t.ErrorCode, &t.ErrorMessage, &t.ExecutionTraceID,
+			&t.Workspace, &t.Hypothesis, &unresolvedJSON, &t.ToolBudget, &t.TokenBudget, &t.LLMCallBudget, &t.LLMCostBudgetUSD, &t.LLMCalls, &t.LLMEstimatedCostUSD, &memoriesJSON, &auditJSON, &t.FinalAnswer, &t.TerminationKind, &t.ErrorCode, &t.ErrorMessage, &t.ExecutionTraceID, &t.CreatorActorID, &terminalSince, &lastMaintenance, &t.MaintenanceVersion,
 		); err != nil {
 			return nil, err
+		}
+		if terminalSince.Valid {
+			at := terminalSince.Time.UTC()
+			t.TerminalSince = &at
+		}
+		if lastMaintenance.Valid {
+			at := lastMaintenance.Time.UTC()
+			t.LastMaintenanceAt = &at
 		}
 		if err := json.Unmarshal([]byte(unresolvedJSON), &t.Unresolved); err != nil {
 			return nil, err
@@ -1622,6 +1707,10 @@ func (p *PostgresStore) TryTransitionTaskStatus(ctx context.Context, id string, 
 	if err := guardTaskLeaseSQL(ctx, tx, id, true); err != nil {
 		return false, err
 	}
+	previous, err := readTaskLifecycleSQL(ctx, tx, id, true)
+	if err != nil {
+		return false, err
+	}
 	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
@@ -1637,6 +1726,13 @@ func (p *PostgresStore) TryTransitionTaskStatus(ctx context.Context, id string, 
 			return false, sql.ErrNoRows
 		}
 		return false, nil
+	}
+	life, err := nextTaskLifecycle(previous, to, time.Now())
+	if err != nil {
+		return false, err
+	}
+	if err := writeTaskLifecycleSQL(ctx, tx, id, life, true); err != nil {
+		return false, err
 	}
 	if err := guardTaskLeaseSQL(ctx, tx, id, true); err != nil {
 		return false, err

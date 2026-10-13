@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-13",
+  "status": "workspace implementation; not committed or deployed",
+  "toolchain": "go1.26.8 darwin/amd64",
+  "acceptance": {
+    "strict_manifest": "PASS: version, unknown and duplicate JSON fields, trailing JSON, duplicate and unknown categories, hash format and 64 KiB budget",
+    "fail_closed": "PASS: missing, cross-tenant, expired, future, conflict, unverified sandbox, all identity/version bindings and unavailable readers",
+    "assessment_invalidation": "PASS: state changes, verification lost, expiration during assessment, persistent and transient clock rollback, cancellation",
+    "trusted_complete_evidence": "PASS: fake reader contract only; evidence_complete=true still blocked and restore_ready=false",
+    "persistent_read_only": "PASS: actual isolated SQLite records reverified; database and directory unchanged; claimed evidence remains unverified",
+    "database_budget": "PASS: database larger than 64 MiB rejected without alteration",
+    "cli": "PASS: missing and claimed evidence reports exit 3; invalid input fails; manifest and target bytes unchanged; no secret body or path in admission output",
+    "full_repository": "PASS: go test -p 1 ./... -timeout 90s",
+    "race": "PASS: go test -race ./internal/store ./internal/api ./cmd/task-restore -timeout 90s",
+    "vet": "PASS: go vet ./internal/store ./internal/api ./cmd/task-restore",
+    "postgres_source": "NOT_RUN: dedicated TEST_POSTGRES_DSN missing",
+    "documentation": "PASS: local links exist, no trailing whitespace, report JSON parses",
+    "diff_check": "PASS: git diff --check"
+  },
+  "scope": {
+    "dependency_manifest_schema": "task-restore-dependencies-v1",
+    "report_schema": "task-restore-admission-diagnostic-v1",
+    "production_external_dependency_readers": "NOT_IMPLEMENTED; missing claims are missing and claimed evidence is unverified",
+    "decision": "blocked",
+    "restore_ready": false,
+    "source_preserved": true,
+    "online_restore": "NOT_IMPLEMENTED",
+    "source_deletion": "NOT_AUTHORIZED",
+    "http_contract_changed": false
+  }
+}
