@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/wuxujun/ai-agent/internal/approvalcrypto"
 	"github.com/wuxujun/ai-agent/internal/store"
 )
 
@@ -20,7 +21,14 @@ func runAdmission(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	tenant := flags.String("tenant", "", "explicit tenant")
 	workspaceEvidence := flags.String("workspace-evidence", "", "operator-selected workspace baseline file")
 	manifest := flags.String("manifest", "", "optional dependency manifest file")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || *directory == "" || *task == "" || *tenant == "" {
+	keySource := flags.String("key-source", "", "explicit read-only key provider: environment")
+	sourceEvidence := flags.String("approval-source-evidence", "", "independent signed approval source proof")
+	sourceTrust := flags.String("approval-source-trust", "", "explicit trust pins: environment")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || *directory == "" || *task == "" || *tenant == "" || (*keySource != "" && *keySource != "environment") {
+		fmt.Fprintln(stderr, "invalid admission arguments")
+		return 2
+	}
+	if (*sourceTrust != "" && *sourceTrust != "environment") || (*sourceEvidence != "") != (*sourceTrust != "") || (*sourceTrust != "" && *keySource != "environment") {
 		fmt.Fprintln(stderr, "invalid admission arguments")
 		return 2
 	}
@@ -40,7 +48,20 @@ func runAdmission(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			return 1
 		}
 	}
-	report, err := store.AssessPersistentTaskRestoreAdmissionWithWorkspace(ctx, *directory, *task, *tenant, data, workspaceData)
+	var provider approvalcrypto.ReadOnlyKeyProvider
+	if *keySource == "environment" {
+		provider = approvalcrypto.NewEnvironmentReadOnlyKeyProvider()
+	}
+	options := store.TaskRestoreAdmissionOptions{WorkspaceEvidence: workspaceData, KeyProvider: provider}
+	if *sourceTrust == "environment" {
+		options.ApprovalSourceEvidence, err = readAdmissionInput(*sourceEvidence, store.MaxTaskRestoreApprovalSourceBytes)
+		if err != nil {
+			fmt.Fprintln(stderr, "cannot read approval source evidence within budget")
+			return 1
+		}
+		options.ApprovalSourceTrust = store.NewEnvironmentTaskRestoreApprovalSourceTrust()
+	}
+	report, err := store.AssessPersistentTaskRestoreAdmissionWithOptions(ctx, *directory, *task, *tenant, data, options)
 	if err != nil {
 		fmt.Fprintln(stderr, "read-only restore admission assessment failed")
 		return 1

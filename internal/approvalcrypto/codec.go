@@ -131,6 +131,9 @@ func (c *Codec) Decrypt(payload []byte) ([]byte, error) {
 	if c == nil || c.primary == nil {
 		return nil, errors.New("approval encryption codec is not configured")
 	}
+	if len(payload) == 0 {
+		return nil, errors.New("invalid approval payload format")
+	}
 	switch payload[0] {
 	case payloadVersionV1:
 		for _, aead := range c.legacy {

@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/wuxujun/ai-agent/internal/approvalcrypto"
 )
 
 const maxTaskRestoreAdmissionDatabaseBytes = 64 << 20
 
 // The offline reader only proves the current isolated database's integrity.
-// It has no keys, executor, audit client, online Store or external verifiers.
+// Optional trusted readers check workspace and keys. It has no executor, audit
+// client, online Store or authority to restore approvals or execute effects.
 type persistentRestoreAdmissionReader struct {
 	sandbox      *TaskRestoreSandbox
 	path         string
@@ -24,6 +27,7 @@ type persistentRestoreAdmissionReader struct {
 	dirIdentity  os.FileInfo
 	task, tenant string
 	workspace    *restoreWorkspaceReader
+	keys         *restoreKeyReader
 }
 
 func (r *persistentRestoreAdmissionReader) fingerprint(ctx context.Context) (string, error) {
@@ -105,6 +109,31 @@ func (r *persistentRestoreAdmissionReader) ReadState(ctx context.Context) (TaskR
 		revision = restoreDigest([]byte(after + ":" + workspaceRevision))
 		policyVersion = "read-only-workspace-v1"
 	}
+	if r.keys != nil {
+		keyRevision, err := r.keys.read(ctx, r)
+		if err != nil {
+			return TaskRestoreAdmissionState{}, err
+		}
+		revision = restoreDigest([]byte(revision + ":" + keyRevision))
+		policyVersion = "read-only-keys-v1"
+		if r.workspace != nil {
+			policyVersion = "read-only-workspace-keys-v1"
+		}
+		if r.keys.source != nil {
+			policyVersion = "read-only-source-keys-v1"
+			if r.workspace != nil {
+				policyVersion = "read-only-workspace-source-keys-v1"
+			}
+		}
+	}
+	// Cover mutations during dependency scans, not just sandbox.Verify.
+	final, err := r.fingerprint(ctx)
+	if err != nil {
+		return TaskRestoreAdmissionState{}, err
+	}
+	if final != after {
+		return TaskRestoreAdmissionState{}, ErrTaskRestoreMismatch
+	}
 	return TaskRestoreAdmissionState{SandboxVerified: report.Verified && report.Reopened, Binding: TaskRestoreAdmissionBinding{
 		TaskID: r.task, TenantID: r.tenant, PayloadSHA256: report.PayloadSHA256,
 		TargetID: restoreDigest([]byte(filepath.Dir(r.path))), StateRevision: revision,
@@ -113,6 +142,13 @@ func (r *persistentRestoreAdmissionReader) ReadState(ctx context.Context) (TaskR
 }
 
 func (r *persistentRestoreAdmissionReader) CheckEvidence(ctx context.Context, claim TaskRestoreEvidenceClaim) (TaskRestoreEvidenceObservation, error) {
+	if claim.Kind == "key_management" && r.keys != nil {
+		state, err := r.ReadState(ctx)
+		if err != nil {
+			return TaskRestoreEvidenceObservation{}, err
+		}
+		return r.keys.check(claim, state.Binding), nil
+	}
 	if claim.Kind != "workspace" || r.workspace == nil {
 		return TaskRestoreEvidenceObservation{}, nil
 	}
@@ -135,6 +171,32 @@ func AssessPersistentTaskRestoreAdmission(ctx context.Context, directory, task, 
 // extracted from the uploaded dependency manifest. Only the fixed isolated
 // tenant/task root is read. Remaining evidence categories remain unverified.
 func AssessPersistentTaskRestoreAdmissionWithWorkspace(ctx context.Context, directory, task, tenant string, manifestData, workspaceData []byte) (*TaskRestoreAdmissionReport, error) {
+	return AssessPersistentTaskRestoreAdmissionWithKeys(ctx, directory, task, tenant, manifestData, workspaceData, nil)
+}
+
+// The provider is selected explicitly by trusted code, never by uploaded JSON.
+// A nil provider preserves the database/workspace-only diagnostic behavior.
+func AssessPersistentTaskRestoreAdmissionWithKeys(ctx context.Context, directory, task, tenant string, manifestData, workspaceData []byte, provider approvalcrypto.ReadOnlyKeyProvider) (*TaskRestoreAdmissionReport, error) {
+	return AssessPersistentTaskRestoreAdmissionWithOptions(ctx, directory, task, tenant, manifestData, TaskRestoreAdmissionOptions{WorkspaceEvidence: workspaceData, KeyProvider: provider})
+}
+
+type TaskRestoreAdmissionOptions struct {
+	WorkspaceEvidence      []byte
+	KeyProvider            approvalcrypto.ReadOnlyKeyProvider
+	ApprovalSourceEvidence []byte
+	ApprovalSourceTrust    TaskRestoreApprovalSourceTrustProvider
+}
+
+// Only trusted application code selects providers. Signature evidence is
+// untrusted input; neither a public key nor source pins are accepted from it.
+func AssessPersistentTaskRestoreAdmissionWithOptions(ctx context.Context, directory, task, tenant string, manifestData []byte, options TaskRestoreAdmissionOptions) (*TaskRestoreAdmissionReport, error) {
+	workspaceData, provider := options.WorkspaceEvidence, options.KeyProvider
+	if len(options.ApprovalSourceEvidence) > MaxTaskRestoreApprovalSourceBytes {
+		return nil, ErrTaskExportTooLarge
+	}
+	if (options.ApprovalSourceEvidence != nil) != (options.ApprovalSourceTrust != nil) || (options.ApprovalSourceTrust != nil && provider == nil) {
+		return nil, ErrTaskRestoreApprovalSource
+	}
 	if len(workspaceData) > MaxTaskRestoreWorkspaceEvidenceBytes {
 		return nil, ErrTaskExportTooLarge
 	}
@@ -176,6 +238,20 @@ func AssessPersistentTaskRestoreAdmissionWithWorkspace(ctx context.Context, dire
 			return nil, err
 		}
 	}
+	if provider != nil {
+		reader.keys = &restoreKeyReader{provider: provider}
+		if options.ApprovalSourceTrust != nil {
+			source, err := decodeRestoreApprovalSource(options.ApprovalSourceEvidence, options.ApprovalSourceTrust, task, tenant, state.Binding.PayloadSHA256)
+			if err != nil {
+				return nil, err
+			}
+			reader.keys.source = source
+		}
+		state, err = reader.ReadState(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// Keep the size check and blob read in the same SQLite snapshot.
 	tx, err := sandbox.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -199,14 +275,30 @@ func AssessPersistentTaskRestoreAdmissionWithWorkspace(ctx context.Context, dire
 	if manifestData == nil {
 		now := time.Now().UTC()
 		manifestData, err = json.Marshal(TaskRestoreDependencyManifest{Schema: TaskRestoreAdmissionSchema, Binding: state.Binding, CreatedAt: now, ExpiresAt: now.Add(5 * time.Minute), Evidence: func() []TaskRestoreEvidenceClaim {
+			claims := []TaskRestoreEvidenceClaim{}
 			if reader.workspace != nil {
-				return []TaskRestoreEvidenceClaim{{Kind: "workspace", SHA256: reader.workspace.digest}}
+				claims = append(claims, TaskRestoreEvidenceClaim{Kind: "workspace", SHA256: reader.workspace.digest})
 			}
-			return []TaskRestoreEvidenceClaim{}
+			if reader.keys != nil {
+				claims = append(claims, TaskRestoreEvidenceClaim{Kind: "key_management", SHA256: reader.keys.digest})
+			}
+			return claims
 		}()})
 		if err != nil {
 			return nil, err
 		}
 	}
-	return EvaluateTaskRestoreAdmission(ctx, artifact, manifestData, tenant, MaxTaskExportBytes, reader, nil)
+	report, err := EvaluateTaskRestoreAdmission(ctx, artifact, manifestData, tenant, MaxTaskExportBytes, reader, nil)
+	if err == nil && reader.keys != nil {
+		summary := reader.keys.summary
+		// A summary is current verified data only when target binding stayed valid.
+		for _, b := range report.Blockers {
+			if b.Kind == "target" || b.Kind == "manifest" || b.Kind == "assessment" || (b.Kind == "key_management" && (b.Code == "expired_or_invalid_time" || b.Code == "expired_during_assessment")) {
+				summary.Decryption, summary.SourceBinding = "unverified", "unverified"
+				summary.Reason = "stale_or_unbound_evidence"
+			}
+		}
+		report.KeyManagement = &summary
+	}
+	return report, err
 }

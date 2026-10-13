@@ -79,17 +79,18 @@ type TaskRestoreAdmissionBlocker struct {
 }
 
 type TaskRestoreAdmissionReport struct {
-	Schema           string                        `json:"schema"`
-	Binding          *TaskRestoreAdmissionBinding  `json:"binding,omitempty"`
-	CheckedAt        time.Time                     `json:"checked_at"`
-	PayloadSHA256    string                        `json:"payload_sha256"`
-	ManifestSHA256   string                        `json:"manifest_sha256"`
-	VerifiedEvidence []TaskRestoreEvidenceClaim    `json:"verified_evidence"`
-	EvidenceComplete bool                          `json:"evidence_complete"`
-	Decision         string                        `json:"decision"`
-	RestoreReady     bool                          `json:"restore_ready"`
-	SourcePreserved  bool                          `json:"source_preserved"`
-	Blockers         []TaskRestoreAdmissionBlocker `json:"blockers"`
+	KeyManagement    *TaskRestoreKeyManagementSummary `json:"key_management,omitempty"`
+	Schema           string                           `json:"schema"`
+	Binding          *TaskRestoreAdmissionBinding     `json:"binding,omitempty"`
+	CheckedAt        time.Time                        `json:"checked_at"`
+	PayloadSHA256    string                           `json:"payload_sha256"`
+	ManifestSHA256   string                           `json:"manifest_sha256"`
+	VerifiedEvidence []TaskRestoreEvidenceClaim       `json:"verified_evidence"`
+	EvidenceComplete bool                             `json:"evidence_complete"`
+	Decision         string                           `json:"decision"`
+	RestoreReady     bool                             `json:"restore_ready"`
+	SourcePreserved  bool                             `json:"source_preserved"`
+	Blockers         []TaskRestoreAdmissionBlocker    `json:"blockers"`
 }
 
 func restoreDigest(data []byte) string {

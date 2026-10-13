@@ -88,3 +88,29 @@ func TestCodecKeyringRejectsInvalidPreviousKey(t *testing.T) {
 		t.Fatal("accepted invalid previous key")
 	}
 }
+
+func TestCodecRejectsEveryTruncationAndUnknownVersion(t *testing.T) {
+	key := bytes.Repeat([]byte{0x53}, 32)
+	codec, err := New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := codec.Encrypt([]byte("private-checkpoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range [][]byte{sealLegacyV1(t, key, []byte("private-checkpoint")), v2} {
+		for i := 0; i < len(payload); i++ {
+			if plain, err := codec.Decrypt(payload[:i]); err == nil || plain != nil {
+				t.Fatal("accepted truncated ciphertext", i)
+			}
+		}
+		payload[0] = 99
+		if plain, err := codec.Decrypt(payload); err == nil || plain != nil {
+			t.Fatal("accepted unknown version")
+		}
+	}
+	if plain, err := (*Codec)(nil).Decrypt(nil); err == nil || plain != nil {
+		t.Fatal("accepted unconfigured codec")
+	}
+}

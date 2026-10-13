@@ -33,7 +33,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runAdmission(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || (args[0] != "import" && args[0] != "verify") {
-		fmt.Fprintln(stderr, "usage: task-restore import --file FILE --tenant TENANT --parent DIRECTORY [--byte-budget N] | verify --directory DIRECTORY --task TASK --tenant TENANT | assess --directory DIRECTORY --task TASK --tenant TENANT [--manifest FILE] [--workspace-evidence FILE]")
+		fmt.Fprintln(stderr, "usage: task-restore import --file FILE --tenant TENANT --parent DIRECTORY [--byte-budget N] | verify --directory DIRECTORY --task TASK --tenant TENANT | assess --directory DIRECTORY --task TASK --tenant TENANT [--manifest FILE] [--workspace-evidence FILE] [--key-source environment] [--approval-source-evidence FILE --approval-source-trust environment]")
 		return 2
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
