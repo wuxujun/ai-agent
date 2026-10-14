@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	TaskRestoreSessionObservationSchema   = "task-restore-session-observation-v1"
+	TaskRestoreSessionObservationSchema   = "task-restore-session-observation-v2"
 	TaskRestoreExecutionObservationSchema = "task-restore-execution-observation-v1"
 	MaxTaskRestoreObservationBytes        = 8 << 20
 	MaxTaskRestoreObservationTasks        = 1000
@@ -61,12 +61,13 @@ type TaskRestoreObservationScope struct {
 }
 
 type TaskRestoreDependencyMember struct {
-	ID         string `json:"id"`
-	TenantID   string `json:"tenant_id"`
-	SessionID  string `json:"session_id"`
-	SequenceNo int64  `json:"sequence_no,string"`
-	TaskSHA256 string `json:"task_sha256"`
-	Revision   string `json:"revision"`
+	ID          string `json:"id"`
+	TenantID    string `json:"tenant_id"`
+	SessionID   string `json:"session_id"`
+	SequenceNo  int64  `json:"sequence_no,string"`
+	TaskSHA256  string `json:"task_sha256"`
+	TraceSHA256 string `json:"trace_sha256"`
+	Revision    string `json:"revision"`
 }
 type TaskRestoreDependencyEdge struct {
 	From string `json:"from"`
@@ -85,7 +86,7 @@ type TaskRestoreSessionSnapshot struct {
 type TaskRestoreSessionObservation struct {
 	Schema string                      `json:"schema"`
 	Scope  TaskRestoreObservationScope `json:"scope"`
-	// v1 only supports a complete same-session closure with an acyclic graph.
+	// This contract supports a complete same-session closure with an acyclic graph.
 	// Cross-session dependencies need a future contract and remain unverified.
 	DependencyContract    string                     `json:"dependency_contract"`
 	BaselinePayloadSHA256 string                     `json:"baseline_payload_sha256"`
@@ -204,7 +205,7 @@ func validateSessionSnapshot(s TaskRestoreSessionSnapshot, q TaskRestoreDependen
 	sequences := map[int64]bool{}
 	previous := ""
 	for _, m := range s.Members {
-		if !validObservationID(m.ID) || m.ID <= previous || !validRestoreDigest(m.TaskSHA256) || !validObservationToken(m.Revision) {
+		if !validObservationID(m.ID) || m.ID <= previous || !validRestoreDigest(m.TaskSHA256) || !validRestoreDigest(m.TraceSHA256) || !validObservationToken(m.Revision) {
 			return "unverified"
 		}
 		previous = m.ID
@@ -225,7 +226,7 @@ func validateSessionSnapshot(s TaskRestoreSessionSnapshot, q TaskRestoreDependen
 	if !ok {
 		return "missing"
 	}
-	if root.TaskSHA256 != q.TaskSHA256 || root.SequenceNo != q.SequenceNo {
+	if root.TaskSHA256 != q.TaskSHA256 || root.TraceSHA256 != q.CheckpointSHA256 || root.SequenceNo != q.SequenceNo {
 		return "conflict"
 	}
 	// Same-session v1 cannot prove a no-session task has cross-task dependencies.
@@ -429,7 +430,7 @@ func (r *restoreDependencyAdmissionReader) observe(ctx context.Context) (TaskRes
 	}
 	encoded, _ := json.Marshal(revisions)
 	before.Binding.StateRevision = restoreDigest(encoded)
-	before.Binding.PolicyVersion = "read-only-dependencies-v1-" + restoreDigest([]byte(before.Binding.PolicyVersion))
+	before.Binding.PolicyVersion = "read-only-dependencies-v2-" + restoreDigest([]byte(before.Binding.PolicyVersion))
 	return before, scans, nil
 }
 

@@ -64,7 +64,7 @@ func dependencyFixture(t *testing.T) ([]byte, *admissionTestReader, *restoreDepe
 	r := reader.(*restoreDependencyAdmissionReader)
 	q := r.request
 	scope := TaskRestoreObservationScope{TaskID: q.TaskID, TenantID: q.TenantID, PayloadSHA256: q.PayloadSHA256, SourceID: q.SourceID, TargetID: m.Binding.TargetID, Revision: "generation-1", TrustRevision: "trust-1", CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(5 * time.Minute)}
-	snapshot := TaskRestoreSessionSnapshot{SessionID: q.SessionID, SessionSHA256: q.SessionSHA256, Status: types.SessionStatusActive, HighWatermark: 9007199254740993, Revision: "session-1", Members: []TaskRestoreDependencyMember{{ID: q.TaskID, TenantID: q.TenantID, SessionID: q.SessionID, SequenceNo: q.SequenceNo, TaskSHA256: q.TaskSHA256, Revision: "task-1"}}, Edges: []TaskRestoreDependencyEdge{}}
+	snapshot := TaskRestoreSessionSnapshot{SessionID: q.SessionID, SessionSHA256: q.SessionSHA256, Status: types.SessionStatusActive, HighWatermark: 9007199254740993, Revision: "session-1", Members: []TaskRestoreDependencyMember{{ID: q.TaskID, TenantID: q.TenantID, SessionID: q.SessionID, SequenceNo: q.SequenceNo, TaskSHA256: q.TaskSHA256, TraceSHA256: q.CheckpointSHA256, Revision: "task-1"}}, Edges: []TaskRestoreDependencyEdge{}}
 	// restoreFixture uses a high sequence; preserve it exactly through JSON.
 	snapshot.HighWatermark = q.HighWatermark
 	f.session = TaskRestoreSessionObservation{Schema: TaskRestoreSessionObservationSchema, Scope: scope, DependencyContract: "complete-same-session-dag-v1", BaselinePayloadSHA256: q.PayloadSHA256, BaselineRevision: "session-1", Source: snapshot, Target: snapshot}
@@ -380,5 +380,40 @@ func TestTaskRestoreDependenciesVersionAndBaseChanges(t *testing.T) {
 	base.final = &changed
 	if _, err := r.ReadState(t.Context()); !errors.Is(err, ErrTaskRestoreMismatch) {
 		t.Fatal("base mutation accepted", err)
+	}
+}
+
+func TestTaskRestoreDependenciesSessionTraceBinding(t *testing.T) {
+	for _, mode := range []string{"complete", "missing_root_trace", "missing_other_trace", "root_trace_changed", "other_trace_mismatch", "legacy_schema"} {
+		t.Run(mode, func(t *testing.T) {
+			_, _, r, f := dependencyFixture(t)
+			q := r.request
+			q.TargetID = f.session.Scope.TargetID
+			other := TaskRestoreDependencyMember{ID: "restore-task-z", TenantID: q.TenantID, SessionID: q.SessionID, SequenceNo: q.SequenceNo + 1, TaskSHA256: restoreDigest([]byte("other-task")), TraceSHA256: restoreDigest([]byte("other-physical-traces")), Revision: "other-1"}
+			f.session.Source.Members = append(f.session.Source.Members, other)
+			f.session.Target.Members = append(f.session.Target.Members, other)
+			expected := "verified"
+			switch mode {
+			case "missing_root_trace":
+				f.session.Source.Members[0].TraceSHA256 = ""
+				expected = "unverified"
+			case "missing_other_trace":
+				f.session.Target.Members[1].TraceSHA256 = ""
+				expected = "unverified"
+			case "root_trace_changed":
+				f.session.Source.Members[0].TraceSHA256 = restoreDigest([]byte("changed"))
+				f.session.Target.Members[0].TraceSHA256 = f.session.Source.Members[0].TraceSHA256
+				expected = "conflict"
+			case "other_trace_mismatch":
+				f.session.Target.Members[1].TraceSHA256 = restoreDigest([]byte("different-checkpoint"))
+				expected = "conflict"
+			case "legacy_schema":
+				f.session.Schema = "task-restore-session-observation-v1"
+				expected = "unverified"
+			}
+			if got := validateSessionObservation(f.session, q, time.Now()); got != expected {
+				t.Fatalf("status=%s want=%s", got, expected)
+			}
+		})
 	}
 }

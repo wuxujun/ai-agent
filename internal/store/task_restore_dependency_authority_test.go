@@ -400,3 +400,26 @@ func TestTaskRestoreDependencyAuthorityRejectsSecondReadChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestTaskRestoreDependencyAuthoritySignedMemberTraceMismatch(t *testing.T) {
+	q, f, r, key := signedDependencyAuthorityFixture(t, "session_dependencies")
+	resignDependencyEvidence(t, f, key, func(c *TaskRestoreDependencyAuthorityContent) {
+		var o TaskRestoreSessionObservation
+		json.Unmarshal(c.Observation, &o)
+		member := TaskRestoreDependencyMember{ID: "restore-task-z", TenantID: q.TenantID, SessionID: q.SessionID, SequenceNo: q.SequenceNo + 1, TaskSHA256: restoreDigest([]byte("same-task")), TraceSHA256: restoreDigest([]byte("source-traces")), Revision: "other-1"}
+		o.Source.Members = append(o.Source.Members, member)
+		member.TraceSHA256 = restoreDigest([]byte("target-traces"))
+		o.Target.Members = append(o.Target.Members, member)
+		c.Observation, _ = json.Marshal(o)
+	})
+	// Even a valid signature and current pins cannot waive exact Trace equality.
+	if data, err := r.ReadSessionDependencies(t.Context(), q); data != nil || !errors.Is(err, ErrTaskRestoreDependencyAuthority) {
+		t.Fatal("signed checkpoint mismatch accepted", err)
+	}
+	var e TaskRestoreDependencyAuthorityEvidence
+	json.Unmarshal(f.evidence, &e)
+	e.Content.Observation = bytes.Replace(e.Content.Observation, []byte(TaskRestoreSessionObservationSchema), []byte("task-restore-session-observation-v1"), 1)
+	if _, err := TaskRestoreDependencyAuthoritySigningBytes(e.Content); err == nil {
+		t.Fatal("legacy unbound schema signed")
+	}
+}
