@@ -1,0 +1,1833 @@
+{
+  "date": "2026-10-12",
+  "toolchain": "go version go1.26.8 darwin/arm64",
+  "platform": "darwin/arm64",
+  "cpu": "Apple M4 Max",
+  "gomaxprocs": 16,
+  "source_base": "95ab3d699f0a4abdbb98fd6b0913158a5d6d810a",
+  "source_state": "dirty worktree; same other runtime changes in before/after; not a release benchmark",
+  "task_read_sha256_before": "5452bfb2100fabc0a8c5002c560a0fdebd8a3eff8b9bbbd8a6506747fb2f746c",
+  "task_read_sha256_after": "7159c2edb20c11423f71a68dd9f758bb1a71b83e447094e45124aaa8b9f78bd3",
+  "fixture": "synthetic trace rows 100/1000/10000; ~1KiB unique observation + evidence per row; task summaries 100/10000; serial in-process reads; 2 runs",
+  "sampling": "100 iterations per read/fanout case; 20 per unchanged-snapshot write; p95 is per-run nearest-rank, not pooled; setup excluded; warm local caches; no service traffic",
+  "results": {
+    "before": [
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 9225.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 11209.0,
+          "samples": 100.0,
+          "B/op": 27008.0,
+          "allocs/op": 202.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6672.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 9083.0,
+          "samples": 100.0,
+          "B/op": 27008.0,
+          "allocs/op": 202.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6215.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 8167.0,
+          "samples": 100.0,
+          "B/op": 27008.0,
+          "allocs/op": 202.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 5377.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 6417.0,
+          "samples": 100.0,
+          "B/op": 27008.0,
+          "allocs/op": 202.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 9710.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 11625.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 9504.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 10917.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 9520.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 11541.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 8817.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 10459.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 64382.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 159542.0,
+          "samples": 100.0,
+          "B/op": 252610.0,
+          "allocs/op": 2002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 55201.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 145958.0,
+          "samples": 100.0,
+          "B/op": 252610.0,
+          "allocs/op": 2002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 53208.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 162667.0,
+          "samples": 100.0,
+          "B/op": 252608.0,
+          "allocs/op": 2002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 49846.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 160667.0,
+          "samples": 100.0,
+          "B/op": 252609.0,
+          "allocs/op": 2002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6300.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 7708.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6700.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 8208.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6500.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 9209.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 5879.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 7667.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 371830.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 854417.0,
+          "samples": 100.0,
+          "B/op": 2488234.0,
+          "allocs/op": 20002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 369252.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 788041.0,
+          "samples": 100.0,
+          "B/op": 2488129.0,
+          "allocs/op": 20002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 372752.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 801417.0,
+          "samples": 100.0,
+          "B/op": 2488128.0,
+          "allocs/op": 20002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 370475.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 761042.0,
+          "samples": 100.0,
+          "B/op": 2488184.0,
+          "allocs/op": 20002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6490.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 7834.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6138.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 8292.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 7325.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 8875.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6820.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 8167.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 226490.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 372334.0,
+          "samples": 100.0,
+          "B/op": 348845.0,
+          "allocs/op": 3139.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 214363.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 339708.0,
+          "samples": 100.0,
+          "B/op": 348843.0,
+          "allocs/op": 3139.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 24444.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 29083.0,
+          "samples": 100.0,
+          "B/op": 3912.0,
+          "allocs/op": 106.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 23942.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 26583.0,
+          "samples": 100.0,
+          "B/op": 3912.0,
+          "allocs/op": 106.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 231920.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 362291.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 229437.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 385625.0,
+          "samples": 100.0,
+          "B/op": 339539.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 222370.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 359166.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 220797.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 413708.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 1712454.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225089.0,
+          "p95-ns": 1860875.0,
+          "samples": 100.0,
+          "B/op": 3545659.0,
+          "allocs/op": 31082.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 1705892.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225089.0,
+          "p95-ns": 1842458.0,
+          "samples": 100.0,
+          "B/op": 3545655.0,
+          "allocs/op": 31082.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 24648.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225089.0,
+          "p95-ns": 31667.0,
+          "samples": 100.0,
+          "B/op": 3928.0,
+          "allocs/op": 107.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 25138.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225089.0,
+          "p95-ns": 29458.0,
+          "samples": 100.0,
+          "B/op": 3928.0,
+          "allocs/op": 107.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 216947.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225089.0,
+          "p95-ns": 325875.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 223074.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225089.0,
+          "p95-ns": 342750.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 223526.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225089.0,
+          "p95-ns": 373667.0,
+          "samples": 100.0,
+          "B/op": 341152.0,
+          "allocs/op": 3930.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 220378.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225089.0,
+          "p95-ns": 344084.0,
+          "samples": 100.0,
+          "B/op": 341153.0,
+          "allocs/op": 3930.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 19288935.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257092.0,
+          "p95-ns": 19953708.0,
+          "samples": 100.0,
+          "B/op": 38326796.0,
+          "allocs/op": 319090.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 19449490.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257092.0,
+          "p95-ns": 19924833.0,
+          "samples": 100.0,
+          "B/op": 38326812.0,
+          "allocs/op": 319090.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 26006.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257092.0,
+          "p95-ns": 32541.0,
+          "samples": 100.0,
+          "B/op": 3928.0,
+          "allocs/op": 107.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 24617.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257092.0,
+          "p95-ns": 29375.0,
+          "samples": 100.0,
+          "B/op": 3928.0,
+          "allocs/op": 107.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 222282.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257092.0,
+          "p95-ns": 239959.0,
+          "samples": 100.0,
+          "B/op": 339472.0,
+          "allocs/op": 3628.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 218692.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257092.0,
+          "p95-ns": 240000.0,
+          "samples": 100.0,
+          "B/op": 339472.0,
+          "allocs/op": 3628.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 220609.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257092.0,
+          "p95-ns": 245125.0,
+          "samples": 100.0,
+          "B/op": 341152.0,
+          "allocs/op": 3930.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 240320.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257092.0,
+          "p95-ns": 302334.0,
+          "samples": 100.0,
+          "B/op": 341152.0,
+          "allocs/op": 3930.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_100/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 9950.0,
+          "p95-ns": 13375.0,
+          "samples": 100.0,
+          "B/op": 20785.0,
+          "allocs/op": 5.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_100/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 9669.0,
+          "p95-ns": 13458.0,
+          "samples": 100.0,
+          "B/op": 20783.0,
+          "allocs/op": 5.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_100/offset_equivalent_80-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 3479.0,
+          "p95-ns": 4375.0,
+          "samples": 100.0,
+          "B/op": 20760.0,
+          "allocs/op": 5.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_100/offset_equivalent_80-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 3441.0,
+          "p95-ns": 4458.0,
+          "samples": 100.0,
+          "B/op": 20760.0,
+          "allocs/op": 5.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_10000/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 1664099.0,
+          "p95-ns": 2200500.0,
+          "samples": 100.0,
+          "B/op": 1925892.0,
+          "allocs/op": 6.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_10000/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 1626070.0,
+          "p95-ns": 2095917.0,
+          "samples": 100.0,
+          "B/op": 1925786.0,
+          "allocs/op": 6.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_10000/offset_equivalent_9980-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 307081.0,
+          "p95-ns": 608208.0,
+          "samples": 100.0,
+          "B/op": 1925800.0,
+          "allocs/op": 5.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_10000/offset_equivalent_9980-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 311321.0,
+          "p95-ns": 656792.0,
+          "samples": 100.0,
+          "B/op": 1925815.0,
+          "allocs/op": 5.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_100/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 45302.0,
+          "p95-ns": 53625.0,
+          "samples": 100.0,
+          "B/op": 16471.0,
+          "allocs/op": 490.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_100/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 44132.0,
+          "p95-ns": 49417.0,
+          "samples": 100.0,
+          "B/op": 16476.0,
+          "allocs/op": 490.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_100/offset_equivalent_80-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 73092.0,
+          "p95-ns": 78791.0,
+          "samples": 100.0,
+          "B/op": 16976.0,
+          "allocs/op": 499.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_100/offset_equivalent_80-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 72407.0,
+          "p95-ns": 80959.0,
+          "samples": 100.0,
+          "B/op": 16976.0,
+          "allocs/op": 499.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_10000/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 61194.0,
+          "p95-ns": 68250.0,
+          "samples": 100.0,
+          "B/op": 16489.0,
+          "allocs/op": 491.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_10000/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 56864.0,
+          "p95-ns": 63417.0,
+          "samples": 100.0,
+          "B/op": 16492.0,
+          "allocs/op": 491.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_10000/offset_equivalent_9980-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 2403069.0,
+          "p95-ns": 2540167.0,
+          "samples": 100.0,
+          "B/op": 16980.0,
+          "allocs/op": 499.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_10000/offset_equivalent_9980-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 2395525.0,
+          "p95-ns": 2466500.0,
+          "samples": 100.0,
+          "B/op": 16976.0,
+          "allocs/op": 499.0
+        }
+      }
+    ],
+    "after": [
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 8868.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 10750.0,
+          "samples": 100.0,
+          "B/op": 27008.0,
+          "allocs/op": 202.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6987.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 9125.0,
+          "samples": 100.0,
+          "B/op": 27008.0,
+          "allocs/op": 202.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 230.8,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 709.0,
+          "samples": 100.0,
+          "B/op": 576.0,
+          "allocs/op": 1.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 435.8,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 292.0,
+          "samples": 100.0,
+          "B/op": 576.0,
+          "allocs/op": 1.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 10598.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 19416.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 9604.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 26083.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 9376.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 13792.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_100/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 7818.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 9417.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 61773.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 173750.0,
+          "samples": 100.0,
+          "B/op": 252608.0,
+          "allocs/op": 2002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 60518.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 158667.0,
+          "samples": 100.0,
+          "B/op": 252608.0,
+          "allocs/op": 2002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 163.3,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 250.0,
+          "samples": 100.0,
+          "B/op": 576.0,
+          "allocs/op": 1.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 125.8,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 208.0,
+          "samples": 100.0,
+          "B/op": 576.0,
+          "allocs/op": 1.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 8504.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 11875.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6978.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 7791.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 7015.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 9666.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_1000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6505.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 7708.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 381770.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 846584.0,
+          "samples": 100.0,
+          "B/op": 2488234.0,
+          "allocs/op": 20002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 365536.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 725541.0,
+          "samples": 100.0,
+          "B/op": 2488235.0,
+          "allocs/op": 20002.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 149.2,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 167.0,
+          "samples": 100.0,
+          "B/op": 576.0,
+          "allocs/op": 1.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 114.6,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 208.0,
+          "samples": 100.0,
+          "B/op": 576.0,
+          "allocs/op": 1.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6278.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 8334.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 5711.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 7000.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 6144.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 8542.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/memory/traces_10000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 5825.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 8084.0,
+          "samples": 100.0,
+          "B/op": 30880.0,
+          "allocs/op": 301.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 221031.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 366375.0,
+          "samples": 100.0,
+          "B/op": 348843.0,
+          "allocs/op": 3139.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 212382.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 352959.0,
+          "samples": 100.0,
+          "B/op": 348842.0,
+          "allocs/op": 3139.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 24465.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 27209.0,
+          "samples": 100.0,
+          "B/op": 3912.0,
+          "allocs/op": 106.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 24916.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 30125.0,
+          "samples": 100.0,
+          "B/op": 3912.0,
+          "allocs/op": 106.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 235882.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 428875.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 231394.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 424709.0,
+          "samples": 100.0,
+          "B/op": 339537.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 230042.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 374750.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_100/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 227590.0,
+          "db-wal-bytes": 321176.0,
+          "fixture-json-bytes": 122785.0,
+          "p95-ns": 405792.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 1754083.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 1934333.0,
+          "samples": 100.0,
+          "B/op": 3545651.0,
+          "allocs/op": 31082.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 1757044.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 1964834.0,
+          "samples": 100.0,
+          "B/op": 3545652.0,
+          "allocs/op": 31082.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 24531.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 26750.0,
+          "samples": 100.0,
+          "B/op": 3928.0,
+          "allocs/op": 107.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 24898.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 28333.0,
+          "samples": 100.0,
+          "B/op": 3928.0,
+          "allocs/op": 107.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 224932.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 393584.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 226654.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 370583.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 222860.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 352250.0,
+          "samples": 100.0,
+          "B/op": 341153.0,
+          "allocs/op": 3930.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_1000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 224540.0,
+          "db-wal-bytes": 1586016.0,
+          "fixture-json-bytes": 1225088.0,
+          "p95-ns": 383750.0,
+          "samples": 100.0,
+          "B/op": 341152.0,
+          "allocs/op": 3930.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 19370908.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 20181625.0,
+          "samples": 100.0,
+          "B/op": 38326849.0,
+          "allocs/op": 319090.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/full-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 19565743.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 20428708.0,
+          "samples": 100.0,
+          "B/op": 38326802.0,
+          "allocs/op": 319090.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 25062.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 26708.0,
+          "samples": 100.0,
+          "B/op": 3928.0,
+          "allocs/op": 107.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/metadata-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 25000.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 28917.0,
+          "samples": 100.0,
+          "B/op": 3928.0,
+          "allocs/op": 107.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 224051.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 262500.0,
+          "samples": 100.0,
+          "B/op": 339536.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/trace_first_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 218406.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 241084.0,
+          "samples": 100.0,
+          "B/op": 339537.0,
+          "allocs/op": 3629.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 218220.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 234833.0,
+          "samples": 100.0,
+          "B/op": 341152.0,
+          "allocs/op": 3930.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskReadCapacity/sqlite/traces_10000/trace_tail_100-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 225022.0,
+          "db-wal-bytes": 28291840.0,
+          "fixture-json-bytes": 12257093.0,
+          "p95-ns": 250459.0,
+          "samples": 100.0,
+          "B/op": 341152.0,
+          "allocs/op": 3930.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_100/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 8983.0,
+          "p95-ns": 11584.0,
+          "samples": 100.0,
+          "B/op": 8263.0,
+          "allocs/op": 26.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_100/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 8502.0,
+          "p95-ns": 9416.0,
+          "samples": 100.0,
+          "B/op": 8265.0,
+          "allocs/op": 26.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_100/offset_equivalent_80-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 4382.0,
+          "p95-ns": 6125.0,
+          "samples": 100.0,
+          "B/op": 8240.0,
+          "allocs/op": 26.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_100/offset_equivalent_80-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 4502.0,
+          "p95-ns": 6125.0,
+          "samples": 100.0,
+          "B/op": 8240.0,
+          "allocs/op": 26.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_10000/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 320246.0,
+          "p95-ns": 342375.0,
+          "samples": 100.0,
+          "B/op": 8273.0,
+          "allocs/op": 27.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_10000/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 321872.0,
+          "p95-ns": 347792.0,
+          "samples": 100.0,
+          "B/op": 8273.0,
+          "allocs/op": 27.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_10000/offset_equivalent_9980-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 225014.0,
+          "p95-ns": 243958.0,
+          "samples": 100.0,
+          "B/op": 8240.0,
+          "allocs/op": 26.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/memory/tasks_10000/offset_equivalent_9980-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 223980.0,
+          "p95-ns": 244667.0,
+          "samples": 100.0,
+          "B/op": 8240.0,
+          "allocs/op": 26.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_100/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 45525.0,
+          "p95-ns": 51875.0,
+          "samples": 100.0,
+          "B/op": 16572.0,
+          "allocs/op": 491.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_100/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 45919.0,
+          "p95-ns": 53875.0,
+          "samples": 100.0,
+          "B/op": 16569.0,
+          "allocs/op": 491.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_100/offset_equivalent_80-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 52883.0,
+          "p95-ns": 60042.0,
+          "samples": 100.0,
+          "B/op": 16874.0,
+          "allocs/op": 497.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_100/offset_equivalent_80-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 52608.0,
+          "p95-ns": 55375.0,
+          "samples": 100.0,
+          "B/op": 16872.0,
+          "allocs/op": 497.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_10000/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 45905.0,
+          "p95-ns": 51792.0,
+          "samples": 100.0,
+          "B/op": 16585.0,
+          "allocs/op": 492.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_10000/offset_equivalent_0-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 45289.0,
+          "p95-ns": 51459.0,
+          "samples": 100.0,
+          "B/op": 16585.0,
+          "allocs/op": 492.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_10000/offset_equivalent_9980-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 53801.0,
+          "p95-ns": 63500.0,
+          "samples": 100.0,
+          "B/op": 16872.0,
+          "allocs/op": 497.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSummaryCapacity/sqlite/tasks_10000/offset_equivalent_9980-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 51148.0,
+          "p95-ns": 55917.0,
+          "samples": 100.0,
+          "B/op": 16872.0,
+          "allocs/op": 497.0
+        }
+      }
+    ],
+    "write": [
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/memory/traces_100-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 9844.0,
+          "p95-ns": 13750.0,
+          "samples": 20.0,
+          "B/op": 30024.0,
+          "allocs/op": 212.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/memory/traces_100-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 9492.0,
+          "p95-ns": 12791.0,
+          "samples": 20.0,
+          "B/op": 30024.0,
+          "allocs/op": 212.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/memory/traces_1000-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 110527.0,
+          "p95-ns": 265000.0,
+          "samples": 20.0,
+          "B/op": 277759.0,
+          "allocs/op": 2012.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/memory/traces_1000-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 93548.0,
+          "p95-ns": 272250.0,
+          "samples": 20.0,
+          "B/op": 277659.0,
+          "allocs/op": 2012.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/memory/traces_10000-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 556629.0,
+          "p95-ns": 1045042.0,
+          "samples": 20.0,
+          "B/op": 2734876.0,
+          "allocs/op": 20013.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/memory/traces_10000-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 421373.0,
+          "p95-ns": 885750.0,
+          "samples": 20.0,
+          "B/op": 2734610.0,
+          "allocs/op": 20012.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_100-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 3095340.0,
+          "db-wal-bytes": 733176.0,
+          "p95-ns": 3485542.0,
+          "samples": 20.0,
+          "B/op": 143980.0,
+          "allocs/op": 2086.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_100-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 3236412.0,
+          "db-wal-bytes": 733176.0,
+          "p95-ns": 4307458.0,
+          "samples": 20.0,
+          "B/op": 143935.0,
+          "allocs/op": 2086.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_1000-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 29417794.0,
+          "db-wal-bytes": 1998016.0,
+          "p95-ns": 29954375.0,
+          "samples": 20.0,
+          "B/op": 1362904.0,
+          "allocs/op": 22052.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_1000-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 29569383.0,
+          "db-wal-bytes": 1998016.0,
+          "p95-ns": 29925916.0,
+          "samples": 20.0,
+          "B/op": 1362740.0,
+          "allocs/op": 22051.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_10000-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 304653452.0,
+          "db-wal-bytes": 28291840.0,
+          "p95-ns": 307796000.0,
+          "samples": 20.0,
+          "B/op": 13676363.0,
+          "allocs/op": 238056.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_10000-16",
+        "iterations": 20,
+        "metrics": {
+          "ns/op": 308052819.0,
+          "db-wal-bytes": 28291840.0,
+          "p95-ns": 314409125.0,
+          "samples": 20.0,
+          "B/op": 13676355.0,
+          "allocs/op": 238056.0
+        }
+      }
+    ],
+    "fanout": [
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_1/full_false-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 80.83,
+          "subscribers": 1.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_1/full_false-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 72.5,
+          "subscribers": 1.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_1/full_true-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 35.83,
+          "subscribers": 1.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_1/full_true-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 26.67,
+          "subscribers": 1.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_100/full_false-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 3609.0,
+          "subscribers": 100.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_100/full_false-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 3514.0,
+          "subscribers": 100.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_100/full_true-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 469.6,
+          "subscribers": 100.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_100/full_true-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 426.2,
+          "subscribers": 100.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_1000/full_false-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 30913.0,
+          "subscribers": 1000.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_1000/full_false-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 28933.0,
+          "subscribers": 1000.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_1000/full_true-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 3352.0,
+          "subscribers": 1000.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      },
+      {
+        "benchmark": "BenchmarkEventBusFanoutCapacity/subscribers_1000/full_true-16",
+        "iterations": 100,
+        "metrics": {
+          "ns/op": 3416.0,
+          "subscribers": 1000.0,
+          "B/op": 0.0,
+          "allocs/op": 0.0
+        }
+      }
+    ]
+  }
+}

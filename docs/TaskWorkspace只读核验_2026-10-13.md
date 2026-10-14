@@ -97,3 +97,7 @@ git diff --check
 ```
 
 [本批次验收记录](benchmarks/task-workspace-restore-2026-10-13.json)。下一步接入历史密钥版本与审批密文的只读检查器，随后是外部审计、session/租约、审批副作用和索引；源 workspace 的权威完整清单与签名来源仍需后续完善。PostgreSQL 在线验收仍需专用 DSN；在线恢复、发布、执行切换与源记录移除尚未实施。
+
+## 提交与下次续作状态
+
+代码已提交至本地 `5052421`（Store 数据基础、联合导出、离线恢复/准入/workspace 核验及测试），未推送、未部署；HTTP 管理员入口及其他工作区改动未纳入该提交。下一次优先按 [密钥管理只读核验续作](Task密钥管理只读核验续作_2026-10-13.md) 实施，密钥检查器当前尚未实现。本轮仅同步文档，文档更新尚未提交；不把数据保真当作解密验收，继续 blocked、restore_ready=false、source_preserved=true。

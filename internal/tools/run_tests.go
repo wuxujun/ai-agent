@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -106,9 +105,8 @@ func (t *RunTestsTool) Execute(ctx context.Context, workspace string, params map
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil, err
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return &ToolResult{Query: query, Observation: fmt.Sprintf("tests failed (exit code %d)\n%s", exitErr.ExitCode(), output)}, nil
+	if code, exited := commandExitCode(err); exited {
+		return &ToolResult{Query: query, Observation: fmt.Sprintf("tests failed (exit code %d)\n%s", code, output)}, nil
 	}
 	return nil, fmt.Errorf("run_tests execution failed: %w", err)
 }

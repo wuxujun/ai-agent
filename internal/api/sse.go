@@ -3,19 +3,22 @@ package api
 import (
 	"container/list"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 // StepEvent is a Server-Sent Event payload pushed to the client after each step.
 type StepEvent struct {
+	Snapshot     *TaskSnapshotMetadata  `json:"snapshot,omitempty"`
 	TaskID       string                 `json:"task_id"`
 	Status       types.TaskStatus       `json:"status"`
 	Step         *types.StepTrace       `json:"step,omitempty"`
@@ -31,10 +34,8 @@ func (e StepEvent) isTerminal() bool {
 	return e.Step == nil && types.IsTerminalTaskStatus(e.Status)
 }
 
-// stickyTerminalTTL bounds how long the EventBus replays a task's terminal
-// event to late subscribers. The 15s store-poll backstop in streamTask already
-// catches anything older than this; the sticky cache exists purely to close the
-// short window between Publish() and a subscriber's Subscribe() landing.
+// stickyTerminalTTL bounds terminal hints offered by Subscribe. Hints are
+// process-local and may be stale; streamTask reads storage for reconciliation.
 const stickyTerminalTTL = 5 * time.Minute
 
 type stickyEvent struct {
@@ -62,12 +63,9 @@ var globalEventBus = &EventBus{
 // GetBus returns the singleton EventBus.
 func GetBus() *EventBus { return globalEventBus }
 
-// Subscribe registers a new channel for events on taskID.
-// The caller must call Unsubscribe when done. If a terminal event for taskID
-// was published within the sticky TTL, it is returned so the caller can replay
-// it before entering the live-event loop — this closes the race window between
-// Publish() and a late Subscribe() that would otherwise wait for the 15s
-// store-poll backstop in streamTask.
+// Subscribe registers a channel and returns a recent terminal hint, if any.
+// The caller must Unsubscribe when done and verify hints against storage.
+// This is not a durable event log or a replay cursor.
 func (b *EventBus) Subscribe(taskID string) (chan StepEvent, *StepEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -104,7 +102,7 @@ func (b *EventBus) Unsubscribe(taskID string, ch chan StepEvent) {
 }
 
 // Publish sends an event to all subscribers of taskID. Terminal events
-// (Completed/Failed) are cached for stickyTerminalTTL so subscribers arriving
+// (Completed/Partial/Failed) are cached for stickyTerminalTTL so subscribers arriving
 // just after the publish can still receive them.
 func (b *EventBus) Publish(taskID string, event StepEvent) {
 	b.mu.Lock()
@@ -145,98 +143,116 @@ func (b *EventBus) ForgetAll() {
 	b.mu.Unlock()
 }
 
-// streamTask handles GET /api/tasks/:id/stream — Server-Sent Events endpoint.
-// The client receives a StepEvent JSON object for every completed step and a
-// final event when the task reaches completed or failed status.
+// TaskSnapshotMetadata identifies a durable reconciliation snapshot. Counts
+// are observations, not replay cursors: Trace may be truncated or rewritten.
+type TaskSnapshotMetadata struct {
+	TraceCount int       `json:"trace_count"`
+	StepCount  int       `json:"step_count"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+const taskStreamPollInterval = 15 * time.Second
+
+// streamTask is a best-effort live stream with durable snapshot reconciliation.
+// Last-Event-ID is deliberately not a replay cursor for this endpoint.
 func (h *Handler) streamTask(c *gin.Context) {
+	h.streamTaskWithBus(c, GetBus(), taskStreamPollInterval)
+}
+
+func (h *Handler) streamTaskWithBus(c *gin.Context, bus *EventBus, interval time.Duration) {
 	taskID := c.Param("id")
-
-	// Validate task existence first
-	checkCtx, checkCancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
-	defer checkCancel()
-	task, err := h.store.GetTask(checkCtx, taskID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
-		return
-	}
-
-	// If task is already terminal, return its final state immediately as a single event
-	if types.IsTerminalTaskStatus(task.Status) {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("X-Accel-Buffering", "no")
-		writeSSEEvent(c, terminalStepEvent(taskID, task))
-		return
-	}
-
-	// Subscribe to live events
-	bus := GetBus()
-	ch, sticky := bus.Subscribe(taskID)
+	// Subscribe before reading state so no transition falls into a read/subscribe
+	// gap. Sticky/live terminal events remain hints; only storage closes the stream.
+	ch, _ := bus.Subscribe(taskID)
 	defer bus.Unsubscribe(taskID, ch)
-
+	read := func() (store.TaskStreamSnapshot, error) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+		return h.readTaskStreamSnapshot(ctx, taskID)
+	}
+	task, err := read()
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		} else {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "task state is temporarily unavailable"})
+		}
+		return
+	}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
 	c.Header("Connection", "keep-alive")
-
-	// Replay a sticky terminal event if one was Publish()'d in the narrow
-	// window between the GetTask check above and Subscribe landing. Without
-	// this, a late subscriber would wait for the 15s poll backstop below.
-	if sticky != nil {
-		writeSSEEvent(c, *sticky)
-		c.Writer.Flush()
+	c.Header("X-SSE-Recovery", "snapshot")
+	writeSSEEvent(c, streamSnapshotEvent(task))
+	c.Writer.Flush()
+	if types.IsTerminalTaskStatus(task.Status) {
 		return
 	}
 
-	clientGone := c.Request.Context().Done()
-
-	// Reliability backstop: Publish drops events for slow consumers (see
-	// Publish), so a terminal event can be lost if this subscriber's buffer is
-	// momentarily full. Poll the store periodically and, once the task reaches a
-	// terminal state, emit an authoritative terminal event and return — even if
-	// the live event was dropped. The store is the source of truth. A
-	// non-terminal poll tick doubles as a keep-alive so proxies don't drop idle
-	// connections.
-	pollTicker := time.NewTicker(15 * time.Second)
-	defer pollTicker.Stop()
-
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	reconcile := func() bool {
+		latest, err := read()
+		if err != nil {
+			// No cached/live payload can replace an unavailable authoritative store.
+			fmt.Fprint(c.Writer, ": reconciliation-unavailable\n\n")
+			c.Writer.Flush()
+			return false
+		}
+		writeSSEEvent(c, streamSnapshotEvent(latest))
+		c.Writer.Flush()
+		return types.IsTerminalTaskStatus(latest.Status)
+	}
 	for {
 		select {
-		case <-clientGone:
-			slog.Info("SSE client disconnected", slog.String("task_id", taskID))
+		case <-c.Request.Context().Done():
+			log.InfoContext(c.Request.Context(), "SSE client disconnected", "task_id", taskID)
 			return
 		case event, ok := <-ch:
 			if !ok {
 				return
 			}
-			writeSSEEvent(c, event)
-			c.Writer.Flush()
-			// Stop streaming once task is terminal
 			if event.isTerminal() {
-				return
-			}
-		case <-pollTicker.C:
-			// Backstop check: has the task reached a terminal state in the store?
-			pollCtx, pollCancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
-			latest, err := h.store.GetTask(pollCtx, taskID)
-			pollCancel()
-			if err != nil {
-				// Transient store error: keep the stream alive and retry next tick.
-				fmt.Fprintf(c.Writer, ": keep-alive\n\n")
-				c.Writer.Flush()
+				if reconcile() {
+					return
+				}
 				continue
 			}
-			if types.IsTerminalTaskStatus(latest.Status) {
-				writeSSEEvent(c, terminalStepEvent(taskID, latest))
-				c.Writer.Flush()
+			writeSSEEvent(c, event)
+			c.Writer.Flush()
+		case <-ticker.C:
+			if reconcile() {
 				return
 			}
-			// Non-terminal: send a keep-alive comment so proxies keep the
-			// connection open.
-			fmt.Fprintf(c.Writer, ": keep-alive\n\n")
-			c.Writer.Flush()
 		}
 	}
+}
+
+func (h *Handler) readTaskStreamSnapshot(ctx context.Context, id string) (store.TaskStreamSnapshot, error) {
+	var snapshot store.TaskStreamSnapshot
+	var err error
+	if reader, ok := h.store.(store.TaskStreamSnapshotStore); ok {
+		snapshot, err = reader.GetTaskStreamSnapshot(ctx, id)
+	} else {
+		var task *types.Task
+		task, err = h.store.GetTask(ctx, id)
+		if err == nil {
+			snapshot = store.StreamSnapshotFromTask(task)
+		}
+	}
+	if err != nil {
+		return store.TaskStreamSnapshot{}, err
+	}
+	if snapshot.ID != id {
+		return store.TaskStreamSnapshot{}, errors.New("task stream snapshot identity mismatch")
+	}
+	return snapshot, nil
+}
+
+func streamSnapshotEvent(snapshot store.TaskStreamSnapshot) StepEvent {
+	usage := snapshot.TokenUsage
+	return StepEvent{TaskID: snapshot.ID, Status: snapshot.Status, Final: snapshot.FinalAnswer, ErrorCode: snapshot.ErrorCode, ErrorMessage: snapshot.ErrorMessage, TokenUsage: &usage, Snapshot: &TaskSnapshotMetadata{TraceCount: snapshot.TraceCount, StepCount: snapshot.StepCount, UpdatedAt: snapshot.UpdatedAt}}
 }
 
 func terminalStepEvent(taskID string, task *types.Task) StepEvent {

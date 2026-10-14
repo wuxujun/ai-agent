@@ -1,0 +1,30 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/wuxujun/ai-agent/internal/store
+cpu: Apple M4 Max
+BenchmarkTaskReadCapacity/memory/traces_100/full-16    	     100	      9649 ns/op	    122785 fixture-json-bytes	     14041 p95-ns	       100.0 samples	   27008 B/op	     202 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_100/full-16    	     100	      7608 ns/op	    122785 fixture-json-bytes	     11125 p95-ns	       100.0 samples	   27008 B/op	     202 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_100/stream_snapshot-16         	     100	       578.3 ns/op	    122785 fixture-json-bytes	       542.0 p95-ns	       100.0 samples	       0 B/op	       0 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_100/stream_snapshot-16         	     100	       582.9 ns/op	    122785 fixture-json-bytes	       542.0 p95-ns	       100.0 samples	       0 B/op	       0 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_1000/full-16                   	     100	     73002 ns/op	   1225089 fixture-json-bytes	    190875 p95-ns	       100.0 samples	  252610 B/op	    2002 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_1000/full-16                   	     100	     66489 ns/op	   1225089 fixture-json-bytes	    193208 p95-ns	       100.0 samples	  252608 B/op	    2002 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_1000/stream_snapshot-16        	     100	      4177 ns/op	   1225089 fixture-json-bytes	      4375 p95-ns	       100.0 samples	       0 B/op	       0 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_1000/stream_snapshot-16        	     100	      4104 ns/op	   1225089 fixture-json-bytes	      4167 p95-ns	       100.0 samples	       0 B/op	       0 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_10000/full-16                  	     100	    378299 ns/op	  12257093 fixture-json-bytes	    820708 p95-ns	       100.0 samples	 2488234 B/op	   20002 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_10000/full-16                  	     100	    377203 ns/op	  12257093 fixture-json-bytes	    797625 p95-ns	       100.0 samples	 2488235 B/op	   20002 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_10000/stream_snapshot-16       	     100	     31003 ns/op	  12257093 fixture-json-bytes	     38625 p95-ns	       100.0 samples	       0 B/op	       0 allocs/op
+BenchmarkTaskReadCapacity/memory/traces_10000/stream_snapshot-16       	     100	     29615 ns/op	  12257093 fixture-json-bytes	     31166 p95-ns	       100.0 samples	       0 B/op	       0 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_100/full-16                    	     100	    216687 ns/op	    321176 db-wal-bytes	    122785 fixture-json-bytes	    344750 p95-ns	       100.0 samples	  348845 B/op	    3139 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_100/full-16                    	     100	    215886 ns/op	    321176 db-wal-bytes	    122785 fixture-json-bytes	    375542 p95-ns	       100.0 samples	  348840 B/op	    3139 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_100/stream_snapshot-16         	     100	     47803 ns/op	    321176 db-wal-bytes	    122785 fixture-json-bytes	     61750 p95-ns	       100.0 samples	    1904 B/op	      48 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_100/stream_snapshot-16         	     100	     46504 ns/op	    321176 db-wal-bytes	    122785 fixture-json-bytes	     54791 p95-ns	       100.0 samples	    1904 B/op	      48 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_1000/full-16                   	     100	   1727160 ns/op	   1586016 db-wal-bytes	   1225089 fixture-json-bytes	   1899666 p95-ns	       100.0 samples	 3545656 B/op	   31082 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_1000/full-16                   	     100	   1746328 ns/op	   1586016 db-wal-bytes	   1225089 fixture-json-bytes	   1927791 p95-ns	       100.0 samples	 3545654 B/op	   31082 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_1000/stream_snapshot-16        	     100	    262358 ns/op	   1586016 db-wal-bytes	   1225089 fixture-json-bytes	    282292 p95-ns	       100.0 samples	    1920 B/op	      50 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_1000/stream_snapshot-16        	     100	    265684 ns/op	   1586016 db-wal-bytes	   1225089 fixture-json-bytes	    282750 p95-ns	       100.0 samples	    1920 B/op	      50 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_10000/full-16                  	     100	  19675258 ns/op	  28291840 db-wal-bytes	  12257092 fixture-json-bytes	  20205500 p95-ns	       100.0 samples	38326799 B/op	  319090 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_10000/full-16                  	     100	  19722820 ns/op	  28291840 db-wal-bytes	  12257092 fixture-json-bytes	  20268709 p95-ns	       100.0 samples	38326801 B/op	  319090 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_10000/stream_snapshot-16       	     100	   3951458 ns/op	  28291840 db-wal-bytes	  12257092 fixture-json-bytes	   4047917 p95-ns	       100.0 samples	    1920 B/op	      50 allocs/op
+BenchmarkTaskReadCapacity/sqlite/traces_10000/stream_snapshot-16       	     100	   4004283 ns/op	  28291840 db-wal-bytes	  12257092 fixture-json-bytes	   4166625 p95-ns	       100.0 samples	    1920 B/op	      50 allocs/op
+PASS
+ok  	github.com/wuxujun/ai-agent/internal/store	6.124s

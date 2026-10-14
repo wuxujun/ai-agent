@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/policy"
+	"github.com/wuxujun/ai-agent/internal/policy/commandenv"
+	"github.com/wuxujun/ai-agent/internal/policy/containersandbox"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // toolTimeout returns the command execution timeout from the configuration.
@@ -27,18 +32,40 @@ func RunCommand(ctx context.Context, dir string, name string, args ...string) (s
 	ctx, cancel := context.WithTimeout(ctx, toolTimeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	configureCommandCancellation(cmd)
-
 	var out boundedCommandOutput
 	var stderr boundedCommandOutput
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+	cfg := config.Get()
+	sandbox, extra := cfg.Tool.Sandbox, append([]string(nil), cfg.Tool.EnvironmentAllowlist...)
+	var err error
+	if validationErr := sandbox.Validate(); validationErr != nil {
+		return "", validationErr
+	}
+	if sandbox.Docker() {
+		if workspaceErr := policy.ValidateWorkspace(dir); workspaceErr != nil {
+			return "", workspaceErr
+		}
+		err = containersandbox.Run(ctx, sandbox, dir, name, args, extra, &out, &stderr)
+		if errors.Is(err, containersandbox.ErrCleanup) {
+			fields := []any{"task_id", logger.TaskID(ctx), "error", err}
+			if span := trace.SpanContextFromContext(ctx); span.IsValid() {
+				fields = append(fields, "trace_id", span.TraceID().String())
+			}
+			logger.Component("tools.runner").ErrorContext(ctx, "sandbox cleanup unconfirmed", fields...)
+		}
+	} else {
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.Dir = dir
+		environment, envErr := commandenv.Build(os.Environ(), dir, extra)
+		if envErr != nil {
+			return "", envErr
+		}
+		cmd.Env = environment
+		configureCommandCancellation(cmd)
+		cmd.Stdout, cmd.Stderr = &out, &stderr
+		err = cmd.Run()
+	}
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, containersandbox.ErrCleanup) {
 			if stderr.Len() > 0 {
 				return stderr.String(), ctxErr
 			}
@@ -47,8 +74,8 @@ func RunCommand(ctx context.Context, dir string, name string, args ...string) (s
 		if errors.Is(err, exec.ErrNotFound) {
 			return "", fmt.Errorf("dependency '%s' is not installed on this system; please install it (e.g., 'brew install %s' or 'apt install %s')", name, name, name)
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if exitErr.ExitCode() == 1 && name == "rg" {
+		if code, exited := commandExitCode(err); exited {
+			if code == 1 && name == "rg" {
 				return out.String(), nil
 			}
 		}
@@ -86,4 +113,17 @@ func (b *boundedCommandOutput) String() string {
 		return string(b.data)
 	}
 	return string(b.data[:min(len(b.data), maxCommandOutputBytes-len(commandOutputTruncated))]) + commandOutputTruncated
+}
+
+// Cleanup and cancellation failures must never be converted into ordinary
+// tool observations, even when joined with a command exit error.
+func commandExitCode(err error) (int, bool) {
+	if errors.Is(err, containersandbox.ErrCleanup) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return 0, false
+	}
+	var exited interface{ ExitCode() int }
+	if errors.As(err, &exited) {
+		return exited.ExitCode(), true
+	}
+	return 0, false
 }

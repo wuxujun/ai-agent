@@ -42,6 +42,8 @@ export TASK_ID='task-demo-001'
 
 `completed`、`partial`、`failed` 是终态。
 
+Task 详情新增存储生成的 `terminal_since`、`last_maintenance_at` 和 JSON 十进制字符串 `maintenance_version`。创建/保存不能由客户端指定这些值；恢复非终态清空终态起点，同终态维护保留起点但推进版本，历史缺失不回填。详见 [生命周期契约](可信终态时间与维护版本_2026-10-12.md)。
+
 ## 2. 创建 Task
 
 ```http
@@ -287,7 +289,28 @@ curl -N \
 }
 ```
 
-如果订阅时 Task 已经进入终态，服务会立即发送一个终态事件并关闭连接。非终态长连接每约 15 秒发送 keep-alive。
+独立 GET 订阅采用**实时提示 + 持久化快照对账**，响应头 `X-SSE-Recovery: snapshot`。首次连接或重连立即发送快照，非终态连接每约 15 秒读取 Store 并发送快照；本节点收到终态提示时也重新读取 Store。快照使用原有 `message` / `data:` 格式，增加可选 `snapshot` 元数据：
+
+```json
+{
+  "task_id": "task-demo-001",
+  "status": "awaiting_approval",
+  "snapshot": {
+    "trace_count": 12,
+    "step_count": 4,
+    "updated_at": "2026-10-12T12:00:00Z"
+  },
+  "token_usage": { "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150 }
+}
+```
+
+`completed`、`partial`、`failed` 的快照包含持久化答案/错误与累计 usage，发送后关闭连接。已建立连接后，Store 暂时不可读时只发送 `: reconciliation-unavailable` 注释并在下一次轮询重试；缓存或即时终态提示不能代替确认结果。正常存储与可写连接下，跨处理器或丢事件的对账等待通常为一个 15 秒轮询周期加存储读取耗时（单次读取最多 3 秒），并非故障/阻塞时的绝对时限。
+
+内置存储通过轻量快照读取状态、Trace 数量和 usage：SQL 单条聚合查询、Memory 锁内汇总、Redis 原子 metadata；旧 Redis/自定义适配器可回退单次完整读取，接口错误不绕过到兼容路径。字段与恢复契约不变，详见 [轻量快照验收](SSE轻量快照读取与一致性验收_2026-10-12.md)。
+
+该流不发送 `id:`，不支持按 `Last-Event-ID` 精确重放；传入该头仍从当前快照开始，不会绕过认证或 Task 租户检查。token/step 是可丢失、可重复或滞后的即时提示，客户端不能将 token 拼接结果或到达顺序当作最终记录。恢复时读取 `GET /api/tasks/:id?view=summary`、`GET /api/tasks/:id/trace`（按页）及 `/approvals`，以持久化状态为准；快照计数/更新时间不是续传游标。Trace 顺序号也可能因重排/截断改变，刷新当前页对账。
+
+Console 在消息、连接 open/error 及恢复可见时合并触发约 300 ms 后的上述查询，并保留可见页面 8 秒轮询；加载中的刷新延后执行，切页/终态时关闭流并清理待刷新计时器。页面后台计时器可能被浏览器节流，实际延迟还取决于 API/存储响应。断开此独立 GET 流只取消观察，不取消任务；`POST .../run-all?stream=true` 的执行流仍按原契约在客户端断开时取消执行。实现与验收范围见 [SSE 恢复说明](SSE断线恢复与持久化对账_2026-10-12.md)。
 
 ## 7. 审批高风险操作
 
@@ -474,3 +497,18 @@ POST /api/tasks/:id/run-all?stream=true
 `api.tenants.<tenant>.approval_disallow_self` 默认 `false`，设为 `true` 后要求不同的已验证个人创建者和审批者，作用于批准和拒绝。策略按任务所属租户评估，管理员无自批豁免；身份缺失/非个人主体及创建者本人均返回 403，且不写入决策或发送信号。启用后创建任务也要求个人身份。`creator_actor_id` 由服务端从认证主体生成并持久化，客户端同名字段被忽略；任务详情（含 `view=summary`）可返回该字段，紧凑列表摘要不增加该字段。历史任务不推断或回填创建者；如需终止，仍可走原有取消流程。策略支持重载，非法候选保留原配置。
 
 个人身份可通过 `api.auth.bearer.require_subject` 要求；JWT 使用已验证的 `sub`，introspection 使用配置的 `subject_claim`。个人审计 ID 在已有加密审批结果中保存；算法、环境变量、严格配置和回归范围见 [生产认证与审批权限说明](生产认证与审批权限说明_2026-10-11.md)。任务创建者身份及可配置禁止自批已实现；完整角色体系仍待实现。
+
+
+## 只读归档候选评估
+
+`GET /api/retention/tasks?tenant_id=<configured-tenant>&hot_days=30&limit=20&byte_budget=65536` 要求管理员身份及明确租户范围，返回有界元数据、blocked/unknown 原因和策略绑定游标。内置后端已补可靠终态/维护时间和字符串维护版本，并按最近维护检查保留窗口；联合快照等证据仍缺失，不返回 eligible，`execution_ready` 始终 false；该入口不导出、修复索引、获取租约或删除数据。权限、预算、Redis 只读行为和完整请求/响应契约见 [评估接口说明](只读归档候选评估接口_2026-10-12.md)。
+
+## 稳定 Task/Trace 单任务导出
+
+`GET /api/retention/tasks/:id/export?tenant_id=<configured-tenant>&byte_budget=1048576` 要求管理员和明确租户。返回稳定 Task/完整 Trace 快照、原物理时间、payload SHA-256 和字节数；响应预算 4096–8388608，最大 10000 条事件，超限返回 413，15 秒超时。源记录保留；不含独立审批/记忆/session 联合数据，`restore_ready=false`，不授予清理权限。详细格式、哈希校验、后端一致性及错误契约见 [导出说明](稳定TaskTrace单任务导出_2026-10-12.md)。
+
+联合范围显式使用 `scope=joint`，返回 `task-joint-export-v2`，包含同次观察的审批密文/版本、任务所属独立记忆/embedding、会话及字符串 sequence 高水位，并增加审批/记忆数量；原范围不变。每类依赖最多 1000 条，Redis 有完整原始键扫描上限；`restore_ready` 仍为 false。详见 [联合导出说明](Task联合快照导出_2026-10-12.md)。
+
+`POST /api/retention/imports/verify?tenant_id=<configured-tenant>&byte_budget=1048576` 要求管理员，正文为完整联合导出 JSON。它验证清单/hash/字节数/数量/租户/关联关系后，在请求专属的临时 SQLite 沙箱中原子导入独立记录，再逐记录读回并比对完整内容。成功返回 `verified=true`、数量和原 payload hash；仍为 `restore_ready=false`、`source_preserved=true`。不接入在线 Store，不执行审批、索引或模型；不保存持久归档，也不授权源记录清理。预算限制上传正文，范围 4096–8388608；非法包 400、未知租户 404、超预算 413、取消/期限超时 504、隔离存储或读回故障 503，错误不包含正文。详见 [隔离恢复验证](Task隔离导入与恢复验证_2026-10-12.md)。
+
+验证报告增加 `source_backend` 来源字段。持久化恢复使用离线 `cmd/task-restore`，支持创建专用私有数据库、关闭/只读重开及重新验证；HTTP 接口不接受磁盘路径。见 [持久化隔离恢复验收](Task持久化隔离恢复验收_2026-10-12.md)。

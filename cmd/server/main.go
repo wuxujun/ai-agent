@@ -106,6 +106,9 @@ func run() error {
 			log.Printf("failed to close log files: %v", err)
 		}
 	}()
+	if err := validateExecutionSandbox(context.Background(), cfg); err != nil {
+		return fmt.Errorf("validate execution sandbox: %w", err)
+	}
 	if err := validateStartupTeamRouting(cfg); err != nil {
 		return err
 	}

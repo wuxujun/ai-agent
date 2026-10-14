@@ -1,0 +1,10 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/wuxujun/ai-agent/internal/store
+cpu: Apple M4 Max
+BenchmarkTaskSnapshotChangedWriteCapacity/sqlite/traces_1000-16         	      20	   3457244 ns/op	   2080416 db-wal-bytes	   3974916 p95-ns	        20.00 samples	 1341987 B/op	   21060 allocs/op
+BenchmarkTaskSnapshotChangedWriteCapacity/sqlite/traces_1000-16         	      20	   3311756 ns/op	   2080416 db-wal-bytes	   3460584 p95-ns	        20.00 samples	 1342154 B/op	   21061 allocs/op
+BenchmarkTaskSnapshotChangedWriteCapacity/sqlite/traces_10000-16        	      20	  37455233 ns/op	  28291840 db-wal-bytes	  38204042 p95-ns	        20.00 samples	13440756 B/op	  228066 allocs/op
+BenchmarkTaskSnapshotChangedWriteCapacity/sqlite/traces_10000-16        	      20	  37171940 ns/op	  28291840 db-wal-bytes	  38017834 p95-ns	        20.00 samples	13440966 B/op	  228066 allocs/op
+PASS
+ok  	github.com/wuxujun/ai-agent/internal/store	3.482s

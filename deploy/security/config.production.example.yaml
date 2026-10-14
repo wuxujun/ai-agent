@@ -55,5 +55,7 @@ answer_pipeline:
   enforcement: strict
   on_required_stage_failure: partial
 
+# Additional inherited subprocess variables require review; no service secrets.
 tool:
   timeout_seconds: 120
+  environment_allowlist: []

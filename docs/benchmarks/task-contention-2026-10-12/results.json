@@ -1,0 +1,377 @@
+{
+  "date": "2026-10-12",
+  "cpu": "Apple M4 Max",
+  "platform": "darwin/arm64",
+  "go": "1.26.8",
+  "gomaxprocs": 16,
+  "source_base": "95ab3d699f0a4abdbb98fd6b0913158a5d6d810a",
+  "source_state": "dirty worktree; synthetic temporary stores only; not a production benchmark",
+  "benchmark_sha256": "9b0bdf5bd8d1cfdd420d1a9d7eeeb5aa70f6508053290de474a9422e04781a79",
+  "workload": "1 writer; 0/4/16 continuous readers; 1000/10000 Trace rows, ~1KiB per row; 20 writes and 20 projections per reader, two runs; no think time; SQLite default single connection; pool waits summed across operations; 30s bounded contexts",
+  "results": [
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_1000/readers_0-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 130283.0,
+        "reads": 0.0,
+        "total-ops/s": 7676.0,
+        "write-p95-ns": 300542.0,
+        "writes": 20.0,
+        "B/op": 277665.0,
+        "allocs/op": 2012.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_1000/readers_0-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 104342.0,
+        "reads": 0.0,
+        "total-ops/s": 9585.0,
+        "write-p95-ns": 203000.0,
+        "writes": 20.0,
+        "B/op": 277659.0,
+        "allocs/op": 2012.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_1000/readers_4-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 140960.0,
+        "read-p95-ns": 476708.0,
+        "reads": 80.0,
+        "total-ops/s": 35472.0,
+        "write-p95-ns": 355750.0,
+        "writes": 20.0,
+        "B/op": 277762.0,
+        "allocs/op": 2013.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_1000/readers_4-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 123975.0,
+        "read-p95-ns": 371792.0,
+        "reads": 80.0,
+        "total-ops/s": 40333.0,
+        "write-p95-ns": 251750.0,
+        "writes": 20.0,
+        "B/op": 277767.0,
+        "allocs/op": 2013.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_1000/readers_16-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 137119.0,
+        "read-p95-ns": 493708.0,
+        "reads": 320.0,
+        "total-ops/s": 123986.0,
+        "write-p95-ns": 240750.0,
+        "writes": 20.0,
+        "B/op": 277810.0,
+        "allocs/op": 2014.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_1000/readers_16-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 123856.0,
+        "read-p95-ns": 624542.0,
+        "reads": 320.0,
+        "total-ops/s": 137263.0,
+        "write-p95-ns": 299000.0,
+        "writes": 20.0,
+        "B/op": 277784.0,
+        "allocs/op": 2013.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_10000/readers_0-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 464140.0,
+        "reads": 0.0,
+        "total-ops/s": 2155.0,
+        "write-p95-ns": 750750.0,
+        "writes": 20.0,
+        "B/op": 2734892.0,
+        "allocs/op": 20013.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_10000/readers_0-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 421060.0,
+        "reads": 0.0,
+        "total-ops/s": 2375.0,
+        "write-p95-ns": 911666.0,
+        "writes": 20.0,
+        "B/op": 2734610.0,
+        "allocs/op": 20012.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_10000/readers_4-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 474848.0,
+        "read-p95-ns": 907958.0,
+        "reads": 80.0,
+        "total-ops/s": 10530.0,
+        "write-p95-ns": 897208.0,
+        "writes": 20.0,
+        "B/op": 2734674.0,
+        "allocs/op": 20013.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_10000/readers_4-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 473583.0,
+        "read-p95-ns": 884375.0,
+        "reads": 80.0,
+        "total-ops/s": 10558.0,
+        "write-p95-ns": 873584.0,
+        "writes": 20.0,
+        "B/op": 2734718.0,
+        "allocs/op": 20014.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_10000/readers_16-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 559423.0,
+        "read-p95-ns": 1528833.0,
+        "reads": 320.0,
+        "total-ops/s": 30389.0,
+        "write-p95-ns": 964875.0,
+        "writes": 20.0,
+        "B/op": 2735347.0,
+        "allocs/op": 20015.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/memory/traces_10000/readers_16-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 568115.0,
+        "read-p95-ns": 1794000.0,
+        "reads": 320.0,
+        "total-ops/s": 29924.0,
+        "write-p95-ns": 952042.0,
+        "writes": 20.0,
+        "B/op": 2735060.0,
+        "allocs/op": 20015.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_1000/readers_0-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 3858240.0,
+        "db-wal-bytes": 2080416.0,
+        "pool-wait-ns/op": 0.0,
+        "pool-waits": 0.0,
+        "reads": 0.0,
+        "total-ops/s": 259.2,
+        "write-p95-ns": 4161084.0,
+        "writes": 20.0,
+        "B/op": 1558247.0,
+        "allocs/op": 25073.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_1000/readers_0-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 3916123.0,
+        "db-wal-bytes": 2080416.0,
+        "pool-wait-ns/op": 0.0,
+        "pool-waits": 0.0,
+        "reads": 0.0,
+        "total-ops/s": 255.4,
+        "write-p95-ns": 4269084.0,
+        "writes": 20.0,
+        "B/op": 1557455.0,
+        "allocs/op": 25072.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_1000/readers_4-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 5050015.0,
+        "db-wal-bytes": 2080416.0,
+        "pool-wait-ns/op": 3756574.0,
+        "pool-waits": 95.0,
+        "read-p95-ns": 14213875.0,
+        "reads": 80.0,
+        "total-ops/s": 990.1,
+        "write-p95-ns": 5792667.0,
+        "writes": 20.0,
+        "B/op": 1566876.0,
+        "allocs/op": 25312.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_1000/readers_4-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 5053821.0,
+        "db-wal-bytes": 2080416.0,
+        "pool-wait-ns/op": 3035049.0,
+        "pool-waits": 99.0,
+        "read-p95-ns": 13948750.0,
+        "reads": 80.0,
+        "total-ops/s": 989.4,
+        "write-p95-ns": 7002167.0,
+        "writes": 20.0,
+        "B/op": 1566044.0,
+        "allocs/op": 25310.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_1000/readers_16-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 8463148.0,
+        "db-wal-bytes": 2080416.0,
+        "pool-wait-ns/op": 7372030.0,
+        "pool-waits": 337.0,
+        "read-p95-ns": 27028375.0,
+        "reads": 320.0,
+        "total-ops/s": 2009.0,
+        "write-p95-ns": 13622959.0,
+        "writes": 20.0,
+        "B/op": 1596444.0,
+        "allocs/op": 26026.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_1000/readers_16-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 8650819.0,
+        "db-wal-bytes": 2080416.0,
+        "pool-wait-ns/op": 6944760.0,
+        "pool-waits": 338.0,
+        "read-p95-ns": 22349375.0,
+        "reads": 320.0,
+        "total-ops/s": 1965.0,
+        "write-p95-ns": 16181042.0,
+        "writes": 20.0,
+        "B/op": 1597622.0,
+        "allocs/op": 26024.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_10000/readers_0-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 48687519.0,
+        "db-wal-bytes": 28291840.0,
+        "pool-wait-ns/op": 0.0,
+        "pool-waits": 0.0,
+        "reads": 0.0,
+        "total-ops/s": 20.54,
+        "write-p95-ns": 49757000.0,
+        "writes": 20.0,
+        "B/op": 15598874.0,
+        "allocs/op": 268085.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_10000/readers_0-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 48229798.0,
+        "db-wal-bytes": 28291840.0,
+        "pool-wait-ns/op": 0.0,
+        "pool-waits": 0.0,
+        "reads": 0.0,
+        "total-ops/s": 20.73,
+        "write-p95-ns": 49412917.0,
+        "writes": 20.0,
+        "B/op": 15599238.0,
+        "allocs/op": 268088.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_10000/readers_4-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 66671254.0,
+        "db-wal-bytes": 28291840.0,
+        "pool-wait-ns/op": 44856553.0,
+        "pool-waits": 96.0,
+        "read-p95-ns": 122582750.0,
+        "reads": 80.0,
+        "total-ops/s": 74.99,
+        "write-p95-ns": 90701750.0,
+        "writes": 20.0,
+        "B/op": 15609900.0,
+        "allocs/op": 268333.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_10000/readers_4-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 65904883.0,
+        "db-wal-bytes": 28291840.0,
+        "pool-wait-ns/op": 40758078.0,
+        "pool-waits": 96.0,
+        "read-p95-ns": 163614542.0,
+        "reads": 80.0,
+        "total-ops/s": 75.87,
+        "write-p95-ns": 105935500.0,
+        "writes": 20.0,
+        "B/op": 15609561.0,
+        "allocs/op": 268331.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_10000/readers_16-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 115367619.0,
+        "db-wal-bytes": 28291840.0,
+        "pool-wait-ns/op": 96189788.0,
+        "pool-waits": 336.0,
+        "read-p95-ns": 291350375.0,
+        "reads": 320.0,
+        "total-ops/s": 147.4,
+        "write-p95-ns": 196505500.0,
+        "writes": 20.0,
+        "B/op": 15639666.0,
+        "allocs/op": 269040.0
+      }
+    },
+    {
+      "benchmark": "BenchmarkTaskConcurrentCapacity/sqlite/traces_10000/readers_16-16",
+      "writer_iterations": 20,
+      "metrics": {
+        "ns/op": 117573256.0,
+        "db-wal-bytes": 28291840.0,
+        "pool-wait-ns/op": 97803079.0,
+        "pool-waits": 332.0,
+        "read-p95-ns": 309936541.0,
+        "reads": 320.0,
+        "total-ops/s": 144.6,
+        "write-p95-ns": 216853833.0,
+        "writes": 20.0,
+        "B/op": 15640200.0,
+        "allocs/op": 269043.0
+      }
+    }
+  ]
+}

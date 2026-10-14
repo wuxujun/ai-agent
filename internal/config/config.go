@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +17,8 @@ import (
 	"github.com/spf13/viper"
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
+	"github.com/wuxujun/ai-agent/internal/policy/commandenv"
+	"github.com/wuxujun/ai-agent/internal/policy/containersandbox"
 )
 
 // Config holds all application configuration loaded from the config file and
@@ -211,7 +214,9 @@ type Config struct {
 	} `mapstructure:"telemetry"`
 
 	Tool struct {
-		TimeoutSeconds int `mapstructure:"timeout_seconds"`
+		TimeoutSeconds       int                     `mapstructure:"timeout_seconds"`
+		EnvironmentAllowlist []string                `mapstructure:"environment_allowlist"`
+		Sandbox              containersandbox.Config `mapstructure:"sandbox"`
 	} `mapstructure:"tool"`
 
 	Skill struct {
@@ -613,6 +618,15 @@ func setupViper() {
 	viper.SetDefault("telemetry.exporter", "otlp")
 	viper.SetDefault("api.trace_view_url_template", "")
 	viper.SetDefault("tool.timeout_seconds", 120)
+	viper.SetDefault("tool.environment_allowlist", []string{})
+	viper.SetDefault("tool.sandbox.mode", "local")
+	viper.SetDefault("tool.sandbox.socket_path", "/var/run/docker.sock")
+	viper.SetDefault("tool.sandbox.image", "")
+	viper.SetDefault("tool.sandbox.user", "65532:65532")
+	viper.SetDefault("tool.sandbox.cpus", 1.0)
+	viper.SetDefault("tool.sandbox.memory_mib", 256)
+	viper.SetDefault("tool.sandbox.pids_limit", 64)
+	viper.SetDefault("tool.sandbox.tmpfs_mib", 64)
 	viper.SetDefault("skill.root", "skills")
 	viper.SetDefault("rag.authorization", "")
 	viper.SetDefault("rag.tool_name", "search")
@@ -662,6 +676,7 @@ func setupViper() {
 	viper.SetDefault("langfuse.bootstrap_timeout_seconds", 15)
 
 	// Explicit bindings for standard env variables
+	_ = viper.BindEnv("tool.environment_allowlist", "AI_AGENT_TOOL_ENVIRONMENT_ALLOWLIST")
 	_ = viper.BindEnv("api.addr", "AI_AGENT_API_ADDR")
 	_ = viper.BindEnv("api.api_key", "AI_AGENT_API_KEY")
 	_ = viper.BindEnv("api.auth.mode", "AI_AGENT_API_AUTH_MODE")
@@ -858,6 +873,7 @@ func cloneConfig(source *Config) *Config {
 		return &Config{}
 	}
 	cloned := *source
+	cloned.Tool.EnvironmentAllowlist = append([]string(nil), source.Tool.EnvironmentAllowlist...)
 	cloned.API.Auth.JWT.AllowedAlgorithms = append([]string(nil), source.API.Auth.JWT.AllowedAlgorithms...)
 	cloned.API.Tenants = make(map[string]APITenantConfig, len(source.API.Tenants))
 	for tenantID, tenant := range source.API.Tenants {
@@ -1001,6 +1017,7 @@ func validateRestartRequiredReload(old, new *Config) error {
 		{"store connection", old.Store.Type != new.Store.Type || old.Store.DSN != new.Store.DSN},
 		{"orchestrator.mode", old.Orchestrator.Mode != new.Orchestrator.Mode},
 		{"skill.root", old.Skill.Root != new.Skill.Root},
+		{"tool.sandbox", old.Tool.Sandbox != new.Tool.Sandbox},
 		{"telemetry", !reflect.DeepEqual(old.Telemetry, new.Telemetry)},
 		{"mcp.servers", mcpServersChanged(old.MCP.Servers, new.MCP.Servers)},
 	} {
@@ -1254,6 +1271,12 @@ func diffConfigs(old, new *Config) []string {
 
 	// Tool / Log / Skill / Telemetry
 	addIfInt("tool.timeout_seconds", old.Tool.TimeoutSeconds, new.Tool.TimeoutSeconds)
+	if old.Tool.Sandbox != new.Tool.Sandbox {
+		changes = append(changes, "tool.sandbox: changed (restart required)")
+	}
+	if !slices.Equal(old.Tool.EnvironmentAllowlist, new.Tool.EnvironmentAllowlist) {
+		changes = append(changes, "tool.environment_allowlist: changed")
+	}
 	addIf("log.level", old.Log.Level, new.Log.Level)
 	if old.Log.Console != new.Log.Console {
 		changes = append(changes, fmt.Sprintf("log.console: %t → %t", old.Log.Console, new.Log.Console))
@@ -1596,6 +1619,15 @@ func isBrainProjectSlug(value string) bool {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	if err := c.Tool.Sandbox.Validate(); err != nil {
+		return err
+	}
+	if c.Tool.Sandbox.Docker() && (c.Tool.TimeoutSeconds <= 0 || c.Tool.TimeoutSeconds > 3600) {
+		return errors.New("Docker sandbox tool.timeout_seconds must be between 1 and 3600")
+	}
+	if err := commandenv.ValidateAllowlist(c.Tool.EnvironmentAllowlist); err != nil {
+		return err
+	}
 	if err := validateTraceViewURLTemplate(c.API.TraceViewURLTemplate); err != nil {
 		return err
 	}

@@ -47,6 +47,43 @@ jobs:
           ghcr.io/gitleaks/gitleaks:v8.27.2
           git --redact --verbose --config /repo/.gitleaks.toml /repo
 
+  console-browser:
+    name: Console browser regressions (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tests/console/package-lock.json
+      - name: Install pinned browser tooling
+        working-directory: tests/console
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Browser tests against isolated Go routes
+        env:
+          AI_AGENT_RUN_CONSOLE_BROWSER_TESTS: '1'
+          UI_BROWSER: ${{ matrix.browser }}
+        run: go test -race -v -count=1 -timeout=5m ./internal/api -run '^TestConsoleBrowser$'
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-browser-failures-${{ matrix.browser }}
+          path: tests/console/test-results/
+          retention-days: 7
+
   vulnerability-scan:
     name: Go vulnerability reachability scan
     runs-on: ubuntu-latest

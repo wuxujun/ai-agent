@@ -6,7 +6,7 @@
   const account = document.getElementById("account");
   const notice = document.getElementById("notice");
   const state = {
-    session: null, timer: null, stream: null, renderID: 0, refreshPending: false,
+    session: null, timer: null, stream: null, liveRefreshTimer: null, liveVisibility: null, renderID: 0, refreshPending: false,
     taskStatus: "", taskSession: "", taskCursor: "", taskHistory: [], taskPage: 1,
     traceCursor: "", traceHistory: [], tracePage: 1,
     traceSearch: "", traceErrors: false, traceRole: "", currentTaskID: "",
@@ -79,6 +79,9 @@
   function stopLive() {
     if (state.timer) clearInterval(state.timer);
     if (state.stream) state.stream.close();
+    if (state.liveRefreshTimer) clearTimeout(state.liveRefreshTimer);
+    if (state.liveVisibility) document.removeEventListener("visibilitychange", state.liveVisibility);
+    state.liveRefreshTimer = null; state.liveVisibility = null;
     state.timer = null;
     state.stream = null;
     state.refreshPending = false;
@@ -123,7 +126,7 @@
         state.session = session;
         setAccount();
         if (!location.hash) location.hash = "#/tasks";
-        await renderRoute();
+        await renderRoute({ focusContent: true });
       } catch (error) {
         input.value = "";
         flash(error.message, true);
@@ -131,6 +134,7 @@
     });
     append(card, form);
     view.replaceChildren(card);
+    input.focus();
   }
 
   function routeParts() {
@@ -141,7 +145,10 @@
 
   function updateNav(parts) {
     for (const anchor of nav.querySelectorAll("a")) {
-      anchor.classList.toggle("active", anchor.dataset.nav === parts[0]);
+      const active = anchor.dataset.nav === parts[0];
+      anchor.classList.toggle("active", active);
+      if (active) anchor.setAttribute("aria-current", "page");
+      else anchor.removeAttribute("aria-current");
     }
   }
 
@@ -665,12 +672,30 @@
     if (state.stream) return;
     const stream = new EventSource(`/api/tasks/${encodeURIComponent(taskID)}/stream`);
     state.stream = stream;
-    stream.addEventListener("message", () => {
-      if (id !== state.renderID || state.refreshPending || state.taskDetailLoading) return;
+    const reconcile = () => {
+      if (id !== state.renderID || state.stream !== stream || state.refreshPending) return;
       state.refreshPending = true;
-      setTimeout(async () => { state.refreshPending = false; if (id === state.renderID) await renderTaskDetail(id, taskID, true); }, 300);
+      const refresh = async () => {
+        if (id !== state.renderID || state.stream !== stream) return;
+        if (state.taskDetailLoading) {
+          state.liveRefreshTimer = setTimeout(refresh, 300);
+          return;
+        }
+        state.liveRefreshTimer = null;
+        state.refreshPending = false;
+        await renderTaskDetail(id, taskID, true);
+      };
+      state.liveRefreshTimer = setTimeout(refresh, 300);
+    };
+    stream.addEventListener("message", reconcile);
+    stream.addEventListener("open", reconcile);
+    stream.addEventListener("error", () => {
+      if (id !== state.renderID) return;
+      flash("实时连接中断，正在从持久化任务恢复状态。", true);
+      reconcile();
     });
-    stream.addEventListener("error", () => { if (id === state.renderID) flash("实时连接中断，正在从持久化任务恢复状态。", true); });
+    state.liveVisibility = () => { if (!document.hidden) reconcile(); };
+    document.addEventListener("visibilitychange", state.liveVisibility);
     state.timer = setInterval(() => { if (id === state.renderID && !document.hidden && !state.taskDetailLoading) renderTaskDetail(id, taskID, true); }, 8000);
   }
 
@@ -782,7 +807,7 @@
     } catch (error) { if (id === state.renderID) view.replaceChildren(empty("审批加载失败", error.message)); }
   }
 
-  async function renderRoute() {
+  async function renderRoute({ focusContent = false } = {}) {
     if (!state.session) { showLogin(); return; }
     stopLive();
     const id = ++state.renderID;
@@ -797,9 +822,18 @@
     else if (parts[0] === "approvals" && parts.length === 1) await renderApprovalsList(id);
     else if (parts[0] === "approvals" && parts[1]) await renderApprovalDetail(id, parts[1]);
     else location.hash = "#/tasks";
+    // Async data may finish after the user has already started editing.
+    // Only establish initial route focus when it is still outside the content.
+    if (focusContent && id === state.renderID && state.session && !view.contains(document.activeElement)) {
+      view.focus({ preventScroll: true });
+    }
   }
 
-  window.addEventListener("hashchange", renderRoute);
+  document.querySelector(".skip-link").addEventListener("click", event => {
+    event.preventDefault();
+    view.focus();
+  });
+  window.addEventListener("hashchange", () => renderRoute({ focusContent: true }));
   (async () => {
     try {
       state.session = await api("/console/session");

@@ -120,6 +120,9 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	api := r.Group("/api")
 	api.Use(ConsoleSessionMiddleware())
 	api.Use(AuthMiddleware())
+	api.GET("/retention/tasks", AdminMiddleware(), h.listRetentionAssessments)
+	api.GET("/retention/tasks/:id/export", AdminMiddleware(), h.exportTask)
+	api.POST("/retention/imports/verify", AdminMiddleware(), h.verifyTaskRestore)
 	tasks := api.Group("/tasks")
 	tasks.Use(TaskTenantMiddleware(st))
 	{

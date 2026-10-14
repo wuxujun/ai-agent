@@ -2,6 +2,7 @@
 .env
 .gocache
 node_modules
+tests/console/test-results/
 __pycache__/
 dist
 /server

@@ -597,6 +597,23 @@ telemetry:
 
 # Tool execution configuration
 tool:
+  # Subprocesses inherit only baseline OS variables plus reviewed names here.
+  # Service credentials and loader/shell injection variables cannot be allowed.
+  # HOME is the task workspace; Git ignores service global/system configuration.
+  # Optional build-cache names: [GOCACHE, GOMODCACHE, GOROOT, GOTOOLCHAIN].
+  # Env override: AI_AGENT_TOOL_ENVIRONMENT_ALLOWLIST (comma-separated names).
+  # environment_allowlist: [] # default; uncomment to add reviewed names
+  # Container backend settings require restart and a reviewed local image.
+  # Default remains local for trusted operations; Docker never falls back to local.
+  # sandbox:
+  #   mode: docker
+  #   socket_path: /var/run/docker.sock
+  #   image: "sha256:<64 lowercase hex characters from image inspect>"
+  #   user: "65532:65532"
+  #   cpus: 1
+  #   memory_mib: 256
+  #   pids_limit: 64
+  #   tmpfs_mib: 64
   # Timeout limit for custom tool executions in seconds.
   # Env override: AI_AGENT_TOOL_TIMEOUT_SECONDS
   timeout_seconds: 120

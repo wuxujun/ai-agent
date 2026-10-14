@@ -26,9 +26,11 @@ brain-compile rollback --tenant tenant-a --project atlas --snapshot snap-0 --exp
 Alert on sustained Brain provider errors, revoked projects, or unexpected
 readiness loss; an empty CURRENT alone is an expected pre-publication state.
 
-> A production-grade, multi-LLM AI Agent execution runtime built in Go. It orchestrates autonomous research, code analysis, and task execution within a secure sandboxed workspace, powered by a dual Multi-Agent workflow engine and a comprehensive answer quality pipeline.
+> A multi-LLM AI Agent execution runtime built in Go. It orchestrates research, code analysis, and task execution with workspace access policies, approval gates, Multi-Agent workflows, and an answer quality pipeline.
 
-[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-blue)](https://go.dev/) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-blue)](https://go.dev/)
+
+Current implementation and verification status: [documentation index](docs/README.md) and [project assessment](docs/项目功能完成度与优化分析报告_2026-10-11.md). The Web console and Brain read-only MVP are implemented; Brain is disabled by default. The checked-in Multi-Agent defaults are Legacy with 0% DAG canary. Full HA validation and DAG rollout remain incomplete and are deferred from the current work.
 
 ---
 
@@ -43,6 +45,8 @@ readiness loss; an empty CURRENT alone is an expected pre-publication state.
 - **Structured Workspace Tools** — Read-only SQLite/JSON queries plus approval-gated patch application and constrained Go test execution, all routed through the shared policy/middleware layer.
 - **Full Observability** — OpenTelemetry traces + metrics (OTLP or stdout), structured JSON logs with daily rotation, local metrics endpoint.
 - **Security** — Workspace boundary enforcement, high-risk tool approval flow, prompt-injection detection, secret sanitization, URL allowlist.
+- **Personal approval identities** — Optional verified subject requirements and local per-tenant approval allowlists; [strict configuration and compatibility scope](docs/生产认证与审批权限说明_2026-10-11.md).
+- **Web Console** — `/console` provides task management, Trace inspection, workflow graph views, and approval operations with encrypted sessions and CSRF checks. Configure `AI_AGENT_CONSOLE_SESSION_KEY` and use an identity-provider Bearer Token; see [API and console documentation](docs/task-api.md).
 - **Hot Reload** — Config and API keys reload without restart via `POST /api/config/reload`.
 
 ---
@@ -607,9 +611,12 @@ research branch).
 
 #### Canary Rollout (DAG vs Legacy)
 
-The DAG runtime is currently in controlled rollout. The `dag_canary_percent`
-field in `teams.yaml` (or `AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT`) determines
-what percentage of tasks use DAG when `runtime=legacy` is the server default:
+The DAG runtime supports controlled rollout. The `multiagent.dag_canary_percent`
+field in `config.yaml` (or `AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT`) determines
+what percentage of new tasks use DAG when the resolved runtime is Legacy.
+Teams can define runtime defaults in `teams.yaml`; the central Multi-Agent
+configuration applies the canary percentage to the selected team.
+The following 5% configuration is an example; the checked-in percentage is 0:
 
 ```yaml
 multiagent:
@@ -626,10 +633,11 @@ Setting `dag_canary_percent=0` (the default) keeps all tasks on Legacy.
 
 #### Current Status
 
-The DAG runtime has passed unit, race, and integration tests and is used in
-production at low canary percentages. Full rollout (removing the Legacy
-fallback) is gated on completing the HA dual-instance validation documented in
-[`deploy/ha/README.md`](deploy/ha/README.md).
+The DAG runtime is implemented with checkpoints, bounded concurrency, and
+canary routing; unit and race regressions pass. The checked-in configuration
+remains `runtime=legacy` with `dag_canary_percent=0`. Full HA acceptance and DAG
+rollout are incomplete and currently deferred. Historical verification evidence
+and remaining gaps are distinguished in the [project assessment](docs/项目功能完成度与优化分析报告_2026-10-11.md).
 
 ---
 
@@ -842,11 +850,11 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 
 ## 🗺️ Roadmap
 
-### ✅ Recently shipped (v1.0.1)
+### ✅ Implemented in the current source
 
 - [x] **Brain knowledge base** — LLM-compiled claim/evidence store with cross-platform safe snapshot read, retraction ledger, and `brain-compile` CLI
 - [x] **Durable approval encryption** — AES-GCM v1/v2 payload encryption with versioned key rotation (`internal/approvalcrypto`)
-- [x] **Wiki BM25 absolute confidence floor** — `minDirectoryBM25RelevanceScore = 0.25` eliminates no-answer false-positives; `wiki-eval` enforces zero FP tolerance
+- [x] **Wiki BM25 absolute confidence floor** — `minDirectoryBM25RelevanceScore = 0.25` filters weak matches; `wiki-eval` defaults to zero no-answer false-positive tolerance on the evaluated dataset
 - [x] **Wiki candidate cache byte budget** — 64 MiB global soft cap with LRU-by-task eviction and `candidate_cache_bytes` / `candidate_cache_evicted_bytes` metrics
 - [x] **`apply_patch` TOCTOU defence** — `os.Root`-confined atomic rename prevents workspace escape on all platforms including Windows
 - [x] **Resizable semaphore state machine** — waiter state machine eliminates capacity leak on context cancel; `Resize()` propagates hot-reload config changes
@@ -857,12 +865,14 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 - [x] **Core file modularisation** — `coordinator.go`, `handler.go`, `engine.go` split into focused sub-files; sizes reduced to ≤600 / ≤250 / ≤120 lines
 - [x] **Code review & test generation** — `internal/review` (git-diff change analysis) and `internal/testgen` (LLM-driven Go test scaffolding)
 - [x] **Windows cross-compilation** — Brain retraction and snapshot platform abstractions; release matrix includes `windows/amd64`
+- [x] **Web UI** — task management, Trace inspection, workflow graph views, approval operations and statistics; Chromium/Firefox/WebKit regressions are available, wider device/accessibility validation remains pending
 
 ### 🔜 Upcoming
 
-- [ ] **DAG runtime full rollout** — remove Legacy fallback after HA canary validation; currently at `AI_AGENT_MULTIAGENT_RUNTIME=dag` (0% canary)
-- [ ] **Web UI** — task management, trace visualisation, and approval dashboard
-- [ ] **Plugin system** — user-defined tool registration without forking the binary
+- [ ] **HA acceptance and DAG full rollout (deferred)** — complete fault and canary validation before considering removal of Legacy fallback; current defaults are `runtime=legacy` and `dag_canary_percent=0`
+- [x] **Web UI browser regressions** — 16 scenarios on Chromium, Firefox and WebKit (48 checks), including asynchronous form focus, task/approval UI, login/CSRF, Trace, keyboard and 320px/390px layouts; [scope and run instructions](tests/console/README.md)
+- [ ] **Web UI broader validation** — real devices/other browser releases/zoom levels, screen readers, full accessibility, and performance baselines
+- [ ] **Local dynamic plugins** — runtime loading and permission/lifecycle management; configuration-based remote MCP tool discovery is already implemented
 - [ ] **Additional built-in skills** — data analysis, SQL agent, diagram generation
 
 
@@ -923,8 +933,10 @@ multiagent:
 The percentage is an integer from 0 to 100. Tasks are deterministically
 bucketed by team and task ID; the selected runtime is recorded in the task
 Trace and reused on resume. Keep `runtime=legacy` during a percentage rollout:
-an explicit `runtime=dag` remains a 100% DAG override. Invalid percentages fail
-closed to 0. Environment changes require a process restart.
+an explicit `runtime=dag` remains a 100% DAG override. Configuration validation
+rejects percentages outside 0–100; rejected reloads preserve the prior snapshot.
+Environment changes require a process restart. Valid changes to the file-backed
+runtime/canary settings can be applied through configuration reload.
 
 Use `GET /api/metrics` and the exported OpenTelemetry runtime histogram to
 compare DAG/Legacy completion, failure, fallback, average latency, and P95.

@@ -1,8 +1,10 @@
 # AI Agent — Go 运行时引擎
 
-> 基于 Go 语言构建的生产级、多 LLM AI Agent 执行运行时。它在安全沙箱工作区内，通过双工作流多智能体引擎和完整的答案质量审查流水线，编排自主研究、代码分析与任务执行。
+> 基于 Go 语言构建的多 LLM AI Agent 执行运行时。通过工作区访问策略、审批、多智能体工作流和答案质量审查流水线，编排研究、代码分析与任务执行。
 
-[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-blue)](https://go.dev/) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-blue)](https://go.dev/)
+
+当前实现与验证状态见 [文档索引](docs/README.md) 和 [项目分析报告](docs/项目功能完成度与优化分析报告_2026-10-11.md)。Web 操作台与 Brain 只读 MVP 已实现，Brain 默认关闭；仓库 Multi-Agent 默认使用 Legacy、DAG 灰度 0%。完整 HA 验收与 DAG 放量尚未完成，当前延后处理。
 
 ---
 
@@ -14,9 +16,11 @@
 - **答案质量流水线** — 并行审计：事实时效性、数值一致性、不确定性校准、安全防护，均可按租户独立配置。
 - **RAG / 长期记忆** — JIT 或预取检索，支持 MCP 或 REST；向量搜索（进程内余弦相似度或 pgvector）；带冲突解决的长期任务记忆。
 - **多 MCP 工具** — 从多个 MCP Streamable HTTP 服务发现工具，按服务设置命名空间，并隔离可选服务故障。
+- **Web 操作台** — `/console` 提供任务管理、Trace 阅读、工作流图及审批操作，支持加密会话与 CSRF 校验。需配置 `AI_AGENT_CONSOLE_SESSION_KEY`，使用身份服务签发的 Bearer Token 登录；详见 [API 与操作台文档](docs/task-api.md)。
 - **结构化 Workspace 工具** — 支持只读 SQLite/JSON 查询、需审批的补丁应用和受限 Go 测试执行，统一经过策略与中间件层。
 - **完整可观测性** — OpenTelemetry 链路追踪 + 指标（OTLP 或标准输出）、结构化 JSON 日志（每日轮转）、本地指标接口。
 - **安全防护** — Workspace 边界强制校验、高风险工具人工审批、Prompt 注入检测、敏感信息脱敏、URL 访问白名单。
+- **个人审批身份** — 可选可信个人主体要求与租户级服务端审批名单；[严格配置及兼容范围](docs/生产认证与审批权限说明_2026-10-11.md)。
 - **热重载配置** — 通过 `POST /api/config/reload` 无需重启即可重新加载配置与 API Key。
 
 ---
@@ -491,9 +495,10 @@ Adaptive 工作流（运行时自动选择分支）：
 
 #### 金丝雀灰度（DAG vs Legacy）
 
-DAG 运行时目前处于受控灰度阶段。`teams.yaml` 中的 `dag_canary_percent`
-（或 `AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT`）决定了在服务端默认
-`runtime=legacy` 时有多少比例的任务走 DAG：
+DAG 运行时支持受控灰度。`config.yaml` 中的 `multiagent.dag_canary_percent`
+（或 `AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT`）决定了在解析后的运行时为
+Legacy 时有多少比例的新任务走 DAG。团队可在 `teams.yaml` 定义 runtime 默认值，
+中央 Multi-Agent 配置将灰度比例应用到所选团队。下面的 5% 是配置示例，仓库实际默认值为 0：
 
 ```yaml
 multiagent:
@@ -510,9 +515,9 @@ multiagent:
 
 #### 当前状态
 
-DAG 运行时已通过单元测试、竞态测试和集成测试，并在低比例金丝雀下用于
-生产。全量放量（移除 Legacy 回退路径）的前提是完成
-[`deploy/ha/README.md`](deploy/ha/README.md) 中记录的 HA 双实例验证。
+DAG 的检查点、有界并发与灰度路由已实现，单元及竞态回归通过。仓库配置仍为
+`runtime=legacy`、`dag_canary_percent=0`；完整 HA 验收和 DAG 放量尚未完成，
+当前延后处理。历史验证范围与待验收项见 [项目分析报告](docs/项目功能完成度与优化分析报告_2026-10-11.md)。
 
 ---
 
@@ -716,11 +721,11 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 
 ## 🗺️ 路线图
 
-### ✅ 近期已发布（v1.0.1）
+### ✅ 当前源码已实现
 
 - [x] **Brain 知识库** — LLM 编译 Claim/Evidence 知识库；跨平台安全快照读取、撤回账本及 `brain-compile` CLI
 - [x] **持久化审批加密** — AES-GCM v1/v2 载荷加密，支持版本化密钥轮换（`internal/approvalcrypto`）
-- [x] **Wiki BM25 绝对置信度下限** — `minDirectoryBM25RelevanceScore = 0.25`，消除无答案误召回；`wiki-eval` 强制执行零误召回容忍
+- [x] **Wiki BM25 绝对置信度下限** — `minDirectoryBM25RelevanceScore = 0.25` 过滤弱匹配；`wiki-eval` 默认对评测数据集采用无答案误召回零容忍门槛
 - [x] **Wiki 候选缓存字节预算** — 64 MiB 全局软上限，按任务 LRU 淘汰；新增 `candidate_cache_bytes` / `candidate_cache_evicted_bytes` 指标
 - [x] **`apply_patch` TOCTOU 防御** — `os.Root` 限定原子重命名，跨平台（含 Windows）防止工作区逃逸
 - [x] **可调整大小信号量状态机** — Waiter 状态机消除 Context 取消时的容量泄漏；`Resize()` 传播热重载配置变更
@@ -731,12 +736,14 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 - [x] **核心文件模块化拆分** — `coordinator.go`、`handler.go`、`engine.go` 拆分为职责单一子文件；规模缩减至 ≤600 / ≤250 / ≤120 行
 - [x] **代码评审与测试生成** — `internal/review`（git diff 变更分析）与 `internal/testgen`（LLM 驱动测试脚手架）
 - [x] **Windows 交叉编译** — Brain 撤回账本与 snapshot 跨平台抽象；发布矩阵新增 `windows/amd64`
+- [x] **Web UI** — 任务管理、Trace 阅读、工作流图、审批操作与统计；Chromium/Firefox/WebKit 回归已建立，更广的设备/可访问性验证待补
 
 ### 🔜 待上线
 
-- [ ] **DAG 运行时全量放量** — HA Canary 验收通过后移除 Legacy 回退路径；当前保持 `AI_AGENT_MULTIAGENT_RUNTIME=dag`（0% Canary）
-- [ ] **Web UI** — 任务管理、Trace 可视化与审批操作台
-- [ ] **插件系统** — 用户自定义工具注册，无需 fork 二进制
+- [ ] **HA 验收与 DAG 全量放量（延后）** — 完成故障与灰度验收后再考虑移除 Legacy 回退；当前默认 `runtime=legacy`、`dag_canary_percent=0`
+- [x] **Web UI 三浏览器回归** — Chromium、Firefox、WebKit 各 16 个场景，共 48 项，覆盖异步表单焦点、任务/审批 UI、登录/CSRF、Trace、键盘与 320px/390px 窄屏；[范围及运行说明](tests/console/README.md)
+- [ ] **Web UI 扩展验证** — 真实设备/其他浏览器发行版本/缩放、读屏、完整可访问性与性能基线
+- [ ] **本地动态插件** — 运行时装载及权限/生命周期管理；配置化远程 MCP 工具发现已实现
 - [ ] **更多内置技能** — 数据分析、SQL Agent、图表生成
 
 
@@ -790,7 +797,8 @@ multiagent:
 
 比例必须是 0–100 的整数。系统按团队名和任务 ID 确定性分桶，并把选中的 runtime 写入任务 Trace，
 恢复任务时继续使用原 runtime。百分比灰度期间应保持 `runtime=legacy`；显式设置 `runtime=dag` 仍表示
-100% DAG。非法比例会安全回退为 0，环境变量变更后需要重启进程。
+100% DAG。配置校验拒绝 0–100 以外的比例，重载失败保留原配置快照。
+环境变量变更后需要重启进程；文件中的合法 runtime/灰度比例变更可通过配置重载生效。
 
 通过 `GET /api/metrics` 和 OpenTelemetry runtime 延迟直方图对比 DAG/Legacy 的完成率、失败率、
 fallback、平均延迟和 P95。回滚时把比例设为 0 并重启；已开始的任务保留持久化 runtime，新任务走

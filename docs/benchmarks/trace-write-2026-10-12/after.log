@@ -1,0 +1,18 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/wuxujun/ai-agent/internal/store
+cpu: Apple M4 Max
+BenchmarkTaskSnapshotWriteCapacity/memory/traces_100-16         	      20	     12975 ns/op	     10834 p95-ns	        20.00 samples	   30024 B/op	     212 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/memory/traces_100-16         	      20	     14765 ns/op	     12250 p95-ns	        20.00 samples	   30024 B/op	     212 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/memory/traces_1000-16        	      20	    126835 ns/op	    287875 p95-ns	        20.00 samples	  277791 B/op	    2012 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/memory/traces_1000-16        	      20	     95819 ns/op	    205666 p95-ns	        20.00 samples	  277643 B/op	    2012 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/memory/traces_10000-16       	      20	    536183 ns/op	   1056416 p95-ns	        20.00 samples	 2734876 B/op	   20013 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/memory/traces_10000-16       	      20	    436435 ns/op	    935833 p95-ns	        20.00 samples	 2734610 B/op	   20012 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_100-16         	      20	    487394 ns/op	    733176 db-wal-bytes	    536542 p95-ns	        20.00 samples	  142212 B/op	    1991 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_100-16         	      20	    499960 ns/op	    733176 db-wal-bytes	    550000 p95-ns	        20.00 samples	  141845 B/op	    1991 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_1000-16        	      20	   3317810 ns/op	   1998016 db-wal-bytes	   3694583 p95-ns	        20.00 samples	 1339006 B/op	   21056 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_1000-16        	      20	   3243488 ns/op	   1998016 db-wal-bytes	   3533208 p95-ns	        20.00 samples	 1338966 B/op	   21057 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_10000-16       	      20	  37131667 ns/op	  28291840 db-wal-bytes	  38694125 p95-ns	        20.00 samples	13436400 B/op	  228059 allocs/op
+BenchmarkTaskSnapshotWriteCapacity/sqlite/traces_10000-16       	      20	  37285608 ns/op	  28291840 db-wal-bytes	  38674542 p95-ns	        20.00 samples	13436455 B/op	  228060 allocs/op
+PASS
+ok  	github.com/wuxujun/ai-agent/internal/store	2.864s

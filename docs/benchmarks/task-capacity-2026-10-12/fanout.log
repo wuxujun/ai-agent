@@ -1,0 +1,18 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/wuxujun/ai-agent/internal/api
+cpu: Apple M4 Max
+BenchmarkEventBusFanoutCapacity/subscribers_1/full_false-16         	     100	        80.83 ns/op	         1.000 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_1/full_false-16         	     100	        72.50 ns/op	         1.000 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_1/full_true-16          	     100	        35.83 ns/op	         1.000 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_1/full_true-16          	     100	        26.67 ns/op	         1.000 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_100/full_false-16       	     100	      3609 ns/op	       100.0 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_100/full_false-16       	     100	      3514 ns/op	       100.0 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_100/full_true-16        	     100	       469.6 ns/op	       100.0 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_100/full_true-16        	     100	       426.2 ns/op	       100.0 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_1000/full_false-16      	     100	     30913 ns/op	      1000 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_1000/full_false-16      	     100	     28933 ns/op	      1000 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_1000/full_true-16       	     100	      3352 ns/op	      1000 subscribers	       0 B/op	       0 allocs/op
+BenchmarkEventBusFanoutCapacity/subscribers_1000/full_true-16       	     100	      3416 ns/op	      1000 subscribers	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/wuxujun/ai-agent/internal/api	2.559s

@@ -1,0 +1,3 @@
+# Preserve unified-diff context prefixes in historical benchmark evidence.
+docs/benchmarks/task-capacity-2026-10-12/task_read.diff.patch -whitespace
+docs/benchmarks/trace-write-2026-10-12/trace_sql.diff.patch -whitespace

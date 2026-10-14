@@ -1,7 +1,9 @@
 # Brain Read-Only MVP P1 实施续接文档
 
 日期：2026-09-03
-状态：暂停，等待新会话从 Task 2 继续
+当时状态：暂停，等待新会话从 Task 2 继续。
+
+> 历史交接说明（2026-10-11）：本文记录 2026-09-03 的暂停点。后续项目身份、来源读取、快照、编译、CAS 发布/回滚、Provider、任务快照固定及只读 API 已落地，不能再从本文的 Task 2 开始重复实施。当前能力见 [项目分析报告](../docs/项目功能完成度与优化分析报告_2026-10-11.md)，实施与验证记录见 [Brain P1 记录](brain-readonly-mvp-p1.md)。正文中的分支、工作树及待办状态保留为历史信息。
 
 ## 1. 当前目标
 
@@ -9,9 +11,9 @@
 
 规范与计划：
 
-- 英文设计：`docs/superpowers/specs/2026-09-02-brain-readonly-mvp-design.md`
-- 中文设计：`docs/superpowers/specs/2026-09-02-brain-readonly-mvp-design-zh.md`
-- 实施计划：`docs/superpowers/plans/2026-09-02-brain-readonly-mvp.md`
+- [英文设计（已归档）](../docs/archive/superpowers/specs/2026-09-02-brain-readonly-mvp-design.md)
+- [中文设计（已归档）](../docs/archive/superpowers/specs/2026-09-02-brain-readonly-mvp-design-zh.md)
+- [实施计划（已归档）](../docs/archive/superpowers/plans/2026-09-02-brain-readonly-mvp.md)
 
 ## 2. Git 与工作区状态
 
