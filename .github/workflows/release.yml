@@ -85,6 +85,7 @@ jobs:
 
       - name: Create Archive (.tar.gz / .zip)
         run: |
+          mkdir -p dist
           cd build_stage
           if [ "${{ matrix.os }}" = "windows" ]; then
             zip -r ../dist/${{ matrix.asset_name }} ${{ matrix.artifact_name }}
