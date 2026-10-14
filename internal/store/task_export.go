@@ -169,6 +169,19 @@ func readSQLTaskExport(ctx context.Context, db *sql.DB, id, tenant string, budge
 		return nil, err
 	}
 	defer tx.Rollback()
+	result, err := readSQLTaskExportSnapshot(ctx, tx, id, tenant, budget, postgres, get, joint...)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// The caller owns the read-only transaction so related task observations can
+// share one snapshot without opening separate transactions or acquiring leases.
+func readSQLTaskExportSnapshot(ctx context.Context, tx *sql.Tx, id, tenant string, budget int, postgres bool, get func(context.Context, taskSQLReader, string, bool) (*types.Task, error), joint ...bool) (*TaskExportSnapshot, error) {
 	// Scope and size checks share the same snapshot as the eventual payload.
 	length := "length"
 	if postgres {
@@ -184,7 +197,7 @@ func readSQLTaskExport(ctx context.Context, db *sql.DB, id, tenant string, budge
 		expression += "+COALESCE(" + length + "(" + operand + "),0)"
 	}
 	var size int64
-	err = tx.QueryRowContext(ctx, "SELECT "+expression+" FROM tasks WHERE id="+lifecycleSQLMarker(postgres, 1)+" AND tenant_id="+lifecycleSQLMarker(postgres, 2), id, tenant).Scan(&size)
+	err := tx.QueryRowContext(ctx, "SELECT "+expression+" FROM tasks WHERE id="+lifecycleSQLMarker(postgres, 1)+" AND tenant_id="+lifecycleSQLMarker(postgres, 2), id, tenant).Scan(&size)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +224,7 @@ func readSQLTaskExport(ctx context.Context, db *sql.DB, id, tenant string, budge
 	if err != nil {
 		return nil, err
 	}
-	events, err := listSQLTaskTraces(ctx, tx, id, 0, MaxTaskExportTraces+1, postgres)
+	events, err := listSQLTaskTraces(ctx, tx, id, 0, count+1, postgres)
 	if err != nil {
 		return nil, err
 	}
@@ -228,9 +241,6 @@ func readSQLTaskExport(ctx context.Context, db *sql.DB, id, tenant string, budge
 	}
 	if !exportCopyFits(result, budget) {
 		return nil, ErrTaskExportTooLarge
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
 	}
 	return result, nil
 }

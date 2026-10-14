@@ -181,6 +181,7 @@ func AssessPersistentTaskRestoreAdmissionWithKeys(ctx context.Context, directory
 }
 
 type TaskRestoreAdmissionOptions struct {
+	DependencyReaders      TaskRestoreDependencyReaders
 	WorkspaceEvidence      []byte
 	KeyProvider            approvalcrypto.ReadOnlyKeyProvider
 	ApprovalSourceEvidence []byte
@@ -272,6 +273,17 @@ func AssessPersistentTaskRestoreAdmissionWithOptions(ctx context.Context, direct
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	var admissionReader TaskRestoreAdmissionReader = reader
+	if options.DependencyReaders.Session != nil || options.DependencyReaders.Execution != nil {
+		admissionReader, err = NewTaskRestoreDependencyAdmissionReader(ctx, reader, artifact, tenant, options.DependencyReaders)
+		if err != nil {
+			return nil, err
+		}
+		state, err = admissionReader.ReadState(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if manifestData == nil {
 		now := time.Now().UTC()
 		manifestData, err = json.Marshal(TaskRestoreDependencyManifest{Schema: TaskRestoreAdmissionSchema, Binding: state.Binding, CreatedAt: now, ExpiresAt: now.Add(5 * time.Minute), Evidence: func() []TaskRestoreEvidenceClaim {
@@ -282,13 +294,21 @@ func AssessPersistentTaskRestoreAdmissionWithOptions(ctx context.Context, direct
 			if reader.keys != nil {
 				claims = append(claims, TaskRestoreEvidenceClaim{Kind: "key_management", SHA256: reader.keys.digest})
 			}
+			if dependencies, ok := admissionReader.(*restoreDependencyAdmissionReader); ok {
+				for _, kind := range []string{"session_dependencies", "execution_leases"} {
+					scan, scanErr := dependencies.scan(ctx, kind, state.Binding)
+					if scanErr == nil && scan.digest != "" {
+						claims = append(claims, TaskRestoreEvidenceClaim{Kind: kind, SHA256: scan.digest})
+					}
+				}
+			}
 			return claims
 		}()})
 		if err != nil {
 			return nil, err
 		}
 	}
-	report, err := EvaluateTaskRestoreAdmission(ctx, artifact, manifestData, tenant, MaxTaskExportBytes, reader, nil)
+	report, err := EvaluateTaskRestoreAdmission(ctx, artifact, manifestData, tenant, MaxTaskExportBytes, admissionReader, nil)
 	if err == nil && reader.keys != nil {
 		summary := reader.keys.summary
 		// A summary is current verified data only when target binding stayed valid.
