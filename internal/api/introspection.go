@@ -29,7 +29,7 @@ var (
 )
 
 type cachedIntrospection struct {
-	tenantID string
+	identity bearerIdentity
 	expires  time.Time
 }
 
@@ -70,67 +70,75 @@ func introspectorFor(introspectionConfig config.APIIntrospectionConfig) *introsp
 	return verifier
 }
 
-func (v *introspectionVerifier) verify(ctx context.Context, rawToken string) (string, error) {
+func (v *introspectionVerifier) verify(ctx context.Context, rawToken string) (bearerIdentity, error) {
 	tokenHash := sha256.Sum256([]byte(rawToken))
-	if tenantID, ok := v.cachedTenant(tokenHash); ok {
-		return tenantID, nil
+	if identity, ok := v.cachedIdentity(tokenHash); ok {
+		return identity, nil
 	}
 
 	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(v.config.TimeoutSeconds)*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, v.config.URL, nil)
 	if err != nil {
-		return "", fmt.Errorf("%w: build introspection request", errAuthenticationUnavailable)
+		return bearerIdentity{}, fmt.Errorf("%w: build introspection request", errAuthenticationUnavailable)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+rawToken)
 
 	response, err := v.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: token introspection request failed", errAuthenticationUnavailable)
+		return bearerIdentity{}, fmt.Errorf("%w: token introspection request failed", errAuthenticationUnavailable)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return "", fmt.Errorf("%w: token introspection returned HTTP %d", errAuthenticationUnavailable, response.StatusCode)
+		return bearerIdentity{}, fmt.Errorf("%w: token introspection returned HTTP %d", errAuthenticationUnavailable, response.StatusCode)
 	}
 
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxIntrospectionResponseBytes+1))
 	if err != nil || len(responseBody) > maxIntrospectionResponseBytes {
-		return "", fmt.Errorf("%w: invalid introspection response size", errAuthenticationUnavailable)
+		return bearerIdentity{}, fmt.Errorf("%w: invalid introspection response size", errAuthenticationUnavailable)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	decoder.UseNumber()
 	claims := make(map[string]any)
 	if err := decoder.Decode(&claims); err != nil {
-		return "", fmt.Errorf("%w: invalid introspection response", errAuthenticationUnavailable)
+		return bearerIdentity{}, fmt.Errorf("%w: invalid introspection response", errAuthenticationUnavailable)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return "", fmt.Errorf("%w: invalid introspection response", errAuthenticationUnavailable)
+		return bearerIdentity{}, fmt.Errorf("%w: invalid introspection response", errAuthenticationUnavailable)
 	}
 	if active, ok := introspectionClaim(claims, v.config.ActiveClaim).(bool); !ok || !active {
-		return "", errInvalidCredential
+		return bearerIdentity{}, errInvalidCredential
 	}
 	tenantID, ok := introspectionClaim(claims, v.config.TenantClaim).(string)
 	tenantID = strings.TrimSpace(tenantID)
 	if !ok || !tenantIDPattern.MatchString(tenantID) {
-		return "", errInvalidCredential
+		return bearerIdentity{}, errInvalidCredential
 	}
 	if v.config.Issuer != "" {
 		issuer, _ := claims["iss"].(string)
 		if issuer != v.config.Issuer {
-			return "", errInvalidCredential
+			return bearerIdentity{}, errInvalidCredential
 		}
 	}
 	if v.config.Audience != "" && !introspectionAudienceContains(introspectionResponseClaim(claims, "aud"), v.config.Audience) {
-		return "", errInvalidCredential
+		return bearerIdentity{}, errInvalidCredential
 	}
 	expiresAt, hasExpiration, validExpiration := introspectionExpiration(introspectionResponseClaim(claims, "exp"))
 	if !validExpiration || (v.config.RequireExpiration && !hasExpiration) || (hasExpiration && !expiresAt.After(time.Now())) {
-		return "", errInvalidCredential
+		return bearerIdentity{}, errInvalidCredential
 	}
-	v.cacheTenant(tokenHash, tenantID, expiresAt, hasExpiration)
-	return tenantID, nil
+	identity := bearerIdentity{TenantID: tenantID, ActorID: "tenant:" + tenantID}
+	if v.config.SubjectClaim != "" {
+		subject, ok := introspectionClaim(claims, v.config.SubjectClaim).(string)
+		identity.ActorID = personalActorID("introspection", tenantID, subject)
+		if !ok || identity.ActorID == "" {
+			return bearerIdentity{}, errInvalidCredential
+		}
+	}
+	v.cacheIdentity(tokenHash, identity, expiresAt, hasExpiration)
+	return identity, nil
 }
 
 // introspectionResponseClaim reads provider metadata from the nested data
@@ -207,24 +215,24 @@ func introspectionExpiration(raw any) (time.Time, bool, bool) {
 	return time.Unix(seconds, 0), true, true
 }
 
-func (v *introspectionVerifier) cachedTenant(tokenHash [sha256.Size]byte) (string, bool) {
+func (v *introspectionVerifier) cachedIdentity(tokenHash [sha256.Size]byte) (bearerIdentity, bool) {
 	if v.config.CacheTTLSeconds <= 0 {
-		return "", false
+		return bearerIdentity{}, false
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	entry, ok := v.cache[tokenHash]
 	if !ok {
-		return "", false
+		return bearerIdentity{}, false
 	}
 	if !time.Now().Before(entry.expires) {
 		delete(v.cache, tokenHash)
-		return "", false
+		return bearerIdentity{}, false
 	}
-	return entry.tenantID, true
+	return entry.identity, true
 }
 
-func (v *introspectionVerifier) cacheTenant(tokenHash [sha256.Size]byte, tenantID string, tokenExpiration time.Time, hasExpiration bool) {
+func (v *introspectionVerifier) cacheIdentity(tokenHash [sha256.Size]byte, identity bearerIdentity, tokenExpiration time.Time, hasExpiration bool) {
 	if v.config.CacheTTLSeconds <= 0 {
 		return
 	}
@@ -240,7 +248,7 @@ func (v *introspectionVerifier) cacheTenant(tokenHash [sha256.Size]byte, tenantI
 	if len(v.cache) >= maxIntrospectionCacheEntries {
 		v.evictCacheEntryLocked()
 	}
-	v.cache[tokenHash] = cachedIntrospection{tenantID: tenantID, expires: expires}
+	v.cache[tokenHash] = cachedIntrospection{identity: identity, expires: expires}
 }
 
 func (v *introspectionVerifier) evictCacheEntryLocked() {

@@ -54,6 +54,19 @@ X-API-Key: {{apiKey}}
 POST {{baseUrl}}/api/config/reload
 X-API-Key: {{apiKey}}
 
+### Approval authorization contract (no new request fields)
+# /api/tasks/:id/approve and /reject now honor api.tenants.<tenant>.approval_mode:
+# omitted/tenant = legacy behavior; deny = 403; actors = local personal-ID allowlist.
+# Upstream roles/admin, body actor_id and X-Actor-ID never grant approval permission.
+# approval_disallow_self: true applies the task-owning tenant policy to all callers:
+# creator and approver must have distinct verified personal actor IDs; unknown legacy
+# creators or nonpersonal callers get 403 on both approve and reject.
+# Task creator_actor_id is server-generated at creation; client fields/headers are ignored.
+# Creation also requires personal identity when this policy is enabled.
+# 403 happens before any approval resolution or distributed signal is sent.
+# Bearer personal identity can be required through api.auth.bearer.require_subject;
+# introspection requires a configured subject_claim when that flag is enabled.
+
 ### Read the complete ordered task trace
 # trace[].step remains the logical execution step; several audit events may share
 # the same step. SQL storage retains every event in array order independently.

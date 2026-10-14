@@ -30,6 +30,10 @@ api:
     bearer:
       # Bearer strategy used by hybrid mode: jwks or introspection.
       validation_mode: "jwks"
+      # Require a stable personal subject on Bearer authentication (optional).
+      # Introspection also needs subject_claim below. Disabled for compatibility.
+      # Env override: AI_AGENT_API_BEARER_REQUIRE_SUBJECT
+      # require_subject: true
     jwt:
       # Required in jwt/hybrid mode. The JWT signature, issuer, audience,
       # expiration, and not-before time are validated before tenant_claim is read.
@@ -49,6 +53,10 @@ api:
       url: "https://api.thinktown.com/api/auth/check"
       # Dot-separated paths are supported for nested JSON response fields.
       tenant_claim: "data.userid"
+      # Optional trusted personal identifier; once configured it must be present.
+      # Do not set this to the tenant claim or an unverified request header.
+      # Env override: AI_AGENT_API_INTROSPECTION_SUBJECT_CLAIM
+      # subject_claim: "data.sub"
       active_claim: "data.active"
       # Optional expected response claims. aud and exp are read from data.aud
       # and data.exp (with top-level fallback). Non-empty values must match.
@@ -71,6 +79,12 @@ api:
     project_a:
       # api_key: "XKT#2026"
       admin: false
+      # Empty/tenant keeps tenant-wide approval decisions; deny forbids them.
+      # actors permits only verified personal IDs in this local allowlist.
+      # See deploy/security/config.production.example.yaml for a strict baseline.
+      # approval_disallow_self: true # requires distinct personal creator/approver; unknown creator denied
+      # approval_mode: actors
+      # approval_actor_ids: ["introspection-sub:<24 lowercase hex characters>"]
       workspace_root: "./workspace/demo"
   #     # Empty or omitted preserves access to all configured Teams. Non-admin
   #     # tenants with a non-empty list may only create tasks using these Teams.

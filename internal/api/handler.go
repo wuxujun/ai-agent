@@ -134,8 +134,8 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 		tasks.GET("", h.listTasks)
 		tasks.GET("/:id/stream", h.streamTask)
 		tasks.GET("/:id/approvals", h.listTaskApprovalRecords)
-		tasks.POST("/:id/approve", h.approveTask)
-		tasks.POST("/:id/reject", h.rejectTask)
+		tasks.POST("/:id/approve", ApprovalAuthorizationMiddleware(), h.approveTask)
+		tasks.POST("/:id/reject", ApprovalAuthorizationMiddleware(), h.rejectTask)
 		tasks.DELETE("/:id/cancel", h.cancelTask)
 		tasks.DELETE("/:id", h.deleteTask)
 	}

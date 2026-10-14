@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
 	"errors"
@@ -221,11 +220,11 @@ func AuthMiddleware() gin.HandlerFunc {
 			}
 		}
 		if bearerEnabled && bearerToken != "" {
-			tenantID, requireKnownTenant, err := verifyBearerCredential(c.Request.Context(), cfg, authMode, bearerToken)
+			identity, requireKnownTenant, err := verifyBearerCredential(c.Request.Context(), cfg, authMode, bearerToken)
 			if err == nil {
-				tenant, known := cfg.API.Tenants[tenantID]
+				tenant, known := cfg.API.Tenants[identity.TenantID]
 				if known || !requireKnownTenant {
-					setPrincipal(c, Principal{TenantID: tenantID, Admin: known && tenant.Admin, ActorID: bearerActorID(cfg, authMode, bearerToken, tenantID)})
+					setPrincipal(c, Principal{TenantID: identity.TenantID, Admin: known && tenant.Admin, ActorID: identity.ActorID})
 					c.Next()
 					return
 				}
@@ -242,7 +241,7 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-func verifyBearerCredential(ctx context.Context, cfg *config.Config, authMode, bearerToken string) (string, bool, error) {
+func verifyBearerCredential(ctx context.Context, cfg *config.Config, authMode, bearerToken string) (bearerIdentity, bool, error) {
 	validationMode := authMode
 	if authMode == "hybrid" {
 		validationMode = strings.ToLower(strings.TrimSpace(cfg.API.Auth.Bearer.ValidationMode))
@@ -253,12 +252,22 @@ func verifyBearerCredential(ctx context.Context, cfg *config.Config, authMode, b
 	switch validationMode {
 	case "jwt", "jwks":
 		tenantID, err := verifierFor(cfg.API.Auth.JWT).verify(ctx, bearerToken)
-		return tenantID, cfg.API.Auth.JWT.RequireKnownTenant, err
+		if err != nil {
+			return bearerIdentity{}, cfg.API.Auth.JWT.RequireKnownTenant, err
+		}
+		identity := bearerIdentity{TenantID: tenantID, ActorID: bearerActorID(cfg, authMode, bearerToken, tenantID)}
+		if cfg.API.Auth.Bearer.RequireSubject && !identity.personal() {
+			return bearerIdentity{}, true, errInvalidCredential
+		}
+		return identity, cfg.API.Auth.JWT.RequireKnownTenant, nil
 	case "introspection":
-		tenantID, err := introspectorFor(cfg.API.Auth.Introspection).verify(ctx, bearerToken)
-		return tenantID, cfg.API.Auth.Introspection.RequireKnownTenant, err
+		identity, err := introspectorFor(cfg.API.Auth.Introspection).verify(ctx, bearerToken)
+		if err == nil && cfg.API.Auth.Bearer.RequireSubject && !identity.personal() {
+			return bearerIdentity{}, true, errInvalidCredential
+		}
+		return identity, cfg.API.Auth.Introspection.RequireKnownTenant, err
 	default:
-		return "", true, errInvalidCredential
+		return bearerIdentity{}, true, errInvalidCredential
 	}
 }
 
@@ -302,16 +311,17 @@ func bearerActorID(cfg *config.Config, authMode, token, tenantID string) string 
 	if validationMode == "jwt" || validationMode == "jwks" || (validationMode == "" && authMode == "hybrid") {
 		claims := jwt.MapClaims{}
 		if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err == nil {
-			if subject, ok := claims["sub"].(string); ok && strings.TrimSpace(subject) != "" {
+			if subject, ok := claims["sub"].(string); ok {
 				// The token was already verified above. Hash the signed subject so
 				// audit records can correlate decisions without exposing an email.
-				digest := sha256.Sum256([]byte(tenantID + "\x00" + subject))
-				return fmt.Sprintf("jwt-sub:%x", digest[:12])
+				if actor := personalActorID("jwt", tenantID, subject); actor != "" {
+					return actor
+				}
 			}
 		}
 	}
-	// The current introspection contract exposes a tenant identifier but no
-	// stable person claim. Keep this explicit until the provider supplies one.
+	// Credentials without a usable personal subject retain the legacy tenant
+	// audit identity unless RequireSubject rejects them at the auth boundary.
 	return "tenant:" + tenantID
 }
 

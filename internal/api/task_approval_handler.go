@@ -33,6 +33,9 @@ func (h *Handler) rejectTask(c *gin.Context) {
 
 func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 	taskID := c.Param("id")
+	if !h.authorizeIndependentApproval(c, taskID) {
+		return
+	}
 
 	var body approvalAction
 	// Best-effort decode: an empty/malformed body is fine — we'll fall back to

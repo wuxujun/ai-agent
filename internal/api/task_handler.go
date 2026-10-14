@@ -65,6 +65,10 @@ func (h *Handler) createTask(c *gin.Context) {
 	principal := principalFromGin(c)
 	runtimeConfig := config.Get()
 	tenant, tenantConfigured := runtimeConfig.API.Tenants[principal.TenantID]
+	if tenant.ApprovalDisallowSelf && !(bearerIdentity{ActorID: principal.ActorID}).personal() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "personal identity required to create tasks under self-approval policy"})
+		return
+	}
 	brainConfigDigest := ""
 	if req.BrainProjectID != "" {
 		ref, err := brain.ResolveProject(runtimeConfig, principal.TenantID, req.BrainProjectID)
@@ -181,6 +185,7 @@ func (h *Handler) createTask(c *gin.Context) {
 	task := &types.Task{
 		ID:                  taskID,
 		TenantID:            principal.TenantID,
+		CreatorActorID:      principal.ActorID,
 		SessionID:           req.SessionID,
 		Goal:                req.Goal,
 		Workspace:           req.Workspace,

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -231,6 +232,11 @@ type Config struct {
 }
 
 type APITenantConfig struct {
+	// Empty/tenant preserves legacy tenant-wide approval authorization.
+	// deny disables decisions; actors permits only locally allowlisted identities.
+	ApprovalDisallowSelf         bool     `mapstructure:"approval_disallow_self"`
+	ApprovalMode                 string   `mapstructure:"approval_mode"`
+	ApprovalActorIDs             []string `mapstructure:"approval_actor_ids"`
 	APIKey                       string   `mapstructure:"api_key"`
 	Admin                        bool     `mapstructure:"admin"`
 	WorkspaceRoot                string   `mapstructure:"workspace_root"`
@@ -288,6 +294,7 @@ type APIAuthConfig struct {
 type APIBearerConfig struct {
 	// ValidationMode selects jwks or introspection for Bearer tokens in hybrid mode.
 	ValidationMode string `mapstructure:"validation_mode"`
+	RequireSubject bool   `mapstructure:"require_subject"`
 }
 
 type APIJWTConfig struct {
@@ -303,8 +310,10 @@ type APIJWTConfig struct {
 }
 
 type APIIntrospectionConfig struct {
-	URL                 string `mapstructure:"url"`
-	TenantClaim         string `mapstructure:"tenant_claim"`
+	URL         string `mapstructure:"url"`
+	TenantClaim string `mapstructure:"tenant_claim"`
+	// A configured subject claim is mandatory in every successful response.
+	SubjectClaim        string `mapstructure:"subject_claim"`
 	ActiveClaim         string `mapstructure:"active_claim"`
 	Issuer              string `mapstructure:"issuer"`
 	Audience            string `mapstructure:"audience"`
@@ -663,6 +672,7 @@ func setupViper() {
 	_ = viper.BindEnv("multiagent.runtime", "AI_AGENT_MULTIAGENT_RUNTIME")
 	_ = viper.BindEnv("multiagent.dag_canary_percent", "AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT")
 	_ = viper.BindEnv("api.auth.bearer.validation_mode", "AI_AGENT_API_BEARER_VALIDATION_MODE")
+	_ = viper.BindEnv("api.auth.bearer.require_subject", "AI_AGENT_API_BEARER_REQUIRE_SUBJECT")
 	_ = viper.BindEnv("api.auth.jwt.issuer", "AI_AGENT_API_JWT_ISSUER")
 	_ = viper.BindEnv("api.auth.jwt.audience", "AI_AGENT_API_JWT_AUDIENCE")
 	_ = viper.BindEnv("api.auth.jwt.jwks_url", "AI_AGENT_API_JWT_JWKS_URL")
@@ -673,6 +683,7 @@ func setupViper() {
 	_ = viper.BindEnv("api.auth.jwt.jwks_request_timeout_seconds", "AI_AGENT_API_JWT_JWKS_REQUEST_TIMEOUT_SECONDS")
 	_ = viper.BindEnv("api.auth.introspection.url", "AI_AGENT_API_INTROSPECTION_URL")
 	_ = viper.BindEnv("api.auth.introspection.tenant_claim", "AI_AGENT_API_INTROSPECTION_TENANT_CLAIM")
+	_ = viper.BindEnv("api.auth.introspection.subject_claim", "AI_AGENT_API_INTROSPECTION_SUBJECT_CLAIM")
 	_ = viper.BindEnv("api.auth.introspection.active_claim", "AI_AGENT_API_INTROSPECTION_ACTIVE_CLAIM")
 	_ = viper.BindEnv("api.auth.introspection.issuer", "AI_AGENT_API_INTROSPECTION_ISSUER")
 	_ = viper.BindEnv("api.auth.introspection.audience", "AI_AGENT_API_INTROSPECTION_AUDIENCE")
@@ -850,6 +861,7 @@ func cloneConfig(source *Config) *Config {
 	cloned.API.Auth.JWT.AllowedAlgorithms = append([]string(nil), source.API.Auth.JWT.AllowedAlgorithms...)
 	cloned.API.Tenants = make(map[string]APITenantConfig, len(source.API.Tenants))
 	for tenantID, tenant := range source.API.Tenants {
+		tenant.ApprovalActorIDs = append([]string(nil), tenant.ApprovalActorIDs...)
 		tenant.AnswerPipelineRequiredStages = append([]string(nil), tenant.AnswerPipelineRequiredStages...)
 		tenant.AllowedMultiAgentTeams = append([]string(nil), tenant.AllowedMultiAgentTeams...)
 		if tenant.BrainProjects != nil {
@@ -1550,6 +1562,12 @@ func (c *Config) validateIntrospectionAuth() error {
 	if introspection.TimeoutSeconds <= 0 || introspection.CacheTTLSeconds < 0 {
 		return fmt.Errorf("api.auth.introspection timeout_seconds must be > 0 and cache_ttl_seconds must be >= 0")
 	}
+	if c.API.Auth.Bearer.RequireSubject && strings.TrimSpace(introspection.SubjectClaim) == "" {
+		return fmt.Errorf("api.auth.introspection.subject_claim is required when bearer.require_subject is true")
+	}
+	if introspection.SubjectClaim != strings.TrimSpace(introspection.SubjectClaim) {
+		return fmt.Errorf("api.auth.introspection.subject_claim must not contain surrounding whitespace")
+	}
 	return nil
 }
 
@@ -1830,6 +1848,31 @@ func (c *Config) Validate() error {
 	for tenantID, tenant := range c.API.Tenants {
 		if strings.TrimSpace(tenantID) == "" {
 			return fmt.Errorf("api tenant id must not be empty")
+		}
+		switch tenant.ApprovalMode {
+		case "", "tenant", "deny":
+		case "actors":
+			if len(tenant.ApprovalActorIDs) == 0 {
+				return fmt.Errorf("api tenant %q approval_actor_ids is required in actors mode", tenantID)
+			}
+		default:
+			return fmt.Errorf("api tenant %q approval_mode must be tenant, deny, or actors", tenantID)
+		}
+		if len(tenant.ApprovalActorIDs) > 0 && tenant.ApprovalMode != "actors" && tenant.ApprovalMode != "deny" {
+			return fmt.Errorf("api tenant %q approval_actor_ids requires actors or deny mode", tenantID)
+		}
+		seenActors := make(map[string]bool)
+		for _, actor := range tenant.ApprovalActorIDs {
+			digest := ""
+			for _, prefix := range []string{"jwt-sub:", "introspection-sub:"} {
+				if strings.HasPrefix(actor, prefix) {
+					digest = strings.TrimPrefix(actor, prefix)
+				}
+			}
+			if _, err := hex.DecodeString(digest); err != nil || len(digest) != 24 || strings.ToLower(digest) != digest || seenActors[actor] {
+				return fmt.Errorf("api tenant %q approval_actor_ids must be unique personal actor hashes", tenantID)
+			}
+			seenActors[actor] = true
 		}
 		if strings.TrimSpace(tenant.APIKey) == "" && authMode == "api_key" {
 			return fmt.Errorf("api tenant %q api_key must not be empty in api_key mode", tenantID)

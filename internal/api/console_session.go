@@ -139,8 +139,8 @@ func createConsoleSession(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "console requires Bearer authentication"})
 		return
 	}
-	tenantID, requireKnownTenant, err := verifyBearerCredential(c.Request.Context(), cfg, authMode, token)
-	if err != nil || (requireKnownTenant && !knownConsoleTenant(cfg, tenantID)) {
+	identity, requireKnownTenant, err := verifyBearerCredential(c.Request.Context(), cfg, authMode, token)
+	if err != nil || (requireKnownTenant && !knownConsoleTenant(cfg, identity.TenantID)) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credential"})
 		return
 	}
@@ -149,7 +149,7 @@ func createConsoleSession(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session creation failed"})
 		return
 	}
-	session := consoleSession{Token: token, TenantID: tenantID, CSRFToken: csrfToken, ExpiresAt: time.Now().Add(consoleSessionLifetime)}
+	session := consoleSession{Token: token, TenantID: identity.TenantID, CSRFToken: csrfToken, ExpiresAt: time.Now().Add(consoleSessionLifetime)}
 	cookie, err := encryptConsoleSession(session)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "console session is not configured"})
@@ -160,7 +160,7 @@ func createConsoleSession(c *gin.Context) {
 		return
 	}
 	setConsoleCookie(c, cookie, int(consoleSessionLifetime.Seconds()))
-	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "csrf_token": csrfToken, "expires_at": session.ExpiresAt})
+	c.JSON(http.StatusOK, gin.H{"tenant_id": identity.TenantID, "csrf_token": csrfToken, "expires_at": session.ExpiresAt})
 }
 
 func knownConsoleTenant(cfg *config.Config, tenantID string) bool {
@@ -177,13 +177,13 @@ func getConsoleSession(c *gin.Context) {
 	}
 	cfg := config.Get()
 	mode := strings.ToLower(strings.TrimSpace(cfg.API.Auth.Mode))
-	tenantID, requireKnownTenant, err := verifyBearerCredential(c.Request.Context(), cfg, mode, session.Token)
-	if err != nil || tenantID != session.TenantID || (requireKnownTenant && !knownConsoleTenant(cfg, tenantID)) {
+	identity, requireKnownTenant, err := verifyBearerCredential(c.Request.Context(), cfg, mode, session.Token)
+	if err != nil || identity.TenantID != session.TenantID || (requireKnownTenant && !knownConsoleTenant(cfg, identity.TenantID)) {
 		setConsoleCookie(c, "", -1)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "console session has expired"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "csrf_token": session.CSRFToken, "expires_at": session.ExpiresAt})
+	c.JSON(http.StatusOK, gin.H{"tenant_id": identity.TenantID, "csrf_token": session.CSRFToken, "expires_at": session.ExpiresAt})
 }
 
 func deleteConsoleSession(c *gin.Context) {

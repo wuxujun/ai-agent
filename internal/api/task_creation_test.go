@@ -8,11 +8,36 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
+
+func TestCreateTaskCannotSupplyLifecycleMetadata(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth.Mode = "api_key"
+		cfg.API.APIKey = "lifecycle-fixture"
+		cfg.API.Tenants = nil
+	}))
+	st := store.NewMemoryStore()
+	r := setupTestRouter(t, st, nil)
+	before := time.Now()
+	body := `{"id":"lifecycle-forgery","goal":"fixture","workspace":"./testdata","terminal_since":"2000-01-01T00:00:00Z","last_maintenance_at":"2000-01-01T00:00:00Z","maintenance_version":"9007199254740991"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "lifecycle-fixture")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 201 {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	got, err := st.GetTask(t.Context(), "lifecycle-forgery")
+	if err != nil || got.MaintenanceVersion != 1 || got.TerminalSince != nil || got.LastMaintenanceAt == nil || got.LastMaintenanceAt.Before(before) {
+		t.Fatalf("caller supplied lifecycle accepted: %+v %v", got, err)
+	}
+}
 
 // Hold both callers at the persistence boundary so the result does not
 // depend on the scheduler choosing a rare check-then-save interleaving.

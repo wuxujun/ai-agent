@@ -34,7 +34,7 @@ func TestDurableApprovalRecoveryCompetingInstancesExecuteOnce(t *testing.T) {
 	engineB := &orchestrator.Engine{Store: st, ApprovalCodec: codec, Executor: executor}
 	handlerA := &Handler{store: st, engine: engineA}
 	handlerB := &Handler{store: st, engine: engineB}
-	task := &types.Task{ID: "competing-recovery", TenantID: "tenant-a", Status: types.StatusAwaitingApproval}
+	task := &types.Task{ID: "competing-recovery", TenantID: "tenant-a", CreatorActorID: "introspection-sub:0123456789abcdef01234567", Status: types.StatusAwaitingApproval}
 	if err := st.SaveFullTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestDurableApprovalRecoveryCompetingInstancesExecuteOnce(t *testing.T) {
 		t.Fatalf("stored approval = %#v, %v", storedApproval, err)
 	}
 	storedTask, err := st.GetTask(context.Background(), task.ID)
-	if err != nil || storedTask.Status != types.StatusPaused || storedTask.StepCount != 1 || len(storedTask.Trace) != 1 {
+	if err != nil || storedTask.CreatorActorID != task.CreatorActorID || storedTask.Status != types.StatusPaused || storedTask.StepCount != 1 || len(storedTask.Trace) != 1 {
 		t.Fatalf("stored task = %#v, %v", storedTask, err)
 	}
 }

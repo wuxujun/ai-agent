@@ -1,0 +1,59 @@
+# Standalone strict single-instance example. Copy to a reviewed runtime config;
+# this file does not override the checked-in config.yaml automatically.
+# Replace all .invalid URLs and claim paths with the actual identity contract.
+api:
+  addr: "127.0.0.1:8088"
+  api_key: ""
+  auth:
+    mode: introspection
+    require_tenant_workspace_root: true
+    bearer:
+      require_subject: true
+    introspection:
+      url: "https://identity.example.invalid/auth/check"
+      tenant_claim: "data.tenant_id"
+      subject_claim: "data.sub"
+      active_claim: "data.active"
+      issuer: "https://identity.example.invalid"
+      audience: "ai-agent"
+      require_expiration: true
+      require_known_tenant: true
+      allow_private_network: false
+      timeout_seconds: 3
+      cache_ttl_seconds: 0
+  tenants:
+    project-a:
+      admin: false
+      workspace_root: "./workspace/project-a"
+      default_multiagent_team: kb_qa
+      allowed_multiagent_teams: [kb_qa]
+      wiki_space: project-a
+      brain_projects: {}
+      daily_llm_call_budget: 100
+      # Enable actors mode only after adding verified personal actor hashes.
+      approval_disallow_self: true
+      approval_mode: deny
+      approval_actor_ids: []
+store:
+  type: sqlite
+  dsn: data/agent.db
+orchestrator:
+  mode: legacy
+multiagent:
+  runtime: legacy
+  dag_canary_percent: 0
+brain:
+  enabled: false
+wiki:
+  default_space: ""
+llm:
+  provider: openai-responses
+  api_key: ""
+  timeout_seconds: 30
+answer_pipeline:
+  enabled: true
+  enforcement: strict
+  on_required_stage_failure: partial
+
+tool:
+  timeout_seconds: 120
