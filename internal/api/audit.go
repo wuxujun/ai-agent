@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -294,6 +295,13 @@ func (h *Handler) reauditTask(c *gin.Context) {
 		return
 	}
 	defer h.taskSem.Release()
+	leaseStore, ok := h.store.(store.TaskLeaseStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "store does not support task lease renewal"})
+		return
+	}
+	acquiredAt := time.Now()
+	taskID, tenantID := task.ID, task.TenantID
 	owner := "reaudit-" + uuid.NewString()
 	acquired, err := h.store.AcquireTaskLease(ctx, task.ID, owner, time.Duration(timeout+30)*time.Second)
 	if err != nil {
@@ -307,17 +315,61 @@ func (h *Handler) reauditTask(c *gin.Context) {
 	defer func() {
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer releaseCancel()
-		if releaseErr := h.store.ReleaseTaskLease(releaseCtx, task.ID, owner); releaseErr != nil {
-			log.Warn("failed to release re-audit lease", "task_id", task.ID, "error", releaseErr)
+		if releaseErr := h.store.ReleaseTaskLease(releaseCtx, taskID, owner); releaseErr != nil {
+			log.Warn("failed to release re-audit lease", "task_id", taskID, "error", releaseErr)
 		}
 	}()
+	ctx = store.WithTaskLease(ctx, taskID, owner)
+	ctx, ownershipCancel := context.WithCancelCause(ctx)
+	lease := store.NewExecutionLease(func() { ownershipCancel(store.ErrTaskLeaseLost) })
+	lease.Start(ctx, leaseStore, taskID, owner, time.Duration(timeout+30)*time.Second, acquiredAt)
+	defer func() { lease.Finish(); ownershipCancel(context.Canceled) }()
+	ownershipError := func(err error) {
+		if errors.Is(err, store.ErrTaskLeaseLost) || errors.Is(context.Cause(ctx), store.ErrTaskLeaseLost) {
+			c.JSON(http.StatusConflict, gin.H{"error": "task execution ownership lost", "task_id": taskID})
+			return
+		}
+		c.Error(err)
+	}
+
+	// The pre-queue copy is admission-only. Always audit the checkpoint loaded
+	// after ownership, and validate it again before running the pipeline.
+	task, err = h.store.GetTask(ctx, taskID)
+	if err != nil {
+		ownershipError(err)
+		return
+	}
+	if task.ID != taskID || task.TenantID != tenantID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+	if !types.IsTerminalTaskStatus(task.Status) {
+		c.JSON(http.StatusConflict, gin.H{"error": "only terminal tasks can be re-audited"})
+		return
+	}
+	if strings.TrimSpace(task.FinalAnswer) == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "task has no answer to audit"})
+		return
+	}
+	if err := lease.Err(); err != nil {
+		ownershipError(err)
+		return
+	}
 	report, err := h.engine.Reaudit(ctx, task, request.Force)
 	if err != nil {
+		if errors.Is(context.Cause(ctx), store.ErrTaskLeaseLost) {
+			ownershipError(store.ErrTaskLeaseLost)
+			return
+		}
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
+	if err := lease.Err(); err != nil {
+		ownershipError(err)
+		return
+	}
 	if err := h.store.SaveFullTask(ctx, task); err != nil {
-		c.Error(err)
+		ownershipError(err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"task_id": task.ID, "status": task.Status, "final_answer": task.FinalAnswer, "answer_audit": report})

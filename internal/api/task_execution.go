@@ -533,23 +533,7 @@ func (h *Handler) cancelTask(c *gin.Context) {
 		return
 	}
 
-	if task.Status == types.StatusRunning {
-		if err := orchestrator.SetTaskCanceled(task, "task_canceled", "Task was canceled via API."); err != nil {
-			c.Error(err)
-			return
-		}
-		if saveErr := h.store.SaveFullTask(ctx, task); saveErr != nil {
-			c.Error(saveErr)
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"message": "task cancelled (marked failed in database)",
-			"task_id": taskID,
-		})
-		return
-	}
-
-	c.JSON(http.StatusBadRequest, gin.H{"error": "task is not running", "status": task.Status})
+	h.cancelOrphanedTask(c, ctx, task)
 }
 
 // CancelTaskByID fires the context cancellation for a locally-running task.

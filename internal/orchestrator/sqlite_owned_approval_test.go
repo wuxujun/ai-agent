@@ -29,7 +29,7 @@ func TestSQLiteOwnedApprovalRecoveryUsesSingleTaskOwner(t *testing.T) {
 			engine.ApprovalCodec = codec
 			exec := &recoveryExecutor{}
 			engine.Executor = exec
-			action, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "fixture-only"}})
+			action, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "fixture-only", "content": "test"}})
 			encrypted, err := codec.Encrypt(action)
 			if err != nil {
 				t.Fatal(err)

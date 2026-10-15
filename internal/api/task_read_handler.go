@@ -106,7 +106,7 @@ func (h *Handler) allowedTaskActions(task *types.Task) []string {
 	if h.engine != nil && (task.Status == types.StatusCreated || task.Status == types.StatusPaused || h.engine.CanResumeTask(task)) {
 		actions = append(actions, "run_all")
 	}
-	if task.Status == types.StatusRunning || task.Status == types.StatusAwaitingApproval {
+	if task.Status == types.StatusRunning || task.Status == types.StatusAwaitingApproval || task.Status == types.StatusPaused {
 		actions = append(actions, "cancel")
 	}
 	if h.engine != nil && h.engine.AnswerPipeline != nil && types.IsTerminalTaskStatus(task.Status) && task.FinalAnswer != "" {

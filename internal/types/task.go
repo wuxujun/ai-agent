@@ -70,8 +70,10 @@ const (
 	TerminationBusinessFailed   TerminationKind = "business_failed"
 	TerminationShutdownRollback TerminationKind = "shutdown_rollback"
 	TerminationClientCancelled  TerminationKind = "client_cancelled"
-	TerminationTimeout          TerminationKind = "timeout"
-	TerminationLeaseLost        TerminationKind = "lease_lost"
+	// TerminationUserCancelled is explicit cancellation, never approval-recoverable.
+	TerminationUserCancelled TerminationKind = "user_cancelled"
+	TerminationTimeout       TerminationKind = "timeout"
+	TerminationLeaseLost     TerminationKind = "lease_lost"
 )
 
 const (

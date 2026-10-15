@@ -33,7 +33,7 @@ func TestSQLiteOwnedCrashHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close() // Process.Kill must bypass this and every scope defer.
-	task := &types.Task{ID: "task", TenantID: "tenant", Goal: "before execution", Status: types.StatusRunning}
+	task := &types.Task{ID: "task", TenantID: "tenant", Goal: "before execution", Status: types.StatusRunning, MaxSteps: 10, ToolBudget: 10}
 	if strings.HasPrefix(stage, "approval-") {
 		task.Status = types.StatusAwaitingApproval
 	}
@@ -73,7 +73,7 @@ func TestSQLiteOwnedCrashHelper(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		action, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "fixture-effect"}})
+		action, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "fixture-effect", "content": "test"}})
 		payload, err := codec.Encrypt(action)
 		if err != nil {
 			t.Fatal(err)

@@ -34,11 +34,11 @@ func TestDurableApprovalRecoveryCompetingInstancesExecuteOnce(t *testing.T) {
 	engineB := &orchestrator.Engine{Store: st, ApprovalCodec: codec, Executor: executor}
 	handlerA := &Handler{store: st, engine: engineA}
 	handlerB := &Handler{store: st, engine: engineB}
-	task := &types.Task{ID: "competing-recovery", TenantID: "tenant-a", CreatorActorID: "introspection-sub:0123456789abcdef01234567", Status: types.StatusAwaitingApproval}
+	task := &types.Task{ID: "competing-recovery", MaxSteps: 10, ToolBudget: 10, TenantID: "tenant-a", CreatorActorID: "introspection-sub:0123456789abcdef01234567", Status: types.StatusAwaitingApproval}
 	if err := st.SaveFullTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	actionJSON, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "x.txt"}})
+	actionJSON, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "x.txt", "content": "test"}})
 	actionPayload, err := codec.Encrypt(actionJSON)
 	if err != nil {
 		t.Fatal(err)

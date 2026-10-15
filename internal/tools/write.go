@@ -51,6 +51,12 @@ func (t *WriteFileTool) Execute(ctx context.Context, workspace string, params ma
 	if err := policy.ValidateWorkspace(workspace); err != nil {
 		return nil, fmt.Errorf("write_file policy violation: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := t.Validate(params); err != nil {
+		return nil, err
+	}
 	path, _ := params["path"].(string)
 	content, _ := params["content"].(string)
 	err := WriteFile(workspace, path, content)
@@ -75,20 +81,42 @@ func WriteFile(workspace string, relativePath string, content string) error {
 		return err
 	}
 
-	dir := filepath.Dir(full)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
 		return err
 	}
+	defer root.Close()
+	return writeFileInRoot(root, relativePath, content)
+}
 
-	// Open with O_NOFOLLOW to prevent following symlinks.
-	f, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|policy.O_NOFOLLOW, 0644)
+func writeFileInRoot(root *os.Root, relativePath, content string) error {
+	if err := root.MkdirAll(filepath.Dir(relativePath), 0755); err != nil {
+		return err
+	}
+	// Do not truncate until the descriptor is known to be a regular file.
+	// Root keeps ancestor swaps confined; O_NOFOLLOW rejects the final symlink.
+	if info, err := root.Lstat(relativePath); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("write_file requires a regular file")
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := root.OpenFile(relativePath, os.O_WRONLY|os.O_CREATE|policy.O_NOFOLLOW|readFileNonblock, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open file safely: %w", err)
 	}
 	defer f.Close()
-
-	if _, err := f.Write([]byte(content)); err != nil {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("write_file requires a regular file")
+	}
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := f.WriteString(content); err != nil {
 		return fmt.Errorf("failed to write content safely: %w", err)
 	}
-	return nil
+	return f.Close()
 }

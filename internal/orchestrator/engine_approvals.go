@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -90,6 +91,9 @@ func (e *Engine) enforceApprovals(ctx context.Context, task *types.Task, decisio
 		}
 		if newParams != nil {
 			ac.Parameters = newParams
+		}
+		if err := planner.ValidateToolArguments(ac.Action, ac.Parameters); err != nil {
+			return false, err
 		}
 	}
 	return false, executionLeaseError(ctx)
@@ -344,6 +348,16 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 	if resolution.Parameters != nil {
 		action.Parameters = resolution.Parameters
 	}
+	if err := planner.ValidateToolArguments(action.Action, action.Parameters); err != nil {
+		return false, fmt.Errorf("validate approved action: %w", err)
+	}
+	tokens := 0
+	for _, trace := range task.Trace {
+		tokens += trace.TokenUsage.TotalTokens
+	}
+	if task.StepCount >= task.MaxSteps || task.ToolBudget <= 0 || (task.TokenBudget > 0 && tokens >= task.TokenBudget) {
+		return false, errors.New("approved recovery task budget exhausted")
+	}
 	if err := recoveryExecutionError(ctx); err != nil {
 		return false, err
 	}
@@ -364,16 +378,31 @@ func (e *Engine) RecoverApprovedApproval(ctx context.Context, task *types.Task, 
 	if err := recoveryExecutionError(ctx); err != nil {
 		return true, err
 	}
+	ctx = store.WithTenantScope(ctx, task.TenantID)
+	if ledger, ok := e.Store.(types.TenantUsageLedger); ok {
+		ctx = llmcore.WithTenantUsageLedger(ctx, ledger)
+	}
+	ctx = llmcore.WithTaskBudget(ctx, task)
 	traces, executeErr := e.Executor.Execute(ctx, task, &planner.PlanDecision{Actions: []planner.ActionCall{action}})
+	traces, injectionAudit := e.inspectExternalTraces(ctx, task, traces)
+	traces, relevanceAudits := e.filterExternalTraces(ctx, task, traces)
+	conflictAudits := e.resolveEvidenceConflicts(ctx, task, traces)
 	task.Trace = append(task.Trace, traces...)
-	task.StepCount += len(traces)
+	if injectionAudit != nil {
+		task.Trace = append(task.Trace, *injectionAudit)
+	}
+	task.Trace = append(task.Trace, relevanceAudits...)
+	task.Trace = append(task.Trace, conflictAudits...)
+	// Exactly one checkpoint was attempted, even if an executor returns no trace.
+	cost := max(1, len(traces))
+	task.StepCount += cost
+	task.ToolBudget -= cost
 	task.Status = types.StatusPaused
 	if executeErr != nil {
 		task.Trace = append(task.Trace, types.StepTrace{
-			Step: task.StepCount + 1, Goal: task.Goal, Action: action.Action,
+			Step: task.StepCount, Goal: task.Goal, Action: action.Action,
 			Observation: "approved recovery action failed", Error: executeErr.Error(),
 		})
-		task.StepCount++
 	}
 	if err := executionLeaseError(ctx); err != nil {
 		return true, err

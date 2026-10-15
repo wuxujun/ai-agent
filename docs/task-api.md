@@ -387,7 +387,11 @@ curl -sS \
 }
 ```
 
-本实例运行中的 Task 通常返回 `200`。集群模式下远端取消信号可能返回 `202`。Task 不存在返回 `404`；非运行状态返回 `400`。
+本实例运行中的 Task 通常返回 `200`。集群模式下远端取消信号可能返回 `202`。Task 不存在返回 `404`。
+
+无本地活动 owner 且未配置审批 bus 时，数据库兜底支持 `running`、`awaiting_approval`、`paused`：获取唯一 task lease 后重读和校验，再持久化 `status=failed`、`termination_kind=user_cancelled`、`error_code=task_canceled`。这种明确取消不会被后台审批恢复当作可恢复中断。随后以版本 CAS 将 pending/approved 审批置为 expired；Task 写入与审批失效不是同一事务，失效失败返回错误但 Task 继续保持不可恢复，重试同一 cancel 可补齐失效。已 rejected/consumed 的审批记录保留，不重放动作。
+
+其他实例仍持有租约时返回 `409`，不会覆盖 checkpoint；已完成或其他不可取消状态返回 `400`。`user_cancelled` 的失败任务允许幂等重试 cancel。单任务详情的 `allowed_actions` 也为 paused 任务显示 cancel。上述变化限于无本地 owner/无 bus 的兜底；本地活动任务和 bus 转发仍沿用既有异步信号语义。
 
 ## 9. 删除 Task
 
@@ -438,7 +442,9 @@ curl -sS \
   "${API_BASE_URL}/api/tasks/${TASK_ID}/re-audit"
 ```
 
-仅终态且存在 `final_answer` 的 Task 可重新审计。常见失败状态：答案流水线不可用 `503`、Task 非终态 `409`、没有答案 `422`、租约冲突 `409`。
+仅终态且存在 `final_answer` 的 Task 可重新审计。排队和获得 lease 后会重读最新 checkpoint 并重新检查租户、终态及答案；审计和保存携带同一 owner scope，续租失效会取消执行，过期/被替换的 owner 不能覆盖新数据。常见失败状态：答案流水线不可用 `503`、Task 非终态 `409`、没有答案 `422`、租约冲突/丢失 `409`、自定义 Store 不支持续租 `501`。
+
+审批最终参数会通过注册工具再次校验；提供 `parameters: {}` 表示完整替换为空对象，不代表沿用原参数，缺少必填字段会阻止动作执行。持久审批恢复会在消费前重读任务并检查最终参数、步数、工具和 Token 预算；不合法或耗尽时保留 approved，不执行动作。每次恢复尝试扣减工具预算，外部工具输出经过既有证据审计。审批消费后执行失败不会自动重放；批准接口接受决策不等于恢复执行成功，客户端应继续读取审批及任务状态。
 
 ## 11. 推荐调用流程
 

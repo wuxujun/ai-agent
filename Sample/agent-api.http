@@ -49,6 +49,24 @@ X-API-Key: {{apiKey}}
 POST {{baseUrl}}/api/tasks/atomic-create-example/run-all
 X-API-Key: {{apiKey}}
 
+### Cancel an orphaned task (no local owner and no approval bus)
+# Supports running, awaiting_approval and paused after acquiring/reloading under a task lease.
+# A peer owner yields 409. Persisted termination_kind=user_cancelled prevents approval recovery.
+# Pending/approved decisions expire via CAS; cleanup failure returns an error but stays fail-closed.
+# Retrying cancel for user_cancelled tasks safely completes approval expiration.
+DELETE {{baseUrl}}/api/tasks/atomic-create-example/cancel
+X-API-Key: {{apiKey}}
+
+### Re-audit a terminal task under renewable ownership
+# Reloads the latest checkpoint after acquiring the lease; revalidates terminal/nonempty answer.
+# Owner scope is preserved into the pipeline/save; peer or lost lease yields 409.
+# Custom stores without TaskLeaseStore renewal return 501.
+POST {{baseUrl}}/api/tasks/atomic-create-example/re-audit
+X-API-Key: {{apiKey}}
+Content-Type: application/json
+
+{"force": true}
+
 ### Reload dynamic configuration (administrator credentials required)
 # Dynamic changes return 200 with the active config_revision.
 # Changes to api.addr, store.type/dsn, orchestrator.mode, skill.root,
@@ -102,6 +120,11 @@ X-API-Key: {{apiKey}}
 # they describe execution start and elapsed milliseconds, not persistence time.
 GET {{baseUrl}}/api/tasks/atomic-create-example/trace?limit=100
 X-API-Key: {{apiKey}}
+
+# Approved replacement parameters are validated against the registered tool.
+# parameters: {} replaces all arguments; it does not restore the old values.
+# Recovery checks task budgets before consumption; approval acceptance does not
+# guarantee execution. Read the persisted task/approval status after the decision.
 
 ### List recoverable pending approvals
 # count is the page size, not a global total. Use next_cursor as cursor for

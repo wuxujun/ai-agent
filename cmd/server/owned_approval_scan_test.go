@@ -38,7 +38,7 @@ func ownedScanFixture(t *testing.T, approved bool, cleanup func(context.Context,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	task := &types.Task{ID: "scan-owned", TenantID: "default", Status: types.StatusAwaitingApproval}
+	task := &types.Task{ID: "scan-owned", TenantID: "default", Status: types.StatusAwaitingApproval, MaxSteps: 10, ToolBudget: 10}
 	if err := st.SaveFullTask(t.Context(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func ownedScanFixture(t *testing.T, approved bool, cleanup func(context.Context,
 	if err != nil {
 		t.Fatal(err)
 	}
-	action, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "fixture"}})
+	action, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "fixture", "content": "test"}})
 	payload, err := codec.Encrypt(action)
 	if err != nil {
 		t.Fatal(err)

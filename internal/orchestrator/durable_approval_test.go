@@ -134,11 +134,11 @@ func TestRecoverApprovedApprovalConsumesBeforeSingleExecution(t *testing.T) {
 	}
 	executor := &recoveryExecutor{}
 	engine := &Engine{Store: st, ApprovalCodec: codec, Executor: executor}
-	task := &types.Task{ID: "recover-task", TenantID: "tenant-a", Goal: "recover", Status: types.StatusAwaitingApproval}
+	task := &types.Task{ID: "recover-task", TenantID: "tenant-a", Goal: "recover", Status: types.StatusAwaitingApproval, MaxSteps: 10, ToolBudget: 10}
 	if err := st.SaveFullTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	actionJSON, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "x"}})
+	actionJSON, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "x", "content": "test"}})
 	ciphertext, err := codec.Encrypt(actionJSON)
 	if err != nil {
 		t.Fatal(err)

@@ -33,7 +33,7 @@ func seedOwnedDispatcherApproval(t *testing.T, h *Handler, approved bool) *compe
 	h.engine.ApprovalCodec = codec
 	exec := &competingRecoveryExecutor{}
 	h.engine.Executor = exec
-	action, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "fixture"}})
+	action, _ := json.Marshal(planner.ActionCall{Action: "write_file", Parameters: map[string]any{"path": "fixture", "content": "test"}})
 	payload, err := codec.Encrypt(action)
 	if err != nil {
 		t.Fatal(err)

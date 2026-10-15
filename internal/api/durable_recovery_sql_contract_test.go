@@ -61,7 +61,7 @@ func runDurableApprovalRecoverySQLContract(t *testing.T, open recoverySQLOpener)
 		parameters map[string]any
 		want       map[string]any
 	}{
-		{"replacement", map[string]any{"path": "approved.txt"}, map[string]any{"path": "approved.txt"}},
+		{"replacement", map[string]any{"path": "approved.txt", "content": "approved"}, map[string]any{"path": "approved.txt", "content": "approved"}},
 		{"unchanged", nil, map[string]any{"path": "original.txt", "content": "original"}},
 		{"empty_replacement", map[string]any{}, map[string]any{}},
 	} {
@@ -107,6 +107,14 @@ func runDurableApprovalRecoverySQLContract(t *testing.T, open recoverySQLOpener)
 			done := make(chan struct{})
 			go func() { handler.Wait(); close(done) }()
 			t.Cleanup(func() { release(); awaitRecoverySQLSignal(t, done) })
+			if tc.name == "empty_replacement" {
+				awaitRecoverySQLSignal(t, done)
+				stored, approval := loadRecoverySQLCheckpoint(t, peer, taskID, approvalID)
+				if calls.Load() != 0 || events.Load() != 0 || approval.Status != types.ApprovalApproved || stored.Status != types.StatusAwaitingApproval || stored.ToolBudget != 10 {
+					t.Fatalf("empty replacement was executed/consumed: task=%+v approval=%+v calls=%d", stored, approval, calls.Load())
+				}
+				return
+			}
 			select {
 			case action := <-entered:
 				if action.Action != "write_file" || !reflect.DeepEqual(action.Parameters, tc.want) {
@@ -129,7 +137,7 @@ func runDurableApprovalRecoverySQLContract(t *testing.T, open recoverySQLOpener)
 
 			stored, approval := loadRecoverySQLCheckpoint(t, peer, taskID, approvalID)
 			wantTrace := append(recoverySQLInitialTrace(), recoverySQLResultTrace())
-			if stored.Status != types.StatusPaused || stored.StepCount != 2 || !reflect.DeepEqual(stored.Trace, wantTrace) {
+			if stored.Status != types.StatusPaused || stored.StepCount != 2 || stored.ToolBudget != 9 || !reflect.DeepEqual(stored.Trace, wantTrace) {
 				t.Fatalf("recovered task = %+v; want paused, 2 execution steps and all 3 trace events", stored)
 			}
 			if approval.Status != types.ApprovalConsumed || approval.Version != 3 || calls.Load() != 1 || events.Load() != 1 {
@@ -285,7 +293,7 @@ func seedRecoverySQLCheckpoint(t *testing.T, open recoverySQLOpener, parameters 
 	if err != nil {
 		t.Fatal(err)
 	}
-	task := &types.Task{ID: taskID, TenantID: "tenant-recovery", Goal: "recovery fixture", Status: types.StatusAwaitingApproval, StepCount: 1, Trace: recoverySQLInitialTrace()}
+	task := &types.Task{ID: taskID, TenantID: "tenant-recovery", Goal: "recovery fixture", Status: types.StatusAwaitingApproval, StepCount: 1, MaxSteps: 10, ToolBudget: 10, Trace: recoverySQLInitialTrace()}
 	if err := seed.SaveFullTask(t.Context(), task); err != nil {
 		t.Fatal(err)
 	}

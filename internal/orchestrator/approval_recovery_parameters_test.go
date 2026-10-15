@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/approvalcrypto"
+	"github.com/wuxujun/ai-agent/internal/config"
+	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
+	"github.com/wuxujun/ai-agent/internal/evidencefilter"
 	"github.com/wuxujun/ai-agent/internal/planner"
+	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/store"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -30,9 +36,8 @@ func TestRecoverApprovedApprovalUsesFinalParameters(t *testing.T) {
 		parameters map[string]any
 		want       map[string]any
 	}{
-		{"replacement", map[string]any{"path": "approved.txt"}, map[string]any{"path": "approved.txt"}},
+		{"replacement", map[string]any{"path": "approved.txt", "content": "approved"}, map[string]any{"path": "approved.txt", "content": "approved"}},
 		{"unchanged", nil, map[string]any{"path": "original.txt", "content": "original"}},
-		{"empty_replacement", map[string]any{}, map[string]any{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -116,7 +121,7 @@ func recoveryParametersFixture(t *testing.T) (*Engine, *types.Task, *types.Durab
 	}
 	executor := &parameterRecoveryExecutor{}
 	engine := &Engine{Store: st, ApprovalCodec: codec, Executor: executor}
-	task := &types.Task{ID: "parameters-task", TenantID: "tenant-a", Status: types.StatusAwaitingApproval}
+	task := &types.Task{ID: "parameters-task", TenantID: "tenant-a", Status: types.StatusAwaitingApproval, MaxSteps: 10, ToolBudget: 10}
 	if err := st.SaveFullTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -137,4 +142,140 @@ func recoveryParametersFixture(t *testing.T) (*Engine, *types.Task, *types.Durab
 		t.Fatal(err)
 	}
 	return engine, task, approval, executor
+}
+
+func TestApprovalRecoveryRejectsInvalidArgumentsAndExhaustedBudget(t *testing.T) {
+	for _, scenario := range []string{"empty_parameters", "missing_content", "traversal", "tool_budget", "steps", "tokens"} {
+		t.Run(scenario, func(t *testing.T) {
+			e, task, approval, executor := recoveryParametersFixture(t)
+			var params map[string]any
+			switch scenario {
+			case "empty_parameters":
+				params = map[string]any{}
+			case "missing_content":
+				params = map[string]any{"path": "x"}
+			case "traversal":
+				params = map[string]any{"path": "../outside", "content": "x"}
+			case "tool_budget":
+				task.ToolBudget = 0
+			case "steps":
+				task.StepCount = task.MaxSteps
+			case "tokens":
+				task.TokenBudget = 1
+				task.Trace = []types.StepTrace{{TokenUsage: types.TokenUsage{TotalTokens: 1}}}
+			}
+			if err := e.Store.SaveFullTask(t.Context(), task); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := e.PersistApprovalResolution(t.Context(), task.ID, approval.ID, types.ApprovalResult{Approved: true, Parameters: params}); err != nil {
+				t.Fatal(err)
+			}
+			st := e.Store.(store.DurableApprovalStore)
+			approval, err := st.GetApproval(t.Context(), approval.ID, task.TenantID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := e.RecoverApprovedApproval(t.Context(), task, approval, "owner")
+			if got || err == nil || executor.calls != 0 {
+				t.Fatalf("recovered=%v err=%v calls=%d", got, err, executor.calls)
+			}
+			after, err := st.GetApproval(t.Context(), approval.ID, task.TenantID)
+			if err != nil || after.Status != types.ApprovalApproved {
+				t.Fatalf("consumed invalid approval: %+v %v", after, err)
+			}
+		})
+	}
+}
+
+type recoveryExternalExecutor struct{}
+
+func (recoveryExternalExecutor) Execute(context.Context, *types.Task, *planner.PlanDecision) ([]types.StepTrace, error) {
+	return []types.StepTrace{{Action: "http_fetch", Query: "version", Observation: "advertisement\nversion is 2"}}, nil
+}
+
+func TestApprovalRecoveryAuditsExternalOutputAndChargesBudget(t *testing.T) {
+	for _, quarantine := range []bool{true, false} {
+		t.Run(map[bool]string{true: "quarantine", false: "relevance_and_conflict"}[quarantine], func(t *testing.T) {
+			e, task, approval, _ := recoveryParametersFixture(t)
+			e.Executor = recoveryExternalExecutor{}
+			if quarantine {
+				e.PromptInjectionDetector = &fixedInjectionDetector{}
+			} else {
+				e.EvidenceRelevanceFilter = &fixedEvidenceFilter{}
+				e.EvidenceConflictResolver = &fixedEvidenceConflictResolver{}
+				e.LLMSceneEnabled = func(scene string) bool { return scene == config.LLMSceneEvidenceConflictResolver }
+				task.Trace = []types.StepTrace{{Action: "http_fetch", Observation: "version is 1"}}
+			}
+			task.ToolBudget = 1
+			if err := e.Store.SaveFullTask(t.Context(), task); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := e.PersistApprovalResolution(t.Context(), task.ID, approval.ID, types.ApprovalResult{Approved: true}); err != nil {
+				t.Fatal(err)
+			}
+			approval, err := e.Store.(store.DurableApprovalStore).GetApproval(t.Context(), approval.ID, task.TenantID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := e.RecoverApprovedApproval(t.Context(), task, approval, "owner")
+			if err != nil || !recovered {
+				t.Fatal(recovered, err)
+			}
+			saved, err := e.Store.GetTask(t.Context(), task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.ToolBudget != 0 || saved.StepCount != 1 {
+				t.Fatalf("budget=%d steps=%d", saved.ToolBudget, saved.StepCount)
+			}
+			seen := map[string]bool{}
+			for _, tr := range saved.Trace {
+				seen[tr.Action] = true
+			}
+			if quarantine {
+				if !seen[promptguard.TraceAction] || !strings.Contains(saved.Trace[0].Observation, "quarantined") {
+					t.Fatalf("unsafe trace persisted: %+v", saved.Trace)
+				}
+			} else if !seen[evidencefilter.TraceAction] || !seen[evidenceconflict.TraceAction] {
+				t.Fatalf("missing audits: %+v", saved.Trace)
+			}
+		})
+	}
+}
+
+func TestLiveApprovalRevalidatesReplacementBeforeExecutor(t *testing.T) {
+	registry := NewApprovalStore()
+	executor := &parameterRecoveryExecutor{}
+	engine := &Engine{Approvals: registry, Executor: executor, Planner: &stubPlanner{decision: &planner.PlanDecision{Actions: []planner.ActionCall{{Action: "write_file", Parameters: map[string]any{"path": "out.txt", "content": "ok"}}}}}}
+	engine.ApprovalCallback = func(taskID string, _ *types.ApprovalRequest) {
+		if !registry.Resolve(taskID, types.ApprovalResult{Approved: true, Parameters: map[string]any{}}) {
+			t.Error("approval not found")
+		}
+	}
+	task := &types.Task{ID: "invalid-live-approval", Status: types.StatusCreated, MaxSteps: 10, ToolBudget: 10}
+	err := engine.Next(t.Context(), task)
+	if err == nil || executor.calls != 0 {
+		t.Fatalf("invalid approved arguments executed: err=%v calls=%d", err, executor.calls)
+	}
+}
+
+type failingRecoveryExecutor struct{}
+
+func (failingRecoveryExecutor) Execute(context.Context, *types.Task, *planner.PlanDecision) ([]types.StepTrace, error) {
+	return nil, errors.New("fixture failure")
+}
+func TestApprovalRecoveryFailedAttemptStillChargesBudget(t *testing.T) {
+	e, task, approval, _ := recoveryParametersFixture(t)
+	e.Executor = failingRecoveryExecutor{}
+	if _, _, _, err := e.PersistApprovalResolution(t.Context(), task.ID, approval.ID, types.ApprovalResult{Approved: true}); err != nil {
+		t.Fatal(err)
+	}
+	approval, err := e.Store.(store.DurableApprovalStore).GetApproval(t.Context(), approval.ID, task.TenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := e.RecoverApprovedApproval(t.Context(), task, approval, "owner")
+	if !recovered || err == nil || task.ToolBudget != 9 || task.StepCount != 1 || len(task.Trace) != 1 || task.Trace[0].Step != 1 {
+		t.Fatalf("task=%+v recovered=%v err=%v", task, recovered, err)
+	}
 }
