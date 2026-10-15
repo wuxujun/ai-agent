@@ -36,19 +36,21 @@ func truncateTaskReportText(value string, limit int) string {
 }
 
 type Handler struct {
-	ownedSQLiteStep *ownedSQLiteStepAdapter
-	store           store.Store
-	engine          *orchestrator.Engine
-	metrics         *metrics.Collector
-	wg              sync.WaitGroup      // tracks background run-all goroutines for graceful shutdown
-	taskSem         *resizableSemaphore // bounded worker pool for concurrency control
+	ownedSQLiteStep   *ownedSQLiteStepAdapter
+	ownedSQLiteRunAll *ownedSQLiteStepAdapter
+	store             store.Store
+	engine            *orchestrator.Engine
+	metrics           *metrics.Collector
+	wg                sync.WaitGroup      // tracks background run-all goroutines for graceful shutdown
+	taskSem           *resizableSemaphore // bounded worker pool for concurrency control
 
 	// activeTasks maps task IDs to the run-all reservation that owns the slot.
 	// Storing a pointer (not the raw CancelFunc) gives us identity equality so
 	// a goroutine's deferred cleanup only removes its OWN entry — preventing
 	// a stale defer from erasing the entry that a subsequent runAll installed.
-	activeTasks   map[string]*activeRun
-	activeTasksMu sync.Mutex
+	ownedApprovalWorkers map[string]ownedApprovalWorker // protected by activeTasksMu
+	activeTasks          map[string]*activeRun
+	activeTasksMu        sync.Mutex
 
 	// approvalBus is the optional Redis-backed distributed approval/cancel bus.
 	// When non-nil, approve and cancel API calls that cannot be resolved
@@ -262,4 +264,10 @@ func (h *Handler) SetBrainPageReader(reader BrainPageReader) {
 	if provider, ok := reader.(interface{ BrainStatus(context.Context) any }); ok {
 		h.brainStatus = provider
 	}
+}
+
+// Queued recovery is tracked separately until it can reserve the active slot.
+type ownedApprovalWorker struct {
+	taskID string
+	run    *activeRun
 }

@@ -38,6 +38,9 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 	for id, run := range h.activeTasks {
 		entries = append(entries, runEntry{taskID: id, run: run})
 	}
+	for _, worker := range h.ownedApprovalWorkers {
+		entries = append(entries, runEntry{taskID: worker.taskID, run: worker.run})
+	}
 	h.activeTasksMu.Unlock()
 
 	for _, e := range entries {

@@ -203,13 +203,80 @@ func (h *Handler) startDurableApprovalRecovery(taskID, approvalID string) {
 	if !ok {
 		return
 	}
+	// Owned background recovery retains the active token through cleanup and
+	// participates in Cancel/Shutdown. A local executing owner keeps its slot;
+	// queued workers remain separately cancellable until that slot becomes free.
+	var token *activeRun
+	var ownedCtx context.Context
+	var ownedCancel context.CancelFunc
+	if h.engine.HasOwnedSQLiteApprovalDispatcher() {
+		if h.engine.Store != h.store {
+			h.observeDurableApproval(context.Background(), "recovery_failure")
+			return
+		}
+		ownedCtx, ownedCancel = context.WithTimeout(context.Background(), 90*time.Second)
+		token = &activeRun{owned: true, cancel: ownedCancel}
+		h.activeTasksMu.Lock()
+		if _, exists := h.ownedApprovalWorkers[approvalID]; exists {
+			h.activeTasksMu.Unlock()
+			ownedCancel()
+			return
+		}
+		if h.ownedApprovalWorkers == nil {
+			h.ownedApprovalWorkers = make(map[string]ownedApprovalWorker)
+		}
+		h.ownedApprovalWorkers[approvalID] = ownedApprovalWorker{taskID, token}
+		h.activeTasksMu.Unlock()
+	}
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
+		if token != nil {
+			defer ownedCancel()
+			defer func() {
+				h.activeTasksMu.Lock()
+				if h.activeTasks[taskID] == token {
+					delete(h.activeTasks, taskID)
+				}
+				if worker, ok := h.ownedApprovalWorkers[approvalID]; ok && worker.run == token {
+					delete(h.ownedApprovalWorkers, approvalID)
+				}
+				h.activeTasksMu.Unlock()
+			}()
+			defer func() {
+				if recover() != nil {
+					h.observeDurableApproval(context.Background(), "recovery_failure")
+					log.Error("owned approval recovery panicked", "task_id", taskID, "approval_id", approvalID)
+				}
+			}()
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
+		if ownedCtx != nil {
+			ctx = ownedCtx
+		}
 		owner := "approval-recovery-" + uuid.NewString()
 		for {
+			if ctx.Err() != nil {
+				return
+			}
+			if token != nil {
+				h.activeTasksMu.Lock()
+				current := h.activeTasks[taskID]
+				if current == nil {
+					h.activeTasks[taskID] = token
+				}
+				h.activeTasksMu.Unlock()
+				if current != nil && current != token {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(500 * time.Millisecond):
+						continue
+					}
+				}
+			}
 			task, err := h.store.GetTask(ctx, taskID)
 			if err != nil {
 				h.observeDurableApproval(ctx, "recovery_failure")
@@ -226,16 +293,11 @@ func (h *Handler) startDurableApprovalRecovery(taskID, approvalID string) {
 				}
 				return
 			}
-			var recovered bool
-			switch approval.Status {
-			case types.ApprovalApproved:
-				recovered, err = h.engine.RecoverApprovedApproval(ctx, task, approval, owner)
-			case types.ApprovalRejected:
-				recovered, err = h.engine.RecoverRejectedApproval(ctx, task, approval, owner)
-			default:
+			if approval.Status != types.ApprovalApproved && approval.Status != types.ApprovalRejected {
 				return
 			}
-			if errors.Is(err, store.ErrTaskLeaseBusy) {
+			recovered, err := h.engine.DispatchApprovalRecovery(ctx, task, approval, owner)
+			if errors.Is(err, store.ErrTaskLeaseBusy) || (token != nil && !recovered && errors.Is(err, store.ErrSQLiteExecutionConflict)) {
 				select {
 				case <-ctx.Done():
 					h.observeDurableApproval(ctx, "recovery_failure")

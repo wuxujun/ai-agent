@@ -212,3 +212,71 @@ func TestSQLiteOwnedEnginePanicRetainsRunningAttempt(t *testing.T) {
 		t.Fatal("panic fabricated engine exit/cleanup")
 	}
 }
+
+func TestSQLiteOwnedPreparedAbortReloadsAndConsumesOnce(t *testing.T) {
+	engine, st, task, options := sqliteOwnedFixture(t)
+	scope, err := engine.PrepareOwnedSQLiteExecution(t.Context(), st, task, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a newer durable preflight checkpoint; Abort must not undo it.
+	latest, err := st.GetTask(scope.Context(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest.Goal = "new checkpoint"
+	if err := st.SaveFullTask(scope.Context(), latest); err != nil {
+		t.Fatal(err)
+	}
+	if err := scope.Abort(nil); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := st.GetTask(t.Context(), task.ID)
+	if err != nil || saved.Goal != "new checkpoint" || ownedSnapshot(t, st).Attempts[0].State != "complete" {
+		t.Fatal("abort overwrote checkpoint", err)
+	}
+	if err := scope.Execute(nil); !errors.Is(err, types.ErrExecutionAdmission) {
+		t.Fatal("scope reused", err)
+	}
+}
+
+func TestSQLiteOwnedPreparedRenewsWhileWaiting(t *testing.T) {
+	engine, st, task, options := sqliteOwnedFixture(t)
+	options.TTL = 600 * time.Millisecond
+	scope, err := engine.PrepareOwnedSQLiteExecution(t.Context(), st, task, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(900 * time.Millisecond)
+	if err := st.CheckExecutionAdmission(scope.Context(), task); err != nil {
+		_ = scope.Abort(err)
+		t.Fatal("prepared owner expired", err)
+	}
+	if err := scope.Execute(nil); err != nil {
+		t.Fatal(err)
+	}
+	if ownedSnapshot(t, st).Attempts[0].State != "complete" {
+		t.Fatal("scope incomplete")
+	}
+}
+
+func TestSQLiteOwnedPreparedCanceledBeforeExecuteStillRunsAbortCallback(t *testing.T) {
+	engine, st, task, options := sqliteOwnedFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	scope, err := engine.PrepareOwnedSQLiteExecution(ctx, st, task, options)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+	called := false
+	err = scope.Execute(func(ctx context.Context, current *types.Task) error {
+		called = true
+		_ = SetTaskCanceled(current, "task_canceled", "Task was canceled.")
+		return ctx.Err()
+	})
+	saved, loadErr := st.GetTask(t.Context(), task.ID)
+	if !called || !errors.Is(err, context.Canceled) || loadErr != nil || saved.Status != types.StatusFailed || ownedSnapshot(t, st).Attempts[0].State != "complete" {
+		t.Fatal("pre-execution cancellation lost", err, loadErr)
+	}
+}

@@ -31,6 +31,7 @@ import (
 )
 
 type Engine struct {
+	ownedApprovalDispatcher *sqliteOwnedApprovalDispatcher
 	// ExecutionAdmission is optional and fixed before use; nil preserves legacy admission.
 	ExecutionAdmission          types.ExecutionAdmissionChecker
 	admissionOwner              types.ExecutionAdmissionOwner

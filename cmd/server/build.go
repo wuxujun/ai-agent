@@ -118,6 +118,11 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) BackgroundRun
 		if scanCtx.Err() != nil {
 			return
 		}
+		if eng != nil && eng.HasOwnedSQLiteApprovalDispatcher() && eng.Store != st {
+			slog.Warn("startup scan: owned approval store binding mismatch")
+			return
+		}
+
 		pausedTasks, err := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusPaused, Limit: 500})
 		if err != nil {
 			if scanCtx.Err() != nil {
@@ -186,13 +191,7 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) BackgroundRun
 					if scanCtx.Err() != nil {
 						return
 					}
-					var recovered bool
-					var recoverErr error
-					if status == types.ApprovalApproved {
-						recovered, recoverErr = eng.RecoverApprovedApproval(scanCtx, task, approval, owner)
-					} else {
-						recovered, recoverErr = eng.RecoverRejectedApproval(scanCtx, task, approval, owner)
-					}
+					recovered, recoverErr := eng.DispatchApprovalRecovery(scanCtx, task, approval, owner)
 					if recoverErr != nil {
 						if eng.Metrics != nil {
 							eng.Metrics.ObserveDurableApproval(scanCtx, "recovery_failure")

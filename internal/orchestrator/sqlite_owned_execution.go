@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/wuxujun/ai-agent/internal/store"
@@ -49,59 +50,133 @@ type sqliteOwnedScope struct {
 	identity SQLiteOwnedExecutionIdentity
 }
 
-func (e *Engine) runOwnedSQLiteExecution(ctx context.Context, st *store.SQLiteStore, task *types.Task, options SQLiteOwnedExecutionOptions, run func(context.Context, *types.Task) error) error {
+// PreparedSQLiteOwnedExecution retains the sole durable owner while a trusted
+// adapter performs pre-response CAS and queues execution. Call exactly one of
+// Execute or Abort after a successful Prepare; both own final flush and cleanup.
+// The task and Context must not be used concurrently with that final operation.
+type PreparedSQLiteOwnedExecution struct {
+	engine   *Engine
+	store    *store.SQLiteStore
+	task     *types.Task
+	options  SQLiteOwnedExecutionOptions
+	identity SQLiteOwnedExecutionIdentity
+	ctx      context.Context
+	cancel   context.CancelCauseFunc
+	lease    *store.ExecutionLease
+	loaded   bool
+	consumed atomic.Bool
+}
+
+func (s *PreparedSQLiteOwnedExecution) Context() context.Context { return s.ctx }
+
+func (e *Engine) PrepareOwnedSQLiteExecution(ctx context.Context, st *store.SQLiteStore, task *types.Task, options SQLiteOwnedExecutionOptions) (*PreparedSQLiteOwnedExecution, error) {
 	if st == nil || task == nil || e.Store != st || e.ExecutionAdmission != st || options.Cleanup == nil || options.TTL < 300*time.Millisecond || options.TTL > time.Hour {
-		return types.ErrExecutionAdmission
+		return nil, types.ErrExecutionAdmission
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	taskID, tenantID := task.ID, task.TenantID
 	acquiredAt := time.Now()
 	attempt, err := st.StartSQLiteExecutionAttempt(ctx, taskID, tenantID, options.AttemptID, options.InstanceSHA256, options.ExpectedGateEpoch, options.TTL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	identity := SQLiteOwnedExecutionIdentity{Origin: attempt.Origin, NamespaceSHA256: attempt.NamespaceSHA256, TaskID: taskID, TenantID: tenantID, AttemptID: attempt.ID, InstanceSHA256: attempt.InstanceSHA256, TaskIncarnation: attempt.TaskIncarnation, GateEpoch: attempt.GateEpoch}
 	ownedCtx, cancel := context.WithCancelCause(store.WithSQLiteExecutionAttempt(ctx, attempt))
-	defer cancel(context.Canceled)
 	lease := store.NewExecutionLease(func() { cancel(store.ErrTaskLeaseLost) })
 	ownedCtx = context.WithValue(ownedCtx, sqliteOwnedScopeKey{}, sqliteOwnedScope{st, identity})
 	ownedCtx = WithExecutionLeaseCheck(ownedCtx, lease.Err)
 	lease.Start(ownedCtx, st, taskID, "execution-attempt:"+attempt.ID, options.TTL, acquiredAt)
+	scope := &PreparedSQLiteOwnedExecution{engine: e, store: st, task: task, options: options, identity: identity, ctx: ownedCtx, cancel: cancel, lease: lease}
+	// Reload before exposing the scope; stale callers cannot overwrite a checkpoint.
+	latest, loadErr := st.GetTask(ownedCtx, taskID)
+	if loadErr == nil && (latest.ID != taskID || latest.TenantID != tenantID) {
+		loadErr = types.ErrExecutionAdmission
+	}
+	if loadErr != nil {
+		return nil, errors.Join(loadErr, scope.Abort(loadErr))
+	}
+	*task = *latest
+	task.ExecutionTraceID = ""
+	if span := trace.SpanContextFromContext(ownedCtx); span.IsValid() {
+		task.ExecutionTraceID = span.TraceID().String()
+	}
+	scope.loaded = true
+	if options.OnAdmitted != nil {
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					lease.Finish()
+					cancel(context.Canceled)
+					panic(p)
+				}
+			}()
+			options.OnAdmitted(identity)
+		}()
+	}
+	return scope, nil
+}
+
+func (e *Engine) runOwnedSQLiteExecution(ctx context.Context, st *store.SQLiteStore, task *types.Task, options SQLiteOwnedExecutionOptions, run func(context.Context, *types.Task) error) error {
+	scope, err := e.PrepareOwnedSQLiteExecution(ctx, st, task, options)
+	if err != nil {
+		return err
+	}
+	return scope.Execute(run)
+}
+
+// Execute consumes the prepared scope. A nil callback uses the selected Engine
+// entry. Trusted callbacks may wait for a semaphore before entering the Engine.
+func (s *PreparedSQLiteOwnedExecution) Execute(run func(context.Context, *types.Task) error) error {
+	return s.finish(run, nil, true)
+}
+
+// Abort records a non-entry exit and flushes the reloaded checkpoint, without
+// invoking the Engine. Cancellation does not stop renewal during final cleanup.
+func (s *PreparedSQLiteOwnedExecution) Abort(reason error) error {
+	return s.finish(nil, reason, false)
+}
+
+func (s *PreparedSQLiteOwnedExecution) finish(run func(context.Context, *types.Task) error, executionErr error, execute bool) error {
+	if !s.consumed.CompareAndSwap(false, true) {
+		return types.ErrExecutionAdmission
+	}
+	st, task, options, identity, ownedCtx, lease := s.store, s.task, s.options, s.identity, s.ctx, s.lease
+	taskID, tenantID := identity.TaskID, identity.TenantID
+	defer s.cancel(context.Canceled)
 	stopped := false
 	defer func() {
 		if !stopped {
 			lease.Finish()
 		}
 	}()
-	if options.OnAdmitted != nil {
-		options.OnAdmitted(identity)
-	}
-	// Reload after registration; a stale caller Task cannot overwrite the latest
-	// checkpoint simply because it successfully acquired a new attempt.
-	latest, loadErr := st.GetTask(ownedCtx, taskID)
-	var executionErr error
 	entered := false
-	if loadErr != nil {
-		executionErr = loadErr
-	} else if latest.TenantID != tenantID || latest.ID != taskID {
-		executionErr = types.ErrExecutionAdmission
-	} else {
-		*task = *latest
-		task.ExecutionTraceID = ""
-		if span := trace.SpanContextFromContext(ownedCtx); span.IsValid() {
-			task.ExecutionTraceID = span.TraceID().String()
+	// Preflight may have rejected a status CAS. Never flush the earlier copy
+	// over the durable checkpoint on a path that did not enter execution.
+	if !execute {
+		reloadCtx, reloadCancel := context.WithTimeout(context.WithoutCancel(ownedCtx), 10*time.Second)
+		latest, err := st.GetTask(reloadCtx, taskID)
+		reloadCancel()
+		if err != nil || latest.ID != taskID || latest.TenantID != tenantID {
+			s.loaded = false
+			executionErr = errors.Join(executionErr, ErrSQLiteOwnedFlush)
+		} else {
+			*task = *latest
+			s.loaded = true
 		}
+	}
+	if execute && s.loaded {
 		entered = true
 		if run != nil {
 			executionErr = run(ownedCtx, task)
 		} else if options.RunAll {
-			executionErr = e.RunAll(ownedCtx, task)
+			executionErr = s.engine.RunAll(ownedCtx, task)
 		} else {
-			executionErr = e.Next(ownedCtx, task)
+			executionErr = s.engine.Next(ownedCtx, task)
 		}
 	}
+
 	outcome := "returned"
 	if !entered {
 		outcome = "not-entered"
@@ -120,12 +195,12 @@ func (e *Engine) runOwnedSQLiteExecution(ctx context.Context, st *store.SQLiteSt
 	// Engine has returned synchronously. This local receipt never claims all
 	// tools/hosts have exited; cleanup is a distinct mandatory stage below.
 	exitCtx, exitCancel := context.WithTimeout(context.WithoutCancel(ownedCtx), 10*time.Second)
-	exitErr := st.ExitSQLiteExecutionAttempt(exitCtx, taskID, tenantID, attempt.ID, attempt.InstanceSHA256, exitSHA)
+	exitErr := st.ExitSQLiteExecutionAttempt(exitCtx, taskID, tenantID, identity.AttemptID, identity.InstanceSHA256, exitSHA)
 	exitCancel()
 
 	flushSHA := ""
 	var flushErr error
-	if !entered || task.ID != taskID || task.TenantID != tenantID {
+	if !s.loaded || task.ID != taskID || task.TenantID != tenantID {
 		flushErr = ErrSQLiteOwnedFlush
 	} else if err := lease.Err(); err != nil {
 		flushErr = err
@@ -162,7 +237,7 @@ func (e *Engine) runOwnedSQLiteExecution(ctx context.Context, st *store.SQLiteSt
 	var finalizeErr error
 	if exitErr == nil && flushErr == nil && cleanupErr == nil && ownershipErr == nil {
 		finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(ownedCtx), 10*time.Second)
-		finalizeErr = st.FinalizeSQLiteExecutionAttempt(finalizeCtx, taskID, tenantID, attempt.ID, attempt.InstanceSHA256, flushSHA, cleanupSHA)
+		finalizeErr = st.FinalizeSQLiteExecutionAttempt(finalizeCtx, taskID, tenantID, identity.AttemptID, identity.InstanceSHA256, flushSHA, cleanupSHA)
 		finalizeCancel()
 	}
 	return errors.Join(executionErr, exitErr, flushErr, cleanupErr, ownershipErr, finalizeErr)

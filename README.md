@@ -870,7 +870,7 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 ### 🔜 Upcoming
 
 - [ ] **HA acceptance and DAG full rollout (deferred)** — complete fault and canary validation before considering removal of Legacy fallback; current defaults are `runtime=legacy` and `dag_canary_percent=0`
-- [x] **Web UI browser regressions** — 16 scenarios on Chromium, Firefox and WebKit (48 checks), including asynchronous form focus, task/approval UI, login/CSRF, Trace, keyboard and 320px/390px layouts; [scope and run instructions](tests/console/README.md)
+- [x] **Web UI browser regressions** — 18 scenarios on Chromium, Firefox and WebKit (54 historical checks), including asynchronous form focus, task/approval UI, login/CSRF, Trace, keyboard and 320px/390px layouts; [scope and run instructions](tests/console/README.md)
 - [ ] **Web UI broader validation** — real devices/other browser releases/zoom levels, screen readers, full accessibility, and performance baselines
 - [ ] **Local dynamic plugins** — runtime loading and permission/lifecycle management; configuration-based remote MCP tool discovery is already implemented
 - [ ] **Additional built-in skills** — data analysis, SQL agent, diagram generation

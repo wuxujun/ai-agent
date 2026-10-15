@@ -95,3 +95,24 @@ func TestSQLiteOwnedApprovalRejectsCrossTenantBeforeRegistration(t *testing.T) {
 		t.Fatal("invalid recovery registered attempt")
 	}
 }
+
+func TestSQLiteOwnedApprovalDispatcherProviderFailureDoesNotFallback(t *testing.T) {
+	engine, st, task, _ := sqliteOwnedFixture(t)
+	calls := 0
+	if err := engine.SetOwnedSQLiteApprovalDispatcher(func(context.Context, string, string) (SQLiteOwnedExecutionOptions, error) {
+		calls++
+		return SQLiteOwnedExecutionOptions{}, errors.New("secret-provider-error")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	approval := &types.DurableApproval{TaskID: task.ID, TenantID: task.TenantID, Status: types.ApprovalApproved}
+	recovered, err := engine.DispatchApprovalRecovery(t.Context(), task, approval, "ordinary-owner")
+	if recovered || !errors.Is(err, types.ErrExecutionAdmission) || strings.Contains(err.Error(), "secret") || calls != 1 || len(ownedSnapshot(t, st).Attempts) != 0 {
+		t.Fatal("provider failure fallback", err)
+	}
+	// A changed Engine/store binding cannot reuse the trusted adapter.
+	engine.ExecutionAdmission = nil
+	if _, err := engine.DispatchApprovalRecovery(t.Context(), task, approval, "ordinary-owner"); !errors.Is(err, types.ErrExecutionAdmission) || calls != 1 {
+		t.Fatal("changed binding", err)
+	}
+}

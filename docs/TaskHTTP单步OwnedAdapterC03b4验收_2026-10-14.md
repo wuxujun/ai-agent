@@ -1,5 +1,7 @@
 # HTTP 单步 Owned Adapter C03b4 首批验收
 
+最新续作：prepared owned scope 与 `/run-all` 显式 adapter 已实现于基线 `8fd19bf` 后工作区，见 [run-all 续作验收](TaskHTTP全程OwnedAdapterC03b4续作验收_2026-10-14.md)。默认关闭，启动/后台审批 dispatcher 仍待接入；下文保留首批历史范围。
+
 提交状态（2026-10-14）：本文与 C02a/b/c、C03a/b1/b2/b3 及 C03b4 首批 `/run` 实现一并纳入本批本地提交，准确提交号以 Git 记录为准。下文保留各阶段实现和验证边界；当前整体停点与最终验证见[会话续接文档](会话续接与完成进度_2026-10-13.md)。
 
 2026-10-14，基线 `86bd534`。当前 C02/C03 改动已纳入本批本地提交。本批将显式 owned adapter 接入现有 `POST /api/tasks/:id/run` JSON/SSE；C03b4 的 `/run-all`、启动扫描与后台审批调用点尚未切换，整个阶段不能据此宣称全部完成。

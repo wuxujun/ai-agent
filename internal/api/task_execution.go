@@ -195,6 +195,11 @@ func (h *Handler) runAll(c *gin.Context) {
 		return
 	}
 
+	if h.ownedSQLiteRunAll != nil {
+		h.runOwnedSQLiteAll(c, task)
+		return
+	}
+
 	leaseStore, ok := h.store.(store.TaskLeaseStore)
 	if !ok {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "store does not support task lease renewal"})
@@ -556,10 +561,18 @@ func (h *Handler) CancelTaskByID(taskID string) bool {
 	if exists && !run.owned {
 		delete(h.activeTasks, taskID)
 	}
+	var pending []context.CancelFunc
+	for _, worker := range h.ownedApprovalWorkers {
+		if worker.taskID == taskID {
+			pending = append(pending, worker.run.cancel)
+		}
+	}
 	h.activeTasksMu.Unlock()
-
+	for _, cancel := range pending {
+		cancel()
+	}
 	if !exists {
-		return false
+		return len(pending) > 0
 	}
 	run.cancel()
 	return true

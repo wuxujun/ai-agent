@@ -492,6 +492,8 @@ POST /api/tasks/:id/run-all?stream=true
 
 启动工作台前，服务端必须通过环境变量 `AI_AGENT_CONSOLE_SESSION_KEY` 提供 32 字节密钥的标准 Base64 编码；没有该密钥时会话创建失败。所有实例须使用同一密钥。工作台会话最长 8 小时，底层 Bearer Token 如果更早失效，会立即拒绝后续请求。生产环境须通过 HTTPS 访问工作台。
 
+`AI_AGENT_CONSOLE_SESSION_KEY` 是会话 Cookie 加密密钥，不签发 Bearer Token，也不替代外部身份认证。环境变量缺失、标准 Base64 非法或解码后不为 32 字节，会导致会话创建返回 `503 {"error":"console session is not configured"}`。项目通过启动时的 `godotenv.Load` 加载 `.env`，已有进程环境（包括 IDE/启动脚本设置）优先；修改 `.env` 后需重启原服务，普通配置热重载不重新加载该文件。密钥应稳定保存，更换会使已有会话失效。当前排障与真实登录未确认状态见 [Web UI 发布检查](Web-UI发布前检查与登录排障_2026-10-14.md)。
+
 审批操作支持 `api.tenants.<tenant>.approval_mode`：省略/`tenant` 保留原租户级授权，`deny` 返回 403，`actors` 仅允许本地 `approval_actor_ids` 名单中的已验证个人主体。权限拒绝发生在任何决策写入/恢复/信号之前；读取权限仍沿用租户隔离。客户端 `actor_id`、请求头或上游角色不会授予权限。
 
 `api.tenants.<tenant>.approval_disallow_self` 默认 `false`，设为 `true` 后要求不同的已验证个人创建者和审批者，作用于批准和拒绝。策略按任务所属租户评估，管理员无自批豁免；身份缺失/非个人主体及创建者本人均返回 403，且不写入决策或发送信号。启用后创建任务也要求个人身份。`creator_actor_id` 由服务端从认证主体生成并持久化，客户端同名字段被忽略；任务详情（含 `view=summary`）可返回该字段，紧凑列表摘要不增加该字段。历史任务不推断或回填创建者；如需终止，仍可走原有取消流程。策略支持重载，非法候选保留原配置。

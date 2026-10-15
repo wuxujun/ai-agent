@@ -741,7 +741,7 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 ### 🔜 待上线
 
 - [ ] **HA 验收与 DAG 全量放量（延后）** — 完成故障与灰度验收后再考虑移除 Legacy 回退；当前默认 `runtime=legacy`、`dag_canary_percent=0`
-- [x] **Web UI 三浏览器回归** — Chromium、Firefox、WebKit 各 16 个场景，共 48 项，覆盖异步表单焦点、任务/审批 UI、登录/CSRF、Trace、键盘与 320px/390px 窄屏；[范围及运行说明](tests/console/README.md)
+- [x] **Web UI 三浏览器回归** — Chromium、Firefox、WebKit 各 18 个场景，共 54 项历史通过记录，覆盖异步表单焦点、任务/审批 UI、登录/CSRF、Trace、键盘与 320px/390px 窄屏；[范围及运行说明](tests/console/README.md)
 - [ ] **Web UI 扩展验证** — 真实设备/其他浏览器发行版本/缩放、读屏、完整可访问性与性能基线
 - [ ] **本地动态插件** — 运行时装载及权限/生命周期管理；配置化远程 MCP 工具发现已实现
 - [ ] **更多内置技能** — 数据分析、SQL Agent、图表生成
