@@ -18,7 +18,7 @@ export default defineConfig({
   retries: 0,
   timeout: 30000,
   expect: { timeout: 5000 },
-  outputDir: 'test-results',
+  outputDir: process.env.UI_TEST_OUTPUT_DIR || 'test-results',
   reporter: [['list']],
   projects: (selected ? [selected] : browsers).map(browserName => ({
     name: browserName,

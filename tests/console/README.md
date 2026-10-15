@@ -20,6 +20,8 @@ Linux CI 安装浏览器时增加 `--with-deps`。本地也可将 `PLAYWRIGHT_BR
 
 默认运行全部三个浏览器。只运行某个浏览器时，在 Go 命令前增加 `UI_BROWSER=chromium`、`UI_BROWSER=firefox` 或 `UI_BROWSER=webkit`。未安装选定浏览器会失败；非法名称也会明确拒绝。可选 `UI_BROWSER_EXECUTABLE` 只允许与 `UI_BROWSER=chromium` 一起使用，避免错误地把同一可执行文件用于其他引擎。
 
+可用 `UI_TEST_OUTPUT_DIR` 指定独立的测试产物目录（建议每次运行使用一个新的绝对路径），以保留不同引擎的截图和失败 trace，避免后续 Playwright 运行清理/覆盖前次结果。未设置时沿用 `tests/console/test-results`。
+
 测试必须从 Go 入口启动；它创建临时工作区和内存 Store，设置测试会话密钥、假的 introspection 响应及确定性 Planner，并将临时服务 URL/workspace 传给 Playwright。不读取根目录 `.env`，不需要真实 Token、数据库、LLM 或 HA 环境。浏览器请求仅允许访问该测试服务。
 
 普通 `go test ./...` 会跳过 `TestConsoleBrowser`；显式启用后缺少 Node/依赖/浏览器或任一用例失败都会使命令失败。CI 的 `console-browser` 矩阵按三个浏览器分别安装依赖、运行 18 项回归及 Go 竞态检测；失败不取消其他浏览器，证据名称按浏览器区分。
