@@ -73,6 +73,9 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 			continue
 		}
 
+		if e.run.owned {
+			continue // Owned cleanup/finalize or unresolved records belong to its lifecycle.
+		}
 		if e.run.lease != nil && e.run.lease.Err() != nil {
 			continue
 		}

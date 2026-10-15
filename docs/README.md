@@ -12,7 +12,7 @@
 
 该批提交为 `17d134e`；后续审查已补每个会话成员的 Trace 摘要绑定，会话观察升级 v2，防止源/目标 Task 一致但检查点不一致漏检。新增回归、全仓/竞态/vet 通过，修复已纳入本批本地提交；真实控制面与专用环境仍待提供。
 
-外部输入未提供时，已形成 [仓库内权威控制面实施设计](Task仓库内权威控制面实施设计_2026-10-13.md)，并于 2026-10-14 完成 [C01 专用 SQLite 耐久版本账本原型](Task权威版本账本C01验收_2026-10-14.md)：原子模型事件/代次、tombstone/重建、独立 floor 回滚/分叉拒绝及只读重开。定向/全仓/竞态/vet 通过，已纳入本批本地提交；下一步 C02 业务事务覆盖，真实权威仍 NOT_RUN。
+外部输入未提供时，已形成 [仓库内权威控制面实施设计](Task仓库内权威控制面实施设计_2026-10-13.md)，并于 2026-10-14 完成 [C01 专用 SQLite 耐久版本账本原型](Task权威版本账本C01验收_2026-10-14.md)：原子模型事件/代次、tombstone/重建、独立 floor 回滚/分叉拒绝及只读重开。定向/全仓/竞态/vet 通过，已纳入本批本地提交；后续 [C02a SQLite 核心物理行版本原型](TaskSQLite业务行版本C02a验收_2026-10-14.md) 已实现并纳入本批本地提交，四表触发器同事务记录/只读观察保持 unverified；后续 [C02b 内容版本与同事务导出基准](TaskSQLite内容版本与导出基准C02b验收_2026-10-14.md) 已实现并纳入本批本地提交；后续 [C02c startup 核验/锚点接入契约](TaskSQLite启动覆盖与锚点契约C02c验收_2026-10-14.md) 已实现并纳入本批本地提交，所有报告仍 unverified；后续 [C03a 单任务 gate/attempt/lease 协议](Task持久化Gate与Attempt原型C03a验收_2026-10-14.md) 已实现并纳入本批本地提交；后续 [C03b1 实际入口可选准入检查](Task执行器准入接入C03b1验收_2026-10-14.md) 已实现并纳入本批本地提交；后续 [C03b2 显式 owned 生命周期](TaskOwnedExecution生命周期C03b2验收_2026-10-14.md) 已实现并纳入本批本地提交；后续 [C03b3 审批 owned adapter/Coordinator scope 与 HTTP 矩阵](Task审批恢复与外层接入C03b3验收_2026-10-14.md) 已实现并纳入本批本地提交；后续 [C03b4 首批 HTTP `/run` adapter](TaskHTTP单步OwnedAdapterC03b4验收_2026-10-14.md) 已实现并纳入本批本地提交且默认关闭；下一步 prepared scope、run-all CAS/排队/202 与启动 dispatcher，真实保护写者/fencing/独立服务仍未接入，真实权威 NOT_RUN。
 
 ## 当前状态与下一步
 
@@ -30,7 +30,7 @@
 - 已补内置后端 terminal_since / last_maintenance_at / maintenance_version，历史终态不回填、失败不推进版本；只读评估升级 diagnostic-v2 并检查最近维护保留窗口。全仓、Store/API/编排竞态及专用 Redis 通过，PostgreSQL 在线 NOT_RUN。稳定导出、联合快照和隔离读回验证已补（见下项）；完整在线恢复仍待补。
 - 已补管理员/明确租户的稳定单任务 Task/Trace 导出，保留物理时间、SHA-256/字节量及源记录，限制响应预算与事件数。全仓/竞态/vet 和专用 Redis 通过；PostgreSQL 在线 NOT_RUN。v1 包明确排除独立审批/记忆/session，restore_ready=false；联合快照和隔离恢复演练已补（见下项）。
 - 显式 scope=joint 已补同次观察的审批密文/版本、任务所属记忆/embedding、session/sequence 高水位和联合哈希。Memory/SQLite、专用 Redis 及全仓/竞态/vet 通过；PostgreSQL 在线 NOT_RUN。restore_ready 仍 false；已新增 [临时隔离验证](Task隔离导入与恢复验证_2026-10-12.md) 与 [离线持久化隔离恢复验收](Task持久化隔离恢复验收_2026-10-12.md)，源记录保留，在线恢复仍待补。
-- 恢复验证续作已补大事务缓存溢写后强制退出、真实热日志拒绝及文件损坏回归；保持只读、不自动修复、证据不变。完整恢复准入设计与只读诊断评估器/离线 assess 已完成；workspace 实际文件只读核验已接入；其余可信检查器和在线恢复尚未实现，restore_ready=false；PostgreSQL 专用 DSN 缺失仍 NOT_RUN。上述 Store/离线恢复核验代码已提交至 `5052421`，未推送、未部署；HTTP 接口及其他工作区改动未纳入该提交。后续本地提交 `5aa898a` 已补历史密钥实际解密与审批来源签名只读核验，见 [密钥核验续作](Task密钥管理只读核验续作_2026-10-13.md) 和 [来源绑定核验](Task审批密文来源绑定只读核验_2026-10-13.md)。剩余工作为真实秘密管理/来源权威及其余七类可信检查器；仍 blocked、restore_ready=false。当前先按 [工作区分组方案](工作区收尾分组与验证方案_2026-10-13.md) 收尾未提交改动。
+- 恢复验证续作已补大事务缓存溢写后强制退出、真实热日志拒绝及文件损坏回归；保持只读、不自动修复、证据不变。完整恢复准入设计与只读诊断评估器/离线 assess 已完成；workspace 实际文件只读核验已接入；其余可信检查器和在线恢复尚未实现，restore_ready=false；PostgreSQL 专用 DSN 缺失仍 NOT_RUN。上述 Store/离线恢复核验代码已提交至 `5052421`，未推送、未部署；HTTP 接口及其他工作区改动未纳入该提交。后续本地提交 `5aa898a` 已补历史密钥实际解密与审批来源签名只读核验，见 [密钥核验续作](Task密钥管理只读核验续作_2026-10-13.md) 和 [来源绑定核验](Task审批密文来源绑定只读核验_2026-10-13.md)。剩余工作为真实秘密管理/来源权威及其余七类可信检查器；仍 blocked、restore_ready=false。此前工作区收尾已完成；当前停点以 [会话续接文档](会话续接与完成进度_2026-10-13.md) 为准。
 - HA 相关运维、双节点验收及 DAG 灰度按用户要求延后。默认保持 Legacy、DAG 0%；延期不表示验收通过。
 - F08 浏览器回归已建立：18 个场景在 Chromium、Firefox、WebKit 上共 54 项通过，覆盖任务、审批 UI、登录/CSRF、中断后对账、长 Trace、键盘焦点、延迟数据响应及 320px/390px 窄屏。已修复导航隐藏与异步焦点问题，CI 按三浏览器分任务；远端首次运行待核验。真实设备/其他发行版本/缩放、读屏、完整可访问性及性能验证仍待补。
 
@@ -63,6 +63,14 @@
 | [Task 依赖权威签名桥接与接入契约](Task依赖权威签名桥接与接入契约_2026-10-13.md) | S03a Ed25519/独立当前 pins 核验、撤销与代次失效及 S03b 实际环境输入 |
 | [Task 仓库内权威控制面实施设计](Task仓库内权威控制面实施设计_2026-10-13.md) | 写入覆盖审查、耐久代次/回滚拒绝、隔离回执与 C01–C05 落地顺序 |
 | [Task 权威版本账本 C01 验收](Task权威版本账本C01验收_2026-10-14.md) | 专用 SQLite 原型、事件/tombstone/独立 floor、回滚/分叉/退出回归及未接入边界 |
+| [Task SQLite 业务行版本 C02a 验收](TaskSQLite业务行版本C02a验收_2026-10-14.md) | 专用库四表 DML/代次同事务、ABA/回滚/崩溃/只读重开及 C02b 缺口 |
+| [Task SQLite 内容版本与导出基准 C02b 验收](TaskSQLite内容版本与导出基准C02b验收_2026-10-14.md) | 前后内容历史摘要、原子会话/导出基准及未接入边界 |
+| [Task SQLite 启动覆盖与锚点契约 C02c 验收](TaskSQLite启动覆盖与锚点契约C02c验收_2026-10-14.md) | 代码预期的只读 startup、锚点双读与变化拒绝、未实现真实 writer fencing |
+| [Task 持久化 Gate 与 Attempt 原型 C03a 验收](Task持久化Gate与Attempt原型C03a验收_2026-10-14.md) | 单任务禁派发/注册/租约同事务、退出与完整回执、未接入执行器边界 |
+| [Task 执行器准入接入 C03b1 验收](Task执行器准入接入C03b1验收_2026-10-14.md) | 实际 Engine/Coordinator 入口可选检查、继承 scope/租约优先级及完整 lifecycle 缺口 |
+| [Task Owned Execution 生命周期 C03b2 验收](TaskOwnedExecution生命周期C03b2验收_2026-10-14.md) | 续租/退出/最后 flush/cleanup 顺序、失败保留、同事务 finalize ownership 与 source ticket 绑定 |
+| [Task 审批恢复与外层接入 C03b3 验收](Task审批恢复与外层接入C03b3验收_2026-10-14.md) | 唯一 owned task lease 复用、checkpoint context 修复、HTTP/SSE/取消/关闭接入矩阵 |
+| [Task HTTP 单步 Owned Adapter C03b4 首批验收](TaskHTTP单步OwnedAdapterC03b4验收_2026-10-14.md) | 显式 `/run` JSON/SSE、admission 响应边界、owned cancel/slot、run-all/启动待办 |
 | [Task workspace 只读核验](TaskWorkspace只读核验_2026-10-13.md) | 固定租户/任务文件根、独立基准、大小/hash/权限核验和状态变化失效 |
 | [Task 密钥管理只读核验续作](Task密钥管理只读核验续作_2026-10-13.md) | 已实现的本地密钥/来源核验、真实权威缺口与回归边界 |
 | [Task 恢复验证续作交接](Task恢复验证续作交接_2026-10-12.md) | 当前完成项、待验收项、代码入口、环境前提和下一次步骤 |

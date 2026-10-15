@@ -60,6 +60,8 @@ type researchPhaseResult struct {
 // It updates task.Trace and task.Status in-place. Published-answer auditing and
 // final confidence are owned by orchestrator.AnswerPipeline.
 type Coordinator struct {
+	ExecutionAdmission       types.ExecutionAdmissionChecker
+	admissionOwner           types.ExecutionAdmissionOwner
 	Planner                  Planner
 	Researcher               Researcher
 	Executor                 Executor
@@ -79,11 +81,11 @@ type Coordinator struct {
 	PersistTask              func(ctx context.Context, task *types.Task) error
 }
 
-func (c *Coordinator) persistTaskDetached(task *types.Task) error {
+func (c *Coordinator) persistTaskDetached(base context.Context, task *types.Task) error {
 	if c.PersistTask == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(logger.WithTaskID(context.Background(), task.ID), 10*time.Second)
+	ctx, cancel := context.WithTimeout(logger.WithTaskID(context.WithoutCancel(base), task.ID), 10*time.Second)
 	defer cancel()
 	return c.PersistTask(ctx, task)
 }
@@ -95,6 +97,10 @@ func (c *Coordinator) persistTaskDetached(task *types.Task) error {
 // are owned by Researcher/Writer or Executor/Verifier. Both paths retain the
 // same policy, approval, cancellation, and budget gates.
 func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) {
+	ctx, runErr = types.BindExecutionAdmission(ctx, &c.admissionOwner, c.ExecutionAdmission, task)
+	if runErr != nil {
+		return runErr
+	}
 	ctx = logger.WithTaskID(ctx, task.ID)
 	_, _, projectID, snapshotID, watermark, ok := tools.RetrievalContextScope(ctx)
 	if ok && projectID != "" && snapshotID != "" {

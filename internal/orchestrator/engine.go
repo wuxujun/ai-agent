@@ -31,6 +31,9 @@ import (
 )
 
 type Engine struct {
+	// ExecutionAdmission is optional and fixed before use; nil preserves legacy admission.
+	ExecutionAdmission          types.ExecutionAdmissionChecker
+	admissionOwner              types.ExecutionAdmissionOwner
 	BrainPinner                 brain.SnapshotPinner
 	AnswerPipeline              answerpipeline.Pipeline
 	Planner                     planner.Planner

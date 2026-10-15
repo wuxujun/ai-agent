@@ -12,6 +12,29 @@ import (
 // Recovery is also called by startup scans, so ownership belongs here rather
 // than only in the HTTP caller. Each attempt reloads its checkpoint after locking.
 func (e *Engine) beginApprovalRecovery(ctx context.Context, task *types.Task, owner string) (context.Context, func(), error) {
+	var admissionErr error
+	ctx, admissionErr = types.BindExecutionAdmission(ctx, &e.admissionOwner, e.ExecutionAdmission, task)
+	if admissionErr != nil {
+		return nil, nil, admissionErr
+	}
+	if managed, ok := ctx.Value(sqliteOwnedScopeKey{}).(sqliteOwnedScope); ok {
+		identity := managed.identity
+		if e.Store != managed.store || e.ExecutionAdmission != managed.store || task == nil || identity.TaskID != task.ID || identity.TenantID != task.TenantID {
+			return nil, nil, types.ErrExecutionAdmission
+		}
+		if err := executionLeaseError(ctx); err != nil {
+			return nil, nil, err
+		}
+		latest, err := e.Store.GetTask(ctx, task.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if latest.ID != identity.TaskID || latest.TenantID != identity.TenantID {
+			return nil, nil, types.ErrExecutionAdmission
+		}
+		*task = *latest
+		return ctx, func() {}, nil
+	}
 	renewer, ok := e.Store.(store.TaskLeaseStore)
 	if !ok {
 		return nil, nil, errors.New("store does not support task lease renewal")

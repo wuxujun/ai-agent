@@ -53,6 +53,11 @@ func (h *Handler) runTaskStep(c *gin.Context) {
 		return
 	}
 
+	if h.ownedSQLiteStep != nil {
+		handedOff = h.runOwnedSQLiteStep(c, ctx, cancel, task)
+		return
+	}
+
 	owner := uuid.NewString()
 	run := &activeRun{cancel: cancel, owner: owner}
 	h.activeTasksMu.Lock()
@@ -548,7 +553,7 @@ func (h *Handler) cancelTask(c *gin.Context) {
 func (h *Handler) CancelTaskByID(taskID string) bool {
 	h.activeTasksMu.Lock()
 	run, exists := h.activeTasks[taskID]
-	if exists {
+	if exists && !run.owned {
 		delete(h.activeTasks, taskID)
 	}
 	h.activeTasksMu.Unlock()

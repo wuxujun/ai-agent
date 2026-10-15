@@ -36,11 +36,12 @@ func truncateTaskReportText(value string, limit int) string {
 }
 
 type Handler struct {
-	store   store.Store
-	engine  *orchestrator.Engine
-	metrics *metrics.Collector
-	wg      sync.WaitGroup      // tracks background run-all goroutines for graceful shutdown
-	taskSem *resizableSemaphore // bounded worker pool for concurrency control
+	ownedSQLiteStep *ownedSQLiteStepAdapter
+	store           store.Store
+	engine          *orchestrator.Engine
+	metrics         *metrics.Collector
+	wg              sync.WaitGroup      // tracks background run-all goroutines for graceful shutdown
+	taskSem         *resizableSemaphore // bounded worker pool for concurrency control
 
 	// activeTasks maps task IDs to the run-all reservation that owns the slot.
 	// Storing a pointer (not the raw CancelFunc) gives us identity equality so
@@ -86,6 +87,7 @@ type wikiStatusProvider interface {
 // Handler.activeTasks. The token's pointer identity is what callers compare
 // against; the cancel function is the bgCtx cancel that cancelTask should fire.
 type activeRun struct {
+	owned  bool
 	cancel context.CancelFunc
 	owner  string
 	lease  *store.ExecutionLease

@@ -55,6 +55,10 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	if err := executionLeaseError(ctx); err != nil {
 		return err
 	}
+	ctx, err = types.BindExecutionAdmission(ctx, &e.admissionOwner, e.ExecutionAdmission, task)
+	if err != nil {
+		return err
+	}
 	ctx = logger.WithTaskID(ctx, task.ID)
 	effectiveMode := e.effectiveMode(task)
 	resumingMultiAgent := effectiveMode == ModeMultiAgent && e.CanResumeTask(task)
@@ -111,6 +115,9 @@ func (e *Engine) Next(ctx context.Context, task *types.Task) (err error) {
 	}()
 	defer func() {
 		if err != nil {
+			if errors.Is(err, types.ErrExecutionAdmission) {
+				return
+			}
 			var budgetErr *llmcore.TaskBudgetError
 			if errors.As(err, &budgetErr) {
 				engineLog.Info("task reached LLM budget", "task_id", task.ID, "kind", budgetErr.Kind, "current", budgetErr.Current, "limit", budgetErr.Limit)
@@ -439,6 +446,16 @@ func (e *Engine) runLegacyNext(ctx context.Context, task *types.Task) error {
 }
 
 func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
+	if e.ExecutionAdmission != nil {
+		if err := executionLeaseError(ctx); err != nil {
+			return err
+		}
+	}
+	var admissionErr error
+	ctx, admissionErr = types.BindExecutionAdmission(ctx, &e.admissionOwner, e.ExecutionAdmission, task)
+	if admissionErr != nil {
+		return admissionErr
+	}
 	ctx = logger.WithTaskID(ctx, task.ID)
 	ctx, span := tracer.Start(ctx, "engine.run_all")
 	defer span.End()

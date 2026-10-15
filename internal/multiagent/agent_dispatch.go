@@ -138,6 +138,9 @@ func appendWorkflowRouteTrace(task *types.Task, decision workflowRouteDecision) 
 }
 
 func (c *Coordinator) executeWorkflowStep(ctx context.Context, workspace string, step ResearchStep) (*StepEvidence, error) {
+	if err := types.CheckExecutionAdmission(ctx); err != nil {
+		return nil, err
+	}
 	if workflowFromContext(ctx) == WorkflowReviewed {
 		if c.Executor == nil {
 			return nil, fmt.Errorf("reviewed workflow requires an Executor")

@@ -27,6 +27,8 @@ var log = logger.Component("store")
 type SQLiteStore struct {
 	db              *sql.DB
 	memoryIndexGate memoryIndexGate
+	restoreVersions *sqliteRestoreVersions
+	executionGate   *sqliteExecutionGate
 }
 
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {

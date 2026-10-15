@@ -336,8 +336,8 @@ func TestPersistTaskDetachedSurvivesCanceledExecutionContext(t *testing.T) {
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = canceled // Models the execution context that must not reach persistence.
-	if err := c.persistTaskDetached(task); err != nil {
+
+	if err := c.persistTaskDetached(canceled, task); err != nil {
 		t.Fatal(err)
 	}
 	if !called {

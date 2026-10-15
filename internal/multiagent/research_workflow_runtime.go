@@ -67,7 +67,7 @@ func (c *Coordinator) runResearchWorkflowDAGFromPlan(ctx context.Context, task *
 			if err := upsertWorkflowRuntimeCheckpoint(task, current); err != nil {
 				return err
 			}
-			return c.persistTaskDetached(task)
+			return c.persistTaskDetached(ctx, task)
 		},
 	}
 	_, err = runtime.Run(ctx, graph, WorkflowResearch, checkpoint, func(nodeCtx context.Context, node WorkflowGraphNode, dependencies map[string]WorkflowNodeResult) (WorkflowNodeResult, error) {

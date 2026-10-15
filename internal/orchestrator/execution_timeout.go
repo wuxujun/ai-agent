@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"github.com/wuxujun/ai-agent/internal/types"
 	"sync"
 	"time"
 )
@@ -158,7 +159,9 @@ type executionLeaseKey struct{}
 
 func executionLeaseError(ctx context.Context) error {
 	if check, ok := ctx.Value(executionLeaseKey{}).(func() error); ok {
-		return check()
+		if err := check(); err != nil {
+			return err
+		}
 	}
-	return nil
+	return types.CheckExecutionAdmission(ctx)
 }
