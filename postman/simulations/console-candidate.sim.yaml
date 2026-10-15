@@ -1,0 +1,5 @@
+simulation: console-candidate-local
+routing: path
+mocks:
+  - routeKey: auth
+    path: ../mocks/candidate-auth/default.js

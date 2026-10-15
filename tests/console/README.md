@@ -53,3 +53,19 @@ macOS WebKit 的链接导航使用 Option-Tab（反向 Option-Shift-Tab），其
 
 
 2026-10-12 SSE 更新：每个浏览器现有 18 个场景，共 54 项。新增 open/error 生命周期触发后的 300 ms 对账与终态关闭验证，Task/Trace/approvals 读取和取消使用真实认证路由；EventSource 生命周期信号由浏览器夹具驱动，不等于代理/LB 自动重连验收。服务端独立测试覆盖真实 HTTP 断开、两个独立事件总线/处理器共享 SQLite、非终态/终态轮询和慢消费者丢事件。
+
+## 候选二进制隔离运行（可选）
+
+`candidate-smoke.py` 验证已构建二进制，不使用 `httptest` 替换应用。先校验包内 MANIFEST.json 中的 server SHA-256，再启动本地 Postman simulation、临时 HTTPS 身份转发和应用入口、全新 SQLite 与随机测试会话密钥。测试只创建一个任务，不执行任务，不调用模型；所有产物保留在新的 `/private/tmp/ai-agent-candidate-runtime-*` 目录，退出时只停止自身进程/容器。
+
+前提：Python 3、支持 `-addext` 的 OpenSSL、Postman CLI >= 1.70。macOS 的 Go 系统证书验证不使用本脚本的 SSL_CERT_FILE，因此 macOS 上需使用匹配架构的 Linux 测试二进制和已缓存、按 SHA-256 固定的 Docker 镜像；不修改系统钥匙串、不跳过 TLS 校验。容器不拉取镜像，使用非 root、只读根、资源限额和仅回环端口映射。
+
+```bash
+python3 tests/console/candidate-smoke.py \
+  --package /absolute/path/to/linux-smoke-package \
+  --docker-image sha256:<locally-cached-image-id>
+```
+
+包目录需含 server、teams.yaml、skills/、MANIFEST.json；manifest 需有 version、goos 及 file_sha256.server，运行配置由夹具单独生成。Docker Desktop 的 `host.docker.internal` 必须能访问主机回环 HTTPS fixture。Linux 本机也可不加 `--docker-image`；该分支本轮未执行。实际运行命令、镜像、二进制哈希和结果见[候选二进制隔离运行验收](../../docs/Web-UI候选二进制隔离运行验收_2026-10-15.md)。
+
+Postman 文件位于 `postman/simulations/console-candidate.sim.yaml` 与 `postman/mocks/candidate-auth/default.js`。它们根据仓库现有 introspection 测试契约构造固定假身份；未知路径返回 501。这里只验证该契约下的应用行为，不代替生产身份提供方验收。不会查询/上传远端工作区，simulation 使用 `--no-history`；测试日志、临时证书私钥、数据库和真实凭据都不提交 Git。
