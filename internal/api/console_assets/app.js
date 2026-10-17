@@ -842,6 +842,7 @@
         if (error.status !== 401) throw error;
         // Read UA_TOKEN on the server so HttpOnly identity cookies work too.
         state.session = await api("/console/session", { method: "POST", body: {} });
+        console.log("UA_TOKEN Cookie 验证通过，已自动登录。");
       }
       setAccount();
       if (!location.hash) location.hash = "#/tasks";
