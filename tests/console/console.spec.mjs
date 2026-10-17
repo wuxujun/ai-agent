@@ -41,6 +41,29 @@ async function createTask(page, goal, run = false) {
 
 const taskStatus = page => page.locator('#view > .toolbar .badge').first();
 
+test('UA_TOKEN automatically logs in with HttpOnly cookies, reloads and explicitly logs out', async ({ page, context, baseURL }) => {
+  await context.addCookies([{ name: 'UA_TOKEN', value: token, url: baseURL, httpOnly: true }]);
+  await page.goto('/console');
+  await expect(page.getByRole('heading', { name: '任务管理', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '使用 UA_TOKEN 登录', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => document.cookie)).toBe('');
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '任务管理', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '退出', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  expect((await context.request.get('/console/session')).status()).toBe(401);
+});
+
+test('missing or invalid UA_TOKEN allows manual login after failure', async ({ page, context, baseURL }) => {
+  await page.goto('/console');
+  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  await context.addCookies([{ name: 'UA_TOKEN', value: 'invalid-fixture-token', url: baseURL, httpOnly: true }]);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  await expect(page.getByLabel('Bearer Token')).toHaveValue('');
+  await login(page);
+});
+
 test('late Team options do not steal focus from a task form being edited', async ({ page }) => {
   await login(page);
   let release;

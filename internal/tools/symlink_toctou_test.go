@@ -35,6 +35,11 @@ func TestWriteFile_SymlinkBlocked(t *testing.T) {
 		t.Fatal("expected WriteFile to fail on symlink target, but it succeeded")
 	}
 
+	// 4. ReadFile must also reject symlink targets via Lstat + O_NOFOLLOW.
+	if _, err := ReadFile(workspace, "link.txt"); err == nil {
+		t.Fatal("expected ReadFile to fail on symlink target, but it succeeded")
+	}
+
 	// Verify that the original content was NOT overwritten
 	content, err := os.ReadFile(realFile)
 	if err != nil {

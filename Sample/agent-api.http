@@ -2,6 +2,15 @@
 @apiKey = replace-with-tenant-api-key
 @approvalId = replace-with-approval-id
 
+### Console login using an existing UA_TOKEN cookie
+# An empty token reads UA_TOKEN from the request cookies (including HttpOnly).
+# A nonempty token in the JSON body takes precedence. Both use Bearer verification.
+POST {{baseUrl}}/console/session
+Content-Type: application/json
+Cookie: UA_TOKEN=replace-with-identity-provider-token
+
+{"token": ""}
+
 # All request bodies are limited to 10 MiB, including chunked requests.
 # Oversized requests return 413 before a handler performs any operation:
 # {"error":"request body exceeds 10 MiB limit"}

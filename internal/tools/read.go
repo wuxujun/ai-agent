@@ -49,6 +49,12 @@ func (t *ReadFileTool) Execute(ctx context.Context, workspace string, params map
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := policy.ValidateWorkspace(workspace); err != nil {
+		return nil, fmt.Errorf("read_file policy violation: %w", err)
+	}
+	if err := t.Validate(params); err != nil {
+		return nil, err
+	}
 	path, _ := params["path"].(string)
 	content, err := ReadFile(workspace, path)
 	if err != nil {
@@ -90,14 +96,14 @@ func ReadFile(workspace string, relativePath string) (string, error) {
 		return "", err
 	}
 	defer root.Close()
-	info, err := root.Stat(relative)
+	info, err := root.Lstat(relative)
 	if err != nil {
 		return "", err
 	}
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("read_file target must be a regular file")
 	}
-	file, err := root.OpenFile(relative, os.O_RDONLY|readFileNonblock, 0)
+	file, err := root.OpenFile(relative, os.O_RDONLY|policy.O_NOFOLLOW|readFileNonblock, 0)
 	if err != nil {
 		return "", err
 	}

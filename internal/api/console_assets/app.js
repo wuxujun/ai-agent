@@ -836,7 +836,13 @@
   window.addEventListener("hashchange", () => renderRoute({ focusContent: true }));
   (async () => {
     try {
-      state.session = await api("/console/session");
+      try {
+        state.session = await api("/console/session");
+      } catch (error) {
+        if (error.status !== 401) throw error;
+        // Read UA_TOKEN on the server so HttpOnly identity cookies work too.
+        state.session = await api("/console/session", { method: "POST", body: {} });
+      }
       setAccount();
       if (!location.hash) location.hash = "#/tasks";
       await renderRoute();

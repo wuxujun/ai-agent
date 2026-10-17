@@ -10,7 +10,73 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wuxujun/ai-agent/internal/config"
 )
+
+func TestCreateConsoleSession_UATokenCookie(t *testing.T) {
+	t.Setenv("AI_AGENT_CONSOLE_SESSION_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x67}, 32)))
+	introspection := testIntrospectionConfig()
+	introspection.CacheTTLSeconds = 0
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.API.Auth = config.APIAuthConfig{Mode: "introspection", Introspection: introspection}
+		cfg.API.Tenants = map[string]config.APITenantConfig{"tenant-a": {}}
+	}))
+	installTestIntrospector(t, introspection, nil, func(req *http.Request) (int, string) {
+		if req.Header.Get("Authorization") != "Bearer cookie-fixture-token" {
+			return http.StatusUnauthorized, `{}`
+		}
+		return http.StatusOK, `{"iss":"https://issuer.example","data":{"active":true,"userid":"tenant-a","aud":"ai-agent","exp":` + expirationAfter(time.Hour) + `}}`
+	})
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/console/session", createConsoleSession)
+	for _, tc := range []struct {
+		name, body, cookie, origin string
+		want                       int
+	}{
+		{name: "cookie", body: `{}`, cookie: "cookie-fixture-token", want: http.StatusOK},
+		{name: "empty body token", body: `{"token":" "}`, cookie: "cookie-fixture-token", want: http.StatusOK},
+		{name: "encoded cookie", body: `{}`, cookie: "cookie-fixture%2Dtoken", want: http.StatusOK},
+		{name: "manual takes precedence", body: `{"token":"cookie-fixture-token"}`, cookie: "invalid", want: http.StatusOK},
+		{name: "invalid manual does not fall back", body: `{"token":"invalid"}`, cookie: "cookie-fixture-token", want: http.StatusUnauthorized},
+		{name: "invalid cookie", body: `{}`, cookie: "invalid", want: http.StatusUnauthorized},
+		{name: "missing cookie", body: `{}`, want: http.StatusBadRequest},
+		{name: "empty cookie", body: `{}`, cookie: " ", want: http.StatusBadRequest},
+		{name: "oversized cookie", body: `{}`, cookie: strings.Repeat("a", 2501), want: http.StatusBadRequest},
+		{name: "foreign origin", body: `{}`, cookie: "cookie-fixture-token", origin: "https://foreign.invalid", want: http.StatusForbidden},
+		{name: "malformed body", body: `{`, cookie: "cookie-fixture-token", want: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://example.test/console/session", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			if tc.cookie != "" {
+				req.AddCookie(&http.Cookie{Name: "UA_TOKEN", Value: tc.cookie})
+			}
+			req.Header.Set("Origin", tc.origin)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != tc.want {
+				t.Fatalf("status = %d, want %d", response.Code, tc.want)
+			}
+			if tc.want == http.StatusOK {
+				cookies := response.Result().Cookies()
+				if len(cookies) != 1 || cookies[0].Name != consoleCookieName || !cookies[0].HttpOnly {
+					t.Fatal("expected encrypted HttpOnly console session")
+				}
+				check := httptest.NewRequest(http.MethodGet, "/", nil)
+				check.AddCookie(cookies[0])
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Request = check
+				session, err := readConsoleSession(ctx)
+				if err != nil || session.Token != "cookie-fixture-token" || session.TenantID != "tenant-a" {
+					t.Fatal("session did not retain the verified credential and tenant")
+				}
+			} else if len(response.Result().Cookies()) != 0 {
+				t.Fatal("failed authentication created a session cookie")
+			}
+		})
+	}
+}
 
 func TestConsoleSessionMiddleware_EncryptedCookieAndCSRF(t *testing.T) {
 	t.Setenv("AI_AGENT_CONSOLE_SESSION_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x67}, 32)))

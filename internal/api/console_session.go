@@ -129,6 +129,12 @@ func createConsoleSession(c *gin.Context) {
 		return
 	}
 	token := strings.TrimSpace(body.Token)
+	if token == "" {
+		cookie, err := c.Cookie("UA_TOKEN")
+		if err == nil {
+			token = strings.TrimSpace(cookie)
+		}
+	}
 	if token == "" || len(token) > 2500 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid token length"})
 		return

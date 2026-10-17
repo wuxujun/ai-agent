@@ -1,6 +1,6 @@
 services:
   litellm:
-    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm@sha256:90d8de0ea6fbb3cad145d1019d00a0149ae400b1e18e2011a60f1988f143f672}
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:v1.105.0}
     command:
       [
         "--config",
@@ -73,7 +73,7 @@ services:
     stop_grace_period: 30s
 
   model-bootstrap:
-    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm@sha256:90d8de0ea6fbb3cad145d1019d00a0149ae400b1e18e2011a60f1988f143f672}
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:v1.105.0}
     entrypoint: ["python", "/bootstrap/bootstrap_models.py"]
     init: true
     restart: unless-stopped
@@ -91,7 +91,6 @@ services:
     volumes:
       - ./bootstrap_models.py:/bootstrap/bootstrap_models.py:ro
       - ./bootstrap-models.json:/bootstrap/bootstrap-models.json:ro
-      - ./qwen-models.json:/bootstrap/qwen-models.json:ro
     depends_on:
       litellm:
         condition: service_healthy

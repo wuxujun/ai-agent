@@ -75,3 +75,23 @@ func TestReadFileToolCanceledDoesNotRead(t *testing.T) {
 		t.Fatal("canceled read ignored context", err)
 	}
 }
+
+func TestReadFileToolValidatesWorkspaceAndParams(t *testing.T) {
+	tool := &ReadFileTool{}
+	if _, err := tool.Execute(t.Context(), ".", map[string]any{"path": "a.txt"}); err == nil {
+		t.Fatal("expected workspace validation error for '.'")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := os.MkdirTemp(cwd, "read-tool-ws-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(ws)
+	if _, err := tool.Execute(t.Context(), ws, map[string]any{"path": "../escape"}); err == nil {
+		t.Fatal("expected parameter validation error for traversal path")
+	}
+}
+
