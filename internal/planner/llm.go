@@ -626,7 +626,18 @@ func unmarshalDecision(textValue string, decision *PlanDecision) error {
 func decodeDecisionJSON(raw string, decision *PlanDecision) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
-		return err
+		// Some compatible providers emit literal newlines in Markdown answers.
+		// Escape only string control characters; never guess missing quotes,
+		// delimiters, or values. The repaired object still needs full validation.
+		repaired := escapeJSONStringControls(raw)
+		if repaired == raw {
+			return err
+		}
+		fields = nil
+		if repairErr := json.Unmarshal([]byte(repaired), &fields); repairErr != nil {
+			return err
+		}
+		raw = repaired
 	}
 	for _, required := range []string{"thought_summary", "stop", "final_answer", "actions"} {
 		if _, ok := fields[required]; !ok {
@@ -639,6 +650,36 @@ func decodeDecisionJSON(raw string, decision *PlanDecision) error {
 	}
 	*decision = parsed
 	return nil
+}
+
+func escapeJSONStringControls(raw string) string {
+	var out strings.Builder
+	inString, escaped := false, false
+	start := 0
+	const hex = "0123456789abcdef"
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+		} else if inString && c == '\\' {
+			escaped = true
+		} else if inString && c < 0x20 {
+			out.WriteString(raw[start:i])
+			out.WriteString(`\u00`)
+			out.WriteByte(hex[c>>4])
+			out.WriteByte(hex[c&0xf])
+			start = i + 1
+		}
+	}
+	if start == 0 {
+		return raw
+	}
+	out.WriteString(raw[start:])
+	return out.String()
 }
 
 func jsonObjectCandidates(value string) []string {

@@ -12,6 +12,7 @@
     traceSearch: "", traceErrors: false, traceRole: "", currentTaskID: "",
     traceExpanded: new Set(), traceInnerScroll: new Map(), taskDetailRequest: 0, taskDetailLoading: false,
     approvalStatus: "pending", approvalCursor: "", approvalHistory: [],
+    promptInitPending: false,
   };
 
   function el(tag, className = "", value = "") {
@@ -91,11 +92,106 @@
     account.replaceChildren();
     nav.hidden = !state.session;
     if (!state.session) return;
-    append(account, el("span", "mono", state.session.tenant_id), button("退出", "quiet", async () => {
+    const navigation = el("div", "account-menu");
+    const panel = el("div", "account-menu-panel");
+    panel.id = "account-navigation";
+    panel.hidden = true;
+    const toggle = button("导航", "quiet", () => {
+      panel.hidden = !panel.hidden;
+      toggle.setAttribute("aria-expanded", String(!panel.hidden));
+    });
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", panel.id);
+    append(panel,link("会话模式", "/web/"), link("任务管理", "#/tasks"), link("审批待办", "#/approvals"), link("新建任务", "#/tasks/new"));
+    panel.addEventListener("click", event => {
+      if (event.target.closest("a")) closeAccountNavigation();
+    });
+    append(navigation, toggle, panel);
+    append(account, el("span", "mono account-tenant", state.session.tenant_id), link("设置", "#/settings", "button quiet"), navigation, button("退出", "quiet", async () => {
       try { await api("/console/session", { method: "DELETE" }); } catch (error) { flash(error.message, true); }
       state.session = null;
       showLogin();
     }));
+  }
+
+  function closeAccountNavigation({ restoreFocus = false } = {}) {
+    const panel = document.getElementById("account-navigation");
+    if (!panel || panel.hidden) return;
+    panel.hidden = true;
+    const toggle = account.querySelector('[aria-controls="account-navigation"]');
+    toggle.setAttribute("aria-expanded", "false");
+    if (restoreFocus) toggle.focus();
+  }
+
+  function defaultRoute() {
+    try {
+      return localStorage.getItem("console.defaultRoute") === "/approvals" ? "/approvals" : "/tasks";
+    } catch { return "/tasks"; }
+  }
+
+  function renderSettings() {
+    view.replaceChildren(pageHead("Settings", "设置"));
+    const session = section("当前会话");
+    addKV(session, [["租户", state.session.tenant_id], ["会话到期时间", formatTime(state.session.expires_at)]]);
+    const preferences = section("浏览偏好");
+    const form = el("form");
+    const wrap = el("div", "field");
+    const label = el("label", "", "默认首页");
+    label.htmlFor = "default-route";
+    const select = el("select");
+    select.id = "default-route";
+    for (const [value, title] of [["/tasks", "任务管理"], ["/approvals", "审批待办"]]) {
+      const option = el("option", "", title);
+      option.value = value;
+      select.append(option);
+    }
+    select.value = defaultRoute();
+    const help = el("span", "help", "仅保存在当前浏览器，下次从 Console 入口登录时生效。");
+    help.id = "default-route-help";
+    select.setAttribute("aria-describedby", help.id);
+    append(wrap, label, select, help);
+    const save = el("button", "button primary", "保存设置");
+    save.type = "submit";
+    append(form, wrap, save);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      try {
+        localStorage.setItem("console.defaultRoute", select.value);
+        flash("设置已保存。");
+      } catch { flash("当前浏览器无法保存设置，请检查存储权限。", true); }
+    });
+    preferences.append(form);
+    const prompts = section("租户 Prompt Team 初始化");
+    prompts.append(el("p", "subtle", "为当前租户获准使用的 Team 创建独立 Prompt 副本，后续任务优先使用租户副本。仅创建缺失内容，保留已有租户 Prompt。需要启用 Langfuse Prompt 管理。"));
+    const result = el("p", "subtle");
+    result.setAttribute("role", "status");
+    result.hidden = true;
+    const initialize = button(state.promptInitPending ? "初始化中…" : "初始化 Prompt Team", "primary", async () => {
+      if (state.promptInitPending) return;
+      state.promptInitPending = true;
+      initialize.disabled = true;
+      initialize.textContent = "初始化中…";
+      result.hidden = false;
+      result.textContent = "正在初始化，请稍候…";
+      const renderID = state.renderID;
+      try {
+        const summary = await api("/api/tenant/prompt/init", { method: "POST", body: {} });
+        if (renderID !== state.renderID) return;
+        result.textContent = `初始化完成：已处理 ${summary.processed} 个 Prompt，已有 ${summary.existing} 个，新建 ${summary.created} 个。`;
+      } catch (error) {
+        if (renderID !== state.renderID) return;
+        result.textContent = `初始化失败：${error.message}`;
+      } finally {
+        state.promptInitPending = false;
+        // Returning to settings during a request creates a new button.
+        const current = document.getElementById("initialize-team-prompts");
+        if (current) { current.disabled = false; current.textContent = "初始化 Prompt Team"; }
+      }
+    });
+    initialize.id = "initialize-team-prompts";
+    initialize.disabled = state.promptInitPending;
+    append(prompts, initialize, result);
+    view.append(session, preferences, prompts);
   }
 
   function showLogin() {
@@ -125,7 +221,7 @@
         input.value = "";
         state.session = session;
         setAccount();
-        if (!location.hash) location.hash = "#/tasks";
+        if (!location.hash) location.hash = `#${defaultRoute()}`;
         await renderRoute({ focusContent: true });
       } catch (error) {
         input.value = "";
@@ -808,6 +904,7 @@
   }
 
   async function renderRoute({ focusContent = false } = {}) {
+    closeAccountNavigation();
     if (!state.session) { showLogin(); return; }
     stopLive();
     const id = ++state.renderID;
@@ -821,6 +918,7 @@
     }
     else if (parts[0] === "approvals" && parts.length === 1) await renderApprovalsList(id);
     else if (parts[0] === "approvals" && parts[1]) await renderApprovalDetail(id, parts[1]);
+    else if (parts[0] === "settings" && parts.length === 1) renderSettings();
     else location.hash = "#/tasks";
     // Async data may finish after the user has already started editing.
     // Only establish initial route focus when it is still outside the content.
@@ -832,6 +930,12 @@
   document.querySelector(".skip-link").addEventListener("click", event => {
     event.preventDefault();
     view.focus();
+  });
+  document.addEventListener("click", event => {
+    if (!event.target.closest(".account-menu")) closeAccountNavigation();
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") closeAccountNavigation({ restoreFocus: true });
   });
   window.addEventListener("hashchange", () => renderRoute({ focusContent: true }));
   (async () => {
@@ -845,7 +949,7 @@
         console.log("UA_TOKEN Cookie 验证通过，已自动登录。");
       }
       setAccount();
-      if (!location.hash) location.hash = "#/tasks";
+      if (!location.hash) location.hash = `#${defaultRoute()}`;
       await renderRoute();
     } catch { showLogin(); }
   })();

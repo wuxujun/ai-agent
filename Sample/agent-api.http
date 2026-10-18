@@ -2,6 +2,30 @@
 @apiKey = replace-with-tenant-api-key
 @approvalId = replace-with-approval-id
 
+### Initialize Team Prompt copies for the authenticated tenant
+# Tenant identity comes only from authentication. A tenant_id in request data
+# cannot select another tenant. Does not require system admin. Authentication's
+# require_known_tenant policy applies; accepted dynamic tenants need no extra
+# api.tenants entry and use the default Team access policy.
+# Only allowed_multiagent_teams are included (an empty allowlist means all Teams).
+# Langfuse must be enabled and configured. Missing copies use current system
+# content, or local teams.yaml seeds only if the system prompt is confirmed 404.
+# Existing copies are preserved. Names: tenants/<plain tenant ID>/<prompt name>.
+# Tenant IDs must be one path segment without surrounding whitespace or control
+# characters. Copies created under the former Base64 naming need reinitializing.
+# Later multi-agent tasks prefer these names; existing task version pins are kept.
+# Missing labels, upstream failures and pinned-version failures do not silently
+# switch a tenant copy to system/local content. Missing copies of fixed-version
+# prompts cannot be created automatically; they must already exist at that version.
+# Response: {"status":"ok","tenant_id":"...","existing":2,"created":0,"processed":2}
+# Failures may include partial processed/created/existing counts; retry is safe
+# within this server process. The Langfuse API provides no cross-server create lock.
+POST {{baseUrl}}/api/tenant/prompt/init
+X-API-Key: {{apiKey}}
+Content-Type: application/json
+
+{}
+
 ### Console login using an existing UA_TOKEN cookie
 # An empty token reads UA_TOKEN from the request cookies (including HttpOnly).
 # A nonempty token in the JSON body takes precedence. Both use Bearer verification.

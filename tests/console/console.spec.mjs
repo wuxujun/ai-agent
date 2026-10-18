@@ -41,6 +41,84 @@ async function createTask(page, goal, run = false) {
 
 const taskStatus = page => page.locator('#view > .toolbar .badge').first();
 
+test('account settings save the browser homepage and navigation opens destinations', async ({ page }) => {
+  await page.goto('/console');
+  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  await expect(page.locator('#account')).toBeEmpty();
+  await login(page);
+  await page.locator('#account').getByRole('link', { name: '设置', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
+  await expect(page.locator('#view')).toContainText('tenant-a');
+  await page.getByLabel('默认首页').selectOption('/approvals');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('设置已保存。');
+  await page.goto('/console');
+  await expect(page).toHaveURL(/#\/approvals$/);
+  const toggle = page.getByRole('button', { name: '导航', exact: true });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await page.locator('#account-navigation').getByRole('link', { name: '新建任务', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '创建任务', exact: true })).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('settings initializes Team prompts with CSRF and reports counts', async ({ page }) => {
+  await login(page);
+  await page.locator('#account').getByRole('link', { name: '设置', exact: true }).click();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  await page.route('**/api/tenant/prompt/init', async route => {
+    calls++;
+    expect(route.request().method()).toBe('POST');
+    expect(route.request().headers()['x-console-csrf']).toBeTruthy();
+    await gate;
+    await route.fulfill({ json: { status: 'ok', processed: 5, existing: 3, created: 2 } });
+  });
+  const initialize = page.getByRole('button', { name: '初始化 Prompt Team', exact: true });
+  await initialize.click();
+  await expect(page.getByRole('button', { name: '初始化中…', exact: true })).toBeDisabled();
+  release();
+  await expect(page.locator('#view').getByRole('status')).toHaveText('初始化完成：已处理 5 个 Prompt，已有 3 个，新建 2 个。');
+  await expect(initialize).toBeEnabled();
+  expect(calls).toBe(1);
+});
+
+test('settings initializes only the current tenant and allows retry after errors', async ({ page }) => {
+  await login(page);
+  await page.locator('#account').getByRole('link', { name: '设置', exact: true }).click();
+  const initialize = page.getByRole('button', { name: '初始化 Prompt Team', exact: true });
+  // The real tenant endpoint accepts this non-admin identity. With Langfuse
+  // disabled in the fixture it must return 503, never a system-admin 403.
+  await initialize.click();
+  await expect(page.locator('#view').getByRole('status')).toContainText('初始化失败：Langfuse prompt management is disabled');
+  await expect(initialize).toBeEnabled();
+  await page.route('**/api/tenant/prompt/init', route => route.fulfill({ status: 403, json: { error: 'tenant not configured' } }));
+  await initialize.click();
+  await expect(page.locator('#view').getByRole('status')).toContainText('初始化失败：tenant not configured');
+  await expect(initialize).toBeEnabled();
+});
+
+test('account navigation supports keyboard dismissal and narrow screens', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await login(page);
+  const toggle = page.getByRole('button', { name: '导航', exact: true });
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#account-navigation')).toBeVisible();
+  const box = await page.locator('#account-navigation').boundingBox();
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(320);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#account-navigation')).toBeHidden();
+  await expect(toggle).toBeFocused();
+  await toggle.click();
+  await page.getByRole('heading', { name: '任务管理', exact: true }).click();
+  await expect(page.locator('#account-navigation')).toBeHidden();
+  await page.getByRole('button', { name: '退出', exact: true }).click();
+  await expect(page.locator('#account')).toBeEmpty();
+});
+
 test('UA_TOKEN automatically logs in with HttpOnly cookies, reloads and explicitly logs out', async ({ page, context, baseURL }) => {
   await context.addCookies([{ name: 'UA_TOKEN', value: token, url: baseURL, httpOnly: true }]);
   await page.goto('/console');

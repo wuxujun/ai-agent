@@ -137,13 +137,13 @@ func resolveAgentPromptDetailsForTask(ctx context.Context, agentCfg AgentConfig,
 		promptName = strings.TrimSpace(agentCfg.LangfusePrompt)
 	}
 	if promptName != "" {
-		resolved, err := promptmanager.GetManager().ResolvePinned(ctx, promptName, agentPromptSelector(agentCfg), fallback)
+		resolved, err := promptmanager.GetManager().ResolveTenantPinned(ctx, promptName, agentPromptSelector(agentCfg), fallback)
 		return resolvedAgentPromptFromResolution(resolved), err
 	}
 	if strings.TrimSpace(agentCfg.SystemPrompt) != "" {
 		return resolvedAgentPrompt{Content: agentCfg.SystemPrompt}, nil
 	}
-	resolved, err := promptmanager.GetManager().ResolvePinned(ctx, defaultName, agentPromptSelector(agentCfg), defaultPrompt)
+	resolved, err := promptmanager.GetManager().ResolveTenantPinned(ctx, defaultName, agentPromptSelector(agentCfg), defaultPrompt)
 	return resolvedAgentPromptFromResolution(resolved), err
 }
 

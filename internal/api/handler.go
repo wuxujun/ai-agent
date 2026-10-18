@@ -184,6 +184,7 @@ func RegisterRoutes(r *gin.Engine, st store.Store, eng *orchestrator.Engine, mc 
 	api.GET("/teams/lifecycle-audits/archives", AdminMiddleware(), h.listTeamLifecycleAuditArchives)
 	api.POST("/config/reload", AdminMiddleware(), h.reloadConfig)
 	api.POST("/prompt/init", AdminMiddleware(), h.initPrompts)
+	api.POST("/tenant/prompt/init", h.initTenantPrompts)
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})

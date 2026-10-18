@@ -1,0 +1,5 @@
+simulation: tenant-prompts-local
+routing: path
+mocks:
+  - routeKey: langfuse
+    path: ../mocks/tenant-prompts/default.js

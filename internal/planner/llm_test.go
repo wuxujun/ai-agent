@@ -362,6 +362,81 @@ The schema above describes the output.
 	}
 }
 
+func TestUnmarshalDecisionStringControls(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, want string
+	}{
+		{"markdown", "中文建议：\n\n### 一、竞赛\n- 项目", "中文建议：\n\n### 一、竞赛\n- 项目"},
+		{"controls", "first\r\n\tsecond\x00\x1f", "first\r\n\tsecond\x00\x1f"},
+		{"escaped_quote_and_braces", "say \\\"{hello}\\\"\nnext", "say \"{hello}\"\nnext"},
+		{"escaped_backslash", "path\\\\\nnext", "path\\\nnext"},
+		{"valid_escapes", `line\nnext\t\"quoted\"\\end`, "line\nnext\t\"quoted\"\\end"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{
+  "thought_summary": "done",
+  "stop": true,
+  "final_answer": "` + tc.content + `",
+  "actions": [{"action":"none","parameters":{}}]
+}`
+			for _, wrapped := range []bool{false, true} {
+				input := raw
+				if wrapped {
+					input = "```json\n" + raw + "\n```"
+				}
+				var decision PlanDecision
+				if err := unmarshalDecision(input, &decision); err != nil {
+					t.Fatalf("wrapped=%v: %v", wrapped, err)
+				}
+				if decision.FinalAnswer != tc.want {
+					t.Fatalf("wrapped=%v: answer = %q, want %q", wrapped, decision.FinalAnswer, tc.want)
+				}
+				if err := ValidateDecision(&decision); err != nil {
+					t.Fatalf("wrapped=%v: validation: %v", wrapped, err)
+				}
+			}
+		})
+	}
+}
+
+func TestUnmarshalDecisionStringControlsRejectsOtherMalformedJSON(t *testing.T) {
+	for _, raw := range []string{
+		"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"first\nsecond\",\"actions\":}",
+		"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"first\nsecond\"}",
+		"{\"thought_summary\":\"done\",\"stop\":\"true\",\"final_answer\":\"first\nsecond\",\"actions\":[]}",
+		"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"first\\\nsecond\",\"actions\":[]}",
+		"{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"first\\q\nsecond\",\"actions\":[]}",
+	} {
+		decision := PlanDecision{FinalAnswer: "unchanged"}
+		if err := unmarshalDecision(raw, &decision); err == nil {
+			t.Fatalf("accepted malformed input %q", raw)
+		}
+		if decision.FinalAnswer != "unchanged" {
+			t.Fatal("failed parsing modified the destination")
+		}
+	}
+}
+
+func TestLLMPlannerMultilineFinalAnswer(t *testing.T) {
+	raw := "{\"thought_summary\":\"done\",\"stop\":true,\"final_answer\":\"建议：\n\n- 第一项\n- 第二项\",\"actions\":[{\"action\":\"none\",\"parameters\":{}}]}"
+	body, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"content": raw}}},
+		"usage":   map[string]int{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewLLMPlannerWithProvider(ProviderLiteLLM, "key", "model", "https://llm.test/v1")
+	p.Client = fakeHTTPClient(http.StatusOK, "text/event-stream", "data: "+string(body)+"\n\ndata: [DONE]\n\n")
+	decision, err := p.PlanNext(t.Context(), &types.Task{ID: "multiline", Goal: "recommend", MaxSteps: 5, ToolBudget: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Stop || decision.FinalAnswer != "建议：\n\n- 第一项\n- 第二项" || decision.TokenUsage.TotalTokens != 12 {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
 // TestLLMPlannerTokenThresholdTrigger is the regression test for the
 // context_compression_token_threshold feature: compression must fire when the
 // accumulated TotalTokens across new traces exceeds the configured token

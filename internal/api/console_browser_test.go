@@ -81,6 +81,7 @@ func TestConsoleBrowser(t *testing.T) {
 		cfg.Orchestrator.MaxConcurrentTasks = 2
 		cfg.AnswerPipeline.Enabled = false
 		cfg.Brain.Enabled = false
+		cfg.Langfuse.Enabled = false
 	}))
 	installTestIntrospector(t, introspection, nil, func(req *http.Request) (int, string) {
 		if req.Header.Get("Authorization") != "Bearer browser-fixture-token" {

@@ -16,6 +16,44 @@ type PromptBootstrapSummary struct {
 	Created  int
 }
 
+// Serialize tenant bootstrap writes within this process. Waiting respects
+// cancellation and the API's bootstrap timeout.
+var tenantPromptBootstrapGate = make(chan struct{}, 1)
+
+// BootstrapTenantTeamPrompts creates copies only for the already-authorized
+// teams supplied by the API. It never writes to their system prompt names.
+func BootstrapTenantTeamPrompts(ctx context.Context, tenantID string, cfg *TeamsConfig) (PromptBootstrapSummary, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return PromptBootstrapSummary{}, fmt.Errorf("tenant prompt initialization requires a tenant")
+	}
+	if err := ctx.Err(); err != nil {
+		return PromptBootstrapSummary{}, err
+	}
+	seeds, err := TeamPromptSeeds(cfg)
+	if err != nil {
+		return PromptBootstrapSummary{}, err
+	}
+	select {
+	case tenantPromptBootstrapGate <- struct{}{}:
+		defer func() { <-tenantPromptBootstrapGate }()
+	case <-ctx.Done():
+		return PromptBootstrapSummary{}, ctx.Err()
+	}
+	var summary PromptBootstrapSummary
+	for _, seed := range seeds {
+		_, created, err := promptmanager.GetManager().EnsureTenantTextPrompt(ctx, tenantID, seed)
+		if err != nil {
+			return summary, err
+		}
+		if created {
+			summary.Created++
+		} else {
+			summary.Existing++
+		}
+	}
+	return summary, nil
+}
+
 // LoadTeamsConfigStrict loads teams.yaml for startup synchronization. Unlike
 // GetTeamsConfig, it returns parse and file errors instead of silently falling
 // back to defaults.

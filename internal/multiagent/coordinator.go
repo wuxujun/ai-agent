@@ -102,6 +102,7 @@ func (c *Coordinator) Run(ctx context.Context, task *types.Task) (runErr error) 
 		return runErr
 	}
 	ctx = logger.WithTaskID(ctx, task.ID)
+	ctx = promptmanager.WithTenantScope(ctx, task.TenantID)
 	_, _, projectID, snapshotID, watermark, ok := tools.RetrievalContextScope(ctx)
 	if ok && projectID != "" && snapshotID != "" {
 		ctx = tools.WithRetrievalExecutionContext(ctx, task.ID, task.TenantID, tools.WithBrainScope(projectID, snapshotID), tools.WithBrainWatermark(watermark))
