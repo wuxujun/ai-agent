@@ -30,4 +30,5 @@ func TestMemoryIndexGateAllowsOneConcurrentIndexer(t *testing.T) {
 	if !gate.tryStart("mem-1") {
 		t.Fatal("memory ID should be claimable after indexing completes")
 	}
+	gate.done("mem-1")
 }

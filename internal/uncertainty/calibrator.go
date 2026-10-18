@@ -6,17 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
-	"github.com/wuxujun/ai-agent/internal/factfreshness"
 	"github.com/wuxujun/ai-agent/internal/llm"
-	"github.com/wuxujun/ai-agent/internal/numericconsistency"
-	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
-	"github.com/wuxujun/ai-agent/internal/sourcecredibility"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
-const TraceAction = "answer_uncertainty_calibrate"
+const TraceAction = types.TraceActionAnswerUncertainty
 
 type Result struct {
 	Confidence         string   `json:"confidence"`
@@ -82,7 +77,7 @@ func ShouldCalibrate(task *types.Task) bool {
 		return false
 	}
 	for _, trace := range task.Trace {
-		if promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == factfreshness.TraceAction || trace.Action == numericconsistency.TraceAction || trace.Action == "citation_verify" {
+		if types.IsExternalAction(trace.Action) || trace.Action == types.TraceActionEvidenceConflict || trace.Action == types.TraceActionSourceCredibility || trace.Action == types.TraceActionFactFreshness || trace.Action == types.TraceActionNumericConsistency || trace.Action == "citation_verify" {
 			return true
 		}
 		for _, evidence := range trace.Evidence {
@@ -168,7 +163,7 @@ func evidenceCatalog(task *types.Task) []evidenceItem {
 		if trace.Action == TraceAction {
 			continue
 		}
-		if strings.TrimSpace(trace.Observation) != "" && (promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == factfreshness.TraceAction || trace.Action == numericconsistency.TraceAction || trace.Action == "citation_verify") {
+		if strings.TrimSpace(trace.Observation) != "" && (types.IsExternalAction(trace.Action) || trace.Action == types.TraceActionEvidenceConflict || trace.Action == types.TraceActionSourceCredibility || trace.Action == types.TraceActionFactFreshness || trace.Action == types.TraceActionNumericConsistency || trace.Action == "citation_verify") {
 			items = append(items, evidenceItem{Action: trace.Action, Source: trace.Query, Content: truncate(sanitize.Secrets(trace.Observation), 1200)})
 		}
 		for _, evidence := range trace.Evidence {

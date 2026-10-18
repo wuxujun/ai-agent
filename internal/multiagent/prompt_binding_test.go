@@ -59,6 +59,7 @@ func TestCoordinatorResumeUsesPersistedPromptVersion(t *testing.T) {
 	firstServer := httptest.NewServer(promptVersionServer(7, &firstQueriesMu, &firstQueries))
 	defer firstServer.Close()
 	t.Setenv("LANGFUSE_BASE_URL", firstServer.URL)
+	t.Setenv("LANGFUSE_ALLOW_PRIVATE_NETWORK", "true")
 	config.Reload()
 
 	firstTask := newPromptPinTask(t)

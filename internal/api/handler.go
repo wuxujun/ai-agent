@@ -48,6 +48,8 @@ type Handler struct {
 	// Storing a pointer (not the raw CancelFunc) gives us identity equality so
 	// a goroutine's deferred cleanup only removes its OWN entry — preventing
 	// a stale defer from erasing the entry that a subsequent runAll installed.
+	shuttingDown         bool                           // protected by activeTasksMu
+	recoveryWorkers      map[string]context.CancelFunc  // protected by activeTasksMu
 	ownedApprovalWorkers map[string]ownedApprovalWorker // protected by activeTasksMu
 	activeTasks          map[string]*activeRun
 	activeTasksMu        sync.Mutex

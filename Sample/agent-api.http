@@ -82,9 +82,11 @@ X-API-Key: {{apiKey}}
 POST {{baseUrl}}/api/tasks/atomic-create-example/run-all
 X-API-Key: {{apiKey}}
 
-### Cancel an orphaned task (no local owner and no approval bus)
+### Cancel an orphaned task (including when the approval bus is enabled)
 # Supports running, awaiting_approval and paused after acquiring/reloading under a task lease.
-# A peer owner yields 409. Persisted termination_kind=user_cancelled prevents approval recovery.
+# A live peer owner yields 202 when a bus is available, or 409 without a bus.
+# A task without a live lease is canceled in the database; a bus publication failure is an error.
+# Persisted termination_kind=user_cancelled prevents approval recovery.
 # Pending/approved decisions expire via CAS; cleanup failure returns an error but stays fail-closed.
 # Retrying cancel for user_cancelled tasks safely completes approval expiration.
 DELETE {{baseUrl}}/api/tasks/atomic-create-example/cancel
@@ -102,6 +104,8 @@ Content-Type: application/json
 
 ### Reload dynamic configuration (administrator credentials required)
 # Dynamic changes return 200 with the active config_revision.
+# log.* changes reconfigure outputs for HTTP, file-watch and SIGHUP reloads.
+# An output-opening failure preserves the previous configuration and logger.
 # Changes to api.addr, store.type/dsn, orchestrator.mode, skill.root,
 # telemetry, mcp.servers, or Wiki startup bindings require a process restart.
 # These return 500 with an error containing "configuration change requires restart";

@@ -16,7 +16,7 @@ import (
 
 const (
 	TraceAction       = "prompt_injection_detect"
-	QuarantineMessage = "[QUARANTINED: potential prompt injection in external content]"
+	QuarantineMessage = types.QuarantinedEvidenceMessage
 )
 
 type Source struct {
@@ -127,14 +127,7 @@ func (d *LLMDetector) detectBatch(ctx context.Context, sources []Source) (*Resul
 	return &output, usage, nil
 }
 
-func IsExternalAction(action string) bool {
-	switch action {
-	case "http_fetch", "web_search", "rag_search", "rag_fetch", "memory_search", "memory_get", "wiki_search", "wiki_fetch", "wiki_graph", "wiki_graph_fetch", "wiki_suggest":
-		return true
-	default:
-		return false
-	}
-}
+func IsExternalAction(action string) bool { return types.IsExternalAction(action) }
 
 func QuarantineEvidence(evidence []types.Evidence) []types.Evidence {
 	if len(evidence) == 0 {

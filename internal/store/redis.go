@@ -169,6 +169,42 @@ var deleteTaskScript = redis.NewScript(`
 		redis.call('ZREM', ARGV[4] .. tenant .. ":" .. status, ARGV[1])
 		redis.call('ZREM', ARGV[6] .. tenant, ARGV[5])
 	end
+
+local taskMemories = redis.call('ZRANGE', 'memories:task:' .. ARGV[1], 0, -1)
+for _, memoryID in ipairs(taskMemories) do
+ local memoryKey = 'memory:' .. memoryID
+ local rawMemory = redis.call('GET', memoryKey)
+ if rawMemory then
+  local mem = cjson.decode(rawMemory)
+  if mem.task_id == ARGV[1] then
+   redis.call('DEL', memoryKey)
+   redis.call('ZREM', 'memories:index', memoryID)
+   redis.call('ZREM', 'memories:tenant:' .. (mem.tenant_id or ''), memoryID)
+   redis.call('ZREM', 'memories:session:' .. (mem.tenant_id or '') .. ':' .. (mem.session_id or ''), memoryID)
+  end
+ end
+end
+redis.call('DEL', 'memories:task:' .. ARGV[1])
+if ok then
+ local tenant = task['tenant_id'] or ''
+ if tenant == '' then tenant = 'default' end
+ local approvalIndex = 'approvals:task:' .. tenant .. ':' .. ARGV[1]
+ local approvals = redis.call('ZRANGE', approvalIndex, 0, -1)
+ for _, approvalID in ipairs(approvals) do
+  local approvalKey = 'approval:' .. approvalID
+  local rawApproval = redis.call('GET', approvalKey)
+  if rawApproval then
+   local approval = cjson.decode(rawApproval)
+   if approval.TaskID == ARGV[1] and approval.TenantID == tenant then
+    redis.call('DEL', approvalKey)
+    redis.call('ZREM', 'approvals:tenant:' .. tenant, approvalID)
+    redis.call('ZREM', 'approvals:tenant-status:' .. tenant .. ':' .. approval.Status, approvalID)
+   end
+  end
+ end
+ redis.call('DEL', approvalIndex)
+end
+
 	local summaryRaw = redis.call('GET', KEYS[7])
 	if summaryRaw then
 		local summary = cjson.decode(summaryRaw)
@@ -204,6 +240,7 @@ var deleteMemoryScript = redis.NewScript(`
 	if scope ~= "" and tenant ~= scope and not (scope == "default" and tenant == "") then
 		return 0
 	end
+	redis.call('ZREM', 'memories:task:' .. (memory.task_id or ''), ARGV[1])
 	redis.call('DEL', KEYS[1])
 	redis.call('ZREM', KEYS[2], ARGV[1])
 	redis.call('ZREM', ARGV[3] .. tenant, ARGV[1])
@@ -345,6 +382,7 @@ func (r *RedisStore) GetTenantLLMUsage(ctx context.Context, tenantID string, per
 
 // Close closes the Redis client.
 func (r *RedisStore) Close() error {
+	r.memoryIndexGate.close()
 	return r.client.Close()
 }
 
@@ -472,7 +510,7 @@ func (r *RedisStore) saveFullTask(ctx context.Context, task *types.Task, createO
 					log.Warn("failed to create memory for task in redis store", "task_id", taskSnap.ID, "error", err)
 					return
 				}
-				_ = r.SaveMemory(asyncCtx, mem)
+				_ = r.SaveMemory(context.WithValue(asyncCtx, indexedMemoryKey{}, true), mem)
 			}()
 		} else {
 			r.memoryIndexGate.done(memoryID)
@@ -843,6 +881,9 @@ func (r *RedisStore) NextSessionTaskSequence(ctx context.Context, id, tenantID s
 }
 
 func (r *RedisStore) DeleteTask(ctx context.Context, id string) (bool, error) {
+	if err := r.ensureMemoryTaskIndexes(ctx); err != nil {
+		return false, err
+	}
 	memoryID := "mem-" + id
 	deleted, err := deleteTaskScript.Run(ctx, r.client, []string{
 		r.taskKey(id),
@@ -886,6 +927,24 @@ func (r *RedisStore) memoryKey(id string) string {
 	return "memory:" + id
 }
 
+var saveMemoryScript = redis.NewScript(`
+if ARGV[4] == '1' and redis.call('EXISTS', KEYS[2]) == 0 then return 0 end
+local mem = cjson.decode(ARGV[1])
+local old = redis.call('GET', KEYS[1])
+if old then
+ local prior = cjson.decode(old)
+ redis.call('ZREM', 'memories:task:' .. (prior.task_id or ''), ARGV[3])
+ redis.call('ZREM', 'memories:tenant:' .. (prior.tenant_id or ''), ARGV[3])
+ redis.call('ZREM', 'memories:session:' .. (prior.tenant_id or '') .. ':' .. (prior.session_id or ''), ARGV[3])
+end
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('ZADD', 'memories:index', ARGV[2], ARGV[3])
+redis.call('ZADD', 'memories:tenant:' .. (mem.tenant_id or ''), ARGV[2], ARGV[3])
+if mem.session_id and mem.session_id ~= '' then redis.call('ZADD', 'memories:session:' .. (mem.tenant_id or '') .. ':' .. mem.session_id, ARGV[2], ARGV[3]) end
+if mem.task_id and mem.task_id ~= '' then redis.call('ZADD', 'memories:task:' .. mem.task_id, ARGV[2], ARGV[3]) end
+return 1
+`)
+
 // SaveMemory persists a memory entry to Redis and index.
 func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 	normalized := *mem
@@ -895,29 +954,10 @@ func (r *RedisStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 		return fmt.Errorf("failed to serialize memory: %w", err)
 	}
 
-	err = r.client.Set(ctx, r.memoryKey(mem.ID), data, 0).Err()
-	if err != nil {
-		return fmt.Errorf("failed to save memory to redis: %w", err)
-	}
+	indexed, _ := ctx.Value(indexedMemoryKey{}).(bool)
+	_, err = saveMemoryScript.Run(ctx, r.client, []string{r.memoryKey(mem.ID), r.taskKey(mem.TaskID)}, data, mem.Timestamp.UnixNano(), mem.ID, indexed).Result()
+	return err
 
-	// Add to memories:index ZSET
-	err = r.client.ZAdd(ctx, "memories:index", redis.Z{
-		Score:  float64(mem.Timestamp.UnixNano()),
-		Member: mem.ID,
-	}).Err()
-	if err != nil {
-		return fmt.Errorf("failed to index memory in redis: %w", err)
-	}
-	if err := r.client.ZAdd(ctx, "memories:tenant:"+mem.TenantID, redis.Z{Score: float64(mem.Timestamp.UnixNano()), Member: mem.ID}).Err(); err != nil {
-		return fmt.Errorf("failed to index tenant memory: %w", err)
-	}
-	if mem.SessionID != "" {
-		if err := r.client.ZAdd(ctx, "memories:session:"+mem.TenantID+":"+mem.SessionID, redis.Z{Score: float64(mem.Timestamp.UnixNano()), Member: mem.ID}).Err(); err != nil {
-			return fmt.Errorf("failed to index session memory: %w", err)
-		}
-	}
-
-	return nil
 }
 
 func (r *RedisStore) ListMemories(ctx context.Context, filter ListMemoryFilter) ([]*types.Memory, error) {

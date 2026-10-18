@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
-	"github.com/wuxujun/ai-agent/internal/multiagent"
 )
 
 type embeddingBoundsTransport func(*http.Request) (*http.Response, error)
@@ -43,7 +42,7 @@ func TestEmbeddingResponsesAreBoundedAndErrorsPrivate(t *testing.T) {
 				http.DefaultTransport = embeddingBoundsTransport(func(*http.Request) (*http.Response, error) {
 					return &http.Response{StatusCode: status, Header: make(http.Header), Body: body}, nil
 				})
-				cfg := multiagent.LLMConfig{BaseURL: "https://fixture.invalid"}
+				cfg := llmcore.Config{BaseURL: "https://fixture.invalid"}
 				var err error
 				if provider == "openai" {
 					_, err = getOpenAIEmbedding(t.Context(), "fixture", cfg)

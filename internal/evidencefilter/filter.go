@@ -8,7 +8,6 @@ import (
 
 	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/llm"
-	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -165,7 +164,7 @@ func Apply(observation string, evidence []types.Evidence, result *Result) (strin
 }
 
 func Eligible(action, observation string) bool {
-	return promptguard.IsExternalAction(action) && !strings.Contains(observation, promptguard.QuarantineMessage) && !strings.Contains(observation, "external content quarantined")
+	return types.IsExternalAction(action) && !strings.Contains(observation, types.QuarantinedEvidenceMessage) && !strings.Contains(observation, "external content quarantined")
 }
 
 func NewAuditTrace(step int, kind string, result *Result, usage types.TokenUsage, failure error) types.StepTrace {

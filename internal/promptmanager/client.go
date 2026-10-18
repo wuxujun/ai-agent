@@ -90,8 +90,8 @@ func GetManager() *PromptManager {
 	once.Do(func() {
 		instance = &PromptManager{
 			cache:  make(map[string]cachedPrompt),
-			client: &http.Client{Timeout: 3 * time.Second}, // Strict timeout to prevent latency amplification
-			ttl:    10 * time.Minute,                       // 10 minutes TTL
+			client: nil,              // Default transport follows the current outbound network policy.
+			ttl:    10 * time.Minute, // 10 minutes TTL
 		}
 	})
 	return instance
@@ -295,7 +295,7 @@ func (pm *PromptManager) fetchFromLangfuse(ctx context.Context, name string, sel
 	req.SetBasicAuth(pubKey, secKey)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := pm.client.Do(req)
+	resp, err := pm.doPromptRequest(req)
 	if err != nil {
 		return ResolvedPrompt{}, err
 	}
@@ -307,7 +307,7 @@ func (pm *PromptManager) fetchFromLangfuse(ctx context.Context, name string, sel
 	}
 
 	var data PromptResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := decodePromptResponse(resp.Body, &data); err != nil {
 		return ResolvedPrompt{}, err
 	}
 

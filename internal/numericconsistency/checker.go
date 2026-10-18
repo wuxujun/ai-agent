@@ -8,16 +8,12 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
-	"github.com/wuxujun/ai-agent/internal/factfreshness"
 	"github.com/wuxujun/ai-agent/internal/llm"
-	"github.com/wuxujun/ai-agent/internal/promptguard"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
-	"github.com/wuxujun/ai-agent/internal/sourcecredibility"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
-const TraceAction = "numeric_consistency_check"
+const TraceAction = types.TraceActionNumericConsistency
 
 type Result struct {
 	HasNumericClaims bool     `json:"has_numeric_claims"`
@@ -85,7 +81,7 @@ func ShouldCheck(task *types.Task) bool {
 		return false
 	}
 	for _, trace := range task.Trace {
-		if promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == factfreshness.TraceAction || trace.Action == "citation_verify" {
+		if types.IsExternalAction(trace.Action) || trace.Action == types.TraceActionEvidenceConflict || trace.Action == types.TraceActionSourceCredibility || trace.Action == types.TraceActionFactFreshness || trace.Action == "citation_verify" {
 			return true
 		}
 	}
@@ -169,7 +165,7 @@ func evidenceCatalog(task *types.Task) []source {
 		if trace.Action == TraceAction {
 			continue
 		}
-		if strings.TrimSpace(trace.Observation) != "" && (promptguard.IsExternalAction(trace.Action) || trace.Action == evidenceconflict.TraceAction || trace.Action == sourcecredibility.TraceAction || trace.Action == factfreshness.TraceAction || trace.Action == "citation_verify") {
+		if strings.TrimSpace(trace.Observation) != "" && (types.IsExternalAction(trace.Action) || trace.Action == types.TraceActionEvidenceConflict || trace.Action == types.TraceActionSourceCredibility || trace.Action == types.TraceActionFactFreshness || trace.Action == "citation_verify") {
 			result = append(result, source{ID: fmt.Sprintf("E%d", index), Origin: truncate(sanitize.Secrets(trace.Action+":"+trace.Query), 200), Content: truncate(sanitize.Secrets(trace.Observation), 800)})
 			index++
 		}

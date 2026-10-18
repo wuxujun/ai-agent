@@ -123,7 +123,7 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) BackgroundRun
 			return
 		}
 
-		pausedTasks, err := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusPaused, Limit: 500})
+		pausedTasks, err := listStartupTasks(scanCtx, st, types.StatusPaused)
 		if err != nil {
 			if scanCtx.Err() != nil {
 				return
@@ -145,7 +145,7 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) BackgroundRun
 		if !ok || eng == nil || eng.ApprovalCodec == nil {
 			return
 		}
-		awaitingTasks, err := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusAwaitingApproval, Limit: 500})
+		awaitingTasks, err := listStartupTasks(scanCtx, st, types.StatusAwaitingApproval)
 		if err != nil {
 			if scanCtx.Err() != nil {
 				return
@@ -153,7 +153,7 @@ func startPausedTaskScan(st store.Store, eng *orchestrator.Engine) BackgroundRun
 			slog.Warn("startup scan: failed to list awaiting approval tasks", "error", err)
 			return
 		}
-		failedTasks, failedErr := st.ListTasks(scanCtx, store.ListFilter{Status: types.StatusFailed, Limit: 500})
+		failedTasks, failedErr := listStartupTasks(scanCtx, st, types.StatusFailed)
 		if failedErr != nil {
 			if scanCtx.Err() != nil {
 				return
@@ -362,4 +362,19 @@ func wireEngineEvents(eng *orchestrator.Engine) {
 // task event streams may outlive ordinary request/response exchanges.
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+}
+
+// Collect the startup snapshot before recovery mutates the status-filtered set.
+func listStartupTasks(ctx context.Context, st store.Store, status types.TaskStatus) ([]*types.Task, error) {
+	var tasks []*types.Task
+	for offset := 0; ; offset += 500 {
+		batch, err := st.ListTasks(ctx, store.ListFilter{Status: status, Limit: 500, Offset: offset})
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, batch...)
+		if len(batch) < 500 {
+			return tasks, nil
+		}
+	}
 }

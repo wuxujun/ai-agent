@@ -24,6 +24,9 @@ func TestSQLiteStore_CleanupTerminalApprovals(t *testing.T) {
 		Request:       types.ApprovalRequest{ID: "sqlite-cleanup", TaskID: "sqlite-cleanup-task", Action: "write_file", RiskLevel: types.RiskLevelHigh},
 		ActionPayload: []byte("ciphertext"), Status: types.ApprovalExpired, ResolvedAt: cutoff.Add(-time.Minute),
 	}
+	if err := st.SaveFullTask(ctx, &types.Task{ID: record.TaskID, TenantID: record.TenantID, Status: types.StatusCreated}); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.CreateApproval(ctx, record); err != nil {
 		t.Fatal(err)
 	}

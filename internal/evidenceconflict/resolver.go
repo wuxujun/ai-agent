@@ -14,20 +14,10 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
-const TraceAction = "evidence_conflict_resolve"
+const TraceAction = types.TraceActionEvidenceConflict
 
-type Source struct {
-	ID      string `json:"source_id"`
-	Origin  string `json:"origin"`
-	Content string `json:"content"`
-}
-
-type Conflict struct {
-	SourceIDs   []string `json:"source_ids"`
-	Severity    string   `json:"severity"`
-	Topic       string   `json:"topic"`
-	Explanation string   `json:"explanation"`
-}
+type Source = types.ConflictSource
+type Conflict = types.EvidenceConflict
 
 type Result struct {
 	Conflicts []Conflict `json:"conflicts"`

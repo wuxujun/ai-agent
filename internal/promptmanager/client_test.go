@@ -48,6 +48,7 @@ func TestPromptManagerGet(t *testing.T) {
 	defer server.Close()
 
 	// Update config via environment variables
+	t.Setenv("LANGFUSE_ALLOW_PRIVATE_NETWORK", "true")
 	os.Setenv("LANGFUSE_ENABLED", "true")
 	os.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
 	os.Setenv("LANGFUSE_SECRET_KEY", "sk-test")
@@ -154,6 +155,7 @@ func TestPromptManagerCacheIsScopedByHostAndKey(t *testing.T) {
 	}))
 	defer serverTwo.Close()
 
+	t.Setenv("LANGFUSE_ALLOW_PRIVATE_NETWORK", "true")
 	os.Setenv("LANGFUSE_ENABLED", "true")
 	os.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
 	os.Setenv("LANGFUSE_SECRET_KEY", "sk-test")
@@ -211,6 +213,7 @@ func TestPromptManagerSelectorScopesCacheAndRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
+	t.Setenv("LANGFUSE_ALLOW_PRIVATE_NETWORK", "true")
 	os.Setenv("LANGFUSE_ENABLED", "true")
 	os.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
 	os.Setenv("LANGFUSE_SECRET_KEY", "sk-test")

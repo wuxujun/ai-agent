@@ -167,7 +167,7 @@ func (pm *PromptManager) createTextPrompt(ctx context.Context, name, content str
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := pm.client.Do(req)
+	resp, err := pm.doPromptRequest(req)
 	if err != nil {
 		return ResolvedPrompt{}, err
 	}
@@ -177,7 +177,7 @@ func (pm *PromptManager) createTextPrompt(ctx context.Context, name, content str
 		return ResolvedPrompt{}, &HTTPStatusError{Method: http.MethodPost, URL: endpoint, StatusCode: resp.StatusCode}
 	}
 	var data PromptResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := decodePromptResponse(resp.Body, &data); err != nil {
 		return ResolvedPrompt{}, fmt.Errorf("decode created Langfuse prompt %q: %w", name, err)
 	}
 	prompt, err := renderPromptContent(data.Prompt)

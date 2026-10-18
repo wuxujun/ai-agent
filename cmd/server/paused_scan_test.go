@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync/atomic"
 	"syscall"
@@ -81,5 +82,29 @@ func TestPausedTaskScanShutdownJoinsBeforeStoreClose(t *testing.T) {
 			runner.Stop()
 			runner.Wait()
 		})
+	}
+}
+
+func TestStartupScanPaginatesPastFiveHundredFailures(t *testing.T) {
+	st := store.NewMemoryStore()
+	defer st.Close()
+	for i := 0; i < 1003; i++ {
+		if err := st.SaveFullTask(t.Context(), &types.Task{ID: fmt.Sprintf("task-%04d", i), Status: types.StatusFailed}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks, err := listStartupTasks(t.Context(), st, types.StatusFailed)
+	if err != nil || len(tasks) != 1003 {
+		t.Fatalf("tasks=%d err=%v", len(tasks), err)
+	}
+	seen := map[string]bool{}
+	for _, task := range tasks {
+		if seen[task.ID] {
+			t.Fatal("duplicate task", task.ID)
+		}
+		seen[task.ID] = true
+	}
+	if !seen["task-1002"] {
+		t.Fatal("latest failure omitted")
 	}
 }

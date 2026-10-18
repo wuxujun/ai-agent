@@ -644,6 +644,8 @@ langfuse:
   # Langfuse host URL.
   # Env override: LANGFUSE_BASE_URL
   host: "https://cloud.langfuse.com"
+  # Private network access requires an explicit allow_private_network: true
+  # (or LANGFUSE_ALLOW_PRIVATE_NETWORK=true); it is disabled by default.
 
   # Langfuse Public Key (pk-lf-...)
   # Env override: LANGFUSE_PUBLIC_KEY

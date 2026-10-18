@@ -243,9 +243,6 @@ func run() error {
 			}
 			app.tasks.ResizeTaskSemaphore(cfg.Orchestrator.MaxConcurrentTasks)
 			slog.Info("config reloaded", "changes", len(changes))
-			if err := configureLogger(config.Get()); err != nil {
-				return fmt.Errorf("logging reconfiguration failed; keeping previous outputs: %w", err)
-			}
 			return nil
 		},
 	}, quit)
@@ -273,12 +270,5 @@ func bootstrapLangfusePrompts(cfg *config.Config) (multiagent.PromptBootstrapSum
 }
 
 func configureLogger(cfg *config.Config) error {
-	return logger.Configure(logger.Options{
-		Level:         cfg.Log.Level,
-		Console:       cfg.Log.Console,
-		FileEnabled:   cfg.Log.FileEnabled,
-		AccessEnabled: cfg.Log.AccessEnabled,
-		Directory:     cfg.Log.Directory,
-		RetentionDays: cfg.Log.RetentionDays,
-	})
+	return config.ConfigureLogging(cfg)
 }

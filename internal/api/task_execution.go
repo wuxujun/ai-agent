@@ -507,20 +507,8 @@ func (h *Handler) cancelTask(c *gin.Context) {
 		return
 	}
 
-	// ── P0: Not in local activeTasks — the task may be running on a peer
-	// instance. Broadcast the cancel signal via Redis so the executing
-	// instance can pick it up and cancel its context.
-	if h.approvalBus != nil {
-		if pubErr := h.approvalBus.PublishCancel(c.Request.Context(), taskID); pubErr != nil {
-			log.Warn("cancel bus publish failed", "task_id", taskID, "error", pubErr)
-		}
-		c.JSON(http.StatusAccepted, gin.H{
-			"message": "cancel signal forwarded to cluster",
-			"task_id": taskID,
-		})
-		return
-	}
-	// No bus — fall back to the legacy DB-level cancel.
+	// Try the durable checkpoint even when the cluster bus is enabled.
+	// A peer cancellation is needed only when a live lease prevents local cleanup.
 	ctx, dbCancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 	defer dbCancel()
 	task, err := h.store.GetTask(ctx, taskID)

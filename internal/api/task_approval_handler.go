@@ -203,36 +203,39 @@ func (h *Handler) startDurableApprovalRecovery(taskID, approvalID string) {
 	if !ok {
 		return
 	}
-	// Owned background recovery retains the active token through cleanup and
-	// participates in Cancel/Shutdown. A local executing owner keeps its slot;
-	// queued workers remain separately cancellable until that slot becomes free.
+	// Register every recovery before shutdown can snapshot workers or wait.
+	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	var token *activeRun
-	var ownedCtx context.Context
-	var ownedCancel context.CancelFunc
 	if h.engine.HasOwnedSQLiteApprovalDispatcher() {
 		if h.engine.Store != h.store {
-			h.observeDurableApproval(context.Background(), "recovery_failure")
+			recoveryCancel()
 			return
 		}
-		ownedCtx, ownedCancel = context.WithTimeout(context.Background(), 90*time.Second)
-		token = &activeRun{owned: true, cancel: ownedCancel}
-		h.activeTasksMu.Lock()
-		if _, exists := h.ownedApprovalWorkers[approvalID]; exists {
-			h.activeTasksMu.Unlock()
-			ownedCancel()
-			return
-		}
+		token = &activeRun{owned: true, cancel: recoveryCancel}
+	}
+	h.activeTasksMu.Lock()
+	if h.shuttingDown || h.recoveryWorkers[approvalID] != nil {
+		h.activeTasksMu.Unlock()
+		recoveryCancel()
+		return
+	}
+	if h.recoveryWorkers == nil {
+		h.recoveryWorkers = make(map[string]context.CancelFunc)
+	}
+	h.recoveryWorkers[approvalID] = recoveryCancel
+	if token != nil {
 		if h.ownedApprovalWorkers == nil {
 			h.ownedApprovalWorkers = make(map[string]ownedApprovalWorker)
 		}
 		h.ownedApprovalWorkers[approvalID] = ownedApprovalWorker{taskID, token}
-		h.activeTasksMu.Unlock()
 	}
 	h.wg.Add(1)
+	h.activeTasksMu.Unlock()
 	go func() {
 		defer h.wg.Done()
+		defer recoveryCancel()
+		defer func() { h.activeTasksMu.Lock(); delete(h.recoveryWorkers, approvalID); h.activeTasksMu.Unlock() }()
 		if token != nil {
-			defer ownedCancel()
 			defer func() {
 				h.activeTasksMu.Lock()
 				if h.activeTasks[taskID] == token {
@@ -251,11 +254,7 @@ func (h *Handler) startDurableApprovalRecovery(taskID, approvalID string) {
 			}()
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		if ownedCtx != nil {
-			ctx = ownedCtx
-		}
+		ctx := recoveryCtx
 		owner := "approval-recovery-" + uuid.NewString()
 		for {
 			if ctx.Err() != nil {

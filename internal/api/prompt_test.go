@@ -60,6 +60,7 @@ func TestInitTenantPromptsUsesAuthenticatedTenantAndAllowedTeams(t *testing.T) {
 		}
 		cfg.Langfuse.Enabled = true
 		cfg.Langfuse.Host = langfuse.URL
+		cfg.Langfuse.AllowPrivateNetwork = true
 		cfg.Langfuse.PublicKey = "pk-test"
 		cfg.Langfuse.SecretKey = "sk-test"
 		cfg.Langfuse.BootstrapTimeoutSeconds = 5
@@ -151,6 +152,7 @@ func TestInitPromptsSynchronizesRepositoryTeamPrompts(t *testing.T) {
 		cfg.API.Tenants = nil
 		cfg.Langfuse.Enabled = true
 		cfg.Langfuse.Host = langfuse.URL
+		cfg.Langfuse.AllowPrivateNetwork = true
 		cfg.Langfuse.PublicKey = "pk-test"
 		cfg.Langfuse.SecretKey = "sk-test"
 		cfg.Langfuse.BootstrapTimeoutSeconds = 5

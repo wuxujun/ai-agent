@@ -7,13 +7,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wuxujun/ai-agent/internal/evidenceconflict"
 	"github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/sanitize"
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
-const TraceAction = "source_credibility_score"
+const TraceAction = types.TraceActionSourceCredibility
 
 type Score struct {
 	SourceID     string `json:"source_id"`
@@ -29,29 +28,29 @@ type Result struct {
 }
 
 type Scorer interface {
-	Score(ctx context.Context, task *types.Task, sources []evidenceconflict.Source, conflicts []evidenceconflict.Conflict) (*Result, types.TokenUsage, error)
+	Score(ctx context.Context, task *types.Task, sources []types.ConflictSource, conflicts []types.EvidenceConflict) (*Result, types.TokenUsage, error)
 }
 
 type LLMScorer struct{ Scene string }
 
 func NewLLMScorer(scene string) *LLMScorer { return &LLMScorer{Scene: scene} }
 
-func (s *LLMScorer) Score(ctx context.Context, task *types.Task, sources []evidenceconflict.Source, conflicts []evidenceconflict.Conflict) (*Result, types.TokenUsage, error) {
+func (s *LLMScorer) Score(ctx context.Context, task *types.Task, sources []types.ConflictSource, conflicts []types.EvidenceConflict) (*Result, types.TokenUsage, error) {
 	ids := conflictSourceIDs(conflicts)
 	if len(ids) < 2 {
 		return nil, types.TokenUsage{}, fmt.Errorf("source credibility scoring requires conflicting sources")
 	}
-	byID := make(map[string]evidenceconflict.Source, len(sources))
+	byID := make(map[string]types.ConflictSource, len(sources))
 	for _, source := range sources {
 		byID[source.ID] = source
 	}
-	selected := make([]evidenceconflict.Source, 0, len(ids))
+	selected := make([]types.ConflictSource, 0, len(ids))
 	for _, id := range ids {
 		source, ok := byID[id]
 		if !ok {
 			return nil, types.TokenUsage{}, fmt.Errorf("source credibility scoring missing source %q", id)
 		}
-		selected = append(selected, evidenceconflict.Source{ID: id, Origin: truncate(sanitize.Secrets(source.Origin), 500), Content: truncate(sanitize.Secrets(source.Content), 1200)})
+		selected = append(selected, types.ConflictSource{ID: id, Origin: truncate(sanitize.Secrets(source.Origin), 500), Content: truncate(sanitize.Secrets(source.Content), 1200)})
 	}
 	payload, err := json.Marshal(selected)
 	if err != nil {
@@ -120,7 +119,7 @@ func AlreadyScored(task *types.Task, fingerprint string) bool {
 	return false
 }
 
-func conflictSourceIDs(conflicts []evidenceconflict.Conflict) []string {
+func conflictSourceIDs(conflicts []types.EvidenceConflict) []string {
 	seen := make(map[string]bool)
 	for _, conflict := range conflicts {
 		for _, id := range conflict.SourceIDs {

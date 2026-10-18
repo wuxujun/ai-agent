@@ -18,7 +18,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/wuxujun/ai-agent/internal/config"
-	"github.com/wuxujun/ai-agent/internal/telemetry"
+	"github.com/wuxujun/ai-agent/internal/policy"
 )
 
 const (
@@ -57,7 +57,7 @@ func verifierFor(jwtConfig config.APIJWTConfig) *jwtVerifier {
 	}
 	verifier := &jwtVerifier{
 		config: jwtConfig,
-		client: telemetry.NewHTTPClient(time.Duration(jwtConfig.JWKSRequestTimeoutSeconds) * time.Second),
+		client: policy.ConfiguredHTTPClient(time.Duration(jwtConfig.JWKSRequestTimeoutSeconds)*time.Second, false),
 	}
 	// The JWKS location is operator-configured. Do not let a compromised issuer
 	// redirect this server to an internal metadata or control-plane endpoint.

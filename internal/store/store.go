@@ -8,6 +8,8 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+type indexedMemoryKey struct{}
+
 type tenantScopeContextKey struct{}
 type sessionScopeContextKey struct{}
 type taskLeaseContextKey struct{}

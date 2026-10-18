@@ -38,6 +38,14 @@ func (h *Handler) cancelOrphanedTask(c *gin.Context, ctx context.Context, task *
 		return
 	}
 	if !acquired {
+		if h.approvalBus != nil {
+			if err := h.approvalBus.PublishCancel(ctx, taskID); err != nil {
+				c.Error(err)
+				return
+			}
+			c.JSON(http.StatusAccepted, gin.H{"message": "cancel signal forwarded to cluster", "task_id": taskID})
+			return
+		}
 		c.JSON(http.StatusConflict, gin.H{"error": "task is active on another instance", "task_id": taskID})
 		return
 	}

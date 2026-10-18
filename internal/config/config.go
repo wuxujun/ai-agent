@@ -226,6 +226,7 @@ type Config struct {
 	} `mapstructure:"skill"`
 
 	Langfuse struct {
+		AllowPrivateNetwork     bool   `mapstructure:"allow_private_network"`
 		PublicKey               string `mapstructure:"public_key"`
 		SecretKey               string `mapstructure:"secret_key"`
 		Host                    string `mapstructure:"host"`
@@ -670,6 +671,8 @@ func setupViper() {
 	viper.SetDefault("search.url", "https://api.firecrawl.dev/v1/search")
 	viper.SetDefault("search.api_key", "")
 	viper.SetDefault("langfuse.enabled", false)
+	viper.SetDefault("langfuse.allow_private_network", false)
+	_ = viper.BindEnv("langfuse.allow_private_network", "LANGFUSE_ALLOW_PRIVATE_NETWORK")
 	viper.SetDefault("langfuse.host", "https://cloud.langfuse.com")
 	viper.SetDefault("langfuse.bootstrap_missing_prompts", false)
 	viper.SetDefault("langfuse.bootstrap_failure_policy", "fail")
@@ -980,6 +983,14 @@ func Reload() (*Config, []string, error) {
 		return nil, nil, fmt.Errorf("config reload: %w", err)
 	}
 
+	// Build logger outputs before publishing the candidate. Configure retains the
+	// previous handler if any output cannot be opened. All reload entry points
+	// share this transaction, including the filesystem watcher.
+	if globalConfig == nil || globalConfig.Log != newCfg.Log {
+		if err := ConfigureLogging(newCfg); err != nil {
+			return nil, nil, fmt.Errorf("config reload: configure logging: %w", err)
+		}
+	}
 	changes := applyReloadedConfig(newCfg)
 
 	if len(changes) == 0 {
@@ -1554,8 +1565,8 @@ func (c *Config) validateJWTAuth() error {
 		return fmt.Errorf("api.auth.jwt issuer, audience, jwks_url, and tenant_claim are required")
 	}
 	parsedJWKSURL, err := url.Parse(jwtConfig.JWKSURL)
-	if err != nil || parsedJWKSURL.Host == "" || parsedJWKSURL.User != nil || parsedJWKSURL.Fragment != "" || (parsedJWKSURL.Scheme != "https" && parsedJWKSURL.Scheme != "http") {
-		return fmt.Errorf("api.auth.jwt.jwks_url must be an absolute http or https URL without userinfo or fragment")
+	if err != nil || parsedJWKSURL.Host == "" || parsedJWKSURL.User != nil || parsedJWKSURL.Fragment != "" || parsedJWKSURL.Scheme != "https" {
+		return fmt.Errorf("api.auth.jwt.jwks_url must be an absolute https URL without userinfo or fragment")
 	}
 	if len(jwtConfig.AllowedAlgorithms) == 0 {
 		return fmt.Errorf("api.auth.jwt.allowed_algorithms must not be empty")
@@ -2214,4 +2225,12 @@ func (c *Config) validateLLMRouteCycles() error {
 		}
 	}
 	return nil
+}
+
+// ConfigureLogging applies the same logging options at startup and reload.
+func ConfigureLogging(cfg *Config) error {
+	return logger.Configure(logger.Options{
+		Level: cfg.Log.Level, Console: cfg.Log.Console, FileEnabled: cfg.Log.FileEnabled,
+		AccessEnabled: cfg.Log.AccessEnabled, Directory: cfg.Log.Directory, RetentionDays: cfg.Log.RetentionDays,
+	})
 }

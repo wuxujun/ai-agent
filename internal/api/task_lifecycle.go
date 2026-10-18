@@ -30,6 +30,11 @@ func (h *Handler) SetApprovalBus(bus *orchestrator.ApprovalBus) {
 func (h *Handler) Shutdown(ctx context.Context) error {
 	// Snapshot and cancel all active tasks.
 	h.activeTasksMu.Lock()
+	h.shuttingDown = true
+	recoveryCancels := make([]context.CancelFunc, 0, len(h.recoveryWorkers))
+	for _, cancel := range h.recoveryWorkers {
+		recoveryCancels = append(recoveryCancels, cancel)
+	}
 	type runEntry struct {
 		taskID string
 		run    *activeRun
@@ -43,6 +48,9 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 	}
 	h.activeTasksMu.Unlock()
 
+	for _, cancel := range recoveryCancels {
+		cancel()
+	}
 	for _, e := range entries {
 		e.run.cancel()
 	}

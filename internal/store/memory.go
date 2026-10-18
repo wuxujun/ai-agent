@@ -17,15 +17,16 @@ import (
 
 // MemoryStore implements Store in-memory for testing or ephemeral executions.
 type MemoryStore struct {
-	mu          sync.RWMutex
-	tasks       map[string]*types.Task
-	traceTimes  map[string][]time.Time
-	sessions    map[string]*types.Session
-	memories    map[string]*types.Memory
-	leases      map[string]memoryLease
-	approvals   map[string]*types.DurableApproval
-	indexing    map[string]bool // Tracks tasks currently undergoing async indexing
-	tenantUsage map[string]types.TenantLLMUsage
+	memoryIndexGate memoryIndexGate
+	mu              sync.RWMutex
+	tasks           map[string]*types.Task
+	traceTimes      map[string][]time.Time
+	sessions        map[string]*types.Session
+	memories        map[string]*types.Memory
+	leases          map[string]memoryLease
+	approvals       map[string]*types.DurableApproval
+	indexing        map[string]bool // Tracks tasks currently undergoing async indexing
+	tenantUsage     map[string]types.TenantLLMUsage
 }
 
 type memoryLease struct {
@@ -154,7 +155,7 @@ func (m *MemoryStore) saveFullTask(ctx context.Context, task *types.Task, create
 		session.UpdatedAt = task.UpdatedAt
 	}
 
-	shouldIndex := memory.ShouldIndexTask(task) && !alreadyIndexed && !alreadyIndexing
+	shouldIndex := memory.ShouldIndexTask(task) && !alreadyIndexed && !alreadyIndexing && m.memoryIndexGate.tryStart(task.ID)
 	if shouldIndex {
 		m.indexing[task.ID] = true
 	}
@@ -165,6 +166,7 @@ func (m *MemoryStore) saveFullTask(ctx context.Context, task *types.Task, create
 		// Since generating embeddings can take time (e.g. hitting remote APIs),
 		// we run this outside of the write lock to prevent blocking memory storage.
 		go func() {
+			defer m.memoryIndexGate.done(cloned.ID)
 			defer func() {
 				m.mu.Lock()
 				delete(m.indexing, cloned.ID)
@@ -181,6 +183,10 @@ func (m *MemoryStore) saveFullTask(ctx context.Context, task *types.Task, create
 			}
 
 			m.mu.Lock()
+			if m.tasks[cloned.ID] == nil {
+				m.mu.Unlock()
+				return
+			}
 			clonedMem := *mem
 			if mem.Embedding != nil {
 				clonedMem.Embedding = make([]float32, len(mem.Embedding))
@@ -207,8 +213,9 @@ func (m *MemoryStore) GetTask(ctx context.Context, id string) (*types.Task, erro
 	return types.CloneTask(task), nil
 }
 
-// Close is a no-op for MemoryStore.
+// Close drains asynchronous memory indexing.
 func (m *MemoryStore) Close() error {
+	m.memoryIndexGate.close()
 	return nil
 }
 
@@ -264,6 +271,11 @@ func (m *MemoryStore) DeleteTask(_ context.Context, id string) (bool, error) {
 	if _, exists := m.tasks[id]; !exists {
 		return false, nil
 	}
+	for approvalID, record := range m.approvals {
+		if record.TaskID == id {
+			delete(m.approvals, approvalID)
+		}
+	}
 	delete(m.tasks, id)
 	delete(m.traceTimes, id)
 	for memoryID, mem := range m.memories {
@@ -283,6 +295,11 @@ func (m *MemoryStore) DeleteAllTasks(_ context.Context) (int64, error) {
 	for memoryID, mem := range m.memories {
 		if _, taskOwned := m.tasks[mem.TaskID]; taskOwned {
 			delete(m.memories, memoryID)
+		}
+	}
+	for approvalID, record := range m.approvals {
+		if _, exists := m.tasks[record.TaskID]; exists {
+			delete(m.approvals, approvalID)
 		}
 	}
 	m.tasks = make(map[string]*types.Task)

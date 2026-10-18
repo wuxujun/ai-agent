@@ -17,8 +17,6 @@ import (
 	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
 	"github.com/wuxujun/ai-agent/internal/logger"
-	"github.com/wuxujun/ai-agent/internal/multiagent"
-	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/telemetry"
 	"google.golang.org/genai"
 )
@@ -68,11 +66,11 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 		return localEmbedding(text), nil
 	}
 
-	cfg := multiagent.LLMConfigForScene(config.LLMSceneEmbedding)
+	cfg := llmcore.ConfigForScene(config.LLMSceneEmbedding)
 	providerSpec, providerRegistered := llmprovider.Lookup(string(cfg.Provider))
 
 	// If no API key is set, go straight to local fallback to avoid timeouts
-	if cfg.APIKey == "" && cfg.Provider != planner.ProviderOllama {
+	if cfg.APIKey == "" && cfg.Provider != "ollama" {
 		return localEmbedding(text), nil
 	}
 	if providerRegistered && providerSpec.Protocol == llmprovider.ProtocolGemini && geminiEmbeddingUnsupportedLocation.Load() {
@@ -127,8 +125,8 @@ func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	return vec, nil
 }
 
-func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConfig) ([]float32, error) {
-	client, err := planner.GetGeminiClient(cfg.APIKey, cfg.BaseURL)
+func getGeminiEmbedding(ctx context.Context, text string, cfg llmcore.Config) ([]float32, error) {
+	client, err := llmcore.GetGeminiClient(cfg.APIKey, cfg.BaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +157,7 @@ func getGeminiEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	return resp.Embeddings[0].Values, nil
 }
 
-func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConfig) ([]float32, error) {
+func getOpenAIEmbedding(ctx context.Context, text string, cfg llmcore.Config) ([]float32, error) {
 	model := cfg.Model
 	if model == "" {
 		model = "text-embedding-3-small"
@@ -231,7 +229,7 @@ func getOpenAIEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	return m.Data[0].Embedding, nil
 }
 
-func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConfig) ([]float32, error) {
+func getOllamaEmbedding(ctx context.Context, text string, cfg llmcore.Config) ([]float32, error) {
 	model := config.Get().Embedding.Model
 	if model == "" {
 		model = "nomic-embed-text"
@@ -248,7 +246,7 @@ func getOllamaEmbedding(ctx context.Context, text string, cfg multiagent.LLMConf
 	// Perform a quick health check to verify if the Ollama local service is running and embedding model is pulled.
 	isLocal := strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1")
 	if isLocal {
-		if err := planner.ProbeOllama(ctx, url, model); err != nil {
+		if err := llmcore.ProbeOllama(ctx, url, model); err != nil {
 			return nil, err
 		}
 	}

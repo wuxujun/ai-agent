@@ -32,7 +32,12 @@ type SQLiteStore struct {
 }
 
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", dsn)
+	// Apply on every connection, including connections reopened after an idle close.
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	db, err := sql.Open("sqlite", dsn+separator+"_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
 	}
@@ -358,6 +363,7 @@ func (s *SQLiteStore) GetTenantLLMUsage(ctx context.Context, tenantID string, pe
 }
 
 func (s *SQLiteStore) Close() error {
+	s.memoryIndexGate.close()
 	return s.db.Close()
 }
 
@@ -641,7 +647,7 @@ execution_trace_id=excluded.execution_trace_id
 					log.Warn("failed to create memory for task", "task_id", taskSnap.ID, "error", err)
 					return
 				}
-				if err := s.SaveMemory(asyncCtx, mem); err != nil {
+				if err := s.SaveMemory(context.WithValue(asyncCtx, indexedMemoryKey{}, true), mem); err != nil {
 					log.Warn("failed to save memory for task", "task_id", taskSnap.ID, "error", err)
 				}
 			}()
@@ -968,6 +974,7 @@ func (s *SQLiteStore) DeleteTask(ctx context.Context, id string) (bool, error) {
 	}
 	defer tx.Rollback()
 	for _, query := range []string{
+		`DELETE FROM approvals WHERE task_id = ?`,
 		`DELETE FROM traces WHERE task_id = ?`,
 		`DELETE FROM memories WHERE task_id = ?`,
 		`DELETE FROM task_leases WHERE task_id = ?`,
@@ -996,7 +1003,7 @@ func (s *SQLiteStore) DeleteAllTasks(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
-	for _, query := range []string{`DELETE FROM traces`, `DELETE FROM memories WHERE task_id IN (SELECT id FROM tasks)`, `DELETE FROM task_leases`} {
+	for _, query := range []string{`DELETE FROM approvals WHERE task_id IN (SELECT id FROM tasks)`, `DELETE FROM traces`, `DELETE FROM memories WHERE task_id IN (SELECT id FROM tasks)`, `DELETE FROM task_leases`} {
 		if _, err := tx.ExecContext(ctx, query); err != nil {
 			return 0, err
 		}
@@ -1022,7 +1029,7 @@ func (s *SQLiteStore) SaveMemory(ctx context.Context, mem *types.Memory) error {
 		return err
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	query := `
 INSERT INTO memories (id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -1034,7 +1041,13 @@ final_answer=excluded.final_answer,
 key_findings=excluded.key_findings,
 timestamp=excluded.timestamp,
 embedding_json=excluded.embedding_json
-`,
+`
+	if indexed, _ := ctx.Value(indexedMemoryKey{}).(bool); indexed {
+		query = strings.Replace(query, "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ?)", 1)
+		_, err = s.db.ExecContext(ctx, query, mem.ID, mem.TenantID, mem.SessionID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp.UTC(), string(embJSON), mem.TaskID)
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, query,
 		mem.ID, mem.TenantID, mem.SessionID, mem.TaskID, mem.Goal, mem.FinalAnswer, mem.KeyFindings, mem.Timestamp.UTC(), string(embJSON),
 	)
 	return err

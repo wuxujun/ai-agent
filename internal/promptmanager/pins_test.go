@@ -120,6 +120,7 @@ func TestResolvePinnedRejectsWrongReturnedVersion(t *testing.T) {
 func configurePromptTestLangfuse(t *testing.T, host string) {
 	t.Helper()
 	t.Cleanup(func() { config.Reload() })
+	t.Setenv("LANGFUSE_ALLOW_PRIVATE_NETWORK", "true")
 	t.Setenv("LANGFUSE_ENABLED", "true")
 	t.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
 	t.Setenv("LANGFUSE_SECRET_KEY", "sk-test")

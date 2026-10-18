@@ -68,19 +68,30 @@ func (h *Handler) listAudits(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 	items := make([]auditListItem, 0, limit+1)
-	matched := 0
-	err := h.scanTasks(ctx, filter.tenantID, filter.taskStatus, func(task *types.Task) bool {
-		if !filter.matches(task) {
-			return true
+	var err error
+	if audits, ok := h.store.(store.AuditStore); ok {
+		f := filter.storeFilter()
+		f.Limit, f.Offset = limit+1, offset
+		var tasks []*types.Task
+		tasks, err = audits.ListAuditTasks(ctx, f)
+		for _, task := range tasks {
+			items = append(items, auditListItem{TaskID: task.ID, TenantID: task.TenantID, Status: task.Status, Audit: task.AnswerAudit})
 		}
-		if matched < offset {
+	} else {
+		matched := 0
+		err = h.scanTasks(ctx, filter.tenantID, filter.taskStatus, func(task *types.Task) bool {
+			if !filter.matches(task) {
+				return true
+			}
+			if matched < offset {
+				matched++
+				return true
+			}
 			matched++
-			return true
-		}
-		matched++
-		items = append(items, auditListItem{TaskID: task.ID, TenantID: task.TenantID, Status: task.Status, Audit: task.AnswerAudit})
-		return len(items) <= limit
-	})
+			items = append(items, auditListItem{TaskID: task.ID, TenantID: task.TenantID, Status: task.Status, Audit: task.AnswerAudit})
+			return len(items) <= limit
+		})
+	}
 	if err != nil {
 		c.Error(err)
 		return
@@ -106,11 +117,7 @@ func (h *Handler) getAuditSummary(c *gin.Context) {
 	confidence := map[string]int{}
 	enforcement := map[string]int{}
 	stageStatuses := map[string]map[string]int{}
-	err := h.scanTasks(ctx, filter.tenantID, filter.taskStatus, func(task *types.Task) bool {
-		if !types.IsTerminalTaskStatus(task.Status) || strings.TrimSpace(task.FinalAnswer) == "" {
-			return true
-		}
-		eligible++
+	err := h.scanAuditSummary(ctx, filter, &eligible, func(task *types.Task) bool {
 		if task.AnswerAudit == nil {
 			return true
 		}
@@ -373,4 +380,43 @@ func (h *Handler) reauditTask(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"task_id": task.ID, "status": task.Status, "final_answer": task.FinalAnswer, "answer_audit": report})
+}
+
+func (f auditFilter) storeFilter() store.AuditFilter {
+	return store.AuditFilter{TenantID: f.tenantID, Status: f.taskStatus, Stage: f.stage, StageState: f.stageState, Confidence: f.confidence, Enforcement: f.enforcement, Publishable: f.publishable}
+}
+
+func (h *Handler) scanAuditSummary(ctx context.Context, filter auditFilter, eligible *int, visit func(*types.Task) bool) error {
+	if audits, ok := h.store.(store.AuditStore); ok {
+		count, err := audits.CountAuditEligibleTasks(ctx, filter.tenantID, filter.taskStatus)
+		if err != nil {
+			return err
+		}
+		*eligible = count
+		f := filter.storeFilter()
+		f.EligibleOnly = true
+		f.Limit = 500
+		for {
+			tasks, err := audits.ListAuditTasks(ctx, f)
+			if err != nil {
+				return err
+			}
+			for _, task := range tasks {
+				if !visit(task) {
+					return nil
+				}
+			}
+			if len(tasks) < f.Limit {
+				return nil
+			}
+			f.Offset += len(tasks)
+		}
+	}
+	return h.scanTasks(ctx, filter.tenantID, filter.taskStatus, func(task *types.Task) bool {
+		if !types.IsTerminalTaskStatus(task.Status) || strings.TrimSpace(task.FinalAnswer) == "" {
+			return true
+		}
+		*eligible++
+		return visit(task)
+	})
 }

@@ -51,6 +51,7 @@ func TestCoordinatorUsesTaskTenantPromptAndPersistsPin(t *testing.T) {
 	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
 		cfg.Langfuse.Enabled = true
 		cfg.Langfuse.Host = server.URL
+		cfg.Langfuse.AllowPrivateNetwork = true
 		cfg.Langfuse.PublicKey = "pk-test"
 		cfg.Langfuse.SecretKey = "sk-test"
 	}))

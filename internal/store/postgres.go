@@ -334,6 +334,7 @@ func (p *PostgresStore) GetTenantLLMUsage(ctx context.Context, tenantID string, 
 
 // Close closes the database connection.
 func (p *PostgresStore) Close() error {
+	p.memoryIndexGate.close()
 	return p.db.Close()
 }
 
@@ -617,7 +618,7 @@ execution_trace_id=EXCLUDED.execution_trace_id`
 					log.Warn("failed to create memory for task in postgres store", "task_id", taskSnap.ID, "error", err)
 					return
 				}
-				if err := p.SaveMemory(asyncCtx, mem); err != nil {
+				if err := p.SaveMemory(context.WithValue(asyncCtx, indexedMemoryKey{}, true), mem); err != nil {
 					log.Warn("failed to save memory for task in postgres store", "task_id", taskSnap.ID, "error", err)
 				}
 			}()
@@ -926,7 +927,17 @@ func (p *PostgresStore) DeleteTask(ctx context.Context, id string) (bool, error)
 		return false, err
 	}
 	defer tx.Rollback()
+	// Lock the parent before deleting children. Generated memory saves take a
+	// key-share lock, so no indexer can insert between child cleanup and deletion.
+	var lockedID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id = $1 FOR UPDATE`, id).Scan(&lockedID); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+
 	for _, query := range []string{
+		`DELETE FROM approvals WHERE task_id = $1`,
 		`DELETE FROM traces WHERE task_id = $1`,
 		`DELETE FROM memories WHERE task_id = $1`,
 		`DELETE FROM task_leases WHERE task_id = $1`,
@@ -955,7 +966,13 @@ func (p *PostgresStore) DeleteAllTasks(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
-	for _, query := range []string{`DELETE FROM traces`, `DELETE FROM memories WHERE task_id IN (SELECT id FROM tasks)`, `DELETE FROM task_leases`} {
+	// Exclude both task writers and generated-memory key-share readers while
+	// clearing the parent set and its children in this transaction.
+	if _, err := tx.ExecContext(ctx, `LOCK TABLE tasks IN EXCLUSIVE MODE`); err != nil {
+		return 0, err
+	}
+
+	for _, query := range []string{`DELETE FROM approvals WHERE task_id IN (SELECT id FROM tasks)`, `DELETE FROM traces`, `DELETE FROM memories WHERE task_id IN (SELECT id FROM tasks)`, `DELETE FROM task_leases`} {
 		if _, err := tx.ExecContext(ctx, query); err != nil {
 			return 0, err
 		}
@@ -989,7 +1006,7 @@ func (p *PostgresStore) SaveMemory(ctx context.Context, mem *types.Memory) error
 		if len(mem.Embedding) > 0 {
 			vecValue = pgVectorLiteral(mem.Embedding)
 		}
-		_, err = p.db.ExecContext(ctx, `
+		query := `
 INSERT INTO memories (id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json, embedding_vector)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)
 ON CONFLICT(id) DO UPDATE SET
@@ -1002,13 +1019,17 @@ key_findings=EXCLUDED.key_findings,
 timestamp=EXCLUDED.timestamp,
 embedding_json=EXCLUDED.embedding_json,
 embedding_vector=EXCLUDED.embedding_vector
-`,
+`
+		if indexed, _ := ctx.Value(indexedMemoryKey{}).(bool); indexed {
+			query = strings.Replace(query, "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)", "SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector WHERE EXISTS (SELECT 1 FROM tasks WHERE id = $4 FOR KEY SHARE)", 1)
+		}
+		_, err = p.db.ExecContext(ctx, query,
 			postgresText(mem.ID), postgresText(mem.TenantID), postgresText(mem.SessionID), postgresText(mem.TaskID), postgresText(mem.Goal), postgresText(mem.FinalAnswer), postgresText(mem.KeyFindings), mem.Timestamp.UTC(), string(embJSON), vecValue,
 		)
 		return err
 	}
 
-	_, err = p.db.ExecContext(ctx, `
+	query := `
 INSERT INTO memories (id, tenant_id, session_id, task_id, goal, final_answer, key_findings, timestamp, embedding_json)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT(id) DO UPDATE SET
@@ -1020,7 +1041,11 @@ final_answer=EXCLUDED.final_answer,
 key_findings=EXCLUDED.key_findings,
 timestamp=EXCLUDED.timestamp,
 embedding_json=EXCLUDED.embedding_json
-`,
+`
+	if indexed, _ := ctx.Value(indexedMemoryKey{}).(bool); indexed {
+		query = strings.Replace(query, "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", "SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9 WHERE EXISTS (SELECT 1 FROM tasks WHERE id = $4 FOR KEY SHARE)", 1)
+	}
+	_, err = p.db.ExecContext(ctx, query,
 		postgresText(mem.ID), postgresText(mem.TenantID), postgresText(mem.SessionID), postgresText(mem.TaskID), postgresText(mem.Goal), postgresText(mem.FinalAnswer), postgresText(mem.KeyFindings), mem.Timestamp.UTC(), string(embJSON),
 	)
 	return err
