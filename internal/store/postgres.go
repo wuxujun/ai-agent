@@ -463,15 +463,15 @@ func (p *PostgresStore) ReplaceTraces(ctx context.Context, taskID string, traces
 }
 
 func (p *PostgresStore) SaveFullTask(ctx context.Context, task *types.Task) error {
-	return p.saveFullTask(ctx, task, false)
+	return p.saveFullTask(ctx, task, false, nil)
 }
 
 // CreateTask inserts a complete task in a transaction without replacing an existing ID.
 func (p *PostgresStore) CreateTask(ctx context.Context, task *types.Task) error {
-	return p.saveFullTask(ctx, task, true)
+	return p.saveFullTask(ctx, task, true, nil)
 }
 
-func (p *PostgresStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool) error {
+func (p *PostgresStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool, checkpoint *TaskProgressCheckpoint) error {
 	normalizeTaskTimestamps(task)
 	ctx, span := tracer.Start(ctx, "store.postgres.save_full_task")
 	defer span.End()
@@ -494,6 +494,10 @@ func (p *PostgresStore) saveFullTask(ctx context.Context, task *types.Task, crea
 	}
 
 	previous, err := readTaskLifecycleSQL(ctx, tx, task.ID, true)
+	if err != nil {
+		return err
+	}
+	offset, err := traceProgressOffset(task, checkpoint, previous)
 	if err != nil {
 		return err
 	}
@@ -583,7 +587,7 @@ execution_trace_id=EXCLUDED.execution_trace_id`
 	if err := writeTaskLifecycleSQL(ctx, tx, task.ID, life, true); err != nil {
 		return err
 	}
-	if err := saveTraceSnapshotSQL(ctx, tx, task.ID, task.Trace, true); err != nil {
+	if err := saveTraceSuffixSQL(ctx, tx, task.ID, task.Trace[offset:], true, offset); err != nil {
 		span.RecordError(err)
 		return err
 	}
@@ -839,8 +843,8 @@ func (p *PostgresStore) CreateSession(ctx context.Context, session *types.Sessio
 		session.CreatedAt = now
 	}
 	session.UpdatedAt = now
-	_, err := p.db.ExecContext(ctx, `INSERT INTO sessions (id, tenant_id, title, status, next_sequence, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`, session.ID, session.TenantID, session.Title, session.Status, session.NextSequence, session.CreatedAt, session.UpdatedAt)
-	return err
+	result, err := p.db.ExecContext(ctx, `INSERT INTO sessions (id, tenant_id, title, status, next_sequence, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(id) DO NOTHING`, session.ID, session.TenantID, session.Title, session.Status, session.NextSequence, session.CreatedAt, session.UpdatedAt)
+	return sessionCreationResult(result, err)
 }
 
 func (p *PostgresStore) GetSession(ctx context.Context, id, tenantID string) (*types.Session, error) {
@@ -1021,7 +1025,7 @@ embedding_json=EXCLUDED.embedding_json,
 embedding_vector=EXCLUDED.embedding_vector
 `
 		if indexed, _ := ctx.Value(indexedMemoryKey{}).(bool); indexed {
-			query = strings.Replace(query, "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)", "SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector WHERE EXISTS (SELECT 1 FROM tasks WHERE id = $4 FOR KEY SHARE)", 1)
+			query = strings.Replace(query, "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)", "SELECT $1, $2, $3, $4::text, $5, $6, $7, $8, $9, $10::vector WHERE EXISTS (SELECT 1 FROM tasks WHERE id = $4::text FOR KEY SHARE)", 1)
 		}
 		_, err = p.db.ExecContext(ctx, query,
 			postgresText(mem.ID), postgresText(mem.TenantID), postgresText(mem.SessionID), postgresText(mem.TaskID), postgresText(mem.Goal), postgresText(mem.FinalAnswer), postgresText(mem.KeyFindings), mem.Timestamp.UTC(), string(embJSON), vecValue,
@@ -1043,7 +1047,7 @@ timestamp=EXCLUDED.timestamp,
 embedding_json=EXCLUDED.embedding_json
 `
 	if indexed, _ := ctx.Value(indexedMemoryKey{}).(bool); indexed {
-		query = strings.Replace(query, "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", "SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9 WHERE EXISTS (SELECT 1 FROM tasks WHERE id = $4 FOR KEY SHARE)", 1)
+		query = strings.Replace(query, "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", "SELECT $1, $2, $3, $4::text, $5, $6, $7, $8, $9 WHERE EXISTS (SELECT 1 FROM tasks WHERE id = $4::text FOR KEY SHARE)", 1)
 	}
 	_, err = p.db.ExecContext(ctx, query,
 		postgresText(mem.ID), postgresText(mem.TenantID), postgresText(mem.SessionID), postgresText(mem.TaskID), postgresText(mem.Goal), postgresText(mem.FinalAnswer), postgresText(mem.KeyFindings), mem.Timestamp.UTC(), string(embJSON),

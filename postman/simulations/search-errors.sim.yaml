@@ -1,0 +1,5 @@
+simulation: search-errors-local
+routing: path
+mocks:
+  - routeKey: search
+    path: ../mocks/search-errors/default.js

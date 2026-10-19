@@ -183,19 +183,8 @@ func readSQLTaskExport(ctx context.Context, db *sql.DB, id, tenant string, budge
 // share one snapshot without opening separate transactions or acquiring leases.
 func readSQLTaskExportSnapshot(ctx context.Context, tx *sql.Tx, id, tenant string, budget int, postgres bool, get func(context.Context, taskSQLReader, string, bool) (*types.Task, error), joint ...bool) (*TaskExportSnapshot, error) {
 	// Scope and size checks share the same snapshot as the eventual payload.
-	length := "length"
-	if postgres {
-		length = "octet_length"
-	}
 	fields := []string{"id", "tenant_id", "session_id", "creator_actor_id", "goal", "workspace", "hypothesis", "unresolved_json", "memories_json", "answer_audit_json", "final_answer", "execution_mode", "requested_team", "team_selection_source", "team_name", "team_config_digest", "brain_project_id", "brain_snapshot_id", "brain_config_digest", "termination_kind", "error_code", "error_message", "execution_trace_id"}
-	expression := "0"
-	for _, field := range fields {
-		operand := field
-		if !postgres {
-			operand = "CAST(" + field + " AS BLOB)"
-		}
-		expression += "+COALESCE(" + length + "(" + operand + "),0)"
-	}
+	expression := exportSQLBytes(fields, postgres)
 	var size int64
 	err := tx.QueryRowContext(ctx, "SELECT "+expression+" FROM tasks WHERE id="+lifecycleSQLMarker(postgres, 1)+" AND tenant_id="+lifecycleSQLMarker(postgres, 2), id, tenant).Scan(&size)
 	if err != nil {
@@ -206,14 +195,7 @@ func readSQLTaskExportSnapshot(ctx context.Context, tx *sql.Tx, id, tenant strin
 	}
 	var count int
 	var traceBytes int64
-	expr := "0"
-	for _, field := range []string{"goal", "action", "query", "observation", "evidence_json", "agent_role", "error_text"} {
-		operand := field
-		if !postgres {
-			operand = "CAST(" + field + " AS BLOB)"
-		}
-		expr += "+COALESCE(" + length + "(" + operand + "),0)"
-	}
+	expr := exportSQLBytes([]string{"goal", "action", "query", "observation", "evidence_json", "agent_role", "error_text"}, postgres)
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*),COALESCE(SUM("+expr+"),0) FROM traces WHERE task_id="+lifecycleSQLMarker(postgres, 1), id).Scan(&count, &traceBytes); err != nil {
 		return nil, err
 	}

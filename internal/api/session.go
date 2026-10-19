@@ -57,7 +57,11 @@ func (h *Handler) createSession(c *gin.Context) {
 	now := time.Now().UTC()
 	session := &types.Session{ID: req.ID, TenantID: principalFromGin(c).TenantID, Title: strings.TrimSpace(req.Title), Status: types.SessionStatusActive, CreatedAt: now, UpdatedAt: now}
 	if err := sessions.CreateSession(c.Request.Context(), session); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "session already exists"})
+		if errors.Is(err, store.ErrSessionExists) {
+			c.JSON(http.StatusConflict, gin.H{"error": "session already exists"})
+		} else {
+			_ = c.Error(err)
+		}
 		return
 	}
 	c.JSON(http.StatusCreated, session)
@@ -91,10 +95,18 @@ func (h *Handler) listSessions(c *gin.Context) {
 		return
 	}
 	filter := store.ListSessionFilter{TenantID: principalFromGin(c).TenantID, Status: status}
-	if value, err := strconv.Atoi(c.Query("limit")); err == nil && value > 0 {
-		filter.Limit = value
+	limit, valid := pageLimit(c, 50, 500)
+	if !valid {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be between 1 and 500"})
+		return
 	}
-	if value, err := strconv.Atoi(c.Query("offset")); err == nil && value >= 0 {
+	filter.Limit = limit
+	if raw, present := c.GetQuery("offset"); present {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "offset must be a non-negative integer"})
+			return
+		}
 		filter.Offset = value
 	}
 	items, err := sessions.ListSessions(c.Request.Context(), filter)

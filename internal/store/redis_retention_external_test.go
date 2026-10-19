@@ -30,22 +30,31 @@ func TestExternalRedisRetentionIsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.DeleteTask(ctx, task.ID)
-	snapshot := func() map[string]string {
-		t.Helper()
-		keys, err := st.client.Keys(ctx, "*").Result()
-		if err != nil {
+	// Another contract may already have migrated this dedicated database.
+	// Temporarily move only the marker under a unique fixture key, then restore
+	// it before exercising the migrated view. Never flush a shared database.
+	backup := taskSummaryMigrationMarker + ":fixture:" + tenant
+	moved, err := st.client.Exists(ctx, taskSummaryMigrationMarker).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != 0 {
+		if err := st.client.Rename(ctx, taskSummaryMigrationMarker, backup).Err(); err != nil {
 			t.Fatal(err)
 		}
-		result := map[string]string{}
-		for _, key := range keys {
-			value, err := st.client.Dump(ctx, key).Result()
-			if err != nil {
-				t.Fatal(err)
-			}
-			result[key] = value
-		}
-		return result
 	}
+	restored := false
+	restoreMarker := func() {
+		if moved != 0 && !restored {
+			if err := st.client.Rename(ctx, backup, taskSummaryMigrationMarker).Err(); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+		restored = true
+	}
+	defer restoreMarker()
+	snapshot := func() map[string]string { return jointRedisDump(t, st, task.ID) }
 	before := snapshot()
 	// No call to ensureTaskSummaryIndexes: missing markers must fail closed.
 	if _, err := st.ListTaskRetentionObservations(ctx, TaskSummaryFilter{TenantID: tenant, Limit: 1}); !errors.Is(err, ErrRetentionReadModelUnavailable) {
@@ -54,6 +63,7 @@ func TestExternalRedisRetentionIsReadOnly(t *testing.T) {
 	if !reflect.DeepEqual(before, snapshot()) {
 		t.Fatal("read-only scan migrated/repaired keys")
 	}
+	restoreMarker()
 	if err := st.ensureTaskSummaryIndexes(ctx); err != nil {
 		t.Fatal(err)
 	} // Fixture setup only.

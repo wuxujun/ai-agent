@@ -14,6 +14,13 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+const (
+	maxPatchFileBytes = 4 << 20
+	maxPatchBytes     = 1 << 20
+	maxPatchBlocks    = 256
+	maxPatchLines     = 100000
+)
+
 type ApplyPatchTool struct{}
 
 func (t *ApplyPatchTool) Name() string {
@@ -50,6 +57,9 @@ func (t *ApplyPatchTool) Validate(params map[string]any) error {
 	}
 
 	patch, _ := params["patch"].(string)
+	if len(patch) > maxPatchBytes {
+		return fmt.Errorf("patch exceeds 1 MiB limit")
+	}
 	if strings.TrimSpace(patch) == "" {
 		return fmt.Errorf("apply_patch requires non-empty patch content")
 	}
@@ -58,6 +68,12 @@ func (t *ApplyPatchTool) Validate(params map[string]any) error {
 }
 
 func (t *ApplyPatchTool) Execute(ctx context.Context, workspace string, params map[string]interface{}) (*ToolResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := t.Validate(params); err != nil {
+		return nil, err
+	}
 	path, _ := params["path"].(string)
 	path = strings.TrimSpace(path)
 	patch, _ := params["patch"].(string)
@@ -75,7 +91,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, workspace string, params m
 	// 1. Try parsing as SEARCH/REPLACE blocks
 	blocks, parseErr := parseSearchReplacePatch(patch)
 	if parseErr == nil && len(blocks) > 0 {
-		if err := applySearchReplaceBlocks(workspace, fullPath, blocks); err != nil {
+		if err := applySearchReplaceBlocks(ctx, workspace, fullPath, blocks); err != nil {
 			return nil, fmt.Errorf("failed to apply SEARCH/REPLACE blocks: %w", err)
 		}
 		return &ToolResult{
@@ -101,8 +117,14 @@ type patchBlock struct {
 }
 
 func parseSearchReplacePatch(patch string) ([]patchBlock, error) {
+	if len(patch) > maxPatchBytes {
+		return nil, fmt.Errorf("patch exceeds 1 MiB limit")
+	}
 	var blocks []patchBlock
 	lines := strings.Split(patch, "\n")
+	if len(lines) > maxPatchLines {
+		return nil, fmt.Errorf("patch exceeds line limit")
+	}
 
 	inSearch := false
 	inReplace := false
@@ -133,6 +155,9 @@ func parseSearchReplacePatch(patch string) ([]patchBlock, error) {
 				return nil, fmt.Errorf("line %d: unexpected >>>>>>> REPLACE outside REPLACE block", lineNum+1)
 			}
 			inReplace = false
+			if len(blocks) >= maxPatchBlocks {
+				return nil, fmt.Errorf("patch exceeds block limit")
+			}
 			blocks = append(blocks, patchBlock{
 				search:  strings.Join(searchLines, "\n"),
 				replace: strings.Join(replaceLines, "\n"),
@@ -154,7 +179,13 @@ func parseSearchReplacePatch(patch string) ([]patchBlock, error) {
 	return blocks, nil
 }
 
-func applySearchReplaceBlocks(workspace, filePath string, blocks []patchBlock) error {
+func applySearchReplaceBlocks(ctx context.Context, workspace, filePath string, blocks []patchBlock) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(blocks) > maxPatchBlocks {
+		return fmt.Errorf("patch exceeds block limit")
+	}
 	if err := policy.ValidateReadPath(workspace, filePath); err != nil {
 		return err
 	}
@@ -171,13 +202,16 @@ func applySearchReplaceBlocks(workspace, filePath string, blocks []patchBlock) e
 	}
 	defer root.Close()
 
-	b, err := readWorkspaceFileSecurely(root, relativePath)
+	b, err := readWorkspaceFileSecurely(ctx, root, relativePath)
 	if err != nil {
 		return err
 	}
 	content := string(b)
 
 	for i, block := range blocks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Verify unique occurrence
 		count := strings.Count(content, block.search)
 		if count == 0 {
@@ -187,13 +221,19 @@ func applySearchReplaceBlocks(workspace, filePath string, blocks []patchBlock) e
 			return fmt.Errorf("block %d: SEARCH block found multiple times (%d) in the file; please provide a more unique SEARCH block", i+1, count)
 		}
 
+		if len(block.replace) > maxPatchFileBytes-(len(content)-len(block.search)) {
+			return fmt.Errorf("patched file exceeds 4 MiB limit")
+		}
 		content = strings.Replace(content, block.search, block.replace, 1)
 	}
 
-	return writeWorkspaceFileAtomically(root, relativePath, []byte(content))
+	return writeWorkspaceFileAtomically(ctx, root, relativePath, []byte(content))
 }
 
-func readWorkspaceFileSecurely(root *os.Root, relativePath string) ([]byte, error) {
+func readWorkspaceFileSecurely(ctx context.Context, root *os.Root, relativePath string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	info, err := root.Lstat(relativePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect target file: %w", err)
@@ -209,14 +249,48 @@ func readWorkspaceFileSecurely(root *os.Root, relativePath string) ([]byte, erro
 	}
 	defer fRead.Close()
 
-	b, err := io.ReadAll(fRead)
+	openedInfo, err := fRead.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect opened patch target: %w", err)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("patch target must be a regular file")
+	}
+	if openedInfo.Size() > maxPatchFileBytes {
+		return nil, fmt.Errorf("patch target exceeds 4 MiB limit")
+	}
+	b, err := io.ReadAll(io.LimitReader(&patchContextReader{ctx: ctx, reader: fRead}, maxPatchFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read target file safely: %w", err)
+	}
+	if len(b) > maxPatchFileBytes {
+		return nil, fmt.Errorf("patch target exceeds 4 MiB limit")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return b, nil
 }
 
-func writeWorkspaceFileAtomically(root *os.Root, relativePath string, content []byte) error {
+type patchContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *patchContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+func writeWorkspaceFileAtomically(ctx context.Context, root *os.Root, relativePath string, content []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(content) > maxPatchFileBytes {
+		return fmt.Errorf("patched file exceeds 4 MiB limit")
+	}
 	info, err := root.Lstat(relativePath)
 	if err != nil {
 		return fmt.Errorf("failed to inspect target file: %w", err)
@@ -244,6 +318,11 @@ func writeWorkspaceFileAtomically(root *os.Root, relativePath string, content []
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("failed to close temp patch file: %w", err)
+	}
+	// Cancellation is honored until this final check. Rename is the atomic
+	// commit point and cannot itself be interrupted by a context.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := root.Rename(tmpName, relativePath); err != nil {
 		return fmt.Errorf("failed to atomically replace target file: %w", err)

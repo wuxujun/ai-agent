@@ -491,15 +491,15 @@ func (s *SQLiteStore) ReplaceTraces(ctx context.Context, taskID string, traces [
 }
 
 func (s *SQLiteStore) SaveFullTask(ctx context.Context, task *types.Task) error {
-	return s.saveFullTask(ctx, task, false)
+	return s.saveFullTask(ctx, task, false, nil)
 }
 
 // CreateTask inserts a complete task in a transaction without replacing an existing ID.
 func (s *SQLiteStore) CreateTask(ctx context.Context, task *types.Task) error {
-	return s.saveFullTask(ctx, task, true)
+	return s.saveFullTask(ctx, task, true, nil)
 }
 
-func (s *SQLiteStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool) error {
+func (s *SQLiteStore) saveFullTask(ctx context.Context, task *types.Task, createOnly bool, checkpoint *TaskProgressCheckpoint) error {
 	normalizeTaskTimestamps(task)
 	ctx, span := tracer.Start(ctx, "store.save_full_task")
 	defer span.End()
@@ -522,6 +522,10 @@ func (s *SQLiteStore) saveFullTask(ctx context.Context, task *types.Task, create
 	}
 
 	previous, err := readTaskLifecycleSQL(ctx, tx, task.ID, false)
+	if err != nil {
+		return err
+	}
+	offset, err := traceProgressOffset(task, checkpoint, previous)
 	if err != nil {
 		return err
 	}
@@ -612,7 +616,7 @@ execution_trace_id=excluded.execution_trace_id
 	if err := writeTaskLifecycleSQL(ctx, tx, task.ID, life, false); err != nil {
 		return err
 	}
-	if err := saveTraceSnapshotSQL(ctx, tx, task.ID, task.Trace, false); err != nil {
+	if err := saveTraceSuffixSQL(ctx, tx, task.ID, task.Trace[offset:], false, offset); err != nil {
 		span.RecordError(err)
 		return err
 	}
@@ -885,8 +889,8 @@ func (s *SQLiteStore) CreateSession(ctx context.Context, session *types.Session)
 		session.CreatedAt = now
 	}
 	session.UpdatedAt = now
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions (id, tenant_id, title, status, next_sequence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, session.ID, session.TenantID, session.Title, session.Status, session.NextSequence, session.CreatedAt, session.UpdatedAt)
-	return err
+	result, err := s.db.ExecContext(ctx, `INSERT INTO sessions (id, tenant_id, title, status, next_sequence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, session.ID, session.TenantID, session.Title, session.Status, session.NextSequence, session.CreatedAt, session.UpdatedAt)
+	return sessionCreationResult(result, err)
 }
 
 func (s *SQLiteStore) GetSession(ctx context.Context, id, tenantID string) (*types.Session, error) {

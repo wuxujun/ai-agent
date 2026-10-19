@@ -472,6 +472,9 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 	}
 
 	resumeTerminal := e.CanResumeTask(task)
+	// Only checkpoint a snapshot this loop has successfully persisted. An
+	// incoming task may already contain unflushed recovery/admission traces.
+	var checkpoint *store.TaskProgressCheckpoint
 	for !types.IsTerminalTaskStatus(task.Status) || resumeTerminal {
 		resumeTerminal = false
 		if err := executionLeaseError(ctx); err != nil {
@@ -510,11 +513,14 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 			return err
 		}
 		if e.Store != nil {
-			if err := e.Store.SaveFullTask(ctx, task); err != nil {
+			if err := store.SaveTaskProgress(ctx, e.Store, task, checkpoint); err != nil {
 				engineLog.Error("failed to persist run-all progress", "task_id", task.ID, "error", err)
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "persist progress failed")
 				return err
+			}
+			if !types.IsTerminalTaskStatus(task.Status) {
+				checkpoint = store.CaptureTaskProgress(e.Store, task)
 			}
 		}
 

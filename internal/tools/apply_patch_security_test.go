@@ -79,10 +79,10 @@ func TestApplyPatchRejectsAncestorSwappedAfterValidation(t *testing.T) {
 	if err := os.Symlink(outside, parent); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readWorkspaceFileSecurely(root, "dir/target.txt"); err == nil {
+	if _, err := readWorkspaceFileSecurely(context.Background(), root, "dir/target.txt"); err == nil {
 		t.Fatal("read followed the swapped ancestor outside the workspace")
 	}
-	if err := writeWorkspaceFileAtomically(root, "dir/target.txt", []byte("modified")); err == nil {
+	if err := writeWorkspaceFileAtomically(context.Background(), root, "dir/target.txt", []byte("modified")); err == nil {
 		t.Fatal("write followed the swapped ancestor outside the workspace")
 	}
 	outsideTemp := filepath.Join(outside, ".patch.tmp.known")
@@ -110,7 +110,7 @@ func TestApplyPatchPreservesTargetPermissions(t *testing.T) {
 	if err := os.WriteFile(target, []byte("old"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := applySearchReplaceBlocks(workspace, target, []patchBlock{{search: "old", replace: "new"}}); err != nil {
+	if err := applySearchReplaceBlocks(context.Background(), workspace, target, []patchBlock{{search: "old", replace: "new"}}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(target)

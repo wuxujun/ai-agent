@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,7 +85,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params ma
 	if isFirecrawl {
 		// Firecrawl uses POST request with JSON body
 		if err := policy.ValidateURL(searchURL); err != nil {
-			return nil, fmt.Errorf("web_search policy violation: %w", err)
+			return nil, fmt.Errorf("web_search policy violation")
 		}
 
 		payload := map[string]any{
@@ -98,7 +99,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params ma
 
 		req, err = http.NewRequestWithContext(ctx, "POST", searchURL, bytes.NewReader(bodyBytes))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("web_search invalid request URL")
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if apiKey != "" {
@@ -120,43 +121,60 @@ func (t *WebSearchTool) Execute(ctx context.Context, workspace string, params ma
 		}
 
 		if err := policy.ValidateURL(targetURL); err != nil {
-			return nil, fmt.Errorf("web_search policy violation: %w", err)
+			return nil, fmt.Errorf("web_search policy violation")
 		}
 
 		req, err = http.NewRequestWithContext(ctx, "GET", targetURL, nil)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("web_search invalid request URL")
 		}
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 	}
 
 	client := policy.SafeHTTPClient(15 * time.Second)
+	return executeWebSearchRequest(client, req, isFirecrawl, query)
+}
+
+// Keep upstream text and request URLs out of errors: they flow into retry logs,
+// persisted traces and telemetry. The caller owns URL policy and transport.
+func executeWebSearchRequest(client *http.Client, req *http.Request, isFirecrawl bool, query string) (*ToolResult, error) {
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, context.Canceled) {
+			return nil, context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, context.DeadlineExceeded
+		}
+		return nil, fmt.Errorf("web_search transport failed")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("search request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("web_search upstream HTTP status %d", resp.StatusCode)
 	}
 
 	// 1MB limit is plenty for structured JSON or HTML snippets
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
-		return nil, err
+		if req.Context().Err() != nil {
+			return nil, req.Context().Err()
+		}
+		return nil, fmt.Errorf("web_search response read failed")
+	}
+	if len(body) > 1<<20 {
+		return nil, fmt.Errorf("web_search response exceeds 1 MiB limit")
 	}
 
 	var observation string
 	if isFirecrawl {
 		var fcResp firecrawlResponse
 		if err := json.Unmarshal(body, &fcResp); err != nil {
-			return nil, fmt.Errorf("failed to decode firecrawl response: %w", err)
+			return nil, fmt.Errorf("web_search invalid Firecrawl response")
 		}
 
 		if fcResp.Error != "" {
-			return nil, fmt.Errorf("firecrawl API error: %s", fcResp.Error)
+			return nil, fmt.Errorf("web_search Firecrawl reported failure")
 		}
 
 		var results []string

@@ -458,7 +458,7 @@ func (m *MemoryStore) CreateSession(_ context.Context, session *types.Session) e
 		m.sessions = make(map[string]*types.Session)
 	}
 	if _, exists := m.sessions[session.ID]; exists {
-		return fmt.Errorf("session already exists")
+		return ErrSessionExists
 	}
 	now := time.Now().UTC()
 	clone := *session

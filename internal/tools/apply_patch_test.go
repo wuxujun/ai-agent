@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,7 +56,7 @@ line D`
 		},
 	}
 
-	if err := applySearchReplaceBlocks(workspace, filePath, blocks); err != nil {
+	if err := applySearchReplaceBlocks(context.Background(), workspace, filePath, blocks); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 
@@ -94,7 +95,7 @@ line D`
 		},
 	}
 
-	err := applySearchReplaceBlocks(workspace, filePath, blocks)
+	err := applySearchReplaceBlocks(context.Background(), workspace, filePath, blocks)
 	if err == nil {
 		t.Fatal("expected error due to multiple occurrences, got none")
 	}

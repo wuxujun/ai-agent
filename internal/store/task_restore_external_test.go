@@ -83,7 +83,7 @@ func checkPersistentRestoreFromSource(t *testing.T, source Store, backend string
 	}
 	var beforeKeys map[string]string
 	if redis, ok := source.(*RedisStore); ok {
-		beforeKeys = jointRedisDump(t, redis)
+		beforeKeys = jointRedisDump(t, redis, id)
 	}
 	artifact, err := EncodeTaskExport(t.Context(), before, backend, id, tenant, MaxTaskExportBytes)
 	if err != nil {
@@ -113,7 +113,7 @@ func checkPersistentRestoreFromSource(t *testing.T, source Store, backend string
 	if !bytes.Equal(beforeJSON, afterJSON) {
 		t.Fatal("persistent restore changed source")
 	}
-	if redis, ok := source.(*RedisStore); ok && !reflect.DeepEqual(beforeKeys, jointRedisDump(t, redis)) {
+	if redis, ok := source.(*RedisStore); ok && !reflect.DeepEqual(beforeKeys, jointRedisDump(t, redis, id)) {
 		t.Fatal("persistent restore wrote Redis application keys")
 	}
 	reportJSON, err := json.Marshal(report)

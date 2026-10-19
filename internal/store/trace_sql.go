@@ -16,14 +16,22 @@ import (
 // may share. Existing rows with NULL execution_step retain their legacy Step on
 // read and are converted on the next complete save. No execution budget changes.
 func saveTraceSnapshotSQL(ctx context.Context, tx *sql.Tx, id string, traces []types.StepTrace, postgres bool) error {
+	return saveTraceSuffixSQL(ctx, tx, id, traces, postgres, 0)
+}
+
+// offset is only nonzero after a sealed checkpoint and maintenance version
+// have established that the prefix is unchanged in this transaction.
+func saveTraceSuffixSQL(ctx context.Context, tx *sql.Tx, id string, traces []types.StepTrace, postgres bool, offset int) error {
 	mark := func(n int) string {
 		if postgres {
 			return fmt.Sprintf("$%d", n)
 		}
 		return "?"
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM traces WHERE task_id = "+mark(1)+" AND (step < 1 OR step > "+mark(2)+")", id, len(traces)); err != nil {
-		return err
+	if offset == 0 {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM traces WHERE task_id = "+mark(1)+" AND (step < 1 OR step > "+mark(2)+")", id, len(traces)); err != nil {
+			return err
+		}
 	}
 	if len(traces) == 0 {
 		return nil
@@ -63,7 +71,7 @@ func saveTraceSnapshotSQL(ctx context.Context, tx *sql.Tx, id string, traces []t
 		if tr.DurationMS != nil {
 			durationMS = *tr.DurationMS
 		}
-		args := []any{id, i + 1, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(evidence), string(tr.AgentRole), tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, occurredAt, durationMS, time.Now().UTC()}
+		args := []any{id, offset + i + 1, tr.Step, tr.Goal, tr.Action, tr.Query, tr.Observation, string(evidence), string(tr.AgentRole), tr.Error, tr.TokenUsage.PromptTokens, tr.TokenUsage.CompletionTokens, tr.TokenUsage.TotalTokens, occurredAt, durationMS, time.Now().UTC()}
 		if postgres {
 			for i, value := range args {
 				if text, ok := value.(string); ok {

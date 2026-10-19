@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -30,18 +29,12 @@ func TestWebSearchValidation(t *testing.T) {
 }
 
 func TestWebSearchExecutePolicyViolation(t *testing.T) {
-	t.Setenv("AI_AGENT_SEARCH_URL", "http://127.0.0.1:9090")
-	_, _, err := config.Reload()
-	if err != nil {
-		t.Fatalf("failed to reload config: %v", err)
-	}
-	defer func() {
-		os.Unsetenv("AI_AGENT_SEARCH_URL")
-		_, _, _ = config.Reload()
-	}()
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.Search.URL = "http://127.0.0.1:9090"
+	}))
 
 	tool := &WebSearchTool{}
-	_, err = tool.Execute(context.Background(), "/tmp", map[string]any{"query": "test"})
+	_, err := tool.Execute(context.Background(), "/tmp", map[string]any{"query": "test"})
 	if err == nil {
 		t.Error("expected policy violation error for loopback search URL, got nil")
 	} else if !strings.Contains(err.Error(), "policy violation") {

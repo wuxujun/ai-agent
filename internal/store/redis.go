@@ -763,7 +763,7 @@ func (r *RedisStore) CreateSession(ctx context.Context, session *types.Session) 
 		return err
 	}
 	if !created {
-		return fmt.Errorf("session already exists")
+		return ErrSessionExists
 	}
 	return r.client.ZAdd(ctx, "sessions:tenant:"+session.TenantID, redis.Z{Score: float64(session.UpdatedAt.UnixNano()), Member: session.ID}).Err()
 }

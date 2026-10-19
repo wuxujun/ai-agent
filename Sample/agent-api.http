@@ -2,6 +2,19 @@
 @apiKey = replace-with-tenant-api-key
 @approvalId = replace-with-approval-id
 
+### Sessions: only duplicate IDs return 409; storage failures return safe 500.
+POST {{baseUrl}}/api/sessions
+X-API-Key: {{apiKey}}
+Content-Type: application/json
+
+{"title":"Research"}
+
+### Sessions: default limit 50, maximum 500; invalid limit/offset return 400.
+# Response limit/offset reflect the effective query. Generic internal errors:
+# {"error":"internal server error","code":"internal_server_error","request_id":"..."}
+GET {{baseUrl}}/api/sessions?limit=50&offset=0
+X-API-Key: {{apiKey}}
+
 ### Initialize Team Prompt copies for the authenticated tenant
 # Tenant identity comes only from authentication. A tenant_id in request data
 # cannot select another tenant. Does not require system admin. Authentication's

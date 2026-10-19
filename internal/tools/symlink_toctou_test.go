@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,7 +80,7 @@ func TestApplyPatch_SymlinkBlocked(t *testing.T) {
 	}
 
 	// 3. Try to use applySearchReplaceBlocks on the link path. It must fail.
-	err := applySearchReplaceBlocks(workspace, linkFile, blocks)
+	err := applySearchReplaceBlocks(context.Background(), workspace, linkFile, blocks)
 	if err == nil {
 		t.Fatal("expected applySearchReplaceBlocks to fail on symlink target, but it succeeded")
 	}

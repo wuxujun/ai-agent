@@ -131,6 +131,13 @@ func exportSQLBytes(fields []string, postgres bool) string {
 		if !postgres {
 			fn = "length"
 			operand = "CAST(" + field + " AS BLOB)"
+		} else {
+			// PostgreSQL octet_length accepts text/bytea, not jsonb. Keep bytea
+			// operands unchanged so ciphertext is measured as bytes, not hex text.
+			switch field {
+			case "answer_audit_json", "request_json", "unresolved_json", "memories_json", "evidence_json":
+				operand = "CAST(" + field + " AS TEXT)"
+			}
 		}
 		expression += "+COALESCE(" + fn + "(" + operand + "),0)"
 	}

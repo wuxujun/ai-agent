@@ -34,7 +34,7 @@ func applyUnifiedDiff(ctx context.Context, workspace, relativePath, patchContent
 		return fmt.Errorf("failed to open workspace root: %w", err)
 	}
 	defer root.Close()
-	content, err := readWorkspaceFileSecurely(root, relativePath)
+	content, err := readWorkspaceFileSecurely(ctx, root, relativePath)
 	if err != nil {
 		return err
 	}
@@ -45,13 +45,19 @@ func applyUnifiedDiff(ctx context.Context, workspace, relativePath, patchContent
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := writeWorkspaceFileAtomically(root, relativePath, updated); err != nil {
+	if err := writeWorkspaceFileAtomically(ctx, root, relativePath, updated); err != nil {
 		return err
 	}
 	return nil
 }
 
 func applyUnifiedHunks(ctx context.Context, content []byte, target, patch string) ([]byte, error) {
+	if len(content) > maxPatchFileBytes || len(patch) > maxPatchBytes {
+		return nil, fmt.Errorf("patch or target exceeds byte limit")
+	}
+	if strings.Count(string(content), "\n") > maxPatchLines || strings.Count(patch, "\n") > maxPatchLines {
+		return nil, fmt.Errorf("patch or target exceeds line limit")
+	}
 	lines := strings.Split(strings.TrimSuffix(patch, "\n"), "\n")
 	oldHeader, newHeader := false, false
 	var result []patchLine
@@ -177,6 +183,16 @@ func applyUnifiedHunks(ctx context.Context, content []byte, target, patch string
 	result = append(result, original[oldPos:]...)
 	var out strings.Builder
 	for i, line := range result {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		additional := len(line.text)
+		if line.newline {
+			additional++
+		}
+		if additional > maxPatchFileBytes-out.Len() {
+			return nil, fmt.Errorf("patched file exceeds 4 MiB limit")
+		}
 		if i < len(result)-1 && !line.newline {
 			return nil, fmt.Errorf("missing newline before end of patched file")
 		}

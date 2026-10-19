@@ -40,7 +40,7 @@ func buildStore(cfg *config.Config) (store.Store, error) {
 
 func buildApp(cfg *config.Config, st store.Store, eng *orchestrator.Engine, mc *metrics.Collector, llmRuntime *llmcore.Runtime) builtApp {
 	gin.SetMode(gin.ReleaseMode)
-	router := gin.New()
+	router := newAPIRouter(cfg)
 	router.Use(otelgin.Middleware("ai-agent"))
 	router.Use(func(c *gin.Context) {
 		c.Request = c.Request.WithContext(llmcore.WithRuntime(c.Request.Context(), llmRuntime))
@@ -377,4 +377,13 @@ func listStartupTasks(ctx context.Context, st store.Store, status types.TaskStat
 			return tasks, nil
 		}
 	}
+}
+
+// Proxy trust is wired once at startup; reload rejects changes to this setting.
+func newAPIRouter(cfg *config.Config) *gin.Engine {
+	router := gin.New()
+	if err := router.SetTrustedProxies(cfg.API.TrustedProxies); err != nil {
+		panic("invalid trusted proxy configuration")
+	}
+	return router
 }

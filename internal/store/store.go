@@ -24,6 +24,7 @@ var (
 	ErrTaskCreatorImmutable = errors.New("task creator identity is immutable")
 	ErrTaskLeaseBusy        = errors.New("task execution lease is held by another owner")
 	ErrTaskLeaseLost        = errors.New("task execution lease lost")
+	ErrSessionExists        = errors.New("session already exists")
 	ErrSessionNotFound      = errors.New("session not found")
 	ErrSessionArchived      = errors.New("session is archived")
 )

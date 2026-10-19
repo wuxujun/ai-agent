@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"reflect"
@@ -25,6 +26,7 @@ import (
 // environment variables. Fields are grouped by subsystem.
 type Config struct {
 	API struct {
+		TrustedProxies       []string                   `mapstructure:"trusted_proxies"`
 		Addr                 string                     `mapstructure:"addr"`
 		APIKey               string                     `mapstructure:"api_key"`
 		TraceViewURLTemplate string                     `mapstructure:"trace_view_url_template"`
@@ -546,6 +548,7 @@ func setupViper() {
 	// Default values
 	viper.SetDefault("api.addr", "127.0.0.1:8080")
 	viper.SetDefault("api.api_key", "")
+	viper.SetDefault("api.trusted_proxies", []string{})
 	viper.SetDefault("api.auth.mode", "api_key")
 	viper.SetDefault("api.auth.require_tenant_workspace_root", false)
 	viper.SetDefault("api.auth.bearer.validation_mode", "jwks")
@@ -876,6 +879,7 @@ func cloneConfig(source *Config) *Config {
 		return &Config{}
 	}
 	cloned := *source
+	cloned.API.TrustedProxies = append([]string(nil), source.API.TrustedProxies...)
 	cloned.Tool.EnvironmentAllowlist = append([]string(nil), source.Tool.EnvironmentAllowlist...)
 	cloned.API.Auth.JWT.AllowedAlgorithms = append([]string(nil), source.API.Auth.JWT.AllowedAlgorithms...)
 	cloned.API.Tenants = make(map[string]APITenantConfig, len(source.API.Tenants))
@@ -1024,6 +1028,7 @@ func validateRestartRequiredReload(old, new *Config) error {
 		changed bool
 	}{
 		{"api.addr", old.API.Addr != new.API.Addr},
+		{"api.trusted_proxies", !slices.Equal(old.API.TrustedProxies, new.API.TrustedProxies)},
 		{"store.postgres", old.Store.Postgres != new.Store.Postgres},
 		{"store connection", old.Store.Type != new.Store.Type || old.Store.DSN != new.Store.DSN},
 		{"orchestrator.mode", old.Orchestrator.Mode != new.Orchestrator.Mode},
@@ -1630,6 +1635,13 @@ func isBrainProjectSlug(value string) bool {
 // LLM request. API keys are intentionally not required here because Ollama and
 // LiteLLM may run without authentication.
 func (c *Config) Validate() error {
+	for _, proxy := range c.API.TrustedProxies {
+		if net.ParseIP(proxy) == nil {
+			if _, _, err := net.ParseCIDR(proxy); err != nil {
+				return errors.New("api.trusted_proxies entries must be IP addresses or CIDRs")
+			}
+		}
+	}
 	if err := c.Tool.Sandbox.Validate(); err != nil {
 		return err
 	}

@@ -50,11 +50,18 @@ func ErrorMiddleware() gin.HandlerFunc {
 			err := c.Errors.Last()
 			log.Error("request error",
 				"method", c.Request.Method,
-				"path", c.Request.URL.Path,
-				"error", err.Err,
+				"route", c.FullPath(),
+				"error_type", fmt.Sprintf("%T", err.Err),
+				"request_id", c.Writer.Header().Get("X-Request-ID"),
+				"trace_id", trace.SpanContextFromContext(c.Request.Context()).TraceID().String(),
 			)
+			if c.Writer.Written() {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": err.Error(),
+				"error":      "internal server error",
+				"code":       "internal_server_error",
+				"request_id": c.Writer.Header().Get("X-Request-ID"),
 			})
 		}
 	}

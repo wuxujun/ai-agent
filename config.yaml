@@ -8,6 +8,9 @@ api:
   # The host:port address for the HTTP server to listen on.
   # Env override: AI_AGENT_API_ADDR
   addr: "127.0.0.1:8088"
+  # Restart required. Empty means direct connections; forwarded IP headers are
+  # ignored. Behind a proxy, list only its source IPs/CIDRs (never all networks).
+  # trusted_proxies: []
   
   # Optional security key for API authorization.
   # MUST be set via environment variable — do NOT store secrets in this file.

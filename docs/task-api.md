@@ -469,6 +469,12 @@ POST /api/tasks/:id/run-all?stream=true
 
 ## 12. 常见 HTTP 状态码
 
+通用内部故障返回 `500 {"error":"internal server error","code":"internal_server_error","request_id":"..."}`，客户端可使用响应头 `X-Request-ID` 或正文 request_id 定位请求，不再依赖内部错误文本。已经开始输出的流式响应不会追加此 JSON。
+
+`POST /api/sessions` 仅在 ID 已存在时返回 409；数据库/存储故障返回安全的 500。`GET /api/sessions` 的 limit 默认 50、范围 1–500；offset 为非负整数。非法参数返回 400，响应中的 limit/offset 是实际执行值；超限不再静默截断。
+
+`api.trusted_proxies` 默认为空，访问日志只使用直连来源。反向代理部署应显式配置代理源 IP/CIDR；修改此配置需要重启，热重载会拒绝变化并保留原配置。
+
 | 状态码 | 常见含义 |
 |---:|---|
 | `200` | 查询、单步执行、审批、取消或删除成功 |

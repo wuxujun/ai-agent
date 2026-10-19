@@ -77,14 +77,27 @@ func checkTaskJointExport(t *testing.T, st Store) {
 	reader := st.(TaskJointExportReader)
 	var beforeKeys map[string]string
 	if r, ok := st.(*RedisStore); ok {
-		beforeKeys = jointRedisDump(t, r)
+		beforeKeys = jointRedisDump(t, r, id)
 	}
 	snapshot, err := reader.ReadJointTaskExport(ctx, id, tenant, MaxTaskExportBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r, ok := st.(*RedisStore); ok && !reflect.DeepEqual(beforeKeys, jointRedisDump(t, r)) {
-		t.Fatal("joint export wrote Redis data")
+	if r, ok := st.(*RedisStore); ok {
+		afterKeys := jointRedisDump(t, r, id)
+		if !reflect.DeepEqual(beforeKeys, afterKeys) {
+			for key, value := range beforeKeys {
+				if afterKeys[key] != value {
+					t.Logf("changed or removed fixture key: %s", key)
+				}
+			}
+			for key := range afterKeys {
+				if _, existed := beforeKeys[key]; !existed {
+					t.Logf("added fixture key: %s", key)
+				}
+			}
+			t.Fatal("joint export wrote Redis data")
+		}
 	}
 	d := snapshot.Dependencies
 	if d == nil || len(d.Approvals) != 2 || d.Approvals[0].ID != id+"a" || d.Approvals[0].Version != 2 || string(d.Approvals[0].ResolutionPayload) != "fixture-encrypted-resolution" || len(d.Memories) != 1 || !reflect.DeepEqual(d.Memories[0].Embedding, mem.Embedding) || d.Session == nil || d.Session.NextSequence != 2 {
@@ -232,19 +245,27 @@ func TestExternalPostgresTaskJointExport(t *testing.T) {
 	checkTaskJointExport(t, st)
 }
 
-func jointRedisDump(t *testing.T, r *RedisStore) map[string]string {
+func jointRedisDump(t *testing.T, r *RedisStore, fixtureID string) map[string]string {
 	t.Helper()
-	keys, err := r.client.Keys(t.Context(), "*").Result()
+	// EVAL_RO takes an atomic observation. Exclude unrelated expiring leases:
+	// their natural expiry between observations is not an export write. Keep all
+	// persistent/global index keys and every key belonging to this fixture.
+	values, err := r.client.EvalRO(t.Context(), `
+ local result={}
+ for _,key in ipairs(redis.call('KEYS','*')) do
+  local ttl=redis.call('PTTL',key)
+  if ttl==-1 or (ttl>=0 and string.find(key,ARGV[1],1,true)) then
+   local value=redis.call('DUMP',key)
+   if value then result[#result+1]=key;result[#result+1]=value end
+  end
+ end
+ return result`, nil, fixtureID).Slice()
 	if err != nil {
 		t.Fatal(err)
 	}
 	result := map[string]string{}
-	for _, key := range keys {
-		raw, err := r.client.Dump(t.Context(), key).Result()
-		if err != nil {
-			t.Fatal(err)
-		}
-		result[key] = raw
+	for i := 0; i < len(values); i += 2 {
+		result[values[i].(string)] = values[i+1].(string)
 	}
 	return result
 }

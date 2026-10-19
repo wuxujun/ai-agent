@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"sync"
 	"time"
@@ -68,4 +69,19 @@ func memoriesForPersistence(mems []types.Memory) []types.Memory {
 		out[i].Embedding = nil
 	}
 	return out
+}
+
+// A zero-row conflict is distinct from an unavailable or failed backend.
+func sessionCreationResult(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrSessionExists
+	}
+	return nil
 }
