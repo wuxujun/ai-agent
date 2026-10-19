@@ -9,6 +9,33 @@ import (
 	"github.com/wuxujun/ai-agent/internal/types"
 )
 
+func TestApprovalBusRejectsMismatchedTask(t *testing.T) {
+	id, ch := RegisterApproval("owned-task", &types.ApprovalRequest{TaskID: "owned-task", Action: "write_file"})
+	t.Cleanup(func() { RemoveApproval(id) })
+	for _, taskID := range []string{"another-task", ""} {
+		payload, err := json.Marshal(busMessage{Type: "approve", TaskID: taskID, ApprovalID: id, Result: &types.ApprovalResult{Approved: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		(&ApprovalBus{}).dispatchApproval(&redis.Message{Channel: approvalChannel, Payload: string(payload)})
+		select {
+		case <-ch:
+			t.Fatal("mismatched task signaled approval")
+		default:
+		}
+	}
+	payload, _ := json.Marshal(busMessage{Type: "approve", TaskID: "owned-task", ApprovalID: id, Result: &types.ApprovalResult{Approved: false, ActorID: "verified-reviewer"}})
+	(&ApprovalBus{}).dispatchApproval(&redis.Message{Channel: approvalChannel, Payload: string(payload)})
+	select {
+	case result := <-ch:
+		if result.Approved || result.ActorID != "verified-reviewer" {
+			t.Fatal("scoped decision mismatch")
+		}
+	default:
+		t.Fatal("matching scoped decision missing")
+	}
+}
+
 // TestApprovalBusMessageMarshal verifies that busMessage round-trips through
 // JSON without data loss — this is the wire format exchanged via Redis.
 func TestApprovalBusMessageMarshal(t *testing.T) {

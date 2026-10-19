@@ -242,7 +242,10 @@ type Config struct {
 type APITenantConfig struct {
 	// Empty/tenant preserves legacy tenant-wide approval authorization.
 	// deny disables decisions; actors permits only locally allowlisted identities.
-	ApprovalDisallowSelf         bool     `mapstructure:"approval_disallow_self"`
+	ApprovalDisallowSelf bool `mapstructure:"approval_disallow_self"`
+	// ApprovalCrossTenant grants allowlisted personal actors decision-only access
+	// across tenant boundaries. It never grants task reads or administrator access.
+	ApprovalCrossTenant          bool     `mapstructure:"approval_cross_tenant"`
 	ApprovalMode                 string   `mapstructure:"approval_mode"`
 	ApprovalActorIDs             []string `mapstructure:"approval_actor_ids"`
 	APIKey                       string   `mapstructure:"api_key"`
@@ -1915,6 +1918,9 @@ func (c *Config) Validate() error {
 		}
 		if len(tenant.ApprovalActorIDs) > 0 && tenant.ApprovalMode != "actors" && tenant.ApprovalMode != "deny" {
 			return fmt.Errorf("api tenant %q approval_actor_ids requires actors or deny mode", tenantID)
+		}
+		if tenant.ApprovalCrossTenant && (tenant.ApprovalMode != "actors" || !tenant.ApprovalDisallowSelf || !c.API.Auth.Bearer.RequireSubject || authMode == "api_key") {
+			return fmt.Errorf("api tenant %q approval_cross_tenant requires actors mode, approval_disallow_self, and required Bearer personal subjects", tenantID)
 		}
 		seenActors := make(map[string]bool)
 		for _, actor := range tenant.ApprovalActorIDs {

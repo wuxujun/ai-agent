@@ -1,0 +1,5 @@
+simulation: approval-identity-local
+routing: path
+mocks:
+  - routeKey: auth
+    path: ../mocks/approval-identity/default.js

@@ -51,6 +51,12 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 	}
 
 	if body.ApprovalID != "" {
+		// Bind the local approval to the URL's task before any durable write or
+		// signal. Otherwise another task's URL could bypass its self-check.
+		if approval, ok := orchestrator.GetApprovalByID(body.ApprovalID); ok && (approval == nil || approval.TaskID != taskID) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
+			return
+		}
 		var durableApproval *types.ApprovalRequest
 		var durableExists, persisted bool
 		var persistErr error
@@ -91,7 +97,7 @@ func (h *Handler) resolveTaskApproval(c *gin.Context, approved bool) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
 			return
 		}
-		if !orchestrator.ResolveApprovalByID(body.ApprovalID, result) {
+		if !orchestrator.ResolveApprovalByIDForTask(taskID, body.ApprovalID, result) {
 			// Lost the race with another resolver between Get and Resolve.
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval matches approval_id"})
 			return

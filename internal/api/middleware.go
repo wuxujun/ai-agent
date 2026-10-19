@@ -382,6 +382,11 @@ func TaskTenantMiddleware(st store.Store) gin.HandlerFunc {
 			return
 		}
 		if task.TenantID != principal.TenantID {
+			if approvalDecisionRoute(c) && crossTenantApprovalAllowed(principal, config.Get()) {
+				c.Set(crossTenantApprovalKey, true)
+				c.Next()
+				return
+			}
 			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
 			c.Abort()
 			return

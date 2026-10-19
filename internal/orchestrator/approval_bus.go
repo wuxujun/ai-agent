@@ -137,7 +137,7 @@ func (b *ApprovalBus) dispatchApproval(msg *redis.Message) {
 	// Try by specific approval ID first; fall back to task's unique pending if approval ID is empty.
 	var resolved bool
 	if bm.ApprovalID != "" {
-		resolved = ResolveApprovalByID(bm.ApprovalID, *bm.Result)
+		resolved = ResolveApprovalByIDForTask(bm.TaskID, bm.ApprovalID, *bm.Result)
 		// If the specific ID didn't resolve, this is a stale/duplicate Pub/Sub
 		// delivery (the approval was already handled by another instance, or the
 		// message was re-delivered after a crash). We intentionally do NOT fall

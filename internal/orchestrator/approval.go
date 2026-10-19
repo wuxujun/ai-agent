@@ -179,9 +179,19 @@ func (s *ApprovalStore) Resolve(taskID string, result types.ApprovalResult) bool
 // ResolveByID resolves a specific approval by its ID. Required when more than
 // one approval is pending for the same task.
 func (s *ApprovalStore) ResolveByID(approvalID string, result types.ApprovalResult) bool {
+	return s.resolveByID("", approvalID, result, false)
+}
+
+// ResolveByIDForTask checks the registered task and resolves under the same
+// lock, so an ID supplied for another task can never signal its channel.
+func (s *ApprovalStore) ResolveByIDForTask(taskID, approvalID string, result types.ApprovalResult) bool {
+	return s.resolveByID(taskID, approvalID, result, true)
+}
+
+func (s *ApprovalStore) resolveByID(taskID, approvalID string, result types.ApprovalResult, scoped bool) bool {
 	s.mu.Lock()
 	entry, ok := s.approvals[approvalID]
-	if !ok {
+	if !ok || (scoped && entry.taskID != taskID) {
 		s.mu.Unlock()
 		return false
 	}
@@ -291,4 +301,9 @@ func ResolveApproval(taskID string, result types.ApprovalResult) bool {
 // ApprovalStore.
 func ResolveApprovalByID(approvalID string, result types.ApprovalResult) bool {
 	return defaultApprovals.ResolveByID(approvalID, result)
+}
+
+// ResolveApprovalByIDForTask is the task-scoped HTTP/cluster decision boundary.
+func ResolveApprovalByIDForTask(taskID, approvalID string, result types.ApprovalResult) bool {
+	return defaultApprovals.ResolveByIDForTask(taskID, approvalID, result)
 }

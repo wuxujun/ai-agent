@@ -138,6 +138,12 @@ X-API-Key: {{apiKey}}
 # 403 happens before any approval resolution or distributed signal is sent.
 # Bearer personal identity can be required through api.auth.bearer.require_subject;
 # introspection requires a configured subject_claim when that flag is enabled.
+# approval_cross_tenant: true grants only allowlisted personal actors cross-tenant
+# POST approve/reject access; requires actors mode, disallow_self and required subjects.
+# It grants no cross-tenant read/run/cancel/admin access. Global approvers cannot
+# self-approve even when the target tenant has no self policy; unknown creators get 403.
+# Explicit approval_id must belong to the task in the URL (mismatch returns 404).
+# See docs/用户6492跨租户审批_2026-10-19.md for the user-scoped userid contract.
 
 ### Read the complete ordered task trace
 # trace[].step remains the logical execution step; several audit events may share
