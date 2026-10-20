@@ -446,11 +446,49 @@ func TestValidateMultiAgentRolloutSettings(t *testing.T) {
 		func(cfg *Config) { cfg.MultiAgent.Runtime = "graph" },
 		func(cfg *Config) { cfg.MultiAgent.DAGCanaryPercent = -1 },
 		func(cfg *Config) { cfg.MultiAgent.DAGCanaryPercent = 101 },
+		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.CanaryPercent = 101 },
 	} {
 		cfg := validConfig()
 		mutate(cfg)
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("invalid multiagent rollout accepted: %+v", cfg.MultiAgent)
+		}
+	}
+}
+
+func TestValidateHarnessRefineSettings(t *testing.T) {
+	validConfig := func() *Config {
+		cfg := &Config{}
+		cfg.LLM.Provider = "openai"
+		cfg.LLM.TimeoutSeconds = 30
+		cfg.MultiAgent.HarnessRefine.Enabled = true
+		cfg.MultiAgent.HarnessRefine.CanaryPercent = 10
+		cfg.MultiAgent.HarnessRefine.MaxCandidates = 3
+		cfg.MultiAgent.HarnessRefine.LessonsDir = t.TempDir()
+		return cfg
+	}
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("valid harness_refine rejected: %v", err)
+	}
+	// Disabled refinement needs no further settings.
+	cfg := validConfig()
+	cfg.MultiAgent.HarnessRefine.Enabled = false
+	cfg.MultiAgent.HarnessRefine.MaxCandidates = 0
+	cfg.MultiAgent.HarnessRefine.LessonsDir = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disabled harness_refine rejected: %v", err)
+	}
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.MaxCandidates = 0 },
+		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.MaxCandidates = 11 },
+		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.LessonsDir = "" },
+		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.AssessmentEditor = "gpt" },
+		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.AssessmentMaxCostUSD = -1 },
+	} {
+		cfg := validConfig()
+		mutate(cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid harness_refine accepted: %+v", cfg.MultiAgent.HarnessRefine)
 		}
 	}
 }

@@ -24,6 +24,28 @@ import (
 
 // Config holds all application configuration loaded from the config file and
 // environment variables. Fields are grouped by subsystem.
+// HarnessRefineConfig controls the online refinement canary (Phase 3):
+// canary-bucketed multi-agent tasks run with an adopted improvement-harness
+// lesson applied to their in-memory team config. Refinements never stack
+// with the DAG canary: DAG-bucketed tasks keep the base harness.
+type HarnessRefineConfig struct {
+	// Enabled turns the refinement hooks on. Default false.
+	Enabled bool `mapstructure:"enabled"`
+	// CanaryPercent (0-100) of tasks, bucketed deterministically by
+	// team+task ID, that run with a refined harness. Default 0.
+	CanaryPercent int `mapstructure:"canary_percent"`
+	// MaxCandidates caps editor proposals per online assessment. Default 3.
+	MaxCandidates int `mapstructure:"max_candidates"`
+	// LessonsDir is the improvement-harness root (lessons/ + assessments/).
+	// Empty disables lesson loading/recording.
+	LessonsDir string `mapstructure:"lessons_dir"`
+	// AssessmentEditor selects the editor for online assessments: "mock"
+	// (zero-cost heuristic, default) or "llm" (real model proposal call).
+	AssessmentEditor string `mapstructure:"assessment_editor"`
+	// AssessmentMaxCostUSD caps the estimated cost of one online assessment
+	// proposal call; 0 disables the ceiling. Applies to the llm editor.
+	AssessmentMaxCostUSD float64 `mapstructure:"assessment_max_cost_usd"`
+}
 type Config struct {
 	API struct {
 		TrustedProxies       []string                   `mapstructure:"trusted_proxies"`
@@ -86,9 +108,10 @@ type Config struct {
 		// Team selects an entry from teams.yaml. Runtime remains legacy during a
 		// percentage rollout; DAGCanaryPercent then assigns new tasks to DAG by
 		// stable task-ID bucket.
-		Team             string `mapstructure:"team"`
-		Runtime          string `mapstructure:"runtime"`
-		DAGCanaryPercent int    `mapstructure:"dag_canary_percent"`
+		Team             string              `mapstructure:"team"`
+		Runtime          string              `mapstructure:"runtime"`
+		DAGCanaryPercent int                 `mapstructure:"dag_canary_percent"`
+		HarnessRefine    HarnessRefineConfig `mapstructure:"harness_refine"`
 	} `mapstructure:"multiagent"`
 
 	Approval struct {
@@ -454,6 +477,7 @@ const (
 	LLMSceneRAGQueryRewriter            = "rag_query_rewriter"
 	LLMSceneRAGReranker                 = "rag_reranker"
 	LLMSceneMultiAgentPlanner           = "multiagent_planner"
+	LLMSceneHarnessEditor               = "harness_editor"
 	LLMSceneMultiAgentReplanner         = "multiagent_replanner"
 	LLMSceneMultiAgentWriter            = "multiagent_writer"
 	LLMSceneEmbedding                   = "embedding"
@@ -586,6 +610,12 @@ func setupViper() {
 	viper.SetDefault("multiagent.team", "")
 	viper.SetDefault("multiagent.runtime", "")
 	viper.SetDefault("multiagent.dag_canary_percent", 0)
+	viper.SetDefault("multiagent.harness_refine.enabled", false)
+	viper.SetDefault("multiagent.harness_refine.canary_percent", 0)
+	viper.SetDefault("multiagent.harness_refine.max_candidates", 3)
+	viper.SetDefault("multiagent.harness_refine.lessons_dir", "")
+	viper.SetDefault("multiagent.harness_refine.assessment_editor", "mock")
+	viper.SetDefault("multiagent.harness_refine.assessment_max_cost_usd", 0)
 	viper.SetDefault("approval.ttl_seconds", 86400)
 	viper.SetDefault("approval.retention_days", 30)
 	viper.SetDefault("answer_pipeline.enabled", true)
@@ -695,6 +725,12 @@ func setupViper() {
 	_ = viper.BindEnv("multiagent.team", "AI_AGENT_MULTIAGENT_TEAM")
 	_ = viper.BindEnv("multiagent.runtime", "AI_AGENT_MULTIAGENT_RUNTIME")
 	_ = viper.BindEnv("multiagent.dag_canary_percent", "AI_AGENT_MULTIAGENT_DAG_CANARY_PERCENT")
+	_ = viper.BindEnv("multiagent.harness_refine.enabled", "AI_AGENT_MULTIAGENT_HARNESS_REFINE_ENABLED")
+	_ = viper.BindEnv("multiagent.harness_refine.canary_percent", "AI_AGENT_MULTIAGENT_HARNESS_REFINE_CANARY_PERCENT")
+	_ = viper.BindEnv("multiagent.harness_refine.max_candidates", "AI_AGENT_MULTIAGENT_HARNESS_REFINE_MAX_CANDIDATES")
+	_ = viper.BindEnv("multiagent.harness_refine.lessons_dir", "AI_AGENT_MULTIAGENT_HARNESS_REFINE_LESSONS_DIR")
+	_ = viper.BindEnv("multiagent.harness_refine.assessment_editor", "AI_AGENT_MULTIAGENT_HARNESS_REFINE_ASSESSMENT_EDITOR")
+	_ = viper.BindEnv("multiagent.harness_refine.assessment_max_cost_usd", "AI_AGENT_MULTIAGENT_HARNESS_REFINE_ASSESSMENT_MAX_COST_USD")
 	_ = viper.BindEnv("api.auth.bearer.validation_mode", "AI_AGENT_API_BEARER_VALIDATION_MODE")
 	_ = viper.BindEnv("api.auth.bearer.require_subject", "AI_AGENT_API_BEARER_REQUIRE_SUBJECT")
 	_ = viper.BindEnv("api.auth.jwt.issuer", "AI_AGENT_API_JWT_ISSUER")
@@ -1246,6 +1282,9 @@ func diffConfigs(old, new *Config) []string {
 	addIf("multiagent.team", old.MultiAgent.Team, new.MultiAgent.Team)
 	addIf("multiagent.runtime", old.MultiAgent.Runtime, new.MultiAgent.Runtime)
 	addIfInt("multiagent.dag_canary_percent", old.MultiAgent.DAGCanaryPercent, new.MultiAgent.DAGCanaryPercent)
+	if !reflect.DeepEqual(old.MultiAgent.HarnessRefine, new.MultiAgent.HarnessRefine) {
+		changes = append(changes, "multiagent.harness_refine: changed")
+	}
 	addIfInt("approval.ttl_seconds", old.Approval.TTLSeconds, new.Approval.TTLSeconds)
 	addIfInt("approval.retention_days", old.Approval.RetentionDays, new.Approval.RetentionDays)
 	if !reflect.DeepEqual(old.AnswerPipeline, new.AnswerPipeline) {
@@ -1672,6 +1711,26 @@ func (c *Config) Validate() error {
 	}
 	if c.MultiAgent.DAGCanaryPercent < 0 || c.MultiAgent.DAGCanaryPercent > 100 {
 		return fmt.Errorf("multiagent.dag_canary_percent must be between 0 and 100")
+	}
+	hr := c.MultiAgent.HarnessRefine
+	if hr.CanaryPercent < 0 || hr.CanaryPercent > 100 {
+		return fmt.Errorf("multiagent.harness_refine.canary_percent must be between 0 and 100")
+	}
+	if hr.Enabled {
+		if hr.MaxCandidates < 1 || hr.MaxCandidates > 10 {
+			return fmt.Errorf("multiagent.harness_refine.max_candidates must be between 1 and 10")
+		}
+		if hr.CanaryPercent > 0 && strings.TrimSpace(hr.LessonsDir) == "" {
+			return fmt.Errorf("multiagent.harness_refine.lessons_dir is required when refinement is enabled with a non-zero canary")
+		}
+		switch strings.ToLower(strings.TrimSpace(hr.AssessmentEditor)) {
+		case "", "mock", "llm":
+		default:
+			return fmt.Errorf("multiagent.harness_refine.assessment_editor must be mock or llm")
+		}
+		if hr.AssessmentMaxCostUSD < 0 {
+			return fmt.Errorf("multiagent.harness_refine.assessment_max_cost_usd must not be negative")
+		}
 	}
 	if c.Brain.Enabled {
 		if strings.TrimSpace(c.Brain.Root) == "" {

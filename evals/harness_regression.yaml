@@ -1,0 +1,123 @@
+# Harness regression dataset for `harness-refine probe` / `harness-refine run`.
+#
+# Unlike evals/multiagent_runtime.yaml (which guards the DAG rollout), these
+# cases are designed to discriminate HARNESS quality: plan rigor, writer
+# verification discipline, research depth, critic ordering strictness, and
+# recovery behavior. A better harness should measurably move pass and
+# verifier-supported rates on this set; a worse one should regress.
+#
+# All cases reuse the deterministic fixtures in ./evals/runtime-fixtures and
+# keep budgets small so a full propose->probe->compose loop stays cheap.
+# Thresholds are parsed but not enforced by harness-refine; they are kept
+# for multiagent-eval compatibility.
+version: 1
+thresholds:
+  min_dag_success_rate: 0.5
+  max_success_rate_regression: 0.25
+  max_p95_latency_ratio: 2.0
+cases:
+  # Plan rigor: three files must be read before answering. Rewards longer,
+  # better-reviewed plans and strict critics.
+  - name: harness-plan-rigor
+    goal: Read requirements.md, project.json and runtime.go, then summarize the required test command, the logging rule, the project name, and the RuntimeName value. Read all three files before answering.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 10
+    tool_budget: 12
+    token_budget: 24000
+    llm_call_budget: 14
+    expected_statuses: [completed]
+    expected_contains: [go test, logger.Component, ai-agent, dag-canary]
+    require_supported: true
+
+  # Writer verification: exact quotes, not paraphrase. Rewards verification
+  # reminders in the writer prompt.
+  - name: harness-writer-verification
+    goal: Quote the exact logging rule from requirements.md verbatim, then state which Go tool formats code according to the same file.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [logger.Component instead of direct, gofmt]
+    require_supported: true
+
+  # Research depth: evidence spread across two files. Rewards researcher
+  # tooling and thorough evidence gathering.
+  - name: harness-research-depth
+    goal: List every mode defined in project.json and report the recovery token from fallback.md.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 8
+    tool_budget: 10
+    token_budget: 20000
+    llm_call_budget: 12
+    expected_statuses: [completed]
+    expected_contains: [eino, legacy, adk, step, multiagent, recovery-token-260811]
+    require_supported: true
+
+  # Recovery: a missing file must trigger replan, not hallucination.
+  # Rewards executor/critic recovery behavior.
+  - name: harness-recovery-replan
+    goal: Read missing.md and report its contents. If it cannot be read, recover using fallback.md and report the recovery token instead. Never invent file contents.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 8
+    tool_budget: 10
+    token_budget: 20000
+    llm_call_budget: 12
+    expected_statuses: [completed]
+    expected_contains: [recovery-token-260811]
+    require_supported: true
+    min_replans: 1
+    min_failed_tools: 1
+
+  # Critic ordering: read-before-answer discipline. Rewards strict critics
+  # that reject plans which answer from memory.
+  - name: harness-critic-ordering
+    goal: First inspect runtime.go, then report the exact string returned by RuntimeName. Do not guess or answer from memory.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [dag-canary]
+    require_supported: true
+
+  # Tool efficiency: text search finds the answer in one step; without it the
+  # agent must read every file. Rewards researcher tool breadth.
+  - name: harness-text-search
+    goal: Which fixture file mentions 'canary'? Answer with the filename only.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [runtime.go]
+    require_supported: true
+
+  # Chinese verification: same discipline as the English verification case,
+  # guards multilingual prompt edits.
+  - name: harness-chinese-verification
+    goal: 阅读 requirements.md，用原文逐条引用回答：格式化命令是什么？日志规则是什么？
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [gofmt, logger.Component]
+    require_supported: true
+
+  # Synthesis: compress two sources into a short, accurate paragraph.
+  # Rewards writer clarity under a tight answer budget.
+  - name: harness-synthesis
+    goal: In two sentences, explain what the fixture project is for and how its code should be tested and formatted.
+    workspace: ./evals/runtime-fixtures
+    max_steps: 6
+    tool_budget: 8
+    token_budget: 16000
+    llm_call_budget: 10
+    expected_statuses: [completed]
+    expected_contains: [ai-agent, go test, gofmt]
+    require_supported: true

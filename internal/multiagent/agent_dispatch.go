@@ -72,6 +72,7 @@ func NewCoordinator(mc *metrics.Collector) *Coordinator {
 func teamsConfigForTask(task *types.Task) (*TeamsConfig, error) {
 	config := GetTeamsConfig()
 	if task == nil || strings.TrimSpace(task.Team) == "" {
+		applyTeamOverlay(taskIDOf(task), config)
 		return config, nil
 	}
 	selected := strings.TrimSpace(task.Team)
@@ -79,7 +80,23 @@ func teamsConfigForTask(task *types.Task) (*TeamsConfig, error) {
 		return nil, fmt.Errorf("multi-agent team %q is not configured", selected)
 	}
 	config.ActiveTeam = selected
+	applyTeamOverlay(task.ID, config)
 	return config, nil
+}
+
+// taskIDOf safely extracts a task ID for overlay lookup.
+func taskIDOf(task *types.Task) string {
+	if task == nil {
+		return ""
+	}
+	return task.ID
+}
+
+// TeamsConfigForTask is the exported form of teamsConfigForTask: it resolves
+// the effective teams config for a task, honoring the task's team override
+// and any registered refinement overlay.
+func TeamsConfigForTask(task *types.Task) (*TeamsConfig, error) {
+	return teamsConfigForTask(task)
 }
 
 func annotateWorkflowGraph(span trace.Span, prefix string, workflow Workflow) (WorkflowGraphSummary, error) {

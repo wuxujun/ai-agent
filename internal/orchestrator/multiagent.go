@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/multiagent"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -40,11 +41,23 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 
 	log.Info("starting multi-agent workflow", "task_id", task.ID, "team", teamName)
 
+	// Phase 3: online refinement canary. A bucketed task runs with the newest
+	// adopted improvement lesson applied to its in-memory team config; the
+	// overlay is task-scoped and cleared when this run finishes.
+	refine := planRefinement(ctx, task)
+	refineCleanup, effectiveDigest := refine.applyOverlay(ctx, task, config.Get().Skill.Root)
+	defer refineCleanup()
+
 	if err := e.Coordinator.Run(ctx, task); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "multi-agent coordinator failed")
 		return err
 	}
+
+	// Harnessing-level learning: record what a freshly-bucketed task's
+	// outcome plus editor-proposed candidates look like, for operators to
+	// promote to offline probe runs.
+	refine.assessAsync(task, config.Get().MultiAgent.HarnessRefine, config.Get().Skill.Root, effectiveDigest)
 
 	span.SetAttributes(
 		attribute.String("agent.task.status_after", string(task.Status)),

@@ -8,9 +8,6 @@ api:
   # The host:port address for the HTTP server to listen on.
   # Env override: AI_AGENT_API_ADDR
   addr: "127.0.0.1:8088"
-  # Restart required. Empty means direct connections; forwarded IP headers are
-  # ignored. Behind a proxy, list only its source IPs/CIDRs (never all networks).
-  # trusted_proxies: []
   
   # Optional security key for API authorization.
   # MUST be set via environment variable — do NOT store secrets in this file.
@@ -192,6 +189,21 @@ multiagent:
   team: "kb_qa"
   runtime: "legacy"
   dag_canary_percent: 0
+  # Online refinement canary (Phase 3): canary-bucketed tasks run with the
+  # newest adopted improvement-harness lesson applied to their in-memory team
+  # config. Never stacks with the DAG canary. Disabled by default.
+  harness_refine:
+    enabled: false
+    canary_percent: 0
+    max_candidates: 3
+    lessons_dir: "var/improvement"
+    # Editor for online assessments: "mock" (zero-cost heuristic) or "llm"
+    # (real model call, costs per canary task). Env override:
+    # AI_AGENT_MULTIAGENT_HARNESS_REFINE_ASSESSMENT_EDITOR
+    assessment_editor: "mock"
+    # Per-assessment cost ceiling in USD for the llm editor; 0 disables.
+    # Env override: AI_AGENT_MULTIAGENT_HARNESS_REFINE_ASSESSMENT_MAX_COST_USD
+    assessment_max_cost_usd: 0
 
 approval:
   # Maximum age of a pending durable approval in seconds. 0 disables expiry.
@@ -647,8 +659,6 @@ langfuse:
   # Langfuse host URL.
   # Env override: LANGFUSE_BASE_URL
   host: "https://cloud.langfuse.com"
-  # Private network access requires an explicit allow_private_network: true
-  # (or LANGFUSE_ALLOW_PRIVATE_NETWORK=true); it is disabled by default.
 
   # Langfuse Public Key (pk-lf-...)
   # Env override: LANGFUSE_PUBLIC_KEY

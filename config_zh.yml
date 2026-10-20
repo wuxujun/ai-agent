@@ -166,6 +166,21 @@ multiagent:
   team: "kb_qa"
   runtime: "legacy"
   dag_canary_percent: 0
+  # 在线 refinement 金丝雀（Phase 3）：被分桶选中的任务会把最新采纳的
+  # improvement lesson 应用到内存中的 team 配置。永不与 DAG 金丝雀叠加。
+  # 默认关闭。
+  harness_refine:
+    enabled: false
+    canary_percent: 0
+    max_candidates: 3
+    lessons_dir: "var/improvement"
+    # 在线 assessment 用的 editor："mock"（零成本启发式）或 "llm"
+    # （真实模型调用，每个金丝雀任务都会花钱）。Env 覆盖：
+    # AI_AGENT_MULTIAGENT_HARNESS_REFINE_ASSESSMENT_EDITOR
+    assessment_editor: "mock"
+    # 每次 assessment 的 llm editor 成本上限（美元），0 为不限制。
+    # Env 覆盖：AI_AGENT_MULTIAGENT_HARNESS_REFINE_ASSESSMENT_MAX_COST_USD
+    assessment_max_cost_usd: 0
 
 # 持久化人工审批配置
 approval:
