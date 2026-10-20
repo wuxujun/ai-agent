@@ -94,4 +94,3 @@ func TestReadFileToolValidatesWorkspaceAndParams(t *testing.T) {
 		t.Fatal("expected parameter validation error for traversal path")
 	}
 }
-

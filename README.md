@@ -28,7 +28,7 @@ readiness loss; an empty CURRENT alone is an expected pre-publication state.
 
 > A multi-LLM AI Agent execution runtime built in Go. It orchestrates research, code analysis, and task execution with workspace access policies, approval gates, Multi-Agent workflows, and an answer quality pipeline.
 
-[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-blue)](https://go.dev/)
+[![Go 1.26.9](https://img.shields.io/badge/Go-1.26.9-blue)](https://go.dev/)
 
 Current implementation and verification status: [documentation index](docs/README.md) and [project assessment](docs/项目功能完成度与优化分析报告_2026-10-11.md). The Web console and Brain read-only MVP are implemented; Brain is disabled by default. The checked-in Multi-Agent defaults are Legacy with 0% DAG canary. Full HA validation and DAG rollout remain incomplete and are deferred from the current work.
 
@@ -258,7 +258,7 @@ Current implementation and verification status: [documentation index](docs/READM
 
 ### Prerequisites
 
-- Go 1.26.8+ (local, CI, and release builds use the minimum version in `go.mod`)
+- Go 1.26.9+ (local, CI, and release builds use the minimum version in `go.mod`)
 - Optional: `ripgrep` (`rg`) and `find` for local file tools
 - Optional: OTel Collector / Jaeger on `127.0.0.1:4318` for traces
 

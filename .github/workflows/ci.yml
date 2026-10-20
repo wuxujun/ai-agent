@@ -22,7 +22,10 @@ jobs:
       - name: Format check
         run: |
           unformatted="$(find cmd internal -name '*.go' -type f -print0 | xargs -0 gofmt -l)"
-          test -z "$unformatted"
+          if [ -n "$unformatted" ]; then
+            printf 'Run gofmt on these files:\n%s\n' "$unformatted"
+            exit 1
+          fi
       - name: Static analysis
         run: go vet ./...
       - name: Unit tests
