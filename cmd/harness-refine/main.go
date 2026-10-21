@@ -59,11 +59,14 @@ Usage:
   harness-refine propose --teams-yaml teams.yaml --team software --k 3 --out runs/hr/<ts>
   harness-refine probe   --service-url http://127.0.0.1:8088 --input evals/harness_regression.yaml \
                          --candidates runs/hr/<ts> --out runs/hr/<ts>
-  harness-refine compose --probe-results runs/hr/<ts>/probe-results.json --out runs/hr/<ts>
+  harness-refine compose --probe-results runs/hr/<ts>/probe-results.json \
+                         --base-snapshot runs/hr/<ts>/base-snapshot.json --out runs/hr/<ts>
   harness-refine lessons list --lessons-dir var/improvement
   harness-refine lessons assessments list --lessons-dir var/improvement
+  harness-refine lessons retract --lessons-dir var/improvement --id <full-lesson-id> --reason "regression"
   harness-refine run     --teams-yaml teams.yaml --team software --k 3 \
                          --service-url http://127.0.0.1:8088 --input evals/harness_regression.yaml \
+                         --service-teams-yaml /srv/ai-agent/teams.yaml \
                          --out runs/hr/<ts> --lessons-dir var/improvement
   harness-refine run     --rounds 3 --service-teams-yaml /srv/ai-agent/teams.yaml \
                          --team software --k 2 --editor llm \
@@ -73,10 +76,15 @@ Usage:
 
 Probe notes: point the service at the materialized teams.candidates.yaml
 (written by propose) and hot-reload it (POST /api/config/reload) before
-probing, or start a second service with that file. Task creation uses the
-"team" override, so one service can serve base and all candidates.
+probing, or start an isolated service with that file installed as teams.yaml.
+Task creation uses the "team" override, so one service can serve base and
+all candidates.
+Without --service-teams-yaml, run does not pause for manual deployment;
+use separate propose/probe/compose commands for that workflow.
 Use an admin API key or a tenant whose allowed_multiagent_teams includes
 the candidate teams.
+
+Guide: docs/harness.md
 
 Exit codes: 0 success, 1 execution failure, 2 usage/configuration error,
 3 no candidate adopted (compose only; run treats this as convergence).`)

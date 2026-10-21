@@ -747,6 +747,19 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 - [ ] **更多内置技能** — 数据分析、SQL Agent、图表生成
 
 
+### Harness 配置改进
+
+`harness-refine` 支持团队配置与技能摘要快照、候选编辑、基线/候选配对评测、
+lesson 记录，以及默认关闭的线上灰度。先用不调用模型的提案验证本地流程：
+
+```bash
+go run ./cmd/harness-refine propose --teams-yaml teams.yaml --skills-root skills \
+  --team software --editor mock --k 1 --out workspace/harness/quickstart
+```
+
+完整步骤见 [Harness 使用指南](docs/harness.md)，包括候选配置加载、分阶段评测、
+多轮运行、LLM editor、lesson 撤回与当前限制。
+
 ### DAG/Legacy 发布评估
 
 分别启动 Legacy 与 DAG 服务，再以相同预算执行同一数据集：

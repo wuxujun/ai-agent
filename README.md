@@ -876,6 +876,20 @@ workflows, independently verified); rejected or low-confidence drafts are never 
 - [ ] **Additional built-in skills** — data analysis, SQL agent, diagram generation
 
 
+### Harness refinement
+
+`harness-refine` snapshots team configuration and skill digests, proposes edits,
+compares base and candidate teams, and records adopted lessons for an optional
+online canary (disabled by default). Start with a proposal without model calls:
+
+```bash
+go run ./cmd/harness-refine propose --teams-yaml teams.yaml --skills-root skills \
+  --team software --editor mock --k 1 --out workspace/harness/quickstart
+```
+
+See the [Harness usage guide](docs/harness.md) (Chinese) for candidate deployment,
+paired evaluation, multiple rounds, LLM editors, lesson retraction, and limits.
+
 ### DAG/Legacy release evaluation
 
 Run one service with the Legacy runtime and another with DAG, then execute the
