@@ -49,6 +49,12 @@ Current implementation and verification status: [documentation index](docs/READM
 - **Web Console** — `/console` provides task management, Trace inspection, workflow graph views, and approval operations with encrypted sessions and CSRF checks. Configure `AI_AGENT_CONSOLE_SESSION_KEY` and use an identity-provider Bearer Token; see [API and console documentation](docs/task-api.md).
 - **Hot Reload** — Config and API keys reload without restart via `POST /api/config/reload`.
 
+To sync a new or edited LiteLLM model JSON once, run
+`./deploy/litellm/sync-models.sh path/to/models.json` from the repository root.
+The command creates or updates models and verifies the saved configuration.
+See the [LiteLLM gateway guide](deploy/litellm/README.md#sync-any-json-manifest-once)
+for prerequisites, JSON format, and multi-file usage.
+
 ---
 
 ## 🏗️ Architecture

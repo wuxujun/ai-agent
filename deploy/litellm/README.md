@@ -268,6 +268,59 @@ The reconciler is declarative for `litellm_params` and conservative elsewhere:
 - Provider API keys remain environment references and are not copied into the
   seed manifest.
 
+#### Sync any JSON manifest once
+
+From the repository root, synchronize a new or edited manifest with:
+
+```bash
+./deploy/litellm/sync-models.sh deploy/litellm/tencent-models.json
+```
+
+The command requires Python 3, Docker Compose, the Compose `.env` file, and a
+running `litellm` service. It reads the master key inside that container; keys
+are not passed as command arguments or printed. The `model-bootstrap` service
+does not need to be running. No additional volume mounts or container restarts
+are required.
+
+Use the same JSON format as `bootstrap-models.json` or `qwen-models.json`.
+Referenced LiteLLM Credentials must already exist. For example:
+
+```json
+[
+  {
+    "model_name": "my-model",
+    "litellm_params": {
+      "model": "upstream-model",
+      "custom_llm_provider": "custom_openai",
+      "litellm_credential_name": "existing-credential"
+    },
+    "model_info": {"id": null}
+  }
+]
+```
+
+Pass multiple files to synchronize them together, or select another Compose
+environment file:
+
+```bash
+./deploy/litellm/sync-models.sh path/to/first.json path/to/second.json
+./deploy/litellm/sync-models.sh --env-file deploy/litellm/.env path/to/models.json
+```
+
+Manifest paths are relative to your current directory. The command validates
+all files and checks named Credentials before writing models. It creates
+missing deployments, patches changed manifest-owned parameters, then reads
+back the saved configuration. It prints JSON fields `created`, `updated`, and
+`verified`, and exits with a nonzero status on failure. Writes are not
+transactional: a failure can leave some models synchronized; correct the cause
+and rerun the command. Existing models outside the manifests are preserved.
+No inference requests are made.
+
+This is a single run and does not add the JSON to the periodic reconciler.
+If that reconciler manages the same aliases, keep its manifests consistent to
+avoid reverting changes on its next pass. Existing matching and Team ownership
+rules described above still apply.
+
 #### Use the Qwen manifest with a LiteLLM Credential
 
 `qwen-models.json` is a Qwen-only alternative to `bootstrap-models.json`. It
