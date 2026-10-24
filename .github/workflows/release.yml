@@ -12,10 +12,17 @@ on:
         default: 'v1.0.0'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  quality:
+    name: Validate release commit
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   build-release:
+    needs: quality
     name: Build & Upload Release Artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -49,6 +56,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -60,7 +68,16 @@ jobs:
         env:
           APP_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          mkdir -p build_stage/${{ matrix.artifact_name }}
+          [[ "$APP_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.+-][A-Za-z0-9.+-]+)?$ ]] || { echo "Invalid release version" >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if git show-ref --verify --quiet "refs/tags/$APP_VERSION"; then
+            test "$(git rev-parse "refs/tags/${APP_VERSION}^{commit}")" = "$GITHUB_SHA"
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "$GITHUB_SHA"
+          fi
+          test -z "$(git status --porcelain)"
+          mkdir -p dist/build_stage/${{ matrix.artifact_name }}
           EXEC_NAME="server"
           if [ "${{ matrix.os }}" = "windows" ]; then
             EXEC_NAME="server.exe"
@@ -69,28 +86,37 @@ jobs:
           # 编译 Go 二进制文件
           CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build \
             -ldflags="-s -w -X github.com/wuxujun/ai-agent/internal/buildinfo.Version=${APP_VERSION}" \
-            -o build_stage/${{ matrix.artifact_name }}/${EXEC_NAME} \
+            -o dist/build_stage/${{ matrix.artifact_name }}/${EXEC_NAME} \
             ./cmd/server
 
+          python3 - <<'PYMETA'
+          import json, os
+          from pathlib import Path
+          metadata = {"version": os.environ["APP_VERSION"], "commit": os.environ["GITHUB_SHA"],
+                      "repository": os.environ["GITHUB_REPOSITORY"], "run_id": os.environ["GITHUB_RUN_ID"],
+                      "platform": "${{ matrix.os }}/${{ matrix.arch }}"}
+          Path("dist/build_stage/${{ matrix.artifact_name }}/build-provenance.json").write_text(json.dumps(metadata, indent=2) + "\n")
+          PYMETA
+
           # 复制配置文件和必要的资产目录
-          cp config.yaml build_stage/${{ matrix.artifact_name }}/
-          cp teams.yaml build_stage/${{ matrix.artifact_name }}/
-          cp -r skills build_stage/${{ matrix.artifact_name }}/
+          cp config.yaml dist/build_stage/${{ matrix.artifact_name }}/
+          cp teams.yaml dist/build_stage/${{ matrix.artifact_name }}/
+          cp -r skills dist/build_stage/${{ matrix.artifact_name }}/
           if [ "${{ matrix.os }}" = "linux" ]; then
-            cp deploy/systemd/ai-agent.service build_stage/${{ matrix.artifact_name }}/
+            cp deploy/systemd/ai-agent.service dist/build_stage/${{ matrix.artifact_name }}/
           fi
-          mkdir -p build_stage/${{ matrix.artifact_name }}/data \
-                   build_stage/${{ matrix.artifact_name }}/logs \
-                   build_stage/${{ matrix.artifact_name }}/workspace
+          mkdir -p dist/build_stage/${{ matrix.artifact_name }}/data \
+                   dist/build_stage/${{ matrix.artifact_name }}/logs \
+                   dist/build_stage/${{ matrix.artifact_name }}/workspace
 
       - name: Create Archive (.tar.gz / .zip)
         run: |
           mkdir -p dist
-          cd build_stage
+          cd dist/build_stage
           if [ "${{ matrix.os }}" = "windows" ]; then
-            zip -r ../dist/${{ matrix.asset_name }} ${{ matrix.artifact_name }}
+            zip -r ../${{ matrix.asset_name }} ${{ matrix.artifact_name }}
           else
-            tar -czvf ../dist/${{ matrix.asset_name }} ${{ matrix.artifact_name }}
+            tar -czvf ../${{ matrix.asset_name }} ${{ matrix.artifact_name }}
           fi
           cd ..
 
@@ -102,27 +128,38 @@ jobs:
 
   publish-release:
     name: Create GitHub Release
-    needs: build-release
+    needs: [quality, build-release]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
           path: ./release-assets
+          pattern: ai-agent-*
 
       - name: Move Assets to Flat Directory
         run: |
           mkdir -p ./final-assets
           find ./release-assets -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} ./final-assets/ \;
-          ls -la ./final-assets
+          test "$(find ./final-assets -type f | wc -l)" -eq 5
+          cd final-assets
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          sha256sum --check SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: ./final-assets/*
+          fail_on_unmatched_files: true
+          tag_name: ${{ inputs.version || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           draft: false
           prerelease: false
           generate_release_notes: true

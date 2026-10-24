@@ -69,11 +69,12 @@ func TestReleaseArchivesFromCleanDirectory(t *testing.T) {
 			files := map[string]string{
 				binary: "fixture binary", "config.yaml": "fixture config",
 				"teams.yaml": "fixture teams", "skills/example/SKILL.md": "fixture skill",
+				"build-provenance.json": `{"commit":"fixture-sha"}`,
 			}
 			if platform.OS == "linux" {
 				files["ai-agent.service"] = "fixture service"
 			}
-			stage := filepath.Join(root, "build_stage", platform.ArtifactName)
+			stage := filepath.Join(root, "dist", "build_stage", platform.ArtifactName)
 			for name, content := range files {
 				path := filepath.Join(stage, filepath.FromSlash(name))
 				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -88,8 +89,8 @@ func TestReleaseArchivesFromCleanDirectory(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := os.Stat(filepath.Join(root, "dist")); !os.IsNotExist(err) {
-				t.Fatalf("fixture must start without dist: %v", err)
+			if _, err := os.Stat(filepath.Join(root, "dist", platform.AssetName)); !os.IsNotExist(err) {
+				t.Fatalf("fixture must start without release archive: %v", err)
 			}
 			rendered := strings.NewReplacer(
 				"${{ matrix.os }}", platform.OS,
