@@ -322,3 +322,44 @@ func TestDockerPreflightRejectsUnsupportedRuntime(t *testing.T) {
 		})
 	}
 }
+
+// Models the window after a connection deadline expires but before the parent
+// context timer publishes Done/Err. No sleep or scheduler race is needed to
+// reproduce the cancellation error being replaced with a framing error.
+type delayedDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c delayedDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func TestDockerRunPreservesDeadlineBeforeContextTimer(t *testing.T) {
+	for _, denyCleanup := range []bool{false, true} {
+		t.Run(fmt.Sprint(denyCleanup), func(t *testing.T) {
+			fake := newFake(t)
+			fake.hold = true
+			fake.denyDelete = denyCleanup
+			work, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := delayedDeadlineContext{Context: t.Context(), deadline: time.Now().Add(200 * time.Millisecond)}
+			var stdout, stderr bytes.Buffer
+			result := Run(ctx, fake.cfg, work, "sh", []string{"-c", "printf ok"}, nil, &stdout, &stderr)
+			if ctx.Err() != nil {
+				t.Fatal("fixture context published cancellation before assertion")
+			}
+			if !errors.Is(result, context.DeadlineExceeded) {
+				t.Fatalf("caller deadline lost: %v", result)
+			}
+			if errors.Is(result, ErrCleanup) != denyCleanup {
+				t.Fatalf("cleanup result lost: %v", result)
+			}
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if !denyCleanup && (fake.exists || fake.deleted == 0) {
+				t.Fatal("owned container cleanup was skipped")
+			}
+		})
+	}
+}

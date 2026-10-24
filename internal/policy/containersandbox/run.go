@@ -63,8 +63,15 @@ func Run(ctx context.Context, c Config, workspace, name string, args, extra []st
 	// our unguessable name and verifies its ownership label before removing it.
 	containerID := ""
 	defer func() {
-		if result != nil && ctx.Err() != nil {
-			result = ctx.Err()
+		if result != nil {
+			if err := ctx.Err(); err != nil {
+				result = err
+			} else if !time.Now().Before(deadline) {
+				// Socket deadlines can wake readers before the context timer
+				// goroutine publishes Err. Preserve the caller's deadline even
+				// in that scheduling window; cleanup errors are still joined.
+				result = context.DeadlineExceeded
+			}
 		}
 		if cleanupErr := client.removeOwned(containerID, containerName, nonce); cleanupErr != nil {
 			result = errors.Join(result, cleanupErr)
