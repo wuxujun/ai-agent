@@ -197,8 +197,8 @@ type assessSnapshot struct {
 }
 
 // assessAsync records a harnessing-level observation after a freshly-bucketed
-// task completes. It runs in a goroutine and never affects the task result.
-func (p refinePlan) assessAsync(task *types.Task, rc config.HarnessRefineConfig, skillsRoot string, harnessDigest string) {
+// task completes. Queue admission is nonblocking and never affects the task result.
+func (e *Engine) assessAsync(p refinePlan, task *types.Task, rc config.HarnessRefineConfig, skillsRoot string, harnessDigest string) {
 	if !p.assessable || task == nil || !types.IsTerminalTaskStatus(task.Status) {
 		return
 	}
@@ -219,14 +219,9 @@ func (p refinePlan) assessAsync(task *types.Task, rc config.HarnessRefineConfig,
 		harnessDigest: harnessDigest,
 		teamsCfg:      teamsCfg,
 	}
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("refinement: assessment panicked", "task_id", snap.taskID, "panic", r)
-			}
-		}()
-		runAssessment(context.Background(), snap, rc, skillsRoot)
-	}()
+	if !e.enqueueAssessment(assessmentJob{snapshot: snap, config: rc, skillsRoot: skillsRoot}) {
+		log.Warn("refinement: assessment skipped, queue full or stopping", "task_id", task.ID)
+	}
 }
 
 func countErrorSteps(task *types.Task) int {
@@ -241,7 +236,7 @@ func countErrorSteps(task *types.Task) int {
 
 // buildAssessmentEditor selects the editor for online assessments from the
 // refinement config. "mock" (default) costs nothing; "llm" spends one model
-// call per canary-bucketed task, capped by AssessmentMaxCostUSD.
+// call per executed assessment; AssessmentMaxCostUSD checks cost after the call.
 func buildAssessmentEditor(rc config.HarnessRefineConfig) refine.Editor {
 	if strings.EqualFold(strings.TrimSpace(rc.AssessmentEditor), "llm") {
 		return refine.LLMEditor{MaxCostUSD: rc.AssessmentMaxCostUSD}
@@ -254,6 +249,9 @@ func buildAssessmentEditor(rc config.HarnessRefineConfig) refine.Editor {
 // assessments to offline probe runs (harness-refine run), which may produce
 // adopted Lessons.
 func runAssessment(ctx context.Context, snap assessSnapshot, rc config.HarnessRefineConfig, skillsRoot string) {
+	if ctx.Err() != nil {
+		return
+	}
 	if snap.teamsCfg == nil {
 		log.Warn("refinement: assessment skipped, teams snapshot unavailable", "task_id", snap.taskID)
 		return
@@ -262,6 +260,9 @@ func runAssessment(ctx context.Context, snap assessSnapshot, rc config.HarnessRe
 	if err != nil {
 		log.Warn("refinement: assessment skipped, skill digests unavailable",
 			"task_id", snap.taskID, "error", err)
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 	base, err := harness.NewSnapshot(*snap.teamsCfg, digests, "refine:assess")
@@ -282,10 +283,16 @@ func runAssessment(ctx context.Context, snap assessSnapshot, rc config.HarnessRe
 			log.Warn("refinement: assessment lessons unavailable", "task_id", snap.taskID, "error", err)
 		}
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	general, domain, _, err := buildAssessmentEditor(rc).Propose(ctx, base, snap.team, k, lessons)
 	if err != nil {
 		log.Warn("refinement: assessment skipped, editor failed",
 			"task_id", snap.taskID, "error", err)
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 	var candidates []improvement.ProposedCandidate

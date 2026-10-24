@@ -57,7 +57,7 @@ func (e *Engine) runMultiAgentNext(ctx context.Context, task *types.Task) error 
 	// Harnessing-level learning: record what a freshly-bucketed task's
 	// outcome plus editor-proposed candidates look like, for operators to
 	// promote to offline probe runs.
-	refine.assessAsync(task, config.Get().MultiAgent.HarnessRefine, config.Get().Skill.Root, effectiveDigest)
+	e.assessAsync(refine, task, config.Get().MultiAgent.HarnessRefine, config.Get().Skill.Root, effectiveDigest)
 
 	span.SetAttributes(
 		attribute.String("agent.task.status_after", string(task.Status)),

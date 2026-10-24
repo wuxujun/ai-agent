@@ -231,11 +231,12 @@ func run() error {
 	defer signal.Stop(quit)
 	slog.Info("HTTP server listening", "addr", app.server.Addr)
 	return runApp(appRuntime{
-		server: app.server,
-		tasks:  app.tasks,
-		bus:    app.bus,
-		expiry: app.expiry,
-		paused: app.paused,
+		assessments: engineBuild.engine,
+		server:      app.server,
+		tasks:       app.tasks,
+		bus:         app.bus,
+		expiry:      app.expiry,
+		paused:      app.paused,
 		reload: func() error {
 			cfg, changes, err := config.Reload()
 			if err != nil {

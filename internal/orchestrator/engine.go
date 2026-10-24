@@ -31,6 +31,9 @@ import (
 )
 
 type Engine struct {
+	assessmentMu            sync.Mutex
+	assessments             *assessmentRuntime
+	assessmentsStopped      bool
 	ownedApprovalDispatcher *sqliteOwnedApprovalDispatcher
 	// ExecutionAdmission is optional and fixed before use; nil preserves legacy admission.
 	ExecutionAdmission          types.ExecutionAdmissionChecker

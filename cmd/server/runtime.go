@@ -15,6 +15,11 @@ type appHTTPServer interface {
 	Shutdown(context.Context) error
 }
 
+type appAssessmentManager interface {
+	StopAssessments()
+	WaitAssessments(context.Context) error
+}
+
 type appTaskManager interface {
 	Shutdown(context.Context) error
 }
@@ -35,6 +40,7 @@ func (r *pausedTaskRuntime) Stop() { r.cancel() }
 func (r *pausedTaskRuntime) Wait() { <-r.done }
 
 type appRuntime struct {
+	assessments     appAssessmentManager
 	paused          BackgroundRunner
 	server          appHTTPServer
 	tasks           appTaskManager
@@ -92,6 +98,9 @@ waitLoop:
 		}
 	}
 
+	if runtime.assessments != nil {
+		runtime.assessments.StopAssessments()
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), runtime.shutdownTimeout)
 	defer shutdownCancel()
 	if err := runtime.server.Shutdown(shutdownCtx); err != nil {
@@ -117,6 +126,14 @@ waitLoop:
 	defer taskDrainCancel()
 	if err := runtime.tasks.Shutdown(taskDrainCtx); err != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("background task shutdown: %w", err))
+	}
+	if runtime.assessments != nil {
+		assessmentCtx, assessmentCancel := context.WithTimeout(context.Background(), runtime.shutdownTimeout)
+		err := runtime.assessments.WaitAssessments(assessmentCtx)
+		assessmentCancel()
+		if err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("assessment shutdown: %w", err))
+		}
 	}
 	if err := runtime.bus.Close(); err != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("approval bus shutdown: %w", err))

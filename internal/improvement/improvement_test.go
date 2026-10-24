@@ -2,6 +2,7 @@ package improvement
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/harness"
@@ -169,5 +170,17 @@ func TestRecordAndListAssessments(t *testing.T) {
 	bad.TaskID = ""
 	if _, err := s.RecordAssessment(ctx, bad); err == nil {
 		t.Fatal("expected error for empty task_id")
+	}
+}
+
+func TestListHonorsCancellation(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if _, err := s.Record(t.Context(), testLesson()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := s.List(ctx, "software", 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled lesson scan returned %v", err)
 	}
 }
