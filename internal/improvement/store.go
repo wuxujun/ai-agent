@@ -13,7 +13,8 @@ import (
 
 // Store is a file-backed improvement harness. All methods are safe for
 // concurrent use: lesson files are content-addressed (idempotent writes) and
-// retractions are separate files, so readers never need locks.
+// retractions are separate files. A bounded process-local metadata index is
+// shared across Store handles; selected records are always verified from disk.
 type Store struct {
 	root string
 }
@@ -54,11 +55,17 @@ func (s *Store) Record(ctx context.Context, l Lesson) (Lesson, error) {
 	if err := writeAtomic(filepath.Join(s.lessonsDir(), id+".json"), data, 0o644); err != nil {
 		return Lesson{}, err
 	}
+	if err := s.invalidateLessonIndex(); err != nil {
+		return Lesson{}, err
+	}
 	return l, nil
 }
 
 // Get returns a lesson by ID, reporting whether it exists and is not retracted.
-func (s *Store) Get(_ context.Context, id string) (Lesson, bool, error) {
+func (s *Store) Get(ctx context.Context, id string) (Lesson, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Lesson{}, false, err
+	}
 	if !validID(id) {
 		return Lesson{}, false, fmt.Errorf("invalid lesson id %q", id)
 	}
@@ -69,52 +76,19 @@ func (s *Store) Get(_ context.Context, id string) (Lesson, bool, error) {
 	if err != nil {
 		return Lesson{}, false, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Lesson{}, false, err
+	}
+	if retracted, err := s.isRetracted(id); err != nil || retracted {
+		return Lesson{}, false, err
+	}
 	return l, true, nil
 }
 
 // List returns non-retracted lessons for a team (empty team = all teams),
 // newest first, capped at limit (<=0 means no cap).
 func (s *Store) List(ctx context.Context, team string, limit int) ([]Lesson, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(s.lessonsDir())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read lessons: %w", err)
-	}
-	var out []Lesson
-	for _, e := range entries {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".json")
-		retracted, err := s.isRetracted(id)
-		if err != nil {
-			return nil, err
-		}
-		if retracted {
-			continue
-		}
-		l, err := s.readLesson(id)
-		if err != nil {
-			return nil, err
-		}
-		if team != "" && l.Team != team {
-			continue
-		}
-		out = append(out, l)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ObservedAt.After(out[j].ObservedAt) })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
+	return s.listIndexed(ctx, team, limit, false)
 }
 
 // Retract logically withdraws a lesson. The lesson file is kept; its
@@ -145,7 +119,10 @@ func (s *Store) Retract(ctx context.Context, id, reason string) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(s.retractionsDir(), id+".json"), data, 0o644)
+	if err := writeAtomic(filepath.Join(s.retractionsDir(), id+".json"), data, 0o644); err != nil {
+		return err
+	}
+	return s.invalidateLessonIndex()
 }
 
 func (s *Store) readLesson(id string) (Lesson, error) {

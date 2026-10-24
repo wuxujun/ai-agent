@@ -87,31 +87,17 @@ func (s *Store) GetPublished(ctx context.Context, id string) (Lesson, bool, erro
 	if p.LessonID != id || !validValidation(p.Validation) || p.Validation.LessonID != id || p.Validation.ValidatedAt.IsZero() || p.PublishedAt.IsZero() || strings.TrimSpace(p.Reason) == "" {
 		return Lesson{}, false, fmt.Errorf("invalid publication binding")
 	}
+	if err := ctx.Err(); err != nil {
+		return Lesson{}, false, err
+	}
+	if retracted, err := s.isRetracted(id); err != nil || retracted {
+		return Lesson{}, false, err
+	}
 	return l, true, nil
 }
 
 func (s *Store) ListPublished(ctx context.Context, team string, limit int) ([]Lesson, error) {
-	lessons, err := s.List(ctx, team, 0)
-	if err != nil {
-		return nil, err
-	}
-	var result []Lesson
-	for _, l := range lessons {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		published, ok, err := s.GetPublished(ctx, l.ID)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			result = append(result, published)
-		}
-		if limit > 0 && len(result) >= limit {
-			break
-		}
-	}
-	return result, nil
+	return s.listIndexed(ctx, team, limit, true)
 }
 
 func (s *Store) Status(ctx context.Context, id string) (string, error) {
@@ -159,5 +145,8 @@ func (s *Store) writeState(kind, id string, value any) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(dir, id+".json"), data, 0600)
+	if err := writeAtomic(filepath.Join(dir, id+".json"), data, 0600); err != nil {
+		return err
+	}
+	return s.invalidateLessonIndex()
 }
