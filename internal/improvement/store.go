@@ -74,7 +74,10 @@ func (s *Store) Get(_ context.Context, id string) (Lesson, bool, error) {
 
 // List returns non-retracted lessons for a team (empty team = all teams),
 // newest first, capped at limit (<=0 means no cap).
-func (s *Store) List(_ context.Context, team string, limit int) ([]Lesson, error) {
+func (s *Store) List(ctx context.Context, team string, limit int) ([]Lesson, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(s.lessonsDir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -84,6 +87,9 @@ func (s *Store) List(_ context.Context, team string, limit int) ([]Lesson, error
 	}
 	var out []Lesson
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
@@ -153,6 +159,13 @@ func (s *Store) readLesson(id string) (Lesson, error) {
 	var l Lesson
 	if err := json.Unmarshal(data, &l); err != nil {
 		return Lesson{}, fmt.Errorf("parse lesson %s: %w", shortID(id), err)
+	}
+	actual, err := lessonID(l)
+	if err != nil || l.ID != id || actual != id {
+		return Lesson{}, fmt.Errorf("lesson content address mismatch")
+	}
+	if err := l.validate(); err != nil {
+		return Lesson{}, err
 	}
 	return l, nil
 }

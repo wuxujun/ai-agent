@@ -41,23 +41,24 @@ type Case struct {
 }
 
 type VariantResult struct {
-	Runtime         string   `json:"runtime"`
-	TaskID          string   `json:"task_id"`
-	Status          string   `json:"status"`
-	LatencyMS       int64    `json:"latency_ms"`
-	StepCount       int      `json:"step_count"`
-	ToolBudget      int      `json:"tool_budget"`
-	TokenBudget     int      `json:"token_budget"`
-	LLMCalls        int      `json:"llm_calls"`
-	VerifierSeen    bool     `json:"verifier_seen"`
-	Supported       bool     `json:"supported"`
-	FallbackCount   int      `json:"fallback_count"`
-	ReplanCount     int      `json:"replan_count"`
-	FailedToolCount int      `json:"failed_tool_count"`
-	Actions         []string `json:"actions,omitempty"`
-	FinalAnswer     string   `json:"final_answer"`
-	Pass            bool     `json:"pass"`
-	Error           string   `json:"error,omitempty"`
+	EstimatedCostUSD *float64 `json:"estimated_cost_usd,omitempty"`
+	Runtime          string   `json:"runtime"`
+	TaskID           string   `json:"task_id"`
+	Status           string   `json:"status"`
+	LatencyMS        int64    `json:"latency_ms"`
+	StepCount        int      `json:"step_count"`
+	ToolBudget       int      `json:"tool_budget"`
+	TokenBudget      int      `json:"token_budget"`
+	LLMCalls         int      `json:"llm_calls"`
+	VerifierSeen     bool     `json:"verifier_seen"`
+	Supported        bool     `json:"supported"`
+	FallbackCount    int      `json:"fallback_count"`
+	ReplanCount      int      `json:"replan_count"`
+	FailedToolCount  int      `json:"failed_tool_count"`
+	Actions          []string `json:"actions,omitempty"`
+	FinalAnswer      string   `json:"final_answer"`
+	Pass             bool     `json:"pass"`
+	Error            string   `json:"error,omitempty"`
 }
 
 type CaseResult struct {

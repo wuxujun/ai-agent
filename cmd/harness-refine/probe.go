@@ -21,10 +21,11 @@ import (
 
 // ProbeReport is the probe phase output consumed by compose.
 type ProbeReport struct {
-	BaseTeam   string           `json:"base_team"`
-	ServiceURL string           `json:"service_url"`
-	CreatedAt  time.Time        `json:"created_at"`
-	Candidates []CandidateProbe `json:"candidates"`
+	DatasetSHA256 string           `json:"dataset_sha256,omitempty"`
+	BaseTeam      string           `json:"base_team"`
+	ServiceURL    string           `json:"service_url"`
+	CreatedAt     time.Time        `json:"created_at"`
+	Candidates    []CandidateProbe `json:"candidates"`
 }
 
 type CandidateProbe struct {
@@ -83,14 +84,15 @@ func (c probeClient) call(ctx context.Context, method, path string, body any, ou
 }
 
 type taskResponse struct {
-	ID          string          `json:"id"`
-	Status      string          `json:"status"`
-	StepCount   int             `json:"step_count"`
-	ToolBudget  int             `json:"tool_budget"`
-	TokenBudget int             `json:"token_budget"`
-	LLMCalls    int             `json:"llm_calls"`
-	FinalAnswer string          `json:"final_answer"`
-	Trace       json.RawMessage `json:"trace"`
+	EstimatedCostUSD *float64        `json:"llm_estimated_cost_usd"`
+	ID               string          `json:"id"`
+	Status           string          `json:"status"`
+	StepCount        int             `json:"step_count"`
+	ToolBudget       int             `json:"tool_budget"`
+	TokenBudget      int             `json:"token_budget"`
+	LLMCalls         int             `json:"llm_calls"`
+	FinalAnswer      string          `json:"final_answer"`
+	Trace            json.RawMessage `json:"trace"`
 }
 
 var taskIDSafe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
@@ -134,6 +136,7 @@ func runProbeTask(parent context.Context, c probeClient, item multiagenteval.Cas
 			result.ToolBudget = task.ToolBudget
 			result.TokenBudget = task.TokenBudget
 			result.LLMCalls = task.LLMCalls
+			result.EstimatedCostUSD = task.EstimatedCostUSD
 			result.FinalAnswer = task.FinalAnswer
 			result.VerifierSeen, result.Supported = multiagenteval.VerifierOutcome(task.Trace)
 			result.FallbackCount = multiagenteval.FallbackCount(task.Trace)
@@ -208,7 +211,7 @@ func runProbe(args []string, stdout, stderr io.Writer) int {
 	}
 
 	client := probeClient{baseURL: strings.TrimRight(*serviceURL, "/"), apiKey: *apiKey, http: &http.Client{Timeout: 30 * time.Second}}
-	report := ProbeReport{BaseTeam: manifest.BaseTeam, ServiceURL: client.baseURL, CreatedAt: time.Now().UTC()}
+	report := ProbeReport{DatasetSHA256: datasetDigest(dataset), BaseTeam: manifest.BaseTeam, ServiceURL: client.baseURL, CreatedAt: time.Now().UTC()}
 	runID := uuid.NewString()
 
 	for _, cand := range manifest.Candidates {

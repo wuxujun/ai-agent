@@ -15,10 +15,12 @@ import (
 //   - assessments list --lessons-dir DIR [--team T] [--limit N]
 func runLessons(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "lessons: want list, retract, or assessments")
+		fmt.Fprintln(stderr, "lessons: want list, prepare, verify, publish, retract, or assessments")
 		return 2
 	}
 	switch args[0] {
+	case "prepare", "verify", "publish":
+		return runLessonPromotion(args, stdout, stderr)
 	case "list":
 		return runLessonsList(args[1:], stdout, stderr)
 	case "retract":
@@ -88,6 +90,12 @@ func runLessonsList(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	for _, l := range lessons {
+		status, err := improvement.NewStore(*lessonsDir).Status(context.Background(), l.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "state=%s ", status)
 		fmt.Fprintf(stdout, "%s  team=%s  confidence=%.2f  %s  edits=%d  %s\n",
 			l.ID[:12], l.Team, l.Confidence, l.ObservedAt.Format("2006-01-02"),
 			len(l.Edits), l.ContrastDelta)

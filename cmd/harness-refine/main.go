@@ -63,6 +63,12 @@ Usage:
                          --base-snapshot runs/hr/<ts>/base-snapshot.json --out runs/hr/<ts>
   harness-refine lessons list --lessons-dir var/improvement
   harness-refine lessons assessments list --lessons-dir var/improvement
+  harness-refine lessons prepare --lessons-dir data/improvement --id <full-lesson-id> \
+                         --base-snapshot runs/hr/<ts>/base-snapshot.json --out runs/hr/joint
+  harness-refine lessons verify --lessons-dir data/improvement --id <full-lesson-id> \
+                         --base-snapshot runs/hr/<ts>/base-snapshot.json \
+                         --probe-results runs/hr/joint/probe-results.json --input evals/harness_regression.yaml
+  harness-refine lessons publish --lessons-dir data/improvement --id <full-lesson-id> --reason "reviewed joint probe"
   harness-refine lessons retract --lessons-dir var/improvement --id <full-lesson-id> --reason "regression"
   harness-refine run     --teams-yaml teams.yaml --team software --k 3 \
                          --service-url http://127.0.0.1:8088 --input evals/harness_regression.yaml \

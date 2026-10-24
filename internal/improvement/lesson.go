@@ -25,16 +25,17 @@ type EvidenceRef struct {
 // It is the improvement-harness counterpart of brain.Claim: instead of a
 // fact about the world, it records a fact about what improved a harness.
 type Lesson struct {
-	ID            string         `json:"id"` // sha256 of canonical content; assigned by Store.Record
-	Team          string         `json:"team"`
-	HarnessBefore string         `json:"harness_before"` // base harness snapshot digest
-	HarnessAfter  string         `json:"harness_after"`  // refined harness snapshot digest
-	Edits         []harness.Edit `json:"edits"`          // the adopted edits
-	Evidence      []EvidenceRef  `json:"evidence"`
-	ContrastDelta string         `json:"contrast_delta"` // human-readable improvement, e.g. "pass 0.50 -> 1.00"
-	Confidence    float64        `json:"confidence"`     // [0,1]
-	ObservedAt    time.Time      `json:"observed_at"`
-	Source        string         `json:"source"` // e.g. "harness-refine:compose"
+	BaselineActiveTeam string         `json:"baseline_active_team,omitempty"`
+	ID                 string         `json:"id"` // sha256 of canonical content; assigned by Store.Record
+	Team               string         `json:"team"`
+	HarnessBefore      string         `json:"harness_before"` // base harness snapshot digest
+	HarnessAfter       string         `json:"harness_after"`  // refined harness snapshot digest
+	Edits              []harness.Edit `json:"edits"`          // the adopted edits
+	Evidence           []EvidenceRef  `json:"evidence"`
+	ContrastDelta      string         `json:"contrast_delta"` // human-readable improvement, e.g. "pass 0.50 -> 1.00"
+	Confidence         float64        `json:"confidence"`     // [0,1]
+	ObservedAt         time.Time      `json:"observed_at"`
+	Source             string         `json:"source"` // e.g. "harness-refine:compose"
 }
 
 // Retraction is a logical (non-destructive) withdrawal of a lesson.
@@ -49,14 +50,15 @@ type Retraction struct {
 // the same improvement is idempotent.
 func lessonID(l Lesson) (string, error) {
 	payload := struct {
-		Team     string         `json:"team"`
-		Before   string         `json:"harness_before"`
-		After    string         `json:"harness_after"`
-		Edits    []harness.Edit `json:"edits"`
-		Delta    string         `json:"contrast_delta"`
-		Evidence []EvidenceRef  `json:"evidence"`
+		BaselineActiveTeam string         `json:"baseline_active_team,omitempty"`
+		Team               string         `json:"team"`
+		Before             string         `json:"harness_before"`
+		After              string         `json:"harness_after"`
+		Edits              []harness.Edit `json:"edits"`
+		Delta              string         `json:"contrast_delta"`
+		Evidence           []EvidenceRef  `json:"evidence"`
 	}{
-		Team: l.Team, Before: l.HarnessBefore, After: l.HarnessAfter,
+		BaselineActiveTeam: l.BaselineActiveTeam, Team: l.Team, Before: l.HarnessBefore, After: l.HarnessAfter,
 		Edits: l.Edits, Delta: l.ContrastDelta, Evidence: l.Evidence,
 	}
 	data, err := json.Marshal(payload)

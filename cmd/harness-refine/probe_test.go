@@ -40,7 +40,7 @@ func fakeService(t *testing.T, seenTeams *[]string) *httptest.Server {
 		task := map[string]any{
 			"id": "x", "status": "completed", "step_count": 4,
 			"tool_budget": 10, "token_budget": 1000, "llm_calls": 3,
-			"final_answer": "done", "trace": json.RawMessage(trace),
+			"final_answer": "done", "trace": json.RawMessage(trace), "llm_estimated_cost_usd": 0.001,
 		}
 		json.NewEncoder(w).Encode(task)
 	})
@@ -105,11 +105,17 @@ func TestProbeAgainstFakeService(t *testing.T) {
 	if len(report.Candidates) != 2 {
 		t.Fatalf("want 2 candidates probed, got %d", len(report.Candidates))
 	}
+	if len(report.DatasetSHA256) != 64 {
+		t.Fatal("probe did not bind dataset")
+	}
 	for _, cp := range report.Candidates {
 		if len(cp.Cases) != 1 {
 			t.Fatalf("candidate %d: want 1 case, got %d", cp.Index, len(cp.Cases))
 		}
 		c := cp.Cases[0]
+		if c.Base.EstimatedCostUSD == nil || c.Candidate.EstimatedCostUSD == nil || *c.Candidate.EstimatedCostUSD != 0.001 {
+			t.Fatal("probe lost API cost evidence")
+		}
 		if !c.Base.Pass || !c.Candidate.Pass {
 			t.Fatalf("candidate %d: expected passes, got base=%v cand=%v", cp.Index, c.Base.Pass, c.Candidate.Pass)
 		}

@@ -358,11 +358,12 @@ func runCompose(args []string, stdout, stderr io.Writer) int {
 				})
 			}
 			lesson := improvement.Lesson{
-				Team:          report.BaseTeam,
-				HarnessBefore: base.ID,
-				HarnessAfter:  refined.ID,
-				Edits:         adoptedES.Edits,
-				Evidence:      evidence,
+				BaselineActiveTeam: base.Teams.ActiveTeam,
+				Team:               report.BaseTeam,
+				HarnessBefore:      base.ID,
+				HarnessAfter:       refined.ID,
+				Edits:              adoptedES.Edits,
+				Evidence:           evidence,
 				ContrastDelta: fmt.Sprintf("pass %.2f -> %.2f, supported %.2f -> %.2f",
 					winner.basePassRate(), winner.passRate(),
 					winner.baseSupportedRate(), winner.supportedRate()),

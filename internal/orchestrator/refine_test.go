@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,13 +62,21 @@ func TestPlanRefinementPicksNewestLesson(t *testing.T) {
 		}
 	}
 	base := time.Now().UTC()
-	if _, err := store.Record(ctx, mkLesson("b1", base)); err != nil {
+	first, err := store.Record(ctx, mkLesson("b1", base))
+	if err != nil {
 		t.Fatal(err)
 	}
+	publishTestLesson(t, store, first.ID)
 	want, err := store.Record(ctx, mkLesson("b2", base.Add(time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}
+	publishTestLesson(t, store, want.ID)
+	newer, err := store.Record(ctx, mkLesson("unpublished", base.Add(2*time.Second)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = newer
 	task := &types.Task{ID: "t-lesson", Goal: "g", Team: "software"}
 	plan := planRefinement(ctx, task)
 	if plan.lesson == nil || plan.lesson.ID != want.ID {
@@ -82,13 +91,17 @@ func testRefinePlan() refinePlan {
 			"software": {Planner: multiagent.AgentConfig{Model: "m1"}},
 		},
 	}
+	base, _ := harness.NewSnapshot(*teamsCfg, map[string]string{}, "test")
+	edits := []harness.Edit{{Target: "teams.software.planner.model", Op: "set", After: "m2"}}
+	after, _ := harness.Apply(base, harness.EditSet{Edits: edits})
 	return refinePlan{
 		team:     "software",
 		teamsCfg: teamsCfg,
 		lesson: &improvement.Lesson{
-			ID:            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			Team:          "software",
-			HarnessBefore: "a", HarnessAfter: "b",
+			BaselineActiveTeam: teamsCfg.ActiveTeam,
+			ID:                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			Team:               "software",
+			HarnessBefore:      base.ID, HarnessAfter: after.ID,
 			Edits:         []harness.Edit{{Target: "teams.software.planner.model", Op: "set", After: "m2"}},
 			ContrastDelta: "pass 0.50 -> 1.00",
 			Confidence:    0.5,
@@ -164,6 +177,15 @@ func TestCountErrorSteps(t *testing.T) {
 func TestAssessmentUsesCapturedOverlayAfterCleanup(t *testing.T) {
 	plan := testRefinePlan()
 	plan.lesson.Edits = []harness.Edit{{Target: "teams.software.routing.reviewed_min_plan_steps", Op: "set", After: "41"}}
+	base, err := harness.NewSnapshot(*plan.teamsCfg, map[string]string{}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refined, err := harness.Apply(base, harness.EditSet{Edits: plan.lesson.Edits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.lesson.HarnessAfter = refined.ID
 	task := &types.Task{ID: "assessment-overlay", Team: "software", Status: types.StatusCompleted}
 	skillsRoot := t.TempDir()
 	cleanup, digest := plan.applyOverlay(t.Context(), task, skillsRoot)
@@ -203,5 +225,26 @@ func TestBuildAssessmentEditor(t *testing.T) {
 	}
 	if ed.MaxCostUSD != 0.25 {
 		t.Fatalf("cost ceiling not carried: %v", ed.MaxCostUSD)
+	}
+}
+
+func publishTestLesson(t *testing.T, s *improvement.Store, id string) {
+	t.Helper()
+	if err := s.Validate(t.Context(), improvement.Validation{LessonID: id, ReportSHA256: strings.Repeat("a", 64), DatasetSHA256: strings.Repeat("b", 64), MaxCostRatio: 1.2, MaxTaskCostUSD: 0.1, Cases: 2, MaxLatencyRatio: 1.2, MaxLLMCalls: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Publish(t.Context(), id, "test reviewed joint probe"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyOverlayRejectsBaselineDrift(t *testing.T) {
+	plan := testRefinePlan()
+	plan.teamsCfg.Teams["software"] = multiagent.TeamConfig{Planner: multiagent.AgentConfig{Model: "changed"}}
+	task := &types.Task{ID: "baseline-drift", Team: "software"}
+	cleanup, digest := plan.applyOverlay(t.Context(), task, t.TempDir())
+	defer cleanup()
+	if digest != "" || len(task.Trace) != 0 {
+		t.Fatal("baseline drift must prevent overlay")
 	}
 }

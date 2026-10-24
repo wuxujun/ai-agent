@@ -64,7 +64,7 @@ func planRefinement(ctx context.Context, task *types.Task) refinePlan {
 	// Resume path: re-apply the previously selected lesson so the
 	// team-config digest stays stable across runs.
 	if sel, ok := multiagent.PersistedRefineSelection(task, team); ok {
-		lesson, found, err := improvement.NewStore(lessonsDir).Get(ctx, sel.LessonID)
+		lesson, found, err := improvement.NewStore(lessonsDir).GetPublished(ctx, sel.LessonID)
 		if err != nil || !found {
 			log.Warn("refinement: persisted lesson unavailable, running base harness",
 				"task_id", task.ID, "lesson_id", sel.LessonID, "error", err)
@@ -97,7 +97,7 @@ func planRefinement(ctx context.Context, task *types.Task) refinePlan {
 		return refinePlan{}
 	}
 	plan.assessable = true
-	lessons, err := improvement.NewStore(lessonsDir).List(ctx, team, 1)
+	lessons, err := improvement.NewStore(lessonsDir).ListPublished(ctx, team, 1)
 	if err != nil {
 		log.Warn("refinement: list lessons, assessing without overlay",
 			"task_id", task.ID, "error", err)
@@ -134,10 +134,16 @@ func (p refinePlan) applyOverlay(ctx context.Context, task *types.Task, skillsRo
 			"task_id", task.ID, "error", err)
 		return noop, ""
 	}
-	snap, err := harness.NewSnapshot(*teamsCfg, digests, "refine:overlay")
+	snapshotTeams := *teamsCfg
+	snapshotTeams.ActiveTeam = p.lesson.BaselineActiveTeam
+	snap, err := harness.NewSnapshot(snapshotTeams, digests, "refine:overlay")
 	if err != nil {
 		log.Warn("refinement: snapshot failed, running base harness",
 			"task_id", task.ID, "error", err)
+		return noop, ""
+	}
+	if snap.ID != p.lesson.HarnessBefore {
+		log.Warn("refinement: published lesson baseline changed, running base harness", "task_id", task.ID, "lesson_id", p.lesson.ID)
 		return noop, ""
 	}
 	refined, err := harness.Apply(snap, harness.EditSet{
@@ -147,6 +153,10 @@ func (p refinePlan) applyOverlay(ctx context.Context, task *types.Task, skillsRo
 	if err != nil {
 		log.Warn("refinement: apply lesson failed, running base harness",
 			"task_id", task.ID, "lesson_id", p.lesson.ID, "error", err)
+		return noop, ""
+	}
+	if refined.ID != p.lesson.HarnessAfter {
+		log.Warn("refinement: published lesson result mismatch, running base harness", "task_id", task.ID, "lesson_id", p.lesson.ID)
 		return noop, ""
 	}
 	teamCfg, ok := refined.Teams.Teams[p.team]
