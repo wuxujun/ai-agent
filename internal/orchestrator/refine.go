@@ -240,7 +240,8 @@ func countErrorSteps(task *types.Task) int {
 
 // buildAssessmentEditor selects the editor for online assessments from the
 // refinement config. "mock" (default) costs nothing; "llm" spends one model
-// call per executed assessment; AssessmentMaxCostUSD checks cost after the call.
+// call per executed assessment; a positive AssessmentMaxCostUSD also requires
+// conservative pre-call reservation, bounded output, and a single attempt.
 func buildAssessmentEditor(rc config.HarnessRefineConfig) refine.Editor {
 	if strings.EqualFold(strings.TrimSpace(rc.AssessmentEditor), "llm") {
 		return refine.LLMEditor{MaxCostUSD: rc.AssessmentMaxCostUSD}

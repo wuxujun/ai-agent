@@ -43,7 +43,9 @@ type HarnessRefineConfig struct {
 	// (zero-cost heuristic, default) or "llm" (real model proposal call).
 	AssessmentEditor string `mapstructure:"assessment_editor"`
 	// AssessmentMaxCostUSD caps the estimated cost of one online assessment
-	// proposal call; 0 disables the ceiling. Applies to the llm editor.
+	// proposal call using pre-call reservation and post-call usage checks;
+	// positive values disable retries/fallback and bound output. 0 disables
+	// the ceiling. Applies to the llm editor.
 	AssessmentMaxCostUSD float64 `mapstructure:"assessment_max_cost_usd"`
 }
 type Config struct {
@@ -1728,8 +1730,8 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("multiagent.harness_refine.assessment_editor must be mock or llm")
 		}
-		if hr.AssessmentMaxCostUSD < 0 {
-			return fmt.Errorf("multiagent.harness_refine.assessment_max_cost_usd must not be negative")
+		if hr.AssessmentMaxCostUSD < 0 || math.IsNaN(hr.AssessmentMaxCostUSD) || math.IsInf(hr.AssessmentMaxCostUSD, 0) {
+			return fmt.Errorf("multiagent.harness_refine.assessment_max_cost_usd must be finite and nonnegative")
 		}
 	}
 	if c.Brain.Enabled {

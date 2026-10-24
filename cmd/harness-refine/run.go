@@ -48,6 +48,10 @@ func runAll(args []string, stdout, stderr io.Writer) (code int) {
 		fmt.Fprintln(stderr, "run: --team, --service-url and --out are required")
 		return 2
 	}
+	if !validEditorCostCeiling(*editorMaxCostUSD) {
+		fmt.Fprintln(stderr, "run: --editor-max-cost-usd must be finite and nonnegative")
+		return 2
+	}
 	if *reloadTimeout <= 0 {
 		fmt.Fprintln(stderr, "run: --reload-timeout must be positive")
 		return 2

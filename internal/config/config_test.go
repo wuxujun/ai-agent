@@ -484,6 +484,8 @@ func TestValidateHarnessRefineSettings(t *testing.T) {
 		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.LessonsDir = "" },
 		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.AssessmentEditor = "gpt" },
 		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.AssessmentMaxCostUSD = -1 },
+		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.AssessmentMaxCostUSD = math.NaN() },
+		func(cfg *Config) { cfg.MultiAgent.HarnessRefine.AssessmentMaxCostUSD = math.Inf(1) },
 	} {
 		cfg := validConfig()
 		mutate(cfg)

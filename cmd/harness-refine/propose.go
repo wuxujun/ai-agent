@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -50,6 +51,10 @@ func runPropose(args []string, stdout, stderr io.Writer) int {
 	}
 	if *team == "" || *out == "" {
 		fmt.Fprintln(stderr, "propose: --team and --out are required")
+		return 2
+	}
+	if !validEditorCostCeiling(*editorMaxCostUSD) {
+		fmt.Fprintln(stderr, "propose: --editor-max-cost-usd must be finite and nonnegative")
 		return 2
 	}
 
@@ -176,6 +181,10 @@ func runPropose(args []string, stdout, stderr io.Writer) int {
 		len(candidates), len(general), len(domain), *team, *out)
 	fmt.Fprintf(stdout, "base snapshot %s; serve %s and hot-reload before probing\n", base.ID[:12], manifest.TeamsFile)
 	return 0
+}
+
+func validEditorCostCeiling(value float64) bool {
+	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func repeat(s string, n int) []string {

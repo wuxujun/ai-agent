@@ -2,9 +2,12 @@ package refine
 
 import (
 	"context"
+	"errors"
+	"math"
 	"strings"
 	"testing"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/harness"
 	"github.com/wuxujun/ai-agent/internal/improvement"
 	"github.com/wuxujun/ai-agent/internal/llm"
@@ -19,9 +22,13 @@ type fakeEditorCaller struct {
 	systemPrompt string
 	userPrompt   string
 	schema       map[string]any
+	calls        int
+	config       llm.Config
 }
 
-func (f *fakeEditorCaller) CallJSON(_ context.Context, _ llm.Config, system, user string, schema map[string]any, dest any) (types.TokenUsage, error) {
+func (f *fakeEditorCaller) CallJSON(_ context.Context, cfg llm.Config, system, user string, schema map[string]any, dest any) (types.TokenUsage, error) {
+	f.calls++
+	f.config = cfg
 	f.systemPrompt, f.userPrompt, f.schema = system, user, schema
 	if f.err != nil {
 		return f.usage, f.err
@@ -131,10 +138,131 @@ func TestLLMEditorCostCeiling(t *testing.T) {
 	}
 	editor, ctx := testEditor(caller)
 	editor.LLMConfig.InputCostPerMillionUSD = 1.0
+	editor.LLMConfig.OutputCostPerMillionUSD = 1.0
 	editor.MaxCostUSD = 0.5
 	_, _, _, err := editor.Propose(ctx, testBase(), "software", 1, nil)
 	if err == nil || !strings.Contains(err.Error(), "ceiling") {
 		t.Fatalf("expected ceiling error, got %v", err)
+	}
+}
+
+func TestLLMEditorBudgetRejectsBeforeCalling(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		max, input, output float64
+	}{
+		{"insufficient reservation", 0.000001, 1, 1},
+		{"missing input price", 1, 0, 1},
+		{"missing output price", 1, 1, 0},
+		{"negative price", 1, -1, 1},
+		{"nan price", 1, math.NaN(), 1},
+		{"infinite price", 1, 1, math.Inf(1)},
+		{"overflow cost", 1, math.MaxFloat64, math.MaxFloat64},
+		{"negative ceiling", -1, 1, 1},
+		{"nan ceiling", math.NaN(), 1, 1},
+		{"infinite ceiling", math.Inf(1), 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := &fakeEditorCaller{}
+			editor, ctx := testEditor(caller)
+			editor.MaxCostUSD = tc.max
+			editor.LLMConfig.InputCostPerMillionUSD = tc.input
+			editor.LLMConfig.OutputCostPerMillionUSD = tc.output
+			_, _, usage, err := editor.Propose(ctx, testBase(), "software", 1, nil)
+			if err == nil || caller.calls != 0 || usage.TotalTokens != 0 {
+				t.Fatalf("budget rejection: calls=%d, usage=%v, err=%v", caller.calls, usage, err)
+			}
+		})
+	}
+}
+
+func TestLLMEditorBudgetPinsSingleBoundedAttempt(t *testing.T) {
+	t.Cleanup(config.OverrideForTesting(func(cfg *config.Config) {
+		cfg.LLM.Scenes = map[string]config.LLMEndpointConfig{
+			"test":      {Routes: []config.LLMRouteRule{{TargetScene: "expensive", Intents: []string{"coding"}}}},
+			"expensive": {Model: "unreserved-model"},
+		}
+	}))
+	for _, tc := range []struct {
+		name                           string
+		configured, contextLimit, want int
+		err                            error
+	}{
+		{"default bound", 0, 0, 4096, nil},
+		{"smaller config bound", 1000, 0, 1000, nil},
+		{"larger config bound", 10000, 0, 4096, nil},
+		{"context bound", 1000, 100, 100, nil},
+		{"retryable error", 0, 0, 4096, &llm.HTTPStatusError{StatusCode: 503}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := &fakeEditorCaller{usage: types.TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}, err: tc.err}
+			editor, ctx := testEditor(caller)
+			editor.MaxCostUSD = 1
+			editor.LLMConfig.InputCostPerMillionUSD, editor.LLMConfig.OutputCostPerMillionUSD = 1, 1
+			editor.LLMConfig.MaxOutputTokens = tc.configured
+			editor.LLMConfig.MaxRetries, editor.LLMConfig.FallbackScene = 3, "expensive"
+			original := *editor.LLMConfig
+			ctx = llm.WithRoutingHints(ctx, config.LLMRoutingHints{Intent: "coding"})
+			ctx = llm.WithMaxOutputTokens(ctx, tc.contextLimit)
+			_, _, usage, err := editor.Propose(ctx, testBase(), "software", 1, nil)
+			if (err != nil) != (tc.err != nil) || caller.calls != 1 || usage != caller.usage {
+				t.Fatalf("calls=%d usage=%v err=%v", caller.calls, usage, err)
+			}
+			if caller.config.MaxOutputTokens != tc.want || caller.config.MaxRetries != 0 || caller.config.FallbackScene != "" || caller.config.Model != original.Model || *editor.LLMConfig != original {
+				t.Fatal("budgeted invocation changed config or escaped its reserved scene/attempt/output bounds")
+			}
+		})
+	}
+}
+
+func TestLLMEditorBudgetUsageEvidence(t *testing.T) {
+	for _, usage := range []types.TokenUsage{
+		{}, {PromptTokens: -1, CompletionTokens: 1},
+		{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 3},
+		{PromptTokens: 1000000, CompletionTokens: 1, TotalTokens: 1000001},
+		{PromptTokens: 1, CompletionTokens: 4097, TotalTokens: 4098},
+	} {
+		caller := &fakeEditorCaller{usage: usage}
+		editor, ctx := testEditor(caller)
+		editor.MaxCostUSD = 1
+		editor.LLMConfig.InputCostPerMillionUSD, editor.LLMConfig.OutputCostPerMillionUSD = 1, 1
+		general, domain, gotUsage, err := editor.Propose(ctx, testBase(), "software", 1, nil)
+		if err == nil || caller.calls != 1 || len(general)+len(domain) != 0 || gotUsage != usage {
+			t.Fatalf("invalid evidence accepted: usage=%v err=%v", usage, err)
+		}
+	}
+}
+
+func TestLLMEditorZeroBudgetPreservesRetries(t *testing.T) {
+	caller := &fakeEditorCaller{err: &llm.HTTPStatusError{StatusCode: 503}}
+	editor, ctx := testEditor(caller)
+	editor.LLMConfig.MaxRetries = 1
+	_, _, _, err := editor.Propose(ctx, testBase(), "software", 1, nil)
+	if err == nil || caller.calls != 2 || caller.config.MaxOutputTokens != 0 || caller.config.MaxRetries != 1 {
+		t.Fatal("disabled ceiling changed ordinary retry/output behavior")
+	}
+}
+
+func TestLLMEditorBudgetReservationIncludesFullRequest(t *testing.T) {
+	editor, ctx := testEditor(&fakeEditorCaller{})
+	cfg := *editor.LLMConfig
+	cfg.InputCostPerMillionUSD, cfg.OutputCostPerMillionUSD = 1, 1
+	system, user, schema := "多字节 system", "user", editorSchema(1)
+	bound, err := llm.ConservativeInputTokenUpperBound(system, user, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := llm.EstimateCostUSD(cfg, types.TokenUsage{PromptTokens: bound, CompletionTokens: 4096})
+	if _, got, err := boundedEditorConfig(ctx, cfg, system, user, schema, reservation); err != nil || got != bound {
+		t.Fatalf("exact reservation: bound=%d err=%v", got, err)
+	}
+	if _, _, err := boundedEditorConfig(ctx, cfg, system, user, schema, math.Nextafter(reservation, 0)); err == nil {
+		t.Fatal("under-reserved call accepted")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, _, _, err := editor.Propose(ctx, testBase(), "software", 1, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled editor: %v", err)
 	}
 }
 

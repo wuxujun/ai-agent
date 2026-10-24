@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/wuxujun/ai-agent/internal/config"
@@ -65,8 +66,9 @@ type LLMEditor struct {
 	LLMConfig *llm.Config
 	// SystemPrompt overrides the promptmanager/embedded system prompt.
 	SystemPrompt string
-	// MaxCostUSD caps the estimated cost of the proposal call; 0 disables.
-	// Exceeding it fails the proposal.
+	// MaxCostUSD enables conservative pre-call cost admission and post-call
+	// usage checks. Positive limits pin a single attempt with bounded output;
+	// 0 preserves ordinary routing, retry, and fallback behavior.
 	MaxCostUSD float64
 }
 
@@ -88,26 +90,52 @@ func (e LLMEditor) llmConfig() llm.Config {
 // Invalid edits are dropped (counted in the debug log); the rest are
 // returned with the call's token usage for cost tracking.
 func (e LLMEditor) Propose(ctx context.Context, base harness.Snapshot, team string, k int, lessons []improvement.Lesson) ([]harness.EditSet, []harness.EditSet, types.TokenUsage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, types.TokenUsage{}, err
+	}
 	if _, ok := base.Teams.Teams[team]; !ok {
 		return nil, nil, types.TokenUsage{}, fmt.Errorf("team %q not found in snapshot", team)
 	}
 	if k < 1 {
 		return nil, nil, types.TokenUsage{}, fmt.Errorf("k must be >= 1")
 	}
+	if e.MaxCostUSD < 0 || math.IsNaN(e.MaxCostUSD) || math.IsInf(e.MaxCostUSD, 0) {
+		return nil, nil, types.TokenUsage{}, fmt.Errorf("llm editor cost ceiling must be finite and nonnegative")
+	}
 	cfg := e.llmConfig()
 	if strings.TrimSpace(cfg.Model) == "" {
 		return nil, nil, types.TokenUsage{}, fmt.Errorf("llm editor not configured: no model for scene %q (set llm.scenes.%s.model or the provider default model)", e.sceneName(), e.sceneName())
 	}
 	systemPrompt := e.resolveSystemPrompt(ctx)
-	userPrompt := buildEditorPrompt(base, team, k, lessons)
+	userPrompt := truncatePrompt(buildEditorPrompt(base, team, k, lessons), 60000)
+	schema := editorSchema(k)
+	callJSON := llm.CallJSON
+	inputBound := 0
+	if e.MaxCostUSD > 0 {
+		// Freeze the editor scene whose prices and transport limits were
+		// admitted. Inherited task routing, retries, and fallback cannot add
+		// another model or paid attempt under a per-proposal reservation.
+		var err error
+		cfg, inputBound, err = boundedEditorConfig(ctx, cfg, systemPrompt, userPrompt, schema, e.MaxCostUSD)
+		if err != nil {
+			return nil, nil, types.TokenUsage{}, err
+		}
+		callJSON = llm.CallJSONExact
+	}
 
 	var output llmProposal
-	usage, err := llm.CallJSON(ctx, cfg, systemPrompt, truncatePrompt(userPrompt, 60000), editorSchema(k), &output)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, types.TokenUsage{}, err
+	}
+	usage, err := callJSON(ctx, cfg, systemPrompt, userPrompt, schema, &output)
 	if err != nil {
 		return nil, nil, usage, fmt.Errorf("llm editor call: %w", err)
 	}
 	if max := e.MaxCostUSD; max > 0 {
-		if cost := llm.EstimateCostUSD(cfg, usage); cost > max {
+		if !validEditorBudgetUsage(usage, inputBound, cfg.MaxOutputTokens) {
+			return nil, nil, usage, fmt.Errorf("llm editor cost ceiling: missing or out-of-bound usage")
+		}
+		if cost := llm.EstimateCostUSD(cfg, usage); math.IsNaN(cost) || math.IsInf(cost, 0) || cost > max {
 			return nil, nil, usage, fmt.Errorf("llm editor cost $%.4f exceeded ceiling $%.4f", cost, max)
 		}
 	}
