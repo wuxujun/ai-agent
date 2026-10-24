@@ -75,13 +75,23 @@ func (tokens authAcceptanceTokens) validate() error {
 }
 
 func validateProductionAuthAcceptanceConfig(cfg *config.Config, tenantID string) error {
+	return validateProductionAuthAcceptanceBase(cfg, tenantID, false)
+}
+
+// sharedUserid is only selected by the separate cross-tenant acceptance entry.
+// The original same-tenant entry continues to require distinct claims.
+func validateProductionAuthAcceptanceBase(cfg *config.Config, tenantID string, sharedUserid bool) error {
 	auth := cfg.API.Auth
 	if auth.Mode != "introspection" || !auth.Bearer.RequireSubject || !auth.RequireTenantWorkspaceRoot {
 		return errors.New("acceptance requires introspection, personal subjects, and tenant workspace isolation")
 	}
 	in := auth.Introspection
-	if in.SubjectClaim == "" || in.SubjectClaim == in.TenantClaim || in.Issuer == "" || in.Audience == "" || !in.RequireExpiration || !in.RequireKnownTenant || in.CacheTTLSeconds != 0 || in.AllowPrivateNetwork {
-		return errors.New("acceptance requires distinct subject and tenant fields, issuer/audience/expiration/known-tenant checks, no cache, and public-network policy")
+	validClaims := in.SubjectClaim != "" && in.SubjectClaim != in.TenantClaim
+	if sharedUserid {
+		validClaims = in.SubjectClaim == "data.userid" && in.TenantClaim == "data.userid"
+	}
+	if !validClaims || in.Issuer == "" || in.Audience == "" || !in.RequireExpiration || !in.RequireKnownTenant || in.CacheTTLSeconds != 0 || in.AllowPrivateNetwork {
+		return errors.New("acceptance requires the selected identity field contract, issuer/audience/expiration/known-tenant checks, no cache, and public-network policy")
 	}
 	parsed, err := url.Parse(in.URL)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
