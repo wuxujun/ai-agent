@@ -1,0 +1,5 @@
+simulation: harness-reload-local
+routing: path
+mocks:
+  - routeKey: runtime
+    path: ../mocks/harness-reload/default.js

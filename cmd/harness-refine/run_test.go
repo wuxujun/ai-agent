@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/harness"
@@ -225,9 +226,15 @@ func TestDeployCandidatesCopiesFile(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("original\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := deployCandidates(dst, src); err != nil {
+	deployment, err := lockTeamsDeployment(dst)
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer deployment.close()
+	if err := deployment.deploy(src); err != nil {
+		t.Fatal(err)
+	}
+	deployment.restored = true // This helper test deliberately leaves the deployed file.
 	data, _ := os.ReadFile(dst)
 	if !strings.Contains(string(data), "teams:") {
 		t.Fatalf("dst not overwritten: %q", data)
@@ -284,5 +291,30 @@ func TestComposeWritesTeamsRefinedYAML(t *testing.T) {
 	// must carry it so the next round can use this file as --teams-yaml.
 	if !strings.Contains(string(data), "m2") {
 		t.Fatalf("teams.refined.yaml missing refined model:\n%s", data)
+	}
+}
+
+func TestRunReportsBothTasksInEachCandidatePair(t *testing.T) {
+	teamsYAML, skillsRoot := testRepoPaths(t)
+	service := refinementService(t)
+	var created atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/tasks" {
+			created.Add(1)
+		}
+		service.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	dataset := filepath.Join(t.TempDir(), "cases.yaml")
+	if err := os.WriteFile(dataset, []byte(probeTestDataset), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := runAll([]string{"--teams-yaml", teamsYAML, "--skills-root", skillsRoot, "--team", "software", "--k", "1", "--service-url", server.URL, "--input", dataset, "--out", t.TempDir()}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run failed: %d %s", code, &stderr)
+	}
+	if created.Load() != 4 || !strings.Contains(stdout.String(), "up to 1 round(s) x 2 candidates x 1 repetition(s) x 2 paired tasks per case") {
+		t.Fatalf("budget must cover both baseline tasks: created=%d stdout=%s", created.Load(), &stdout)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,7 +22,7 @@ import (
 // service and hot-reloads it automatically, restoring the original file
 // afterwards. Without it, the operator deploys candidates manually between
 // phases (single-round usage).
-func runAll(args []string, stdout, stderr io.Writer) int {
+func runAll(args []string, stdout, stderr io.Writer) (code int) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	teamsYAML := fs.String("teams-yaml", "teams.yaml", "path to teams.yaml")
@@ -36,6 +37,7 @@ func runAll(args []string, stdout, stderr io.Writer) int {
 	apiKey := fs.String("api-key", os.Getenv("AI_AGENT_API_KEY"), "X-API-Key (defaults to AI_AGENT_API_KEY)")
 	input := fs.String("input", "evals/harness_regression.yaml", "YAML evaluation dataset")
 	repetitions := fs.Int("repetitions", 1, "paired runs per case")
+	reloadTimeout := fs.Duration("reload-timeout", 30*time.Second, "timeout for each configuration reload, including restoration")
 	caseTimeout := fs.Duration("case-timeout", 3*time.Minute, "timeout per task")
 	lessonsDir := fs.String("lessons-dir", "", "improvement harness directory (record lessons on adoption)")
 	out := fs.String("out", "", "output directory (required)")
@@ -44,6 +46,10 @@ func runAll(args []string, stdout, stderr io.Writer) int {
 	}
 	if *team == "" || *serviceURL == "" || *out == "" {
 		fmt.Fprintln(stderr, "run: --team, --service-url and --out are required")
+		return 2
+	}
+	if *reloadTimeout <= 0 {
+		fmt.Fprintln(stderr, "run: --reload-timeout must be positive")
 		return 2
 	}
 	if *rounds < 1 || *rounds > 5 {
@@ -56,20 +62,29 @@ func runAll(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Cost estimate before spending: rounds × candidates × cases × repetitions.
-	// Case count is unknown without parsing; report the per-round task budget.
-	fmt.Fprintf(stdout, "run: %d round(s) x %d candidates x %d repetition(s) per case (plus 1 base run per case)\n",
+	// Planned upper bound: each candidate gets its own paired base task.
+	// Case count and actual proposal count are resolved by later phases.
+	fmt.Fprintf(stdout, "run: up to %d round(s) x %d candidates x %d repetition(s) x 2 paired tasks per case (base + candidate)\n",
 		*rounds, 2*(*k), *repetitions)
 
-	var originalTeams []byte
+	var deployment *teamsDeployment
 	if autoDeploy {
 		var err error
-		originalTeams, err = os.ReadFile(*serviceTeamsYAML)
+		deployment, err = lockTeamsDeployment(*serviceTeamsYAML)
 		if err != nil {
-			fmt.Fprintf(stderr, "run: read service teams.yaml: %v\n", err)
+			fmt.Fprintf(stderr, "run: prepare service teams: %v\n", err)
 			return 1
 		}
-		defer restoreServiceTeams(*serviceTeamsYAML, *serviceURL, *apiKey, originalTeams, stderr)
+		defer func() {
+			if err := deployment.restore(*serviceURL, *apiKey, *reloadTimeout); err != nil {
+				fmt.Fprintf(stderr, "run: restore service teams: %v\n", err)
+				code = 1
+			}
+			if err := deployment.close(); err != nil {
+				fmt.Fprintf(stderr, "run: release teams lock: %v\n", err)
+				code = 1
+			}
+		}()
 	}
 
 	type iteration struct {
@@ -115,11 +130,11 @@ func runAll(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 		if autoDeploy {
-			if err := deployCandidates(*serviceTeamsYAML, filepath.Join(roundDir, "teams.candidates.yaml")); err != nil {
+			if err := deployment.deploy(filepath.Join(roundDir, "teams.candidates.yaml")); err != nil {
 				fmt.Fprintf(stderr, "run: deploy candidates: %v\n", err)
 				return 1
 			}
-			if err := reloadService(*serviceURL, *apiKey); err != nil {
+			if err := reloadServiceTimeout(*serviceURL, *apiKey, *reloadTimeout); err != nil {
 				fmt.Fprintf(stderr, "run: hot-reload service: %v\n", err)
 				return 1
 			}
@@ -200,49 +215,31 @@ func runAll(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// deployCandidates copies a round's merged teams file to the service's
-// teams.yaml path.
-func deployCandidates(serviceTeamsYAML, candidatesFile string) error {
-	data, err := os.ReadFile(candidatesFile)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", candidatesFile, err)
-	}
-	if err := os.WriteFile(serviceTeamsYAML, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", serviceTeamsYAML, err)
-	}
-	return nil
+// reloadService uses a bounded request even during restoration.
+func reloadService(serviceURL, apiKey string) error {
+	return reloadServiceTimeout(serviceURL, apiKey, 30*time.Second)
 }
 
-// reloadService hot-reloads the service config (POST /api/config/reload).
-func reloadService(serviceURL, apiKey string) error {
-	req, err := http.NewRequest(http.MethodPost, serviceURL+"/api/config/reload", nil)
+func reloadServiceTimeout(serviceURL, apiKey string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serviceURL+"/api/config/reload", nil)
 	if err != nil {
 		return err
 	}
 	if apiKey != "" {
 		req.Header.Set("X-API-Key", apiKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("reload returned %s", resp.Status)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("reload returned HTTP %d", resp.StatusCode)
 	}
 	return nil
-}
-
-// restoreServiceTeams puts the original teams.yaml back and reloads.
-// Best effort: failures are reported but never fail the run.
-func restoreServiceTeams(serviceTeamsYAML, serviceURL, apiKey string, original []byte, stderr io.Writer) {
-	if err := os.WriteFile(serviceTeamsYAML, original, 0o644); err != nil {
-		fmt.Fprintf(stderr, "run: restore service teams.yaml: %v\n", err)
-		return
-	}
-	if err := reloadService(serviceURL, apiKey); err != nil {
-		fmt.Fprintf(stderr, "run: reload after restore: %v\n", err)
-	}
 }
 
 func readComposeOutput(path string) (composeOutput, error) {
