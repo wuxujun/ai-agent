@@ -134,10 +134,10 @@ func BenchmarkTaskAppendProgress(b *testing.B) {
 				if err := st.(TaskCreationStore).CreateTask(b.Context(), task); err != nil {
 					b.Fatal(err)
 				}
+				var checkpoint *TaskProgressCheckpoint
 				capacityMeasure(b, func() error {
-					var checkpoint *TaskProgressCheckpoint
 					if mode == "progress" {
-						checkpoint = CaptureTaskProgress(st, task)
+						checkpoint = AdvanceTaskProgress(st, task, checkpoint)
 					}
 					task.Trace = append(task.Trace, types.StepTrace{Step: len(task.Trace) + 1, Action: "read_file", Observation: "appended row"})
 					task.StepCount++

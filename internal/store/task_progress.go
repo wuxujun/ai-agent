@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"reflect"
 
 	"github.com/wuxujun/ai-agent/internal/types"
 )
@@ -16,7 +15,7 @@ type TaskProgressCheckpoint struct {
 	owner   Store
 	taskID  string
 	version int64
-	trace   []types.StepTrace
+	trace   progressTraceSnapshot
 }
 
 type TaskProgressStore interface {
@@ -35,20 +34,7 @@ func CaptureTaskProgress(st Store, task *types.Task) *TaskProgressCheckpoint {
 	if sqlite, ok := st.(*SQLiteStore); ok && sqlite.restoreVersions != nil {
 		return nil
 	}
-	detached := types.CloneTask(&types.Task{Trace: task.Trace})
-	// CloneTask normalizes nil slices for its public snapshot contract. Preserve
-	// the exact representation here so an untouched prefix compares equal.
-	for i, item := range task.Trace {
-		if item.Evidence == nil {
-			detached.Trace[i].Evidence = nil
-		}
-		for j, evidence := range item.Evidence {
-			if evidence.Lines != nil && len(evidence.Lines) == 0 {
-				detached.Trace[i].Evidence[j].Lines = []string{}
-			}
-		}
-	}
-	return &TaskProgressCheckpoint{owner: st, taskID: task.ID, version: task.MaintenanceVersion, trace: detached.Trace}
+	return &TaskProgressCheckpoint{owner: st, taskID: task.ID, version: task.MaintenanceVersion, trace: progressTraceSnapshot{}.extend(task.Trace)}
 }
 
 // A step can persist an approval/checkpoint itself. In that case the newly
@@ -81,9 +67,38 @@ func traceProgressOffset(task *types.Task, checkpoint *TaskProgressCheckpoint, p
 	if checkpoint.taskID != task.ID || previous == nil || checkpoint.version != task.MaintenanceVersion || checkpoint.version != previous.MaintenanceVersion {
 		return 0, ErrTaskProgressConflict
 	}
-	count := len(checkpoint.trace)
-	if count > len(task.Trace) || !reflect.DeepEqual(checkpoint.trace, task.Trace[:count]) {
+	count := checkpoint.trace.count
+	if !checkpoint.trace.matches(task.Trace) {
 		return 0, nil
 	}
 	return count, nil
+}
+
+// AdvanceTaskProgress captures an acknowledged save while sharing immutable
+// historical blocks with the previous checkpoint. Call only after a successful
+// complete save, before further task mutation, just like CaptureTaskProgress.
+// Rewrites and version/store changes fall back to a fully detached capture.
+func AdvanceTaskProgress(st Store, task *types.Task, previous *TaskProgressCheckpoint) *TaskProgressCheckpoint {
+	if task == nil || previous == nil || !sameProgressOwner(st, previous.owner) || previous.taskID != task.ID || previous.version+1 != task.MaintenanceVersion || !previous.trace.matches(task.Trace) {
+		return CaptureTaskProgress(st, task)
+	}
+	if sqlite, ok := st.(*SQLiteStore); ok && sqlite.restoreVersions != nil {
+		return nil
+	}
+	return &TaskProgressCheckpoint{owner: st, taskID: task.ID, version: task.MaintenanceVersion, trace: previous.trace.extend(task.Trace[previous.trace.count:])}
+}
+
+func sameProgressOwner(a, b Store) bool {
+	// Reuse is limited to the built-in SQL implementations. Other stores retain
+	// CaptureTaskProgress's original capability and snapshot contract.
+	switch a := a.(type) {
+	case *SQLiteStore:
+		other, ok := b.(*SQLiteStore)
+		return ok && a == other
+	case *PostgresStore:
+		other, ok := b.(*PostgresStore)
+		return ok && a == other
+	default:
+		return false
+	}
 }

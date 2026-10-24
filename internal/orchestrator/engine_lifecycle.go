@@ -520,7 +520,7 @@ func (e *Engine) RunAll(ctx context.Context, task *types.Task) error {
 				return err
 			}
 			if !types.IsTerminalTaskStatus(task.Status) {
-				checkpoint = store.CaptureTaskProgress(e.Store, task)
+				checkpoint = store.AdvanceTaskProgress(e.Store, task, checkpoint)
 			}
 		}
 
