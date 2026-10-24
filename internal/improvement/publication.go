@@ -35,10 +35,12 @@ func (s *Store) Validate(ctx context.Context, v Validation) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, ok, err := s.Get(ctx, v.LessonID); err != nil {
+	if l, ok, err := s.Get(ctx, v.LessonID); err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("lesson unavailable")
+	} else if err := l.ValidateForTeam(l.Team); err != nil {
+		return err
 	}
 	if !validValidation(v) {
 		return fmt.Errorf("invalid joint validation evidence")
@@ -55,10 +57,12 @@ func (s *Store) Publish(ctx context.Context, id, reason string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, ok, err := s.Get(ctx, id); err != nil {
+	if l, ok, err := s.Get(ctx, id); err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("lesson unavailable")
+	} else if err := l.ValidateForTeam(l.Team); err != nil {
+		return err
 	}
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("publication reason is required")
@@ -86,6 +90,9 @@ func (s *Store) GetPublished(ctx context.Context, id string) (Lesson, bool, erro
 	}
 	if p.LessonID != id || !validValidation(p.Validation) || p.Validation.LessonID != id || p.Validation.ValidatedAt.IsZero() || p.PublishedAt.IsZero() || strings.TrimSpace(p.Reason) == "" {
 		return Lesson{}, false, fmt.Errorf("invalid publication binding")
+	}
+	if err := l.ValidateForTeam(l.Team); err != nil {
+		return Lesson{}, false, err
 	}
 	if err := ctx.Err(); err != nil {
 		return Lesson{}, false, err

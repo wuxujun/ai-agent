@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPublicationLifecycle(t *testing.T) {
@@ -71,5 +72,48 @@ func TestPublicationRejectsTamperedLesson(t *testing.T) {
 	}
 	if _, _, err := s.Get(t.Context(), l.ID); err == nil {
 		t.Fatal("tampered content address accepted")
+	}
+}
+
+func TestPublicationRejectsCrossTeamEdits(t *testing.T) {
+	s := NewStore(t.TempDir())
+	draft := testLesson()
+	draft.Edits[0].Target = "teams.data.planner.model"
+	l, err := s.Record(t.Context(), draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := Validation{LessonID: l.ID, ReportSHA256: strings.Repeat("a", 64), DatasetSHA256: strings.Repeat("b", 64), Cases: 2, MaxLatencyRatio: 1.2, MaxCostRatio: 1.2, MaxTaskCostUSD: .1, MaxLLMCalls: 20, ValidatedAt: time.Now().UTC()}
+	if err := s.Validate(t.Context(), proof); err == nil {
+		t.Fatal("cross-team draft validated")
+	}
+	// Existing/operator-written evidence cannot bypass the publication scope check.
+	if err := s.writeState("validations", l.ID, proof); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Publish(t.Context(), l.ID, "review"); err == nil {
+		t.Fatal("cross-team lesson published")
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "publications", l.ID+".json")); !os.IsNotExist(err) {
+		t.Fatal("rejected publication wrote serving state")
+	}
+	if err := s.writeState("publications", l.ID, Publication{LessonID: l.ID, Validation: proof, Reason: "legacy", PublishedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.GetPublished(t.Context(), l.ID); err == nil || ok {
+		t.Fatal("existing cross-team publication served")
+	}
+}
+
+func TestPublicationScopeUsesExactTeamComponent(t *testing.T) {
+	for _, name := range []string{"software", "soft", "software.planner"} {
+		t.Run(name, func(t *testing.T) {
+			l := testLesson()
+			l.Team = name
+			err := l.ValidateForTeam(name)
+			if (err == nil) != (name == "software") {
+				t.Fatalf("scope result for %q: %v", name, err)
+			}
+		})
 	}
 }

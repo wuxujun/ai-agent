@@ -149,3 +149,22 @@ func TestLessonPromotionCLI(t *testing.T) {
 		t.Fatal("changed dataset accepted")
 	}
 }
+
+func TestLessonSnapshotRejectsUnprobedTeamEdits(t *testing.T) {
+	l, base, _, _ := jointFixture(t)
+	base.Teams.Teams["data"] = base.Teams.Teams["software"]
+	base, err := harness.NewSnapshot(base.Teams, base.SkillDigests, "cross-team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Edits = []harness.Edit{{Target: "teams.data.planner.model", Op: "set", After: "other-model"}}
+	refined, err := harness.Apply(base, harness.EditSet{Edits: l.Edits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.HarnessBefore = base.ID
+	l.HarnessAfter = refined.ID
+	if err := checkLessonSnapshot(l, base); err == nil {
+		t.Fatal("joint probe would not materialize the edited team")
+	}
+}

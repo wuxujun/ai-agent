@@ -248,3 +248,14 @@ func TestApplyOverlayRejectsBaselineDrift(t *testing.T) {
 		t.Fatal("baseline drift must prevent overlay")
 	}
 }
+
+func TestApplyOverlayRejectsLessonForAnotherTeam(t *testing.T) {
+	plan := testRefinePlan()
+	plan.lesson.Team = "data"
+	task := &types.Task{ID: "wrong-lesson-team", Team: "software"}
+	cleanup, digest := plan.applyOverlay(t.Context(), task, t.TempDir())
+	defer cleanup()
+	if digest != "" || len(task.Trace) != 0 {
+		t.Fatal("wrong-team lesson installed")
+	}
+}

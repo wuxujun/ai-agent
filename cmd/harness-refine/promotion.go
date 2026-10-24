@@ -123,6 +123,9 @@ func runLessonPromotion(args []string, stdout, stderr io.Writer) int {
 }
 
 func checkLessonSnapshot(l improvement.Lesson, base harness.Snapshot) error {
+	if err := l.ValidateForTeam(l.Team); err != nil {
+		return err
+	}
 	actual, err := harness.NewSnapshot(base.Teams, base.SkillDigests, "verify")
 	if err != nil {
 		return err

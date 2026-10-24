@@ -90,3 +90,22 @@ func (l Lesson) validate() error {
 	}
 	return nil
 }
+
+// ValidateForTeam binds the edits to the team that is actually materialized
+// during joint probes and installed as the task-scoped runtime overlay.
+// Draft records may contain other scopes, but they cannot be promoted/served.
+func (l Lesson) ValidateForTeam(team string) error {
+	if err := l.validate(); err != nil {
+		return err
+	}
+	if l.Team != team {
+		return fmt.Errorf("lesson team does not match selected team")
+	}
+	for _, edit := range l.Edits {
+		targetTeam, _, ok := strings.Cut(strings.TrimPrefix(edit.Target, "teams."), ".")
+		if !ok || targetTeam != team {
+			return fmt.Errorf("lesson edits target a different team")
+		}
+	}
+	return nil
+}

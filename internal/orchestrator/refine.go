@@ -118,6 +118,10 @@ func (p refinePlan) applyOverlay(ctx context.Context, task *types.Task, skillsRo
 	if p.lesson == nil || task == nil {
 		return noop, ""
 	}
+	if err := p.lesson.ValidateForTeam(p.team); err != nil {
+		log.Warn("refinement: lesson scope invalid, running base harness", "task_id", task.ID)
+		return noop, ""
+	}
 	teamsCfg := p.teamsCfg
 	if teamsCfg == nil {
 		var err error
