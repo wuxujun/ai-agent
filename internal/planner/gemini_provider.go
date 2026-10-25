@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"google.golang.org/genai"
@@ -73,9 +74,7 @@ func (p *geminiProvider) Plan(ctx context.Context, req PlanRequest, onChunk func
 			}
 		}
 		if resp.UsageMetadata != nil {
-			usage.PromptTokens = int(resp.UsageMetadata.PromptTokenCount)
-			usage.CompletionTokens = int(resp.UsageMetadata.CandidatesTokenCount)
-			usage.TotalTokens = int(resp.UsageMetadata.TotalTokenCount)
+			usage = llmcore.GeminiTokenUsage(resp.UsageMetadata)
 		}
 	}
 

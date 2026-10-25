@@ -3,8 +3,10 @@ package orchestrator
 import (
 	"context"
 	"iter"
+	"math"
 	"testing"
 
+	"github.com/wuxujun/ai-agent/internal/config"
 	"github.com/wuxujun/ai-agent/internal/tools"
 	"github.com/wuxujun/ai-agent/internal/types"
 	"google.golang.org/adk/model"
@@ -151,6 +153,32 @@ func TestAdkNextPublishesPartialModelChunks(t *testing.T) {
 	}
 	if task.FinalAnswer != "is streamed" {
 		t.Fatalf("final answer = %q", task.FinalAnswer)
+	}
+}
+
+func TestAdkNextAccountsThinkingAndToolUsage(t *testing.T) {
+	inputPrice, outputPrice := 1.0, 2.0
+	t.Cleanup(config.OverrideForTesting(func(c *config.Config) {
+		c.LLM.Scenes = map[string]config.LLMEndpointConfig{config.LLMSceneADK: {
+			InputCostPerMillionUSD: &inputPrice, OutputCostPerMillionUSD: &outputPrice,
+		}}
+	}))
+	m := &streamingADKLLM{responses: []*model.LLMResponse{
+		{Content: genai.NewContentFromText("partial", genai.RoleModel), Partial: true, UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+			PromptTokenCount: 5, ToolUsePromptTokenCount: 1, CandidatesTokenCount: 2, ThoughtsTokenCount: 4, TotalTokenCount: 12,
+		}},
+		{Content: genai.NewContentFromText("usage complete", genai.RoleModel), TurnComplete: true, UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+			PromptTokenCount: 5, CachedContentTokenCount: 2, ToolUsePromptTokenCount: 3, CandidatesTokenCount: 7, ThoughtsTokenCount: 11, TotalTokenCount: 26,
+		}},
+	}}
+	engine := &Engine{Mode: ModeAdk, AdkModel: m}
+	task := &types.Task{ID: "adk-thinking-usage", Goal: "usage fixture", Status: types.StatusCreated, MaxSteps: 5, ToolBudget: 5, Workspace: "./workspace", LLMCostBudgetUSD: 1}
+	if err := engine.Next(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	usage := aggregateTaskTokenUsage(task)
+	if usage != (types.TokenUsage{PromptTokens: 8, CompletionTokens: 18, TotalTokens: 26}) || task.LLMCalls != 1 || math.Abs(task.LLMEstimatedCostUSD-0.000044) > 1e-12 || task.FinalAnswer != "usage complete" {
+		t.Fatalf("usage=%+v calls=%d cost=%g answer=%q", usage, task.LLMCalls, task.LLMEstimatedCostUSD, task.FinalAnswer)
 	}
 }
 

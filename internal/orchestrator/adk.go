@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/wuxujun/ai-agent/internal/config"
+	llmcore "github.com/wuxujun/ai-agent/internal/llm"
 	"github.com/wuxujun/ai-agent/internal/logger"
 	"github.com/wuxujun/ai-agent/internal/planner"
 	"github.com/wuxujun/ai-agent/internal/tools"
@@ -238,10 +239,10 @@ func (e *Engine) runAdkNext(ctx context.Context, task *types.Task) error {
 			return err
 		}
 		if event.UsageMetadata != nil && !event.Partial {
-			metadata := event.UsageMetadata
-			adkUsage.PromptTokens += int(metadata.PromptTokenCount)
-			adkUsage.CompletionTokens += int(metadata.CandidatesTokenCount) + int(metadata.ThoughtsTokenCount)
-			adkUsage.TotalTokens += int(metadata.TotalTokenCount)
+			usage := llmcore.GeminiTokenUsage(event.UsageMetadata)
+			adkUsage.PromptTokens += usage.PromptTokens
+			adkUsage.CompletionTokens += usage.CompletionTokens
+			adkUsage.TotalTokens += usage.TotalTokens
 		}
 		if event.Partial && e.TokenCallback != nil && event.LLMResponse.Content != nil {
 			for _, part := range event.LLMResponse.Content.Parts {

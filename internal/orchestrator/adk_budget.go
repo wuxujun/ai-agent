@@ -40,10 +40,10 @@ func (m budgetedADKModel) GenerateContent(ctx context.Context, req *model.LLMReq
 		for response, err := range m.delegate.GenerateContent(ctx, req, stream) {
 			callErr = err
 			if response != nil && response.UsageMetadata != nil {
-				metadata := response.UsageMetadata
-				usage.PromptTokens = max(usage.PromptTokens, int(metadata.PromptTokenCount))
-				usage.CompletionTokens = max(usage.CompletionTokens, int(metadata.CandidatesTokenCount)+int(metadata.ThoughtsTokenCount))
-				usage.TotalTokens = max(usage.TotalTokens, int(metadata.TotalTokenCount))
+				snapshot := llmcore.GeminiTokenUsage(response.UsageMetadata)
+				usage.PromptTokens = max(usage.PromptTokens, snapshot.PromptTokens)
+				usage.CompletionTokens = max(usage.CompletionTokens, snapshot.CompletionTokens)
+				usage.TotalTokens = max(usage.TotalTokens, snapshot.TotalTokens)
 			}
 			if !yield(response, err) {
 				_ = observe()

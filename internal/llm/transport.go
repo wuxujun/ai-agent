@@ -65,10 +65,7 @@ func (nativeStructuredCaller) CallJSON(ctx context.Context, cfg Config, systemPr
 		if err != nil {
 			return types.TokenUsage{}, err
 		}
-		var usage types.TokenUsage
-		if resp.UsageMetadata != nil {
-			usage = types.TokenUsage{PromptTokens: int(resp.UsageMetadata.PromptTokenCount), CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount), TotalTokens: int(resp.UsageMetadata.TotalTokenCount)}
-		}
+		usage := GeminiTokenUsage(resp.UsageMetadata)
 		if cfg.StrictJSONSchema {
 			return usage, parseStructuredJSONStrict(resp.Text(), dest, schema)
 		}
@@ -106,10 +103,7 @@ func (nativeStructuredCaller) CallVisionJSON(ctx context.Context, cfg Config, sy
 		if err != nil {
 			return types.TokenUsage{}, err
 		}
-		var usage types.TokenUsage
-		if resp.UsageMetadata != nil {
-			usage = types.TokenUsage{PromptTokens: int(resp.UsageMetadata.PromptTokenCount), CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount), TotalTokens: int(resp.UsageMetadata.TotalTokenCount)}
-		}
+		usage := GeminiTokenUsage(resp.UsageMetadata)
 		if cfg.StrictJSONSchema {
 			return usage, parseStructuredJSONStrict(resp.Text(), dest, schema)
 		}

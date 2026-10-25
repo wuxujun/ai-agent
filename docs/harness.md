@@ -194,6 +194,13 @@ CLI/启用的配置校验拒绝。该机制只约束单次 editor proposal，不
 账本，也不覆盖 probe 中所有团队任务的费用。配置单价、token 统计及供应商的限额语义
 决定估算有效性，不能据此保证最终账单或撤销已产生费用；失败尝试也可能计费。
 
+Gemini 用量统一按输入 `promptTokenCount + toolUsePromptTokenCount`、输出
+`candidatesTokenCount + thoughtsTokenCount` 统计；缓存 tokens 已包含在 prompt 中，
+不会重复相加。保留供应商 `totalTokenCount` 原值，缺失或不一致的 total 不会被自动补成
+可通过预算核验的数值。此口径用于结构化文本/视觉、planner 流式和 ADK 路径；因此思考
+tokens 也占用 editor 的输出预留。费用仍按仓库配置的输入/输出单价估算，没有单独模拟
+供应商的缓存折扣或其他特殊计费规则。
+
 ## 5. Lesson、线上灰度与撤回
 
 先将离线结果记录到独立目录，例如在 compose 或 run 中增加

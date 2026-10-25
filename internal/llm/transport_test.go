@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wuxujun/ai-agent/internal/llmprovider"
+	"github.com/wuxujun/ai-agent/internal/types"
 )
 
 func TestNativeStructuredCallerStreamsOpenAIChat(t *testing.T) {
@@ -178,6 +181,63 @@ func TestNativeGeminiStrictSchemaRejectsNestedUnknownResponse(t *testing.T) {
 	_, err := (nativeStructuredCaller{}).CallJSON(context.Background(), Config{Provider: llmprovider.Gemini, APIKey: "test-key", Model: "gemini-test", BaseURL: server.URL, StrictJSONSchema: true}, "system", "user", schema, &output)
 	if !errors.Is(err, ErrStructuredOutput) {
 		t.Fatalf("err=%v output=%+v", err, output)
+	}
+}
+
+func TestNativeGeminiAccountsThinkingAndToolUsage(t *testing.T) {
+	resetGeminiPool(t)
+	for _, tc := range []struct {
+		name            string
+		vision, invalid bool
+	}{
+		{"text", false, false}, {"vision", true, false},
+		{"invalid text retains usage", false, true}, {"invalid vision retains usage", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if !strings.Contains(r.URL.Path, ":generateContent") {
+					t.Error("unexpected Gemini route")
+				}
+				text := `{"answer":"ok"}`
+				if tc.invalid {
+					text = "invalid structured output"
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"candidates":    []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": text}}}}},
+					"usageMetadata": map[string]any{"promptTokenCount": 5, "cachedContentTokenCount": 2, "toolUsePromptTokenCount": 3, "candidatesTokenCount": 7, "thoughtsTokenCount": 11, "totalTokenCount": 26},
+				})
+			}))
+			defer server.Close()
+			cfg := Config{Provider: llmprovider.Gemini, APIKey: "synthetic-usage-key", Model: "gemini-test", BaseURL: server.URL, InputCostPerMillionUSD: 1, OutputCostPerMillionUSD: 2, StrictJSONSchema: true}
+			task := &types.Task{LLMCostBudgetUSD: 1}
+			ctx := WithTaskBudget(t.Context(), task)
+			runtime := NewRuntime(nativeStructuredCaller{}, nil)
+			var output struct {
+				Answer string `json:"answer"`
+			}
+			schema := map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}, "required": []string{"answer"}, "additionalProperties": false}
+			var usage types.TokenUsage
+			var err error
+			if tc.vision {
+				usage, err = runtime.CallVisionJSON(ctx, cfg, "system", "user", VisionInput{MIMEType: "image/png", Data: []byte("synthetic image")}, schema, &output)
+			} else {
+				usage, err = runtime.CallJSONExact(ctx, cfg, "system", "user", schema, &output)
+			}
+			want := types.TokenUsage{PromptTokens: 8, CompletionTokens: 18, TotalTokens: 26}
+			if requests.Load() != 1 || usage != want || task.LLMCalls != 1 || math.Abs(task.LLMEstimatedCostUSD-0.000044) > 1e-12 {
+				t.Fatalf("calls=%d usage=%+v cost=%g err=%v", requests.Load(), usage, task.LLMEstimatedCostUSD, err)
+			}
+			if tc.invalid {
+				if !errors.Is(err, ErrStructuredOutput) {
+					t.Fatalf("expected structured rejection: %v", err)
+				}
+			} else if err != nil || output.Answer != "ok" {
+				t.Fatalf("output=%+v err=%v", output, err)
+			}
+		})
 	}
 }
 
