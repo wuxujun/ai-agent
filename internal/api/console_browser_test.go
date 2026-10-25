@@ -121,7 +121,11 @@ func TestConsoleBrowser(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", cli, "test")
+	args := []string{cli, "test"}
+	if pattern := os.Getenv("UI_TEST_GREP"); pattern != "" {
+		args = append(args, "--grep", pattern)
+	}
+	cmd := exec.CommandContext(ctx, "node", args...)
 	cmd.Dir = suite
 	cmd.Env = append(os.Environ(), "UI_BASE_URL="+server.URL, "UI_WORKSPACE="+workspace)
 	output, err := cmd.CombinedOutput()

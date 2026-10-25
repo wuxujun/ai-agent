@@ -589,6 +589,13 @@
       scheduled = true;
       requestAnimationFrame(() => { scheduled = false; renderWindow(); });
     });
+    viewport.addEventListener("keydown", event => {
+      if (event.target !== viewport || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key !== "Home" && event.key !== "End") return;
+      event.preventDefault();
+      viewport.scrollTop = event.key === "Home" ? 0 : viewport.scrollHeight;
+      renderWindow();
+    });
     function paint(resetScroll = true) {
       const term = search.value.trim().toLowerCase();
       matches = events.filter(({ trace: entry }) =>

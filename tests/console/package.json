@@ -2,6 +2,12 @@
   "name": "ai-agent-console-regression",
   "private": true,
   "type": "module",
-  "scripts": { "test": "playwright test" },
-  "devDependencies": { "@playwright/test": "1.58.2" }
+  "scripts": {
+    "test": "playwright test",
+    "test:live-anonymous": "node live-anonymous.mjs",
+    "test:live-policy": "node --test live-anonymous-policy.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2"
+  }
 }

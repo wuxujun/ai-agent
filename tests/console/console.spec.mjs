@@ -381,6 +381,16 @@ for (const width of [320, 390]) {
     await page.keyboard.press('End');
     await expect(page.locator('.trace-item').last()).toContainText('Trace row 100');
     await page.screenshot({ path: testInfo.outputPath(`trace-${width}.png`), fullPage: true });
+    await page.keyboard.press('Home');
+    await expect(page.locator('.trace-item').first()).toContainText('Trace row 001');
+    await expect.poll(() => viewport.evaluate(node => node.scrollTop)).toBe(0);
+    const search = page.getByLabel('筛选 Trace', { exact: true });
+    await search.fill('read_file');
+    await search.evaluate(node => node.setSelectionRange(0, 0));
+    await search.press('End');
+    await expect(search).toBeFocused();
+    await expect(search).toHaveValue('read_file');
+    await expect.poll(() => viewport.evaluate(node => node.scrollTop)).toBe(0);
     await approvalFixture(page, { preview: 'Read-only narrow preview\n' + 'long-text-'.repeat(80) });
     await expect.poll(fits).toBe(true);
     await page.getByRole('button', { name: '批准', exact: true }).scrollIntoViewIfNeeded();
@@ -420,3 +430,53 @@ for (const signal of ['open', 'error']) {
     expect(await page.evaluate(() => window.fixtureStreams.every(stream => stream.closed))).toBe(true);
   });
 }
+
+test('native EventSource reconnects after EOF and reconciles persisted state', async ({ page, context }) => {
+  await login(page);
+  await page.clock.install({ time: new Date('2026-10-25T12:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-10-25T12:00:01Z'));
+  let connections = 0;
+  let releaseReconnect;
+  const gate = new Promise(resolve => { releaseReconnect = resolve; });
+  // Only the first connection is a finite transport fault. EventSource is
+  // native, and its next request reaches the real authenticated Go SSE route.
+  await page.route('**/api/tasks/*/stream', async route => {
+    connections++;
+    if (connections === 1) {
+      await route.fulfill({
+        status: 200, headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+        body: 'retry: 100\n\n',
+      });
+      return;
+    }
+    await gate;
+    await route.continue();
+  });
+  try {
+    const id = await createTask(page, 'browser-cancel-native-reconnect');
+    await page.getByRole('button', { name: '运行任务', exact: true }).click();
+    await expect(taskStatus(page)).toHaveText('running');
+    await expect.poll(() => connections).toBeGreaterThanOrEqual(2);
+    const reads = new Set();
+    page.on('request', request => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith(`/api/tasks/${id}`)) reads.add(url.pathname);
+    });
+    const session = await (await context.request.get('/console/session')).json();
+    expect((await context.request.delete(`/api/tasks/${id}/cancel`, {
+      headers: { 'X-Console-CSRF': session.csrf_token },
+    })).ok()).toBe(true);
+    const resumed = page.waitForResponse(response =>
+      new URL(response.url()).pathname === `/api/tasks/${id}/stream`
+      && response.headers()['x-sse-recovery'] === 'snapshot');
+    releaseReconnect();
+    expect((await resumed).status()).toBe(200);
+    await page.clock.fastForward(300);
+    await expect(taskStatus(page)).toHaveText('failed');
+    expect(reads.has(`/api/tasks/${id}`)).toBe(true);
+    expect(reads.has(`/api/tasks/${id}/trace`)).toBe(true);
+    expect(reads.has(`/api/tasks/${id}/approvals`)).toBe(true);
+  } finally {
+    releaseReconnect();
+  }
+});
