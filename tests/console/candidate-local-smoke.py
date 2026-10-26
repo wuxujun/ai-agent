@@ -99,6 +99,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--package', required=True, type=Path)
     parser.add_argument('--runner', choices=['postman', 'node'], default='postman')
+    parser.add_argument('--failures', action='store_true', help='also exercise local dependency failures and recovery')
     args = parser.parse_args()
     if sys.platform != 'darwin' or not Path('/usr/bin/sandbox-exec').is_file():
         parser.error('this native fixture requires macOS sandbox-exec; use candidate-smoke.py for Linux')
@@ -152,7 +153,7 @@ def main():
               'commit': manifest['commit'], 'binary_sha256': digest,
               'app_port': app_port, 'mock_port': mock_port, 'runner': args.runner,
               'real_credentials_used': False, 'production_mutations': False,
-              'outbound_network_policy': 'deny non-loopback', 'checks': checks}
+              'outbound_network_policy': 'deny non-loopback', 'failure_matrix': args.failures, 'checks': checks}
     app, mock = None, None
     handles = []
 
@@ -196,6 +197,41 @@ def main():
         json_request(app_port, 'GET', '/api/teams', api_key)
         stats = json_request(mock_port, 'GET', model_prefix + '/_stats')
         record('startup and reads made no model calls', stats['model_calls'] == 0 and stats['unexpected_calls'] == 0)
+        failed_tasks = []
+        if args.failures:
+            for scenario in ['timeout', 'http-json', 'http-html', 'malformed-stream']:
+                json_request(mock_port, 'POST', model_prefix + '/_scenario/' + scenario)
+                failed_id = 'isolated-failure-' + scenario
+                before = json_request(mock_port, 'GET', model_prefix + '/_stats')['model_calls']
+                json_request(app_port, 'POST', '/api/tasks', api_key, {
+                    'id': failed_id, 'goal': 'isolated dependency failure', 'workspace': str(workspace),
+                    'mode': 'legacy', 'max_steps': 2, 'tool_budget': 1, 'llm_call_budget': 2,
+                }, expected=201)
+                started = time.monotonic()
+                json_request(app_port, 'POST', f'/api/tasks/{failed_id}/run-all', api_key, expected=202)
+                task = {}
+                while time.monotonic() - started < 18:
+                    task = json_request(app_port, 'GET', f'/api/tasks/{failed_id}', api_key)
+                    if task.get('status') in ['completed', 'failed', 'partial']:
+                        break
+                    time.sleep(0.1)
+                elapsed = round(time.monotonic() - started, 3)
+                record(scenario + ' reaches failed state within bound',
+                       task.get('status') == 'failed' and elapsed < 6,
+                       status=task.get('status'), elapsed_seconds=elapsed)
+                after = json_request(mock_port, 'GET', model_prefix + '/_stats')['model_calls']
+                record(scenario + ' dependency attempts bounded', 1 <= after - before <= 2,
+                       dependency_calls=after - before)
+                status, headers, stream = request(app_port, 'GET', f'/api/tasks/{failed_id}/stream', api_key)
+                record(scenario + ' failure readable via terminal SSE', status == 200
+                       and headers.get('x-sse-recovery') == 'snapshot' and b'failed' in stream)
+                record(scenario + ' raw upstream response absent from task and SSE',
+                       'candidate-upstream-secret-sentinel' not in json.dumps(task)
+                       and b'candidate-upstream-secret-sentinel' not in stream)
+                record(scenario + ' application remains responsive', request(app_port, 'GET', '/ping')[0] == 200)
+                failed_tasks.append(failed_id)
+            json_request(mock_port, 'POST', model_prefix + '/_scenario/success')
+        calls_before_success = json_request(mock_port, 'GET', model_prefix + '/_stats')['model_calls']
         task_id = 'isolated-candidate-task'
         json_request(app_port, 'POST', '/api/tasks', api_key, {
             'id': task_id, 'goal': 'isolated deterministic completion', 'workspace': str(workspace),
@@ -213,11 +249,12 @@ def main():
                and task.get('final_answer') == ANSWER, status=task.get('status'))
         stats = json_request(mock_port, 'GET', model_prefix + '/_stats')
         record('one local streaming planner call and no unexpected dependencies',
-               stats['model_calls'] == 1 and stats['streaming_calls'] == 1 and stats['unexpected_calls'] == 0,
+               stats['model_calls'] == calls_before_success + 1 and stats['streaming_calls'] == 1 and stats['unexpected_calls'] == 0,
                model_calls=stats['model_calls'], unexpected_calls=stats['unexpected_calls'])
         status, headers, stream = request(app_port, 'GET', f'/api/tasks/{task_id}/stream', api_key)
         record('candidate SSE terminal snapshot', status == 200 and headers.get('x-sse-recovery') == 'snapshot'
                and ANSWER.encode() in stream)
+        calls_before_restart = stats['model_calls']
         first_exit = stop(app)
         record('first candidate graceful shutdown', first_exit == 0, exit_code=first_exit)
         record('candidate port released before restart', port_closed(app_port))
@@ -226,8 +263,11 @@ def main():
         task = json_request(app_port, 'GET', f'/api/tasks/{task_id}', api_key)
         record('fresh SQLite task survives candidate restart', task.get('status') == 'completed'
                and task.get('final_answer') == ANSWER)
+        for failed_id in failed_tasks:
+            restored = json_request(app_port, 'GET', f'/api/tasks/{failed_id}', api_key)
+            record(failed_id + ' failure survives restart', restored.get('status') == 'failed')
         stats = json_request(mock_port, 'GET', model_prefix + '/_stats')
-        record('restart made no additional model calls', stats['model_calls'] == 1 and stats['unexpected_calls'] == 0)
+        record('restart made no additional model calls', stats['model_calls'] == calls_before_restart and stats['unexpected_calls'] == 0)
         versions = []
         for p in [root / 'app-1.log', root / 'app-2.log']:
             for line in p.read_text(errors='replace').splitlines():
@@ -238,6 +278,9 @@ def main():
                 if entry.get('msg') == 'HTTP server listening':
                     versions.append(entry.get('app_version'))
         record('both runtime logs report bound candidate version', versions == [manifest['version']] * 2)
+        record('application logs exclude raw upstream sentinel', all(
+            'candidate-upstream-secret-sentinel' not in p.read_text(errors='replace')
+            for p in root.rglob('*.log') if p.name != 'mock.log'))
         record('candidate binary unchanged after execution', hashlib.sha256(binary.read_bytes()).hexdigest() == digest)
         report['passed'] = True
     except Exception as error:
@@ -250,7 +293,8 @@ def main():
             handle.close()
         report['cleanup'] = {'app_exit': app_exit, 'mock_exit': mock_exit,
                              'app_port_closed': port_closed(app_port), 'mock_port_closed': port_closed(mock_port)}
-        if not all(report['cleanup'][key] for key in ['app_port_closed', 'mock_port_closed']):
+        if (app_exit != 0 or mock_exit != 0
+                or not all(report['cleanup'][key] for key in ['app_port_closed', 'mock_port_closed'])):
             report['passed'] = False
         (root / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))

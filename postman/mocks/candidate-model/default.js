@@ -3,6 +3,9 @@
 const http = require('node:http');
 const model = 'candidate-deterministic';
 const finalAnswer = 'Isolated candidate completed deterministically.';
+let scenario = 'success';
+const scenarios = new Set(['success', 'timeout', 'http-json', 'http-html', 'malformed-stream']);
+const sentinel = 'candidate-upstream-secret-sentinel';
 const stats = { model_calls: 0, unexpected_calls: 0, streaming_calls: 0 };
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -13,6 +16,12 @@ const server = http.createServer((req, res) => {
   console.log(JSON.stringify({ event: 'request', method: req.method, path }));
   if (req.method === 'GET' && path === '/healthz') return json(res, 200, { ok: true });
   if (req.method === 'GET' && path === '/_stats') return json(res, 200, stats);
+  if (req.method === 'POST' && path.startsWith('/_scenario/')) {
+    const selected = path.slice('/_scenario/'.length);
+    if (!scenarios.has(selected)) return json(res, 400, { error: 'unknown scenario' });
+    scenario = selected;
+    return json(res, 200, { scenario });
+  }
   if (req.method !== 'POST' || path !== '/v1/chat/completions') {
     stats.unexpected_calls++;
     return json(res, 501, { error: 'unmodeled candidate dependency call' });
@@ -34,6 +43,21 @@ const server = http.createServer((req, res) => {
       return json(res, 400, { error: 'candidate planner contract mismatch' });
     }
     stats.model_calls++;
+    if (scenario === 'timeout') {
+      // Hold headers beyond the candidate's configured 3s request timeout.
+      const timer = setTimeout(() => res.end(), 20000);
+      res.on('close', () => clearTimeout(timer));
+      return;
+    }
+    if (scenario === 'http-json') return json(res, 500, { error: { message: sentinel } });
+    if (scenario === 'http-html') {
+      res.writeHead(500, { 'Content-Type': 'text/html' });
+      return res.end(`<html><body>${sentinel}</body></html>`);
+    }
+    if (scenario === 'malformed-stream') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      return res.end('data: {broken-json\n\ndata: [DONE]\n\n');
+    }
     const content = JSON.stringify({
       thought_summary: 'Deterministic local fixture; no tools needed.',
       stop: true, final_answer: finalAnswer, actions: [{ action: 'none', parameters: {} }],
