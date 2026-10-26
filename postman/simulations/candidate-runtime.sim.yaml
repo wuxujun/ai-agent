@@ -1,0 +1,5 @@
+simulation: candidate-runtime-local
+routing: path
+mocks:
+  - routeKey: model
+    path: ../mocks/candidate-model/default.js

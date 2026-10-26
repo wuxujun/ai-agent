@@ -87,3 +87,15 @@ python3 tests/console/candidate-smoke.py \
 包目录需含 server、teams.yaml、skills/、MANIFEST.json；manifest 需有 version、goos 及 file_sha256.server，运行配置由夹具单独生成。Docker Desktop 的 `host.docker.internal` 必须能访问主机回环 HTTPS fixture。Linux 本机也可不加 `--docker-image`；该分支本轮未执行。实际运行命令、镜像、二进制哈希和结果见[候选二进制隔离运行验收](../../docs/Web-UI候选二进制隔离运行验收_2026-10-15.md)。
 
 Postman 文件位于 `postman/simulations/console-candidate.sim.yaml` 与 `postman/mocks/candidate-auth/default.js`。它们根据仓库现有 introspection 测试契约构造固定假身份；未知路径返回 501。这里只验证该契约下的应用行为，不代替生产身份提供方验收。不会查询/上传远端工作区，simulation 使用 `--no-history`；测试日志、临时证书私钥、数据库和真实凭据都不提交 Git。
+
+
+## macOS 候选本地模型隔离运行
+
+```sh
+python3 tests/console/candidate-local-smoke.py \
+  --package dist/verification/0.0.0-verify.6a910e0/darwin-arm64
+```
+
+该入口校验 manifest 中的二进制哈希，使用独立端口、空环境文件、随机测试密钥、临时 SQLite 和 macOS loopback 出站限制。默认通过本地 Postman simulation 返回固定流式 planner 决策，真实创建并完成一个隔离任务，核验终态 SSE、重启持久性、运行版本及自身进程清理。不会访问仓库 `.env` 或写入现有 8088 服务。需要 Python 3、Node、Postman CLI >=1.70 和 sandbox-exec；缺失隔离机制会拒绝运行。
+
+mock/simulation 位于 `postman/mocks/candidate-model/default.js` 与 `postman/simulations/candidate-runtime.sim.yaml`，源自仓库 planner 契约，未知调用返回 501，不发布远端资源。显式 `--runner node` 分支未在本次验收中运行。证据与限制见[验收记录](../../docs/候选隔离启动验收_2026-10-25.md)。
