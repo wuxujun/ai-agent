@@ -4,9 +4,9 @@ const http = require('node:http');
 const model = 'candidate-deterministic';
 const finalAnswer = 'Isolated candidate completed deterministically.';
 let scenario = 'success';
-const scenarios = new Set(['success', 'timeout', 'http-json', 'http-html', 'malformed-stream']);
+const scenarios = new Set(['success', 'timeout', 'http-json', 'http-html', 'malformed-stream', 'hold']);
 const sentinel = 'candidate-upstream-secret-sentinel';
-const stats = { model_calls: 0, unexpected_calls: 0, streaming_calls: 0 };
+const stats = { model_calls: 0, unexpected_calls: 0, streaming_calls: 0, active_holds: 0, aborted_holds: 0 };
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -43,10 +43,15 @@ const server = http.createServer((req, res) => {
       return json(res, 400, { error: 'candidate planner contract mismatch' });
     }
     stats.model_calls++;
-    if (scenario === 'timeout') {
+    if (scenario === 'timeout' || scenario === 'hold') {
       // Hold headers beyond the candidate's configured 3s request timeout.
-      const timer = setTimeout(() => res.end(), 20000);
-      res.on('close', () => clearTimeout(timer));
+      stats.active_holds++;
+      const timer = setTimeout(() => res.end(), scenario === 'hold' ? 120000 : 20000);
+      res.on('close', () => {
+        clearTimeout(timer);
+        stats.active_holds--;
+        if (!res.writableFinished) stats.aborted_holds++;
+      });
       return;
     }
     if (scenario === 'http-json') return json(res, 500, { error: { message: sentinel } });
@@ -76,3 +81,10 @@ const server = http.createServer((req, res) => {
 server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => {
   console.log(JSON.stringify({ event: 'listening', port: server.address().port }));
 });
+// Shut down only this fixture's server and connections when the harness exits.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    server.close(() => process.exit(0));
+    server.closeAllConnections();
+  });
+}

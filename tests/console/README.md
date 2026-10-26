@@ -98,7 +98,10 @@ python3 tests/console/candidate-local-smoke.py \
 
 该入口校验 manifest 中的二进制哈希，使用独立端口、空环境文件、随机测试密钥、临时 SQLite 和 macOS loopback 出站限制。默认通过本地 Postman simulation 返回固定流式 planner 决策，真实创建并完成一个隔离任务，核验终态 SSE、重启持久性、运行版本及自身进程清理。不会访问仓库 `.env` 或写入现有 8088 服务。需要 Python 3、Node、Postman CLI >=1.70 和 sandbox-exec；缺失隔离机制会拒绝运行。
 
-mock/simulation 位于 `postman/mocks/candidate-model/default.js` 与 `postman/simulations/candidate-runtime.sim.yaml`，源自仓库 planner 契约，未知调用返回 501，不发布远端资源。显式 `--runner node` 分支未在本次验收中运行。证据与限制见[验收记录](../../docs/候选隔离启动验收_2026-10-25.md)。
+mock/simulation 位于 `postman/mocks/candidate-model/default.js` 与 `postman/simulations/candidate-runtime.sim.yaml`，源自仓库 planner 契约，未知调用返回 501，不发布远端资源。基础验收使用 Postman；后续直接 Node HTTP 的生命周期验收见下文。证据与限制见[验收记录](../../docs/候选隔离启动验收_2026-10-25.md)。
 
 
 增加 `--failures` 可在同一隔离实例依次注入响应超时、500 JSON、500 HTML、损坏 SSE，再恢复正常响应。断言每种失败六秒内结束、依赖请求不超过任务预算、终态 SSE 可读、服务仍响应、合成上游标记不进入任务/SSE/应用日志；候选重启后失败记录和成功答案均保留。此入口不重试失败任务，恢复验证使用新任务。退出码非零或端口未释放均视为失败。
+
+
+生命周期验收使用 `--lifecycle --runner node`：60 秒模型超时、120 秒 hold 场景下，分别取消执行任务与排队任务，再对活跃候选发送 SIGINT。检查依赖连接确实中断、重启后取消状态保留、关闭时任务 paused，以及显式恢复完成。与 `--failures` 分开运行。Postman 转发路径在本轮未及时关闭下游 hold 连接，不能用于此连接释放断言；具体失败记录与最终直接 HTTP 证据见[取消与关闭验收](../../docs/候选取消与关闭验收_2026-10-25.md)。
