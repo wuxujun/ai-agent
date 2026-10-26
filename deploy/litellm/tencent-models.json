@@ -1,0 +1,50 @@
+[
+  {
+    "model_name": "t-agent-planner",
+    "litellm_params": {
+      "model": "deepseek/deepseek-v4-pro",
+      "custom_llm_provider": "custom_openai",
+      "litellm_credential_name": "TENCNT",
+      "drop_params": false
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "t-agent-planner-fallback",
+    "litellm_params": {
+      "model": "deepseek/deepseek-flash",
+      "custom_llm_provider": "custom_openai",
+      "litellm_credential_name": "TENCNT",
+      "drop_params": false
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "t-agent-writer",
+    "litellm_params": {
+      "model": "glm-5.3-flash",
+      "custom_llm_provider": "custom_openai",
+      "litellm_credential_name": "TENCNT",
+      "drop_params": false
+    },
+    "model_info": {
+      "id": null
+    }
+  },
+  {
+    "model_name": "t-agent-fast",
+    "litellm_params": {
+      "model": "deepseek/deepseek-v4-flash",
+      "custom_llm_provider": "custom_openai",
+      "litellm_credential_name": "TENCNT",
+      "drop_params": false
+    },
+    "model_info": {
+      "id": null
+    }
+  }
+]

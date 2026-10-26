@@ -22,7 +22,7 @@ usage() {
 选项:
   -p, --platform <平台>  指定构建平台，可重复传入
   -v, --version <版本>   指定版本（默认读取 VERSION 环境变量，否则为 1.0.0）
-  -o, --output <目录>    指定输出目录（默认 dist，目录必须尚不存在）
+  -o, --output <目录>    指定输出目录（默认 dist，可已存在；目标版本包不得已存在）
   -h, --help             显示帮助
 
 示例:
@@ -91,7 +91,20 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-[[ ! -e "$BUILD_DIR" && ! -L "$BUILD_DIR" ]] || fail "构建目录 ${BUILD_DIR} 已存在，请确认内容后手动移除或改名，或通过 --output 指定新目录"
+if [[ -e "$BUILD_DIR" || -L "$BUILD_DIR" ]]; then
+  [[ -d "$BUILD_DIR" ]] || fail "输出路径 ${BUILD_DIR} 不是目录"
+fi
+# 在开始构建前检查所有目标，避免覆盖版本包或产生部分平台的构建结果。
+for PLATFORM in "${PLATFORMS[@]}"; do
+  PACKAGE_NAME="ai-agent-${VERSION}-${PLATFORM%/*}-${PLATFORM#*/}"
+  ARCHIVE_EXT="tar.gz"
+  if [[ "$PLATFORM" == windows/* ]]; then
+    ARCHIVE_EXT="zip"
+  fi
+  for PACKAGE_PATH in "${BUILD_DIR}/${PACKAGE_NAME}" "${BUILD_DIR}/${PACKAGE_NAME}.${ARCHIVE_EXT}"; do
+    [[ ! -e "$PACKAGE_PATH" && ! -L "$PACKAGE_PATH" ]] || fail "版本包 ${PACKAGE_PATH} 已存在，请确认内容后手动移除或改名，或指定其他版本或输出目录"
+  done
+done
 command -v go >/dev/null 2>&1 || fail "未找到 go 命令"
 SUPPORTED_PLATFORMS="$(go tool dist list)"
 for PLATFORM in "${PLATFORMS[@]}"; do
@@ -107,9 +120,7 @@ for PLATFORM in "${PLATFORMS[@]}"; do
 done
 [[ -f config.yaml && -f teams.yaml && -d skills ]] || fail "缺少 config.yaml、teams.yaml 或 skills 目录"
 
-# mkdir 不覆盖已有目录，也避免并发构建写入同一个输出目录。
-mkdir -p -- "$(dirname -- "$BUILD_DIR")"
-mkdir -- "$BUILD_DIR"
+mkdir -p -- "$BUILD_DIR"
 for PLATFORM in "${PLATFORMS[@]}"; do
   TARGET_OS=${PLATFORM%/*}
   TARGET_ARCH=${PLATFORM#*/}
@@ -121,7 +132,8 @@ for PLATFORM in "${PLATFORMS[@]}"; do
   fi
 
   echo "--> 正在构建: GOOS=${TARGET_OS} GOARCH=${TARGET_ARCH}..."
-  mkdir -- "$TARGET_DIR"
+  # 独占创建版本目录，避免并发构建写入同一个版本包。
+  mkdir -- "$TARGET_DIR" || fail "无法创建版本包目录 ${TARGET_DIR}，请检查是否已有同版本构建或目录权限"
   CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" go build \
     -ldflags="-s -w -X github.com/wuxujun/ai-agent/internal/buildinfo.Version=${VERSION}" \
     -o "${TARGET_DIR}/${EXEC_NAME}" \

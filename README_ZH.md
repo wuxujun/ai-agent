@@ -1,8 +1,32 @@
 # AI Agent — Go 运行时引擎
 
+### Brain 只读运维
+
+Brain 默认关闭。启用后，只能通过 `brain-compile` 操作，并显式指定
+`--tenant` 和 `--project`。执行 CAS `publish` 前，应先检查并校验暂存快照；
+`publish` 和 `rollback` 都需要提供预期的 CURRENT 值。退出码 0 表示成功，
+1 表示受控的校验或提供商失败，2 表示用法或配置错误。`/ready` 和 `/api/metrics`
+只暴露有界的生命周期元数据，不输出页面正文、凭据或租户、项目、任务、快照标识符。
+
+`brain.root` 修改后需要重启。撤回只会在逻辑上阻止读取，不会物理擦除数据；
+Brain 不提供 HTTP 写入路由。编译器凭据必须来自配置的密钥环境变量
+（通常为 `GEMINI_API_KEY`）。
+
+典型审核流程：
+
+```text
+brain-compile inspect --tenant tenant-a --project atlas --snapshot snap-1
+brain-compile verify --tenant tenant-a --project atlas --snapshot snap-1
+brain-compile publish --tenant tenant-a --project atlas --snapshot snap-1 --expected-current snap-0
+brain-compile rollback --tenant tenant-a --project atlas --snapshot snap-0 --expected-current snap-1
+```
+
+应对持续的 Brain 提供商错误、项目撤销或意外失去就绪状态设置告警；
+仅 CURRENT 为空属于发布前的正常状态。
+
 > 基于 Go 语言构建的多 LLM AI Agent 执行运行时。通过工作区访问策略、审批、多智能体工作流和答案质量审查流水线，编排研究、代码分析与任务执行。
 
-[![Go 1.26.8](https://img.shields.io/badge/Go-1.26.8-blue)](https://go.dev/)
+[![Go 1.26.9](https://img.shields.io/badge/Go-1.26.9-blue)](https://go.dev/)
 
 当前实现与验证状态见 [文档索引](docs/README.md) 和 [项目分析报告](docs/项目功能完成度与优化分析报告_2026-10-11.md)。Web 操作台与 Brain 只读 MVP 已实现，Brain 默认关闭；仓库 Multi-Agent 默认使用 Legacy、DAG 灰度 0%。完整 HA 验收与 DAG 放量尚未完成，当前延后处理。
 
@@ -22,6 +46,11 @@
 - **安全防护** — Workspace 边界强制校验、高风险工具人工审批、Prompt 注入检测、敏感信息脱敏、URL 访问白名单。
 - **个人审批身份** — 可选可信个人主体要求与租户级服务端审批名单；[严格配置及兼容范围](docs/生产认证与审批权限说明_2026-10-11.md)。
 - **热重载配置** — 通过 `POST /api/config/reload` 无需重启即可重新加载配置与 API Key。
+
+新增或修改 LiteLLM 模型 JSON 后，可在仓库根目录运行
+`./deploy/litellm/sync-models.sh path/to/models.json` 进行单次同步。
+命令会创建或更新模型，并核对已保存的配置。前置条件、JSON 格式及多文件用法见
+[LiteLLM 网关指南](deploy/litellm/README.md#sync-any-json-manifest-once)。
 
 ---
 
@@ -232,7 +261,7 @@
 
 ### 前置条件
 
-- Go 1.26.8 及以上版本（本地、CI 和发布构建以 `go.mod` 中的最低版本为基准）
+- Go 1.26.9 及以上版本（本地、CI 和发布构建以 `go.mod` 中的最低版本为基准）
 - 可选：`ripgrep`（`rg`）和 `find` 命令，用于本地文件工具
 - 可选：本地运行 OTel Collector / Jaeger，监听 `127.0.0.1:4318`
 
@@ -270,8 +299,11 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 
 ## ⚙️ 配置说明
 
-所有配置项位于 [`config.yaml`](config.yaml)，可通过 `AI_AGENT_*` 环境变量覆盖；标注为
-“修改后需重启”的运行时依赖需要重启服务才能重新初始化。
+所有配置项位于 [`config.yaml`](config.yaml)，可通过 `AI_AGENT_*` 环境变量覆盖。
+设置 `AI_AGENT_CONFIG_FILE` 可选择其他本地 YAML 文件，例如
+[`config.wiki.yaml`](config.wiki.yaml)；热重载和文件监听也使用所选文件。
+显式选择的文件缺失或不可读时，启动或重载会失败，不会静默回退到默认配置。
+标注为“修改后需重启”的运行时依赖需要重启服务才能重新初始化。
 
 | 配置节 | 关键项 |
 |:---|:---|
@@ -286,7 +318,7 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 | `answer_pipeline` | `enabled`、`enforcement`、必选审计阶段 |
 | `langfuse` | 凭证、运行时获取及可选的启动 Prompt 初始化 |
 | `telemetry` | `enabled`、`endpoint`、`exporter`（`otlp` / `stdout`） |
-| `log` | `level`、`console`、`file_enabled`、`directory`、`retention_days` |
+| `log` | `level`、`console`、`file_enabled`、`access_enabled`、`directory`、`retention_days` |
 | `approval` | `ttl_seconds`（默认 86400）、`retention_days`（默认 30）；`0` 禁用对应维护动作 |
 | `search` | `url`、`api_key`（Firecrawl 或兼容服务） |
 | `tool` | `timeout_seconds` |
@@ -300,6 +332,12 @@ go test -race ./internal/multiagent/... ./internal/orchestrator/...
 ```bash
 export AI_AGENT_WIKI_DIRECTORY=/srv/knowledge
 export AI_AGENT_WIKI_DEFAULT_SPACE=local
+# 默认使用 BM25；设为 legacy 并重启可立即回退。
+export AI_AGENT_WIKI_LOCAL_SEARCH_MODE=bm25
+export AI_AGENT_WIKI_LOCAL_REFRESH_INTERVAL_SECONDS=30
+export AI_AGENT_WIKI_LOCAL_GRAPH_MAX_NODES=12
+export AI_AGENT_WIKI_CANDIDATE_CACHE_MAX_TASKS=1024
+export AI_AGENT_WIKI_CANDIDATE_CACHE_TTL_SECONDS=1800
 export AI_AGENT_MULTIAGENT_TEAM=wiki
 ```
 
@@ -317,6 +355,22 @@ export AI_AGENT_MULTIAGENT_TEAM=wiki
 每个租户配置 `api.tenants.<tenant>.wiki_space`；单租户或共享知识库可使用
 `wiki.default_space`。若日志出现 `has no api.tenants.<id>.wiki_space and
 wiki.default_space is empty`，说明两处空间配置均为空。
+
+Wiki 候选 ID 按租户和任务隔离。任务进入终态后会主动释放缓存；
+最大任务数和 TTL 限制用于约束中断任务留下的状态。`/api/metrics` 通过
+`wiki.candidate_cache_*` 暴露当前条目数，以及终态释放、过期和容量淘汰的累计计数。
+
+已认证客户端可通过以下接口解析引用，无需将 `wiki://` 当作网络协议：
+
+```http
+GET /api/wiki/pages/local/concepts/pbl-historical-travel-guide-new-york
+X-API-Key: <tenant credential>
+```
+
+接口返回结构化 JSON，包含规范的 `wiki://` URI 和 Markdown 正文。
+请求的 Space 必须等于租户配置的 `wiki_space`，或共享的 `wiki.default_space` 回退值。
+Slug 只能使用规范的相对 Markdown 路径；路径穿越、隐藏路径、非 Markdown 文件和
+跨 Space 读取都会被拒绝。响应设置 `private, no-store`，不会渲染为 HTML。
 
 创建任务时，可在 `mode=multiagent` 下通过 `team` 覆盖进程默认 Team。可使用
 `api.tenants.<tenant>.allowed_multiagent_teams` 限制非管理员租户；留空或省略
@@ -375,6 +429,12 @@ Team 返回 HTTP 422。成功及无变化更新都会输出结构化审计日志
 - `GET /ready`：查看 Wiki 状态及 `teams.configured`、`healthy`、`active_team`、`team_count` 和无效引用数；默认 Team 或租户 Team 白名单引用不存在时返回 503。
 - `GET /api/metrics`：管理员查看 `wiki.backend_calls`、`backend_errors`、平均延迟及熔断计数。
 - Multi-Agent 日志：应依次出现 `team=wiki`、`action=wiki_search` 和 `action=wiki_fetch`。
+- 答案审计包含确定性的 `wiki_citation_integrity` 阶段。基于 Wiki 的答案若缺少
+  `wiki://` 引用，或引用无效、跨空间、仅搜索命中但未读取，以及其他尚未获取正文的 URI，
+  该阶段会发出警告。它不调用 LLM；流水线执行模式为 `observe` 时不阻断任务。
+  默认情况下该阶段为必选阶段：`advisory` 模式下，同类问题会使任务成为部分完成状态，
+  但保留答案；`strict` 模式下还会设置 `publishable=false`。
+  引用有效且已读取正文的答案在所有模式下均可发布。
 
 若未使用 `wiki_search`，依次检查服务是否已重启、`AI_AGENT_WIKI_DIRECTORY`/`URL` 是否在
 服务进程环境中可见、Team 是否为 `wiki`，以及 `/ready` 中 Wiki 是否健康。配置了目录但仅
@@ -447,6 +507,14 @@ export AI_AGENT_APPROVAL_ENCRYPTION_PREVIOUS_KEYS="<旧-base64-密钥>[,<更旧-
 非管理员租户配置独立的 `api.tenants.<tenant>.workspace_root`。创建任务时若请求的
 Workspace 超出该根目录，服务会返回 `403`。兼容默认值为 `false`；即使未开启严格
 模式，只要租户配置了 `workspace_root`，该边界也始终生效。
+
+每条结构化日志都包含 `app_version`。本地 `go run` 或未注入版本的构建使用 `dev`。
+发布构建应嵌入版本号：
+
+```bash
+VERSION=v1.0.0
+go build -ldflags="-X github.com/wuxujun/ai-agent/internal/buildinfo.Version=${VERSION}" -o server ./cmd/server
+```
 
 
 ### DAG 运行时 — 是什么，为什么重要
@@ -702,6 +770,7 @@ Multi-Agent 会先缓冲答案 chunk，待草稿被接受（Reviewed 工作流�
 | `GET` | `/api/teams` | 查询当前租户可用 Team（仅返回安全的路由元数据） |
 | `GET` | `/api/metrics` | 本地性能指标，包含 Wiki、按 Team/来源分组的选择与拒绝、持久化审批及 DAG/Legacy 灰度计数 |
 | `POST` | `/api/config/reload` | 核心配置和 Team 引用校验通过后事务式热重载；跨配置校验拒绝返回 422 且 revision 不变 |
+| `POST` | `/api/prompt/init` | 管理员：幂等初始化 Langfuse 中缺失的 `teams.yaml` Prompt |
 | `GET` | `/ping` | 健康检查 → `{"message":"pong"}` |
 | `GET` | `/ready` | LLM 与必需 Wiki 就绪检查；依赖异常时返回 503 |
 
