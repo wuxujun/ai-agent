@@ -54,7 +54,8 @@ jobs:
 
   console-browser:
     name: Console browser regressions (${{ matrix.browser }})
-    runs-on: ubuntu-latest
+    # Playwright 1.58 cannot install browser dependencies on ubuntu-26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
